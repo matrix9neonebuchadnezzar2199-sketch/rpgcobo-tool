@@ -1,0 +1,124 @@
+
+runsk( "Workspace.sk");	//	最初にワークスペースをロード！！！！
+if( ::workspace.lang) ::lang <- Language( chooseLanguage( ::workspace.lang));	//	ワークスペースに保存された言語を指定
+{	//	ファイルへのログ開始。1日ごとにファイル名更新
+	FileRef( "log").mkdirs();
+	local d = Date(); changeStdOutFile( FileRef( "log/s%04d%02d%02d.log" % (d.tm_year+1900, d.tm_mon+1, d.tm_mday)));
+}
+
+//	再起動時にはウィンドウは生成済み
+if( !skGetScreenSize( [0,0])[0]){
+	if( ::workspace["iniwindow"]==0 && ::workspace["winsize"]){
+		local s = ::workspace["winsize"];
+		if( s[2]){	//	maximized
+			skCreateScreen( "SKStudio", 1600, 900, 4 | 16);
+			skMoveScreen( { flags=MoveScreenFlags.MOVESCREEN_MAXIMIZE});
+		}else{
+			skCreateScreen( "SKStudio", s[0], s[1], 4 | 16);
+		}
+	}else{
+		switch( ::workspace["iniwindow"]){
+		case 2:
+			skCreateScreen( "SKStudio", 1920, 1080, 4 | 16);
+			break;
+		case 3:
+			skCreateScreen( "SKStudio", 1600, 900, 4 | 16);
+			skMoveScreen( { flags=MoveScreenFlags.MOVESCREEN_MAXIMIZE});
+			break;
+		default:
+			skCreateScreen( "SKStudio", 1600, 900, 4 | 16);
+			break;
+		}
+	}
+	if( ::workspace["showconsole"]) Win32.setConsoleVisible( true);
+}
+skLoadAddon( "popen_s");
+skLoadAddon( "skstudio");
+skEnableDrop( true);
+
+skBeginRender();
+skClearParam( ClearParam( 0, 0, 0, 1));
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	SKStudio基本機能ロード
+
+runsk("/system/exlib/Zip.sk");
+runsk("/system/exlib/TinyHTTPServer.sk");
+
+runsk("/skstudio/functions.sk");
+runsk("/skstudio/common/load.sk");
+
+//	skstudio辞書を読み込む
+::T.merge( "/skstudio/tooldict.conf");
+
+runsk("/skstudio/main/load.sk");
+
+loadskfx( getResource("/skstudio/shader"));
+
+::rootview = SKRootView();
+::rootview.resizemode = 2;
+::rootview.setDisplayResolution( ::workspace.uiscale*0.01);
+
+if( !::["gpui"]) GPUI();	//	GPUIが初期化されてなかったらする！
+
+//	SKStudio initialize
+//	※ここから先skstudioの拡張機能追加が可能
+local std = (::skstudio <- SKStudio.create( ::resroot, ::arguments));
+std.stretchSize( rootview.bnd.w, rootview.bnd.h);
+::rootview.addChild( std);
+
+//	プロジェクトロードはここ！！skstudioインスタンスができてから、、、、？
+//	ゲーム本体はほぼ先頭で行われるが、skstudioの場合はrootviewも出来てからロードするのはどうだろ？
+runsk( "/load.sk");
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	SKStudio用の機能を追加
+
+runsk("efxeditor/load.sk");
+runsk("imgeditor/load.sk");				//	イメージエディター
+runsk("pmeditor/load.sk");				//	PMエディター
+runsk("uieditor/load.sk");				//	UIエディター
+runsk("spritesheet/load.sk");			//	スプライトシートエディター
+runsk("trans/load.sk");					//	翻訳エディター
+
+if( getsk( "/editor_postload.sk")){
+	runsk( "/editor_postload.sk");
+}
+
+module.dispatchAction( "editor_postload");
+
+////////////////////////////////////////////////////////////////////////////////////
+
+::rootview.updateMatrixAll( true);	//	umm??? 最初のバッファ描画で位置ずれ。最初の描画時にmatが正しくないため
+std.loadWorkspace( ::workspace);
+//std.callInEventThread( std.loadWorkspace, std, ::workspace);	//	こっちのほうが起動は早いがエディタのロードがごちゃっと表示される
+
+if( ::arguments.contains( "-reload")) newthread().start( @() Popups.showInfo( "$T.pop_relaunch"));
+if( ::workspace["iniwindow"]==0 && ::workspace["winsize"][2]) std.titlebar.view.findChild( "btn_winmax").setSelected( true);
+
+local prof = null;
+if( ::arguments.contains( "-skprof")) (prof = SKProfiler()).start();
+
+TipsRunner.start( {
+	tipsv = "/skstudio/ui/parts/tipsv.ui",
+	tipsh = "/skstudio/ui/parts/tipsh.ui",
+});
+
+local t0 = skGetTime();
+while( !::rootview.quit){
+	local t1 = skGetTime(), dt = t1-t0; t0 = t1;
+	rootview.update( dt);
+	suspend();
+}
+
+if( prof){
+	prof.stop();
+	local fs = FileRef( "log/prof.json").open( "w");
+	prof.write( fs);
+	fs.close();
+}
+
+printf("OWARI!!!!!!\n");
+skEndRender();

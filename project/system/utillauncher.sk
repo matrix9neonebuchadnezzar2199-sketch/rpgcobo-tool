@@ -1,0 +1,9 @@
+printf("util launcher main.\n");
+
+local f = FileRef( skGetBinBaseDir() .. "/util");
+local r = createResource( f);
+foreach( v in r.getList()){ v.flags |= 0x5000; }
+
+::resroot.install( r);
+
+return runsk( delete ::arguments[0]);

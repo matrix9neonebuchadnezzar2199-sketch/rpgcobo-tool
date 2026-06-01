@@ -1,0 +1,5 @@
+
+runsk( "EfxCanvas.sk");
+runsk( "EfxRightPanel.sk");
+runsk( "EfxEditor.sk");
+runsk( "EfxPropertyBehaviors.sk");

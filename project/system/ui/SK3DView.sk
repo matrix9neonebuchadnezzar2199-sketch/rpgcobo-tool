@@ -1,0 +1,290 @@
+
+import SKViewPropertyID;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//	SK3DView
+//	SK3DSceneを内包する
+//
+
+local oldvp = (0,0,0,0);
+local m_1 = Matrix(), q_1 = Quaternion(), q_2 = Quaternion(), v_1 = Vector3D(), v_2 = Vector3D();
+
+class SK3DView extends SKView
+{
+	static icontype = "sk3d";
+	scn = null;						//	
+	renderer = null;				//	
+	autoupdate = true;
+	
+	sdpath = "";					//	
+	needload = false;				
+	camdata = null;					//	SK3DViewCameraData : 設定されない場合もある
+
+	static r_1 = Rect2D();
+	static a_1 = (0,0,0,0);
+
+	constructor( s = null, r = null){
+		updateFunc = updateScene;
+		scn = s || SK3DScene();
+		renderer = r || SK3DRenderer( scn);
+		renderer.setEnvironment( RenderSettings.getDefaultEnvironment());
+		scn.ref = this;
+	}
+	
+	function setAutoUpdate( b){
+		if( b != autoupdate){
+			setUpdateFunc( b?updateScene:null);
+			autoupdate = b;
+		}
+	}
+	
+	function updateScene( dt){
+		if( scn.updateScene( dt)){
+			repaint();
+		}
+		if( renderer.weather || renderer.foweather["weather"]){
+			repaint();
+		}
+		renderer.env.timer0 += dt*0.001;
+		return true;
+	}
+	
+	//	x SK3DViewのカメラ行列を再設定するのは外の役目！！
+//	function updateLayout(){
+//	}
+	
+	function render(){
+		if( needload && sdpath){
+			needload = false;
+			loadStageData();
+		}
+		//	global viewport
+		skGetViewport( oldvp);
+		skGetMatrix( 4, m_1);
+		local b = (r_1.set( 0.0, 0.0, bnd.w, bnd.h)); b.transform( m_1);
+		if( skGetRenderTarget()){
+			b.set( (b.x + 1.0) * 0.5 * oldvp[2] + oldvp[0], (b.y + 1.0) * 0.5 * oldvp[3]           , (b.w * 0.5) * oldvp[2], (b.h * 0.5) * oldvp[3]);
+		}else{
+			b.set( (b.x + 1.0) * 0.5 * oldvp[2] + oldvp[0], (b.y + 1.0) * 0.5 * oldvp[3] + oldvp[1], (b.w * 0.5) * oldvp[2], (b.h * 0.5) * oldvp[3]);
+			b.y = oldvp[3]-(b.h+b.y);
+		}
+		local a = a_1;
+		a[0] = Math.round( b.x); a[1] = Math.round( b.y); a[2] = Math.round( b.w); a[3] = Math.round( b.h);
+		renderer.render( a);
+	}
+	
+	function loadStageData(){
+	}
+	
+	function startSK3DScript( s){
+		foreach( o in scn.objs){
+		}
+	}
+
+	//	view上のx,y座標からb3bodyをレイテストする。b3resを返す
+	function rayTest( lx, ly, group=-1, mask=-1){
+		local se = getRay( lx, ly);
+		return scn.b3world.rayTest( 1, se[0], se[1], group, mask);
+	}
+
+	//	
+	function getRay( lx, ly){
+		local cam = renderer.camera;
+		local v1 = (#Vector3D())( lx/bnd.w, ly/bnd.h, 0);
+		local v2 = (#Vector3D())( lx/bnd.w, ly/bnd.h, 1);
+		local o1 = cam.unproject( v1);
+		local o2 = cam.unproject( v2);
+		return (o1,o2);
+	}
+
+	//	
+	function project( wp){
+		local cam = renderer.camera;
+		local pp = (#Vector3D())(wp);
+		local w = pp.transform( cam.viewmat).transformw( cam.prjmat);
+		local s = 1.0/w * 0.5;
+		pp.scale( s, -s, s).add( 0.5).scale( bnd.w, bnd.h, 1.0);
+		return pp;
+	}
+	
+	//	parameters
+	//	
+	
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[STRETCHALIGN]),
+		// ( SKVP[BUFFER]),
+		( SKVP[CLEARBG]),
+		( SKVP[BGCOLOR]),
+		( SKVP[CAMERADATA]),
+		( SKVP[ENABLED]),
+		];
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case CLEARBG : return renderer.bgpass.enabled;
+		case CAMERADATA : return camdata;
+		case BGCOLOR : return ( renderer.bgpass["getColor"]) ? renderer.bgpass.getColor() : 0x333333ff;
+		default : return super.getParam( pid);
+		}
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case CLEARBG :
+			renderer.bgpass.enabled = p0;
+			repaint();
+			break;
+		case CAMERADATA :
+			local cd = camdata;
+			if( p0 && p1){
+				p0.lerp( p1, w, (cd = cd || SK3DCameraData()));
+			}else
+			if( p0 || p1){
+				(cd = cd || SK3DCameraData()).set( p0 || p1);
+			}else{
+				cd = null;
+			}
+			(camdata = cd)?.toCamera( renderer.camera);
+			repaint();
+			break;
+		case BGCOLOR:
+			if( renderer.bgpass["setColor"]){
+				renderer.bgpass.setColor( Math.lerpcolor( p0, p1, w));
+			}
+			break;
+		case DUMMYMODEL:
+			if( ::["SKStudio"]){	//	ツール起動の場合のみモデルが追加
+			}
+			break;
+		default :
+			super.setParam( pid, p0, p1, w);
+			break;
+		}
+	}
+}
+
+//	
+class SK3DCameraData extends Serializable
+{
+	static SerialUID = 33;
+	
+	<ser_o> to = null;
+	<ser_o> hpb = null;
+	<ser_h> zoom = 4.0;
+	<ser_h> fovy = 30.0;
+	<ser_h> znear = 0.1;
+	<ser_h> zfar = 100.0;
+	<ser_o> reserved = null;
+
+	constructor(){
+		to = Vector3D( 0.0);
+		hpb = Vector3D( 0.0);
+	}
+
+	function set( v){
+		if( v == this) return this;
+		to << v.to;
+		hpb << v.hpb;
+		zoom = v.zoom;
+		fovy = v.fovy;
+		znear = v.znear;
+		zfar = v.zfar;
+		return this;
+	}
+
+	function lerp( v, w, dst){
+		if( w <= 0.0) return dst.set( this);
+		if( w >= 1.0) return dst.set( v);
+		to.lerp( v.to, w, dst.to);
+		//	
+		dst.zoom = Math.lerp( zoom, v.zoom, w);
+		dst.fovy = Math.lerp( fovy, v.fovy, w);
+		dst.znear = Math.lerp( znear, v.znear, w);
+		dst.zfar = Math.lerp( zfar, v.zfar, w);
+		//	焦点距離を線形補間にするためには再度計算が必要
+		local f0 = focaldist(), f1 = v.focaldist();
+		if( f0 != f1){
+			dst.zoom = dst.focaldistToZoom( Math.lerp( f0, f1, w));
+			// if( zoom != v.zoom) w = (dst.zoom-zoom)/(v.zoom-zoom);	//	回転速度も視点移動と同じ曲線で => zoomが一時的に膨らんだりする場合に変になる。。
+		}
+		//	補正したwで回転。。。？
+		q_1.setHPB( hpb).slerp( q_2.setHPB( v.hpb), w, q_1);
+ 		q_1.getHPB( dst.hpb); dst.hpb[0] = -dst.hpb[0];	//	hが反転してる？？？？要調査
+		return dst;
+	}
+
+	//	
+	function focaldist(){
+		return fovy<=0.0 ? zoom*0.5 : (zoom*0.5) / Math.tan( fovy*0.5*Math.DTOR);	//	fovy=0の時dzは無限
+	}
+
+	//	
+	function focaldistToZoom( fd){
+		return fovy<=0.0 ? fd*2.0 : fd * 2.0 * Math.tan( fovy*0.5*Math.DTOR);
+	}
+
+	//	
+	function getEye( v){
+		return v( 0, 0, -focaldist()).rotate( hpb).add( to);
+	}
+
+	//	カメラが視点eから焦点fに向くようにto,hpbを調整する。focus調整も出来るとなお良し。
+	//	
+	function lookat( e, f, u=Vector3D(0,1,0)){
+		local v = v_1( f).sub( e).normalize(), r;
+		local d = v.dot( u);
+		if( d*d > 0.999999){
+			r = v.cross( u(1,0,0), v_2).normalize();
+		}else{
+			r = v.cross( u, v_2).normalize();
+		}
+		m_1.set(
+			r.x, u.x, v.x, 0,
+			r.y, u.y, v.y, 0,
+			r.z, u.z, v.z, 0, 0,0,0,1
+		).getHPB( hpb);
+		local dist = focaldist();
+		to( 0, 0, dist).rotate( hpb).add( e);
+	}
+	
+	//	視点を固定した回転をする。
+	//	
+	function lookfor( _hpb){
+		local e = getEye( v_2);
+		q_1.setHPB( hpb).synthesize( q_2.setHPB( _hpb));
+ 		q_1.getHPB( hpb); hpb[0] = -hpb[0];	//	hが反転してる？？？？要調査
+		local dist = focaldist();
+		to( 0, 0, dist).rotate( hpb).add( e);
+	}
+
+	//	※camには正しいアスペクトが設定されている必要あり。persモードの時はそんなに問題ないけど
+	function toCamera( cam){
+		local dz = -focaldist(), asp = cam.aspect;
+		//	↓の処理は毎フレームやる必要もないが、特に重くもないのでやっている感じ
+		if( fovy > 0.0){
+			cam.perspective( fovy, asp, znear, zfar);
+		}else{
+			local sy = zoom*0.5, sx = sy * asp;
+			cam.ortho( -sx, sx, -sy, sy, -zfar+dz, zfar+dz);	//	znearは使用されない
+		}
+		cam.viewmat.identity().translate( to).rotate( hpb).translate( 0.0, 0.0, dz);
+		cam.eye( 0.0).transform( cam.viewmat);	//	eyeも入れとく
+		cam.viewmat.invert34u( cam.viewmat);
+		cam.viewmat.lscale( 1.0, 1.0, -1.0);
+		cam.updatePlanes();
+		cam.focus = -dz;
+		return cam;
+	}
+
+	//	
+	static function calcHPB( p0, p1, hpb){
+	}
+}

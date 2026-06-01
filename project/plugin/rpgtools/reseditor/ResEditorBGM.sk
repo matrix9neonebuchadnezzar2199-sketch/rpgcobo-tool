@@ -1,0 +1,486 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+import SoundID;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorBGM : BGM
+//	
+
+local listoggfiles(){
+	local a = [
+		{ lbl="none", val=null, res=null}
+	];
+	foreach( r in ::getResource( "/resource/bgm").getList()){
+		if( r.name.endsWith( ".ogg")) a .. { lbl=r.name, val=r.path, res=r};
+	}
+	return a;
+}
+
+class ResEditorBGM extends EditorViewBase
+{
+	static props = [
+		{ pid="name", lbl="$T.lbl_name", type=LANGSTRING, defval=null }
+		{ pid="wav", lbl="$T.lbl_file", type=LIST, list=listoggfiles, defval="" }
+		{ pid="gain", lbl="$T.lbl_gain", type=SCALAR, range=(0.1,2.0), q=100, defval=1.0, ui="bar" }
+		{ pid="startpoint", lbl="$T.lbl_startpoint", type=SCALAR, range=(0,100000000), defval=0 }
+		{ pid="endpoint", lbl="$T.lbl_endpoint", type=SCALAR, range=(-1,100000000), defval=-1 }
+		{ pid="looppoint", lbl="$T.lbl_looppoint", type=SCALAR, range=(0,100000000), defval=0 }
+		{
+			pid="looptest", lbl="", type=CUSTOMBUTTON, ui="1", cnt="cnt5.ui", get=@( prop, data) 1, set=@( prop, data, act) 0, 
+			tostring = @() "$T.lbl_looptest", icon = "\ue040",
+			edit = @( val) ::skstudio.editor.playLoopTest();
+		}
+	];
+	
+	res = null;				//	Resource : 
+	data = null;			//	::conf.res.chara_vox等のコピー。
+	allitems = null;		//	[] : data内の全アイテム。ページで
+	selitem = null;
+
+	resdirpath = null;		//	project/resource/...
+	
+	//	view
+	sndlist = null;			//	ListBehavior : 
+	proplist = null;		//	PropertyListBehavior : 
+	pager = null;
+	preview = null;			//	ResPreview
+	taglist = null;			//	GPUIListView
+
+	//	snd
+	ctx = null;
+	mixer2d = null;
+	playing = null;			//	thread : ResEditorBGMは同時に一つのみ再生！
+	
+	static function setviewfunc( la, v, i){
+		local d = i.data;
+		v.setValue( "sndid", i.id || "");
+		v.setValue( "sndname", d["name"] || "");
+		v.setValue( "wav", d["wav"]?d.wav.substring( d.wav.lastIndexOf( "/")+1):"");
+		local sndid = v.findChild( "sndid");
+		if( d["wav"]){
+			sndid.textbox.colormask = -1;
+		}else{
+			sndid.textbox.colormask = 0x666666ff;
+		}
+		local info = d["info"];
+		if( info){
+			local t = info.length/(info.freq/100);
+			v.setValue( "wavtime", sprintf( "%d:%02d:%02d", t/100/60, (t/100)%60, t%100 ));
+			v.setValue( "wavfmt", sprintf( "%.1f %dch %S", info.freq/1000.0, info.ch, info.format));
+		}else{
+			v.setValue( "wavtime", "");
+			v.setValue( "wavfmt", "");
+		}
+		//
+		v.pickable = false;
+	}
+
+	function init( path){
+		op = OperationStack();
+		//	
+		res = ::getResource( path);	//	.bw resource
+		res.userdata = null;
+		data = deepclone( res.getContent());
+		//
+		sndlist = ListBehavior( findChild( "itemlist"), []);
+		sndlist.setviewfunc = setviewfunc;
+		sndlist.listview.addEventListener( ITEM_EVENT, sndevent);
+		sndlist.listview.addEventListener( ACTION_EVENT, sndevent);
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.ref = this;
+		pager = PagerBehavior( findChild( "pager"));
+		//
+		allitems = [];
+		local caps = data._meta.caps;
+		local pre = "MU";
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "%S%03d", pre, l);
+			allitems .. {id=id, data=data[id]};
+		}
+		pager.setPageNum( caps / 100);
+		pager.setPage( 0);
+		setPage( 0);
+		//
+		::soundmanager.checkctx();
+		ctx = ::soundmanager.ctx;
+		mixer2d = ctx.createMixer();
+		mixer2d[SK_SND_SEND] = 0;
+		mixer2d.connect();
+		//
+		resdirpath = ::resroot.file.path .. "/resource/bgm";
+		//
+		addEventListener( DROPTARGET_EVENT, dndevent);
+	}
+
+	function setActive( b){
+		super.setActive( b);
+		if( !b){
+			if( playing){
+				playing.thread.wakeupThrow( "interrupt");
+				playing = null;
+			}
+		}
+	}
+
+	function setPage( p){
+		local items = allitems.slice( p*100, Math.min( p*100+100, length( allitems)));
+		sndlist.setListItems( items);
+	}
+
+	function refreshItems(){
+		allitems = [];
+		local caps = data._meta.caps;
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "MU%03d", l);
+			allitems .. {id=id, data=data[id]};
+		}
+		//
+		local p = pager.page, idx = sndlist.items.indexOf( selitem);
+		local items = allitems.slice( p*100, Math.min( p*100+100, length( allitems)));
+		sndlist.setListItems( items);
+		selectID( items[idx]["id"]);
+	}
+
+	function refresh(){
+		setPage( pager.page);
+		if( selitem){
+			proplist.setParameters( selitem.data);
+		}
+	}
+
+	function refreshItem( item){
+		local i = sndlist.items.indexOf( item);
+		if( i >= 0) sndlist.refreshItem( i);
+	}
+
+	function selectID( id){
+		local item = sndlist.items.find( @( v) v["id"] == id);
+		if( item){
+			selitem = item;
+			sndlist.setSelectedItem( item);
+			itemSelected( item);
+		}
+	}
+	
+	function itemSelected( item){
+		if( item){
+			setValue( "itemlbl", sprintf( "$T.lbl_property : %S - %S", item["id"], ::lang( item["data"]["name"])));
+			proplist.bindProperties( props);
+			proplist.setParameters( item.data);
+		}
+	}
+
+
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			local _data = filterValidData( data);
+			res.save( _data);	//	セーブ時にフィルター
+			return true;
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_copy":
+			copy();
+			return true;
+		case "menu_edit_paste":
+			paste( getClipboard( "bgm"));
+			return true;
+		}
+		return false;
+	}
+
+	//	名前の無いもの、voxの無いもの、などデータとして成立していないものは消しちゃう！
+	function filterValidData( data){
+		local _data = clone data;
+		foreach( i, v in _data){
+			if( i.startsWith( "_")) continue;
+			if( !isValidData( v)) removei;
+		}
+		return _data;
+	}
+
+	function isValidData( d){
+		return !!length( d["name"]) && !!length( d["wav"]);
+	}
+
+	function sndevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( cmd["src"]["name"] == "playbtn"){
+				e.consume();
+				newthread().start( playSound, this, cmd.src, cmd.item.id, cmd.item.data);
+			}else{
+				selitem = e.actioncmd;
+				sndlist.setSelectedItem( selitem);
+				itemSelected( selitem);
+				if( e.isMouseDown( BUTTON2_MASK)){
+					showItemContextMenu( e);
+				}
+				break;
+			}
+			break;
+		case ITEM_SELECTED:
+			selitem = cmd;
+			local d = cmd.data;
+			if( !d) d = cmd.data = data[cmd.id] <- {};
+			foreach( p in props){
+				if( !(p.pid in d) && ("defval" in p)){
+					d[p.pid] <- deepclone( p.defval);
+				}
+			}
+			itemSelected( selitem);
+			break;
+		}
+	}
+
+	function showItemContextMenu( e){
+		local cbdata = getClipboard( "bgm");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-",
+			{ id="sort", lbl="$T.lbl_idsort", icon="\ue240"},
+			{ id="dir", lbl="$T.lbl_openresdir", icon="\ue89e"},
+			{ id="import", lbl="$T.lbl_import_file", icon="\ue675"},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "copy":
+			copy();
+			break;
+		case "paste":
+			paste( cbdata);
+			break;
+		case "sort": return showIDSortDialog();
+		case "dir": return skOpenURL( "dir://"..resdirpath);
+		}
+	}
+
+	function copy(){
+		putClipboard( "bgm", selitem);
+		printf( "COPY....... %S\n", encodeJSON( selitem, 1));
+	}
+
+	function paste( cbdata){
+		if( cbdata){
+			local item = selitem, resid = selitem.id, d = data[resid], oldd = deepclone( d), self = this;
+			local newd = cbdata.data;
+			local redo = [@(){
+				Table.clear( d);
+				Table.merge( d, newd);
+				self.refreshItem( item);
+			}];
+			local undo = [@(){
+				Table.clear( d);
+				Table.merge( d, oldd);
+				self.refreshItem( item);
+			}];
+			submitOp( redo, undo, null);	//	trk無し
+			refresh();
+		}
+	}
+
+	function showIDSortDialog(){
+		local idmap = DBSortDialog.run( "bgm");
+		if( idmap){
+			local self = this;
+			local olddata = clone data, newdata = clone data, d = data;
+			foreach( id0, id1 in idmap){
+				if( olddata[id1]){ newdata[id0] <- olddata[id1]; } else delete newdata[id0];
+			}
+			local redo = [@(){
+				Table.clear( d) ... newdata;
+				self.refreshItems();
+			}];
+			local undo = [@(){
+				Table.clear( d) ... olddata;
+				self.refreshItems();
+			}];
+			submitOp( redo, undo, null);
+		}
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd.cmd != "prop") return;
+		local pid = cmd.prop.pid, val = cmd.val;
+		switch( pid){
+		case "wav":
+			setWavOp( selitem.id, val);
+			break;
+		default:
+			setParamOp( selitem.id, pid, val);
+			break;
+		}
+	}
+
+	//	
+	function setParamOp( resid, pid, val){
+		local self = this;
+		local oldval = data[resid][pid];
+		local redo = [@(){
+			self.data[resid][pid] <- val;
+			self.updateListItemView( resid);
+		}];
+		local undo = [@(){
+			self.data[resid][pid] <- oldval;
+			self.updateListItemView( resid);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+		self.refresh();
+	}
+
+	static fmtstr = [null,"8bit","16bit","adpcm",null,"32bit",null,null,null,null,"oggv"];
+
+	function setWavOp( resid, val){
+		local self = this;
+		local oldval = data[resid]["wav"], oldname = data[resid]["name"];
+		local newname = !length( oldname) && { [::lang.code]=val.substring( val.lastIndexOf( "/")+1, val.lastIndexOf( ".")) };
+		local oldinfo = data[resid]["info"];
+		local oldloopstart = data[resid]["loopstart"], oldloopend = data[resid]["loopend"];
+		local isov = val.endsWith(".ogg"), info;
+		if( isov){
+			local ov = VorbisDecoder( ::getResourceContent( val));
+			info = { freq=ov.freq, ch=ov.ch, format="ogg", length=ov.pcmlength};
+			// printf( "????????????????? %S\n", encodeJSON( ov.getComments(), 1));
+			ov.close();
+		}else{
+			local wd = ::getResourceContent( val);
+			info = { freq=wd.freq, ch=wd.ch, format=fmtstr[wd.format], length=wd.length};
+		}
+		local redo = [@(){
+			self.data[resid].wav <- val;
+			self.data[resid].info <- info;
+			if( newname) self.data[resid].name <- newname;
+			self.updateListItemView( resid);
+		}];
+		local undo = [@(){
+			self.data[resid].wav <- oldval;
+			self.data[resid].info <- oldinfo;
+			if( newname) self.data[resid].name <- oldname;
+			self.updateListItemView( resid);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+		refresh();
+	}
+
+	//	
+	function updateListItemView( resid){
+		local i = sndlist.items.findi( @( v) v.id==resid);
+		printf( "updateListItemView %S  %S   %S\n", resid, i, encodeJSON( data[resid]));
+		if( i >= 0) sndlist.refreshIndex( i);
+	}
+
+	//	
+	function playLoopTest(){
+		local v = sndlist.getItemView( selitem), id = selitem.id, snd = selitem.data;
+		snd = {...snd, startpoint = snd.info.length - snd.info.freq*5};
+		newthread().start( playSound, this, v, id, snd);
+	}
+
+	//	
+	function playSound( view, id, snd){
+		local bar = view.findChild( "playbar");
+		if( playing){
+			local pid = playing.id;
+			playing.thread.wakeupThrow( "interrupt");
+			if( pid == id) return;
+		}
+		local r = ::getResource( snd["wav"]);
+		if( !r) return;
+		playing = {id=id, thread=currentthread()};
+		local bgm = BGMThread( snd);
+		try{
+			bgm.mixer = mixer2d;
+			bgm.start();
+			local ov = bgm.ov;
+			while( bgm.isPlaying()){
+				local w = Math.saturate( bgm.tell() * 1.0 / ov.pcmlength) * 10.0;
+				bar.anime( w);
+				suspend();
+			}
+		}catch( ex){
+			printexception( ex);
+			bgm.stop();
+		}
+		bar.anime( 0.0);
+		playing = null;
+	}
+
+	function tagevent( e){
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////////////
+	//	dnd
+
+	function acceptDrag( e){
+		return false;
+	}
+	
+	function isDropable( f){
+		local n = f.name; n = n.substring( n.lastIndexOf( "."+1)).toLowerCase();
+		return (#["wav","ogg","mp3","m4a",]).contains( n);
+	}
+
+	function acceptDrop( ds, x, y){
+		if( ds instanceof FileDragSource){
+			local a = ds.filelist;
+			foreach( f in a){
+				if( isDropable( f)) return true;
+			}
+		}
+		return false;
+	}
+
+	function dndevent( e){
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			break;
+		case TARGET_DRAG_EXIT:
+			break;
+		case TARGET_DROP:
+			local f = e.dragsrc.filelist[0];
+			showImportSound( f);
+			break;
+		}
+	}
+	
+	//	ファイルを指定してインポートダイアログ表示
+	//	※undo不可
+	function showImportSound( f){
+		local d = SoundImportDialog.prepareImport( f, true);	//	oggonly
+		if( d){
+			local ret = SoundImportDialog.run( d);
+			if( ret){
+				local c = ret.conv, fn = ret.f.name;
+				local ext = (c=="none")?fn.substring( fn.lastIndexOf( ".")) : (c=="OGG") ? ".ogg" : ".wav";
+				::getResource( "/resource/bgm").create( ret.name..ext, ret.outbb);
+				::skstudio.fileview.refreshDir( "/resource/bgm");
+				Popups.showInfo( "$T.pop_sndimport");
+				refresh();
+			}
+		}
+	}
+}

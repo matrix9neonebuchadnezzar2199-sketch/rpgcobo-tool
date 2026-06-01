@@ -1,0 +1,104 @@
+
+const VOX_SCALE = 0.0625;	//	1/16
+
+//	serializer id
+const VALUE_BLOCKWORLD = 5900;
+
+enum BlockFlagID
+{
+	BLK_SOLID = 1,				//	当たり判定はここ
+	BLK_PLANT = 2,				//	PLANTは基本的に当たり判定は無い。
+	BLK_LIQUID = 4,				//	ないかなー
+	BLK_BARRIOR = 8,			//	見た目無し
+	BLK_SOLIDFB = 16,			//	フリーブロックは普通のブロックとsolidの場合もフラグを分ける。
+	BLK_DECAL = 32,				//	デカール、クラックなど当たり判定のない見た目に影響するもの。
+
+	//	FreeBlock用
+	BLK_DIGCLOSE = 128,			//	コリジョンを掘るdigコリジョンを無効化。1ブロック単位。
+	BLK_INTERACT = 256,			//	ドア、宝箱みたくインタラクションする。FreeBlock用
+	BLK_HAS_W = 512,
+	BLK_HAS_H = 1024,
+	BLK_HAS_D = 2048,
+	BLK_HAS_LIGHT = 4096,
+	
+	//	Block用
+	
+	BLK_OCCLUDE_U = 1024,
+	BLK_OCCLUDE_F = 2048,
+	BLK_OCCLUDE_L = 4096,
+	BLK_OCCLUDE_B = 8192,
+	BLK_OCCLUDE_R = 16384,
+	BLK_OCCLUDE_D = 32768,
+	BLK_FULLOCCLUDE = 64512,
+	
+	BLK_DRAWUP = 65536,			//	草、カーペットなどは上にはみ出す
+	BLK_DRAWDOWN = 131072,		//	下にはみ出すブロックは無いかな
+	
+	//	stats bits
+	BLK_STATE_ROT		= 1048576,	//	14-15bit
+}
+
+enum BlockPlacementID
+{
+	PLC_ANY = 0,		//	床にも壁にもつく。
+	PLC_FLOOR = 1,
+	PLC_WALL = 2,
+	PLC_DOOR = 3,
+	PLC_ARCH = 4,
+}
+
+// enum BlockThemeID
+// {
+// 	FANTASY = 1,
+// 	MODERN = 2,
+// 	ORIENT = 4,
+// 	ANCIENT = 8,
+// 	CYBER = 16,
+// 	DARK = 32,
+// }
+
+/*
+ドア
+窓
+標識
+街灯
+小屋
+ベンチ
+像
+
+机・椅子
+ラック
+床置き家具
+壁掛け家具
+ランプ
+ベッド
+ボックス
+小部屋
+
+梯子
+柱
+門
+煙突
+
+機械
+
+
+*/
+
+enum FreeBlockCategoryID
+{
+	FB_EXDOOR = 1,
+	FB_EXLAMP = 2,
+	FB_EXTERIOR = 4,
+	FB_INDOOR = 8,
+	FB_INLAMP = 16,
+	FB_INTERIOR = 32,
+	FB_COLUMN = 64,
+	FB_LADDER = 128,
+	FB_SLOPE = 256,
+	FB_STAIR = 512,
+	FB_ROOF = 1024,
+	FB_TREE = 2048,
+	FB_ROCK = 4096,
+	FB_CRACK = 8192,
+}

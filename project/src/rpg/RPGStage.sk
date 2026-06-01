@@ -1,0 +1,683 @@
+import VirtualKeyCode;
+import BlockFlagID;
+import CollisionGroupID;
+import CommandTargetType;
+import GamepadButtonCode;
+
+local v_1 = Vector3D();
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	RPGStage.sk
+//	
+//	※タイトルからステージ、バトル、エンディングまで全てのシーンはRPGStageのループでゲームが進行する。
+//	マップが切り替わると別のRPGStageに遷移する。エンカウントでバトルステージに行くときもRPGStageが切り替わる
+//	
+//	メインイベントが走っている場合はスカウト移動は停止する。マニュアル移動は動く。
+//	※シンボルエンカウントはイベント駆動の追尾モードがある。これもマニュアル移動のループになっている。
+//	
+
+//	操作キャラ、バトルキャラは分かれる。
+
+
+//	RPGStageState:ステージの保存されるステート。マップID毎に保存され、MapEditorで初期状態を設定できる。また、マップに再入場することでリセットされる。
+//	イベントコマンドでいじくられる。
+//	camwork  : カメラワーク。イベントコマンドと同じ
+//	menutype : メニューボタンを押したときの挙動。メニュー画面、ポーズ画面、なし
+//	encntmask : エンカウントのグループマスク。ABCDEFG
+//	encntrate : エンカウント頻度。0-100。100だと1mで確実にエンカウント。0だと無し。
+//	rsetid : レンダー環境。これこのまま入れるもんかな。。。
+//	bgmid : BGM。BGSはステージに配置する。
+//	player3d : 操作キャラ表示。先頭キャラ、指定したキャラ、透明、が選択可能。
+//	ctrmode  : コントロールの可否モード。無効、有効、ダッシュ無効、常にダッシュ、
+//	ctrlock  : イベントコマンドで一時的に操作をロックする。メインイベント実行時には必ず立つ。
+//	
+//	以上は全てステージのステートとして保存されている。バトルから返ってきたときにカレントのステージを入れ替えるだけで
+//	上記のステートは復元してほしいので。
+//	
+
+class RPGStage
+{
+	//	event
+	mainevent = null;	//	EventRunner|? : 並列実行でない実行中のイベント。イベント以外でもブロック用に設定される場合あり。
+	events = null;		//	EventRunner[] : ステージに存在する全てのイベント。インスタントなものは途中で生成されたりする。
+	automacros = null;	//	RPGMacroEventRunner[] : 自動実行のマクロイベント。
+	manumacros = null;	//	RPGMacroEventRunner[] : 手動で起動したマクロイベント。実行終了で消える。
+
+	//	sk3d
+	view = null;		//	SKView : 内部にSK3DViewやオーバーレイ用のUIレイヤーが含まれる。ステージごとに独立。
+	view3d = null;		//	SK3DView : autoupdate=false
+	scn = null;			//	SK3DScene : 
+	b3world = null;		//	b3World : 
+	weather = null;		//	Weather : 天候、時間帯を操作。フェード時にはrenderer.mainpass内を直接置き換えるので結構むずい。
+	screenfx = null;	//	ScreenEffect : ポストエフェクト的なエフェクト。weatherと同時に使用可能。
+	
+	//	camera
+	cam = null;			//	Camera : scn.maincamera
+	camwork = null;		//	RPGCamerawork : 
+	camfade = null;		//	RPGCamerawork : トランジション元の
+	camfadew = 0.0;		//	
+	camfadespd = 1.0;	//	1.0だと1秒でトランジション
+	camdir = 0.0;
+	
+	//	map
+	mapid = null;		//	M000-M999
+	map = null;			//	conf.map[xxx] : 
+	bw = null;			//	BlockWorld : 
+	bw3d = null;		//	SK3DBlockWorld : 
+	bwcol = null;		//	b3Body<BlockColiderInterface> : ブロック選択用。flagmaskを状況に応じて置き換えていく
+	
+	//	操作キャラ
+	player3d = null;	//	RPG3DObject : 操作を受け付けるプレイヤーの3D。
+	cam3d = null;		//	RPG3DObject : カメラに追従している透明オブジェクト。ライトとかをくっつけるもの。※実際のカメラと少し違う位置にある
+	searchdst = null;	//	RPG3DObject : 調べるボタンでトリガー出来る相手。イベントの3D実体。
+	searchpush = 0;		//	
+	searchpop = null;	//	RPG3DPopupView : 調べる、話すのポップアップ
+	searchshown = false;
+	
+	//	ステージの機能
+	battle = null;		//	BattleRunner : バトルの処理はここで
+	subthreads = null;	//	thread[] : subthread()で生成。ステージがポーズ時には走らない
+
+	//	状態
+	stat = null;		//	RPGStageState : 
+	paused = false;		//	bool : true時にはイベントも3Dオブジェクトも時間が進まなく止まった状態になる。描画も止まる。
+	ctrlock = false;	//	bool : mainevent実行時には必ず立つ？
+	stepw = 0.0;		//	float : 歩数カウントの端数を入れておく。1mで1歩にするため。
+	encinc = 10.0;		//	float : encntrateの50%~200%。1歩(1m)毎にENCOUNTERに加算されていき、100.0になったらエンカウント。1.0の場合は100mでエンカウント。
+
+	timescale = 1.0;	//	float : ステージ内の3Dモデルのタイムスケール。イベント、UI、ScreenEffectなどには適用されない。
+	envcoltime = 0;
+	
+	//	サウンド
+	bgm = null;			//	BGMThread : 
+	
+	constructor( mid){
+		mapid = mid;
+		screenfx = ScreenEffect( this);
+		subthreads = [];
+	}
+
+	//	ステージの初期化を行い切り替え処理を行う。
+	//	launch実行時点ではまだRPGStageは切り替わっていない。
+	//	※フェードアウト処理は予めしておく必要あり。
+	//	. プレイヤー、イベント、バトル用キャラ、カメラ、マップへの変更を配置する。※バトル用キャラは保存対象ではない。拡張用
+	//	. カメラ範囲内のメッシュを生成していく。長くて2000msぐらい。
+	//	. アクティブステージの切り替え、SKViewの置き換え
+	//	. 自動実行マクロをまず実行 --- ここでui処理開始するのがいいのかな
+	//	. フェードイン開始
+	//	. フェードイン待ち
+	//	. コントロール開始
+	//	
+	//	optを指定すると、ステージ初期化に追加処理を入れることができる。
+	//	主にバトル用の追加処理に使う。味方パーティの配置、敵キャラの配置、戦闘用ループ開始。
+	//	他にタイトル画面用の処理ってのも入れて良いかもしれないけど、マクロで足りるか。
+	//	
+	function launch( opt=null){
+		local t0 = skGetTime();
+		printf( "RPGStage launching started... \n");
+		ctrlock = true;	//	コントロールロック
+		RPGMain.buttonhelp( "stage");	//	デフォルトのボタンヘルプ
+		//
+		map = ::conf.map[mapid];
+		stat = ::rpgstat.stagemap[mapid];
+		events = [];
+		// event3ds = [];
+		view = ::loadSKView( "/resource/ui/stage.ui");
+		view3d = view.findChild( "stage3d");
+		view3d.setAutoUpdate( false);
+		scn = view3d.scn;
+		cam = scn.maincamera;
+		cam.aspect = ::rootview.bnd.w / ::rootview.bnd.h;	//	とにかくaspectの初期値を与える
+		b3world = scn.getB3World();
+		local env = ::RenderSettings.getEnvironment( stat.statmap.rsetid);
+		view3d.renderer.setEnvironment( env);
+		view3d.renderer.bgpass = createBackground( map["bg"]);
+		encinc = calcEnc();
+		//	3Dサウンド設定
+		local sndmanager = SK3DSoundManager( scn);
+		sndmanager.setReverbID( map.reverbid);
+		scn.setSK3DSoundManager( sndmanager);
+		//	BlockWorld
+		// bw = ::getResourceContent( "/data/mapdata/%S.bw" % mapid);	//	bwがキャッシュされるとdynassetsが残っちゃう。。。まあそんな大きくないし
+		bw = ObjectInput.decode( ::getResource( "/data/mapdata/%S.bw" % mapid).loadData());
+		if( stat.dynassets){
+			local a = stat.dynassets.map( @( v) v && { ...v, bw = RPGEventRunner._getastbw( v.resid), });
+			bw.placeDynamicAssetAll( a);
+		}
+		addMapBounds();
+		//	プレイヤー配置
+		changePlayer3D( stat.statmap.playermodel);	//	mmm??
+		setPlayerPosition( stat.player.pos);
+		//	イベント配置
+		events = [];
+		foreach( evid, v in map.event){		//	マップ定義のイベントを全て配置。この時点では未スポーン。
+			local er = RPGStageEventRunner( evid, v, this, stat.evarmap[evid]);
+			local es = stat.estatmap[evid];
+			if( es) er.setEventSnapshot( es);
+			events .. er;
+		}
+		//	カメラ参照
+		cam3d = RPG3DObject.create3DObject( {r=[0,0,0,0.25,0.25,0.25]});	//	ghost
+		scn.addObject( cam3d);
+		//	オートマクロ生成
+		automacros = ::automacrolist().map( @( v) RPGMacroEventRunner( v.dataid, v.data) );
+		manumacros = [];
+		setCamerawork( stat.camwork);		//	カメラ状態を復元。キャラが一通り配置された後。
+		//	SK3DBlockWorld、コリジョン生成
+		bw3d = SK3DBlockWorld( bw);
+		bw3d.setVisibleFaceMask( map.vs);
+		scn.addObject( bw3d);
+		local bci = BlockColiderInterface( bw);
+		bci.setFlagMask( BLK_SOLID|BLK_PLANT|BLK_BARRIOR|BLK_SOLIDFB);
+		bci.setFinMode( 1|2);		//	barrior | water
+		bci.setBarriorMap( bw.bmp);
+		local bcshp = b3Shape.createCustomConcave( bci);
+		bwcol = b3Body( 0, bcshp, bw3d.mat, G_STAGE, G_VIEW|G_CHARA|G_OBJECT);
+		bwcol.ref = bci;
+		b3world.addBody( bwcol);
+		
+		//	メッシュ生成。※最初のイベント実行でカメラが大きく変わるとまずい。このローディングが意味なくなるため。
+		while( loadInCameraMesh( 150)) suspend();
+		suspend();
+		printf( "RPGStage launching done. time=%S\n", skGetTime( t0));
+		//	アクティブステージの切り替え
+		RPGMain.changeActiveStage( this);	//	この時点からupdateStage()が毎フレーム呼ばれるようになる。pauseしといたほうが安全か？
+		//	StageRunner、イベント初回実行。
+		if( opt["startfunc"]){
+			opt.startfunc( this, opt);		//	ワイプ処理もrunnerからやればいいかなー？
+		}
+		startEvents();					//	イベント初回実行。ここで自動実行マクロの実行と画面内のイベントのスポーンを行う。
+		//	BGMを再生。statに保存されたもの。。。※startEventsの初回で設定されたBGMは反映される
+		if( stat.statmap["bgmid"] != ::getBGMID()){
+			::playBGMID( stat.statmap["bgmid"]);
+		}
+		suspend();
+		RPGMain.wipeout( opt["wipe"]);		//	※ワイプ中にもイベント進んじゃうな
+		// RPGMain.wipein( 500);			//	
+		//	コントロールロックをステージの設定に。※メインイベントがあればtrueに？？？？
+		ctrlock = false;
+	}
+
+	b3mapbnds = null;
+
+	//	マップ境界の4平面のコリジョンを張る
+	function addMapBounds(){
+		local fw = bw.w * 0.5, fd = bw.d * 0.5;
+		local bn = b3Body( 0.0, b3Shape.createPlane( 0, 0, 1, 0), Matrix(), G_STAGE, G_CHARA);
+		local bl = b3Body( 0.0, b3Shape.createPlane( 1, 0, 0, 0), Matrix(), G_STAGE, G_CHARA);
+		local bf = b3Body( 0.0, b3Shape.createPlane( 0, 0,-1, 0), Matrix.fromTranslate( 0, 0,fd), G_STAGE, G_CHARA);
+		local br = b3Body( 0.0, b3Shape.createPlane(-1, 0, 0, 0), Matrix.fromTranslate(fw, 0, 0), G_STAGE, G_CHARA);
+		b3world.addBody( bn);
+		b3world.addBody( bl);
+		b3world.addBody( bf);
+		b3world.addBody( br);
+		b3mapbnds = (bn,bl,bf,br);	//	参照を残しておかないとb3worldから消える
+	}
+
+	//	エンカウント増加値を計算。
+	function calcEnc(){
+		return ::rnd( 0.25, 1.0) * (map["encntrate"]||0.0) * 0.5;
+	}
+
+	//	※dt短いとフレーム数がかさんで時間が無駄に伸びる。
+	function loadInCameraMesh( slp){
+		if( bw3d){
+			bw3d.checkUpdateInCameraMesh( cam);
+			return bw3d.generateChunkMeshes( slp);
+		}
+	}
+
+	//	マクロイベントの実行は各シーンで毎フレーム行う必要がある。これによりロード中や画面切り替え中などに
+	//	割り込んでマクロイベントが実行されてしまうのを防ぐ。
+	function startEvents(){
+		foreach( e in events){
+			e.start();
+		}
+		foreach( e in automacros){
+			e.update( 1);
+		}
+	}
+
+	//	
+	function setPaused( b){
+		if( paused != b){
+			paused = b;
+		}
+	}
+
+	//	
+	function setTimeScale( t){
+		timescale = Math.clamp( float( t), 0.0, 10.0);
+		scn.setTimeScale( timescale);
+	}
+
+	//	
+	function subthread( func, ...){
+		local th = newthread();
+		local a = [th.call, th, func, ...varguments()];
+		~a;
+		subthreads .. th;
+	}
+
+	//	保存用にこのステージの状態のスナップショットのRPGStageStateを取得する。
+	//	ついでにstatもこれに？？？
+	function getSnapshot(){
+		local ss = RPGStageState();
+		ss.mapid = mapid;
+		local p = player3d;
+		ss.player = {
+			pos=(p.pos.x,p.pos.y,p.pos.z, p.dir),
+		};
+		ss.camwork = deepclone( camwork.data);
+		ss.statmap = deepclone( stat.statmap);	//	これは現在のstatmapを入れればいいかな
+		ss.evarmap = {};
+		ss.estatmap = {};
+		ss.remapid = rpgvar.REMAPID;
+		//	イベントの状態保存。イベント変数と状態を別々に。状態は頻繁にリセットされる
+		foreach( e in events){
+			if( e.evar <> ::RPGEventRunner.inievar){	//	初期状態のevarは保存の必要なし
+				ss.evarmap[e.evid] <- e.evar;	//	コピーしない！
+			}
+			local es = e.getEventSnapshot();
+			if( es) ss.estatmap[e.evid] <- es;
+		}
+		//	マップアセット動的配置のスナップショット
+		if( bw.dynassets){
+			local t = ss.dynassets = bw.dynassets.map( @( v) v && { resid=v.resid, pos=v.pos, parma=v.parma, blend=v.blend, });
+		}
+		printf( "STAGE SNAPSHOT!!!!!!!! %S\n", encodeJSON( {evarmap=ss.evarmap, estatmap=ss.estatmap, statmap=ss.statmap, player=ss.player, dynassets=ss.dynassets}, 5));
+		return ss;
+	}
+
+	//	ステージ設定を変更し、反映する。
+	function setStageSetting( pid, val){
+		stat.statmap[pid] <- val;
+		applyStageSetting( pid, val);
+	}
+
+	function applyStageSetting( pid, val){
+		switch( pid){
+		case "playervisible":
+			setPlayerVisible( val);
+			break;
+		}
+	}
+	
+	/////////////////////////////////////////////////////////////////////////
+	//	オブジェクト検索
+
+	//	イベントのIDからEventRunnerを取得する。
+	function getEvent( evid){
+		foreach( e in events){
+			if( e.evid == evid) return e;
+		}
+	}
+
+	//	マーカーを取得。intなら単にtable参照だが、名前を指定することも可能。その場合は全検索
+	function getMarker( mkid){
+		if( typeof( mkid) == SS_INTEGER){
+			return map.marker[mkid];
+		}else{
+			foreach( i, v in map.marker){
+				if( v.name == mkid) return v;
+			}
+		}
+	}
+
+	//	任意の文字列IDを指定してその位置、大きさ、方向の情報を返す。
+	//	イベント、ロケータ、バトルキャラを検索する。
+	//	イベントはスポーンしていたらその位置、してなかったらspawnposを使用する。
+	function getLocation( id){
+		if( id == 0){
+			return { pos=player3d.pos, dir=player3d.dir, };
+		}else
+		if( typeof( id) == SS_INTEGER){	//	イベント、マーカー
+			local v = map.event[id] || map.marker[id];
+			return _vtoloc( v);
+		}else{	//	stringでも検索。。。
+			foreach( v in map.marker){
+				if( v.name==id) return _vtoloc( v);
+			}
+		}
+	}
+
+	function _vtoloc( v){
+		return { pos=Vector3D( v.pos).scale( 0.5), dir=("dir" in v)? v.dir*Math.DTOR :v.pos[3]*0.5*Math.PI };
+	}
+
+	/////////////////////////////////////////////////////////////////////////
+	//	更新処理
+
+	//	プレイヤーの表示・非表示を設定する。
+	function setPlayerVisible( b){
+		player3d.setVisible( b);
+	}
+	
+	//	操作キャラの表示を切り替える。位置等は元のもの。
+	//	先頭キャラ、任意のモデルID、など。
+	//	
+	function changePlayer3D( val){
+		local pc = rpgstat.members.find( @( v) v);
+		switch( val){
+		case -1: //	生きた先頭キャラ
+			pc ??= rpgstat.members.find( @( v) v && !v.isDead());
+			break;
+		case 0: case 1: case 2: case 3: case 4: case 5: //	指定した隊列のキャラ
+			if( rpgstat.members[val]) pc = rpgstat.members[val];
+			break;
+		default:	//	stringで直接指定
+			pc ??= rpgstat.playermap[val];
+			break;
+		}
+		local vis = stat.statmap["playervisible"] ?? true;
+		if( player3d){
+			player3d.kill();
+		}
+		player3d = RPG3DObject.create3DObject( pc.data);
+		player3d.mainaction = PlayerMoveAction();
+		player3d.mainaction.setPlayer3D( player3d);
+		player3d.setVisible( vis);
+		scn.addObject( player3d);
+		//	
+		if( !searchpop){
+			searchpop = loadSKView( "/resource/ui/pop_search.ui", RPG3DPopupView);
+			local rt = RichText( "[+4]\ueeca[+0]  $T.btn_search");
+			searchpop.setValue( "lbl", rt);
+			searchpop.setTargetPoint( 0);	//	top
+			view3d.addChild( searchpop);
+			searchpop.inneranime( -10);
+		}
+		// searchpop.setTarget( player3d);
+	}
+
+	//	ブロック座標系の位置をプレイヤーにセットする。
+	function setPlayerPosition( pp){
+		if( pp[1]==null){ //	Y未指定の場合はXZから一番下の隙間を接地位置とする。
+			pp = clone pp; pp[1] = bw.getFloorY( pp[0]*2, pp[2]*2) * 0.5;
+		}
+		player3d.setPosition( pp);
+	}
+
+	//	指定したカメラワークに変更する。
+	//	dataにはトランジションのパラメータも入っているが、別に指定することもできる。
+	//	transにはトランジションタイプが入る。
+	function setCamerawork( data, trans=null){
+		local newcw = RPGCamerawork.createCamerawork( data);
+		newcw.recover( this);
+		trans = trans || data["trans"];
+		if( trans){	//	トランジションと古いカメラワークを新しいカメラワークに設定する。
+			camfade = camwork;
+			camfadew = 1.0;
+			//	その他色々設定。速度とeasingぐらいか
+		}else{
+			camfade = null;
+			camfadew = 0.0;
+		}
+		camwork = newcw;
+		updateCamerawork( 1);
+		printf( "setCamerawork ------ loadInCameraMesh\n");
+		loadInCameraMesh( 12);	//	1回だけ？それとも全部ロードするまで待つ？
+	}
+
+	//	カメラワークをマップデフォルトにリセットする。
+	function resetCamerawork( trans=null){
+		setCamerawork( map.camwork, trans);
+	}
+
+	//	カメラモーションを設定してカメラワークに追加する
+	function addCameraMotion( data){
+		local cm = RPGCameraMotion.createCameraMotion( data);
+		camwork.addMotion( cm);
+	}
+
+	/////////////////////////////////////////////////////////////////////////
+	//	アップデート処理
+
+	//	RPGMainのメインループからアクティブなステージに対して毎フレーム呼ばれる。
+	function updateStage( dt){
+		if( !paused){
+			updateStageBody( dt);
+		}
+	}
+	
+	function updateStageBody( dt){
+		foreach( th in subthreads){
+			if( !th.wakeup( dt)) removei;	//	サブスレッド更新
+		}
+		battle?.update( dt);
+		updateEvents( dt);
+		updateControl( dt);
+		scn.updateScene( dt);
+		updateCamerawork( dt);
+		sortTargetViews();
+		view3d.repaint();
+		if( bw3d){
+			bw3d.checkUpdateInCameraMesh( cam);
+		}
+		screenfx.update( dt);
+		//	
+		local w = Math.cos( skGetTime( envcoltime)*0.01)*0.3+0.7;
+		view3d.renderer.env.envcolor = Math.lerpcolor( 0, 0x33ffffff, w);
+
+		::voxmtl.updateFrame( dt);
+	}
+
+	//	メニューやバトルからの復帰時に呼び出すとイベントなどの状態を更新できる。paused中も呼べる。
+	function refresh(){
+		updateStageBody( 1);
+	}
+
+	//	マクロイベントの実行は各シーンで毎フレーム行う必要がある。これによりロード中や画面切り替え中などに
+	//	割り込んでマクロイベントが実行されてしまうのを防ぐ。
+	function updateEvents( dt){
+		foreach( e in events){
+			e.update( dt);
+		}
+		foreach( e in automacros){
+			e.update( dt);
+		}
+		foreach( e in manumacros){
+			e.update( dt);
+			if( e.mode != 2) removei;
+		}
+	}
+
+	//	カメラワークのアップデートとカメラトランジションの処理。
+	function updateCamerawork( dt){
+		camwork.update( this, dt);
+		local cw = camwork;
+		if( camfade){
+			camfadew = Math.max( 0.0, camfadew-dt*camfadespd);
+			if( camfadew){
+				camfade.update( this, dt);
+				cw = camfade.lerp( camwork, camfadew, #SK3DCameraData());
+			}else{
+				camfade = null;
+			}
+		}
+		cw.toCamera( cam);
+		scn.applyQuake( cam);
+		cam.updatePlanes();
+		camdir = cw.hpb[0];
+		//	cam3dをカメラに追従させる。※フレーム単位でちょいガクガクしてるけどOK?
+		local d = cw.focaldist();
+		if( d >= 6.0) d = 6.0;		//	focyが狭いとdがすごい大きくなりライトなんかが届かない！
+		cam3d.rot.setHPB( cw.hpb);
+		cam3d.pos( 0, 0, -d).rotate( cam3d.rot).add( cw.to);
+	}
+
+	//	コントロール処理のアップデート。キャラ移動、ダッシュ、ジャンプ、調べるのみ。また、調べるのターゲット選定も行う。
+	//	調べる関係はメインイベントが走っている場合は無効。
+	//	メニューについてはフィールドだとメニュー画面、バトルではポーズとなる。
+	function updateControl( dt){
+		//	歩数、ランダムエンカウントチェック。キー操作中のみ
+		updateSteps( dt);
+		//	調べるコマンドの相手を見つける
+		updateSearchTarget();
+		//	調べるボタンの有効時間減衰
+		searchpush = Math.max( searchpush-dt, 0);
+	}
+
+	//	カメラからの距離で RPG3DTargetView, RPG3DPopupView等をソートする。
+	function sortTargetViews(){
+		view3d.children?.sort( @( v) -(v["rp3d"]["depth"] ?? 100000.0));
+	}
+
+	//	歩数カウント。また、カウント時にランダムエンカウントのチェック。
+	//	
+	function updateSteps( dt){
+		if( !mainevent && player3d.mainaction["cdir"]){
+			local d = v_1( player3d.pos).sub( player3d.mainaction.lastpos).scale( 1, 0, 1);	//	Y移動は無視
+			stepw += d.length();
+			if( stepw >= 1.0){
+				local c = int( stepw); stepw -= c;
+				::rpgvar.STEPS += c;
+				emitOption( "walk", ::rpgvar.STEPS, ::rpgstat.members);
+				foreach( m in ::rpgstat.members){
+					m?.spendSteps( c);
+				}
+				if( (::rpgvar.ENCOUNTER += c*encinc) >= 100.0){
+					encinc = calcEnc();		//	次のエンカウントまでの増加値を再計算
+					::rpgvar.ENCOUNTER = 0.0;
+					raiseEncounter();
+				}
+			}
+		}
+	}
+	
+	//	ランダムエンカウント発生。敵グループの選定をしてM003をコール。
+	//	敵グループが見つからなかった場合はエンカウントはスキップされる。
+	function raiseEncounter(){
+		local a = []
+		local ratesum = 0.0;
+		local px = Math.clamp( player3d.pos.x / bw.w, 0.0, 0.999), pz = Math.clamp( player3d.pos.z / bw.d, 0.0, 0.999);
+		foreach( v in map.encount){
+			if( !v.rate) continue;
+			local bb = decodeBASE64( v.area, ByteBuffer());
+			local bmp = ObjectInput.decode( bb);			//	キャッシュしたほうが良いかも
+			if( !bmp.get( px*bmp.w, pz*bmp.h)) continue;
+			//
+			ratesum += v.rate;
+			a .. v;
+		}
+		if( !a[0]) return;	//	nasi!
+		local r = ::rnd.nextf( ratesum), g = a.last();
+		foreach( v in a){
+			if( (r-=v.rate) <= 0.0){ g = v; break;}
+		}
+		startMacro( "X003", true, {W=mapid, X=g.gid, Y=false, Z=false});
+	}
+	
+	//	インタラクション対象を探す。毎フレームやる必要はない。
+	//	トリガータイプの調べる(接触)と調べる(1m)を共にチェックするために2回に分けてcontactTestを行う。
+	function updateSearchTarget(){
+		local newdst = null;
+		local dists = #[0.4,1.4];
+		local shps = #[ b3Shape.createCylinder( 0.8, 0.75, 0.8), b3Shape.createCylinder( 1.2, 0.75, 1.2), ];	//	キャラの半径は0.4m。
+		local ppos = player3d.pos;
+		local pvec = Vector3D( 0, 0.75, 1).rotate( player3d.dir, 0.0, 0.0);
+		//	l= 0:接触チェック 1:1mチェック
+		for( local l = 0;l < 2;l ++){
+			local pos = Vector3D( pvec).scale( dists[l]).add( player3d.pos);
+			local refs = b3world.contactTest( 0, shps[l], pos, -1, G_EVENT|G_CHARA).getReferences();
+			refs.sort( @( v) v.gbnd.getFrontMostDistance( ppos));
+			foreach( ev3d in refs){
+				local ev = ev3d["event"];
+				if( ev && ev.page["trigger"]==1+l && ev.eventTriggerable() && reachTest( player3d, ev3d)){	//	2=接触, 3=1m    2の時はisolationTestはいらんかな
+					newdst = ev3d; goto DONE;
+				}
+			}
+		}
+	DONE:
+		//	インタラクション対象が変化した。ここから100msほどはチェックしない
+		if( newdst != searchdst){
+			searchdst = newdst;
+			searchpop.setTarget( newdst);
+			if( newdst){
+				local rt = RichText( `[+4]${buttonicon( BTN_A)}[+0]  ${newdst.getSearchButtonLabel()}`);
+				searchpop.setValue( "lbl", rt);
+			}
+		}
+
+		local b = !!searchdst && !mainevent;
+		if( !searchpop.isFuncRunning( "actionfunc") && b != searchshown){
+			searchpop.action( b?"show":"hide");
+			searchshown = b;
+		}
+	}
+	
+	//	aからbが完全に遮断されているかのチェック。壁にさえぎられていたらfalseでテーブルにさえぎられているだけならtrue
+	function reachTest( a, b){
+		//	Y軸に4つほどレイを飛ばす。少しずつxzもずらす
+		local b3res = #b3Result( 8);
+		local ar = a.gbnd, br = b.gbnd, day = ar.s*0.8/3, dby = br.s*0.8/3;
+		local ap = Vector3D( ar.x, ar.y+ar.s*0.4, ar.z), bp = Vector3D( br.x, br.y+br.s*0.4, br.z);
+		for( local l = 0;l < 4;l ++){
+			local b3res = b3world.rayTest( 1, ap, bp, -1, G_CHARA|G_EVENT|G_OBJECT|G_STAGE, b3res);	//	
+			if( !b3res.len() || b3res.bodyb==b.b3body) return true;	//	届いた
+			ap.y -= day; bp.y -= dby;
+		}
+		return false;
+	}
+
+	//	pの位置から上下に床が存在する位置に調整して返す。
+	//	最初にマップに埋まってるかチェック。
+	function adjustFloorPos( p){
+		local t0 = skGetTime();
+		local bx = p.x*2, by = p.y*2, bz = p.z*2;
+		while( bw.collisionAt( bx, by, bz)){ by++; p.y += 0.5; }	//	埋まってる場合は1ブロックずつ上に
+		//	ここから下におろす。
+		p.y += 0.1;	//	yが地面ピッタリだと直下の地面を取り逃す
+		local shp = #b3Shape.createSphere( 0.2);	//	ちょい厚みが必要
+		local b3res = b3world.convexSweepTest( 0, shp, p, v_1( 0, -32.0, 0), G_CHARA, G_STAGE|G_OBJECT);	//	G_CHARAは未指定
+		local t1 = skGetTime( t0);
+		foreach( br in b3res){
+			local ny = br.normal.y, sn = br.surfnormal;	//	sweeptestの場合はnormalは正規ベクトル
+			if( ny > FLOORANGLE){
+				p.y += v_1.y*br.fraction;
+				break;
+			}
+		}
+		local t2 = skGetTime( t0);
+		return p;
+	}
+	
+	/////////////////////////////////////////////////////////////////////////
+	//	イベント処理
+
+	//	マクロイベントを実行する。これはイベント処理外でマクロを呼び出したいときに使う。
+	//	メインイベントとして実行する場合は、今あるメインイベントが終了するまで待つか、失敗する。
+	function startMacro( macroid, ismain=true, wvar=null){
+		local md = {	//	手動実行できるようにデータをいじくる
+			cmdblock = [],
+			...conf.macro[macroid],
+			reqs = null,
+			runmode = ismain?1:2,
+			wvar = wvar,
+		};
+		local m = RPGMacroEventRunner( macroid, md);
+		//	初回実行
+		m.update( 1);
+		if( m.mode==2) manumacros .. m;
+		return m;
+	}
+
+
+
+	static function createBackground( bg){
+		local bgpass;
+		switch( bg["type"]){
+		case "col":
+			bgpass = SK3DRenderer.PassRegistory.ColorBackgroundPass();
+			bgpass.setColor( bg["col"]);
+			break;
+		case "grad":	//	texを作る
+			break;
+		case "tex":
+			break;
+		default:
+		}
+		return bgpass || SK3DRenderer.PassRegistory.SkyboxBackgroundPass();
+	}
+}

@@ -1,0 +1,282 @@
+
+import BlockPlacementID;
+import FreeBlockCategoryID;
+import BlockFlagID;
+
+::g_vc <- {};
+VoxelContainer.ref <- null;
+VoxelContainer.cachemap <- null;
+
+//	※何回でも呼べるようにしたい。。。今は特にFreeBlockImplの作り直し、FreeBlock.fpの再設定が必要なのでやれない。
+//	1. registerFreeBlocksを再度行いFreeBlockImplを作り直す
+//	2. 全てのBlockWorld, FreeBlockインスタンスに対して再設定する
+//	↑ができれば大丈夫
+//	
+function registerVoxelContainers( r){
+	if( r.isdir){
+		foreach( c in r.getList()){
+			if( c.name[0] == '_') continue; //	_から始まるフォルダ、ファイルは無視
+			registerVoxelContainers( c);
+		}
+	}else
+	if( r.name.endsWith( ".vox")){
+		local vc = r.getContent();
+		local vcid = vc.registerGlobal( r.name.substring( 0, r.name.lastIndexOf( ".")));
+		::g_vc[vcid] <- vc;
+		vc.ref = r;
+	}
+}
+
+local vcvpids = ["vp0","vp1","vp2","vp3"]
+local palids = ["pal0","pal1","pal2","pal3"]
+local cvars = ["cvar0","cvar1","cvar2","cvar3"]
+
+//	vp0, vp1, vp2, vp3からvcvpの二次元配列に。。。
+local makevcvp( val){
+	local ret = ((-1,-1),(-1,-1),(-1,-1),(-1,-1));
+	foreach( i, id in vcvpids){
+		local vcvp = val[id];
+		if( !vcvp){
+			continue;
+		}
+		local vc = ::VoxelContainer.getGlobal( vcvp[0]);
+		local vp = vc.findParts( vcvp[1]);
+		if( !vp){
+			printf( "VoxelParts not found!!!!! %S %S\n", vcvp[0], vcvp[1]); throw Exception();
+		}
+		if( vp) ret[i] = (vc.vcid,vp.vpid);
+	}
+	return ret;
+}
+
+//	pal0, pal1... から
+local makepalmod( val){
+	local ret = (null,null,null,null), ppal;
+	foreach( i, id in palids){
+		local palmod = val[id];
+		local vcvp = val[vcvpids[i]], vc = ::VoxelContainer.getGlobal( vcvp[0]);
+		if( palmod && vc){
+			ret[i] = vc.pal.getModPalette( palmod);
+		}else{
+			ret[i] = ret[i-1];
+		}
+	}
+	return ret;
+}
+
+
+//	tの内容は破壊される。ただし何回呼んでもどんどん壊れていくようなことはない
+//	※これがいやならcloneしてテーブルを返すようにすれば良い。
+local registerBlock( i, t){
+	if( !t["cls"]) return;		//	
+	::Block.registerBlock( i, t);
+}
+
+//	tの内容は破壊される。ただし何回呼んでもどんどん壊れていくようなことはない
+//	※これがいやならcloneしてテーブルを返すようにすれば良い。
+local registerFreeBlock( i, t){
+	if( !t["cls"]) return;
+	::FreeBlock.registerFreeBlock( i, t);
+}
+
+//	※※※※※※※※※※※※※※　map_voxリソースからのVoxelConfig
+
+local deffb = ("def","box8");
+
+::defblkvarmap <- {
+	"shape": 	{ cls="shape",	 def={ hide=1, vp0=("def","box8")} },
+	"wall0": 	{ cls="terrain", def={ hide=1, vp0=("def","terrain"), floortype=2} },
+	"floor0": 	{ cls="floor",	 def={ hide=1, vp1=("def","floor")} },
+	"struct0": 	{ cls="build",	 def={ hide=1, vp0=("def","wall"), floortype=1} },
+	"struct1": 	{ cls="build",	 def={ hide=1, vp0=("def","wall"), floortype=1} },
+	"struct2": 	{ cls="build",	 def={ hide=1, vp0=("def","wall"), floortype=1} },
+	"carpet": 	{ cls="carpet",	 def={ hide=1, vp0=("def","carpet")} },
+	"water": 	{ cls="water",	 def={ hide=1, vp0=("def","water")} },
+	"fence": 	{ cls="fence",	 def={ hide=1, vp0=("def","fence")} },
+	"plant": 	{ cls="plant",	 def={ hide=1, vp0=("def","plant")} },
+	//
+	"door": 	{ cls="door",	 def={ hide=1, vp0=("def","door"), catg=FB_EXDOOR, plc=PLC_DOOR} },
+	"lamp": 	{ cls="lamp",	 def={ hide=1, vp0=("def","lamp"), catg=FB_EXLAMP }, flags=BLK_SOLIDFB|BLK_HAS_LIGHT },
+	"exterior": { cls="simple",	 def={ hide=1, vp0=deffb, catg=FB_EXTERIOR, } },
+	"interior": { cls="simple",	 def={ hide=1, vp0=deffb, catg=FB_INTERIOR } },
+	"treerock": { cls="simple",	 def={ hide=1, vp0=deffb, catg=FB_TREE } },
+	"column": 	{ cls="column",	 def={ hide=1, vp0=("def","column"), catg=FB_COLUMN, plc=PLC_FLOOR, push=[0,1]} },
+	"slope": 	{ cls="slope",	 def={ hide=1, vp0=("def","stair"), catg=FB_SLOPE, plc=PLC_FLOOR} },
+	"roof": 	{ cls="roof",	 def={ hide=1, vp0=("def","roof"), catg=FB_ROOF, plc=PLC_FLOOR} },
+	"crack": 	{ cls="crack",	 def={ hide=1, vp0=("def","crack"), catg=FB_CRACK, plc=PLC_ANY, push=[0,1], blend=0}, flags=BLK_DECAL },
+};
+
+local chkvcvp( vcvp){
+	local vc = VoxelContainer.getGlobal( vcvp[0]);
+	if( !vc){
+		printf( "WARNING at map_vox!! vox name '%S' not found.\n", vcvp[0]);
+		return false;
+	}else
+	if( !vc.findParts( vcvp[1])){
+		printf( "WARNING at map_vox!! vox '%S' parts '%S' not found.\n", vcvp[0], vcvp[1]);
+		return false;
+	}
+	return true;
+}
+
+
+//	何度も呼べるようにする！！！！！！！
+//	
+function setupVoxelConfig(){
+	if( !::conf["_resource"]["map_vox"]){
+		printf( "WARN : Empty map_vox config! Skip setupVoxelConfig().\n");
+		return;
+	}
+	local voxmtls = ::conf._resource.renderset.voxmtls;
+	local map_vox = ::conf._resource.map_vox;
+	
+	//	1.マテリアルのセットアップ
+	::voxmtl.loadPatternTexture( "/resource/vox/_sys/patterns.vox");
+	::voxmtl.setConf( voxmtls);
+	
+	//	2.VoxelContainerのセットアップ
+	::getResource( "/resource/vox").flush();
+	::getResourceContent( "/resource/vox/_sys/mask.vox").registerGlobal( "mask", 1);
+	::registerVoxelContainers( ::getResource( "/resource/vox/map"));
+
+	//	3.VoxelPlantのセットアップ
+	// registerVoxelPlants( ::getResource( "/resource/plant"));
+	
+	///////////////////////////////////////////////////////////////////////////////
+	//	4.ブロックの登録情報生成
+	::blks <- {};
+	::fblks <- {};
+	
+	local _block( vals, name){
+		if( !vals[0]) return { name=name};
+		local type = vals[0].type;	//	vals内のtype,clsはすべて同一という条件。
+		local blkdef = defblkvarmap[type];
+		local ret = { cls=blkdef.cls, variations=[], name=name};
+		if( "flags" in blkdef) ret.flags <- blkdef.flags;
+		local mx = 0;
+		foreach( i, _ in vals) mx = Math.max( i, mx);
+		for( local l = 0;l <= mx;l ++){
+			local v = vals[l];
+			v = { ...blkdef.def, ...v};
+			if( !chkvcvp( v["vp0"]) || v.vp0[0]=="def"){
+				v.vp0 <- clone blkdef.def.vp0;
+				v.hide = true;
+			}else{
+				v.hide = false;		//	ここ問答無用にやっていいかな。。。
+			}
+			v.vcvp <- makevcvp( v);
+			v.pal <- makepalmod( v);
+			ret.variations .. v;
+		}
+		return ret;
+	}
+
+	//	todo _chkvcvp
+	local _floorwall( walls, floors, name){
+		local wall0 = Table.find( walls, @( v) v);
+		if( !wall0) return { name=name};
+		local walltype = wall0.type;	//	vals内のtype,clsはすべて同一という条件。
+		local walldef = defblkvarmap[walltype];
+		local ret = { cls=walldef.cls, variations=[], name=name};
+		foreach( w in walls){
+			w = { ...walldef.def, ...w};
+			w.hide = false;
+			w.vcvp <- makevcvp( w);
+			w.pal <- makepalmod( w);
+			ret.variations .. w;	//	床デフォルトのバリエーション登録
+			foreach( f in floors){
+				local floordef = defblkvarmap[f.type];
+				f = {...w, ...floordef, ...f};
+				f.hide = false;
+				f.vcvp <- makevcvp( f);
+				f.pal <- makepalmod( f);
+				ret.variations .. f;
+			}
+		}
+		return ret;
+	}
+
+	//	4-1. 基本ブロック
+	::blks[1] <- _block( map_vox.shape, "$T.blk_basic");
+	
+	//	4-2. 地形ブロック
+	::blks[2] <- _floorwall( map_vox.wall0, map_vox.floor0, "$T.blk_nature");
+	::blks[3] <- _block( map_vox.struct0, "$T.blk_structa");
+	::blks[4] <- _block( map_vox.struct1, "$T.blk_structb");
+	::blks[5] <- _block( map_vox.struct2, "$T.blk_structc");
+
+	//	4-3. ウォーターブロック
+	::blks[8] <- _block( map_vox.water, "$T.blk_water");
+	//	4-4. カーペットブロック
+	::blks[9] <- _block( map_vox.carpet, "$T.blk_carpet");
+	//	4-5. フェンスブロック
+	::blks[10] <- _block(  map_vox.fence, "$T.blk_fence");
+	//	4-6. 草花ブロック
+	::blks[11] <- _block(  map_vox.plant, "$T.blk_plant");
+
+	///////////////////////////////////////////////////////////////////////////////
+	//	5.フリーブロックの登録情報生成
+	
+	::fblks[1] <- _block( map_vox.door, "$T.blk_door");
+	::fblks[2] <- _block( map_vox.lamp, "$T.blk_lamp");
+	::fblks[3] <- _block( map_vox.exterior, "$T.blk_exterior");
+	::fblks[4] <- _block( map_vox.interior, "$T.blk_interior");
+	::fblks[20] <- _block( map_vox.treerock, "$T.blk_treerock");
+	::fblks[30] <- _block( map_vox.column, "$T.blk_column");
+	::fblks[40] <- _block( map_vox.slope, "$T.blk_slope");
+	::fblks[50] <- _block( map_vox.roof, "$T.blk_roof");
+	::fblks[60] <- _block( map_vox.crack, "$T.blk_crack");
+
+	//	6.最後にまとめて登録！
+	foreach( i,t in ::blks) registerBlock( i, t);
+	foreach( i,t in ::fblks) registerFreeBlock( i, t);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////
+
+//	getPolygonMeshでボクセルを読めるように。voxファイル単位のみ
+//	ptdとかでもvoxが使えるように！
+function getPolygonMesh( res, doclone=true){
+	if( typeof( res) == SS_STRING){
+		local s = res;
+		res = getResource( s);
+		if( !res) throw Exception( "getPolygonMesh res not found:%S", s);
+	}
+	local mesh = res.userdata;
+	if( !mesh){
+		if( res.name.endsWith( ".vox")){
+			local vc = res.getContent();
+			local vp = vc.partsAt( 0), vd8 = vp["vd8"];
+			local vmd = VoxelMeshBuilder.createVoxelMeshData( vd8, null, 0, 63, [vd8.w/2, vd8.h/2, vd8.d/2]);
+			mesh = vmd.createPolygonMesh( vc.pal);
+		}else{
+			local loader = PolygonMeshLoader( res);
+			loader.load();
+			mesh = loader.mesh;
+			loader.clear();
+		}
+	}
+	res.flush();
+	res.userdata = mesh;
+	local pm = doclone?(clone mesh):mesh;
+	return pm;
+}
+
+//	map_voxの定義からテスト用のブロック定義を生成。map_voxのプレビュー描画用に必要
+//	
+function testBlockConf( val){
+	local type = val.type;	//	val内のtype,clsはすべて同一という条件。
+	local blkdef = defblkvarmap[type];
+	local v = { ...blkdef.def, ...val};
+	if( v["vp0"] && !chkvcvp( v.vp0)){
+		v.vp0 = clone blkdef.def.vp0;
+	}
+	v.vcvp <- makevcvp( v);
+	v.pal <- makepalmod( v);
+	local ret = { cls=blkdef.cls, variations=[v]};
+	return ret;
+}
+
+
+//	conf_postloadにフックを追加
+module.hookAction( "conf_postload", setupVoxelConfig, 99);

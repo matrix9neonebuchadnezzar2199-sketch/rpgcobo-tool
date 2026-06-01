@@ -1,0 +1,81 @@
+declare mod_efx;
+
+//////////////////////////////////////////////////////////////////////
+//	vox,enemy overlay shader
+//	
+//	RPG3DObjectに光のエフェクト、選択のアウトライン描画を追加する。
+//	このエフェクトはTransパスで行われる。pbr forward passの後に分離した描画パスで描画する。
+//	↑Decalパスにやっぱしよう！HDRにしちゃうと見た目の調整が難しい。。同じ理由でエフェクトも光系はDecalで作る。
+//	※overlayとoutlineも分離する。パスが多くなるけど本来は分離するべきなので。
+//	selectionはenvcolorを使う。
+//	
+//	OverlayEffectクラスでアニメーションを定義する。OverlayEffectはEfxEditorのアクション編集で追加できるように拡張。
+//	以下のパラメータ
+//	time
+//	texture
+//	color grad
+//	axis
+//	uv scale
+//	uv scroll
+
+param overlayefx
+{
+	uniform mediump sampler2D efxtex <id=COLORTEX4, WRAP_S=WRAP, WRAP_T=WRAP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform mediump mat4 efxmat <id=MISC4MAT>;
+}
+
+//	decal pass color effect (pma blend)
+//	p[0] : efx color (PMA)
+//	p[1] : axis, uvscale, vscroll, color intensity
+//	p[2] : wvpos0
+//	
+fs overlayefx
+{
+	const lowp ivec2[2] axlist = ivec2[]( ivec2(1,0), ivec2(0,1));
+	
+	vec4 overlayefx( highp vec3 wvpos){
+		$( COLORTEX4){
+			wvpos -= efxmat[2].xyz;
+			vec4 color = efxmat[0];
+			int i = int( efxmat[1].x);
+			ivec2 ax = axlist[i];
+			float uvscale = efxmat[1].y;
+			highp vec2 uv = vec2( wvpos[ax.x], wvpos[ax.y]) * uvscale + efxmat[1].zw;
+			vec4 col = texture( efxtex, uv) * color;
+			return col;
+		} : {
+			return vec4( 0.0);
+		}
+	}
+}
+
+//	inout outline (texture edge)
+fs outline_tex
+{
+	float outline_tex( sampler2D tex, highp vec2 uv, highp vec2 d, float v0){
+		// d = d * 2.0;
+		vec4 v1 = vec4(
+			texture2D( tex, uv+d*vec2(-1.0, 0.0)).w,
+			texture2D( tex, uv+d*vec2( 1.0, 0.0)).w,
+			texture2D( tex, uv+d*vec2( 0.0,-1.0)).w,
+			texture2D( tex, uv+d*vec2( 0.0, 1.0)).w
+		) - vec4( v0);
+		return clamp( dot( v1, v1), 0.0, 1.0);
+	}
+}
+
+//	inner outline (gbuffer edge)
+fs outline_gtex
+{
+	float outline_gtex( sampler2D gtex0, highp vec2 uv, highp vec2 d, float v0){
+		d = d * 3.0;
+		vec4 v1 = abs( vec4(
+			texture2D( gtex0, uv+d*vec2(-1.0, 0.0)).w,
+			texture2D( gtex0, uv+d*vec2( 1.0, 0.0)).w,
+			texture2D( gtex0, uv+d*vec2( 0.0,-1.0)).w,
+			texture2D( gtex0, uv+d*vec2( 0.0, 1.0)).w
+		) - vec4( v0));
+		v1 = step( vec4( 0.1), v1);
+		return clamp( float( dot( v1, v1)), 0.0, 1.0);
+	}
+}

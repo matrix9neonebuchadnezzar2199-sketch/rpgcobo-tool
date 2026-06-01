@@ -1,0 +1,535 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import BlockFlagID;
+
+local tp_0 = (0,0,0);
+local v3_1 = Vector3D();
+
+FreeBlock._dummy <- null;			//	FreeBlockをGCチェインに入れる。。。
+
+//	
+//	
+//	以下のように使う
+//	local bop = BlockOperation( bw).paintBlock( prm)
+//	
+
+class BlockOperation
+{
+	bw = null;
+	redoop = null;
+	undoop = null;
+
+	constructor( w){
+		bw = w;
+		redoop = [];
+		undoop = [];
+	}
+
+	function submit( editor, trk=null){
+		editor.submitOp( redoop, undoop, trk);
+		redoop = [];
+		undoop = [];
+		// local a1 = getclassinstances( BlockWorld), a2 = getclassinstances( FreeBlock);
+		// printf( "OPOPOP BW %S FB %S\n", a1, a2);
+	}
+
+	function merge( editor, trk=null){
+		editor.mergeOp( redoop, undoop, trk);
+		redoop = [];
+		undoop = [];
+	}
+
+	function len(){
+		return length( redoop);	//	redoop.len == undoop.len
+	}
+
+	//	ブロックを変更するopを追加。
+	function _plcblk( pos, blk){
+		local _bw = bw, oldblk = _bw.blockat( pos);
+		if( blk != oldblk){
+			pos = clone pos;
+			redoop    .. @(){ _bw.placeBlock( pos, blk, 0); }
+			undoop[0] <- @(){ _bw.placeBlock( pos, oldblk, 0); }
+			return true;
+		}
+		return false;
+	}
+
+	//	フリーブロックを配置する
+	//	fbをそのまま渡してるが、fbposを指定すればその位置に配置可能
+	function _plcfblk( fb, fbpos, fbuid){
+		local _bw = bw, oldfb = _bw.getFreeBlock( fbuid);
+		local fbtype = fb.fbtype, fbparam = fb.fbparam;
+		local pfp = _bw.fblockat( fbpos.x, fbpos.y, fbpos.z);
+		// if( pfp && pfp.fbtype==fbtype && pfp.fbparam==fbparam && pfp.rot==fbpos.rot){
+		// 	return false;
+		// }
+		// if( !(fb <> oldfb) && !fbpos) return false;
+		redoop    .. @(){ _bw.placeFreeBlock( fbtype, fbparam, fbpos, fbuid); }
+		undoop[0] <- @(){ if( oldfb){ _bw.placeFreeBlock( oldfb); }else{ _bw.removeFreeBlock( fbuid); } }
+		return true;
+	}
+
+	//	フリーブロックを削除する
+	function _ercfblk( fbuid){
+		local _bw = bw, oldfb = bw.getFreeBlock( fbuid);
+		if( !oldfb) return false;
+		redoop    .. @(){ _bw.removeFreeBlock( fbuid); }
+		undoop[0] <- @(){ _bw.placeFreeBlock( oldfb); }
+		return true;
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	一般ブロック操作
+	//	
+
+	//	hb, blk, pen, rot
+	function paintBlock( p){
+		local pen = p.pen, pos = tp_0, blk = p.blk;
+		local x0 = p.hb.bx-pen.pivot[0], x1 = x0 + pen.w;
+		local y0 = p.hb.by-pen.pivot[1], y1 = y0 + pen.h;
+		local z0 = p.hb.bz-pen.pivot[2], z1 = z0 + pen.d;
+		//	
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++) for( local y = y0; y < y1; y ++, i++){
+			if( !pen[i]) continue;	//	ペンにボクセル無し
+			local oldblk = bw.blockat( x, y, z);
+			if( !oldblk) continue;
+			local newblk = Block.mergeStates( blk, oldblk);	//	移行可能なステートをマージする。
+			pos.set( x, y, z);
+			_plcblk( pos, newblk);
+		}
+		return length( redoop);
+	}
+
+	function boxPaintBlock( p){
+		local r = p.box, pos = tp_0, blk = p.blk;
+		local x0 = r.x, x1 = x0 + r.w;
+		local y0 = r.y, y1 = y0 + r.h;
+		local z0 = r.z, z1 = z0 + r.d;
+		//		
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++) for( local y = y0; y < y1; y ++, i++){
+			local oldblk = bw.blockat( x, y, z);
+			if( !oldblk) continue;	//	ペイント不能なブロック。
+			pos.set( x, y, z);
+			_plcblk( pos, blk);
+		}
+		return length( redoop);
+	}
+
+	function boxPaintWater( p){
+		local r = p.box, pos = tp_0, blk = p.blk;
+		local x0 = r.x, x1 = x0 + r.w;
+		local y0 = r.y, y1 = y0 + r.h;
+		local z0 = r.z, z1 = z0 + r.d;
+		//		
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++) for( local y = y0; y < y1; y ++, i++){
+			local oldblk = bw.blockat( x, y, z);
+			if( !oldblk && y>0) continue;
+			local upblk = bw.blockat( x, y+1, z);
+			if( upblk) continue;	//	上にブロックがあっても塗らない！
+			pos.set( x, y, z);
+			_plcblk( pos, blk);
+		}
+		return length( redoop);
+	}
+
+	//	pos, blk, pen
+	function attachBlock( p){
+		local pen = p.pen, pos = tp_0, blk = p.blk;
+		local x0 = p.hb.bx-pen.pivot[0] + p.hb.nx, x1 = x0 + pen.w;
+		local y0 = p.hb.by-pen.pivot[1] + p.hb.ny, y1 = y0 + pen.h;
+		local z0 = p.hb.bz-pen.pivot[2] + p.hb.nz, z1 = z0 + pen.d;
+		//		
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++) for( local y = y0; y < y1; y ++, i++){
+			if( !pen[i]) continue;	//	ペンにボクセル無し
+			local oldblk = bw.blockat( x, y, z);
+			if( ::Block.isFullOcclude( oldblk)) continue;	//	アタッチ不能なブロック。
+			pos.set( x, y, z);
+			_plcblk( pos, blk);
+		}
+		return length( redoop);
+	}
+
+	function rectFillBlock( p){
+		local r = p.box, pos = tp_0, blk = p.blk;
+		local x0 = r.x, x1 = x0 + r.w;
+		local y0 = r.y, y1 = y0 + r.h;
+		local z0 = r.z, z1 = z0 + r.d;
+		local isattach = !!p.isattach;	//	透明ブロック保護
+		//	
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++) for( local y = y0; y < y1; y ++, i++){
+			local oldblk = bw.blockat( x, y, z);
+			local f = ::Block.getFlags( oldblk);
+			if( isattach==((f&BLK_FULLOCCLUDE)==BLK_FULLOCCLUDE) && !(f&BLK_LIQUID)) continue;	//	水も
+			pos.set( x, y, z);
+			_plcblk( pos, blk);
+		}
+		return length( redoop);
+	}
+
+	function boxAttachBlock( p){
+		local r = p.box, pos = tp_0, blk = p.blk;
+		local x0 = r.x, x1 = x0 + r.w;
+		local y0 = r.y, y1 = y0 + r.h;
+		local z0 = r.z, z1 = z0 + r.d;
+		//		
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++) for( local y = y0; y < y1; y ++, i++){
+			local oldblk = bw.blockat( x, y, z);
+			if( ::Block.isFullOcclude( oldblk)) continue;	//	アタッチ不能なブロック。
+			pos.set( x, y, z);
+			_plcblk( pos, blk);
+		}
+		return length( redoop);
+	}
+
+	//	pos, pen
+	function eraceBlock( p){
+		p = clone p;
+		p.blk <- 0;
+		return paintBlock( p);
+	}
+
+	//	ペンの中に含まれる全てのFreeBlockを取得する
+	//	pos, pen
+	function collectFreeBlocks( p){
+		local pen = p.pen;
+		local x0 = p.hb.bx-pen.pivot[0], x1 = x0 + pen.w;
+		local y0 = p.hb.by-pen.pivot[1], y1 = y0 + pen.h;
+		local z0 = p.hb.bz-pen.pivot[2], z1 = z0 + pen.d;
+		local ret = [];
+		local fba = bw.collectFreeBlocks( IRect3D( x0,y0,z0, pen.w,pen.h,pen.d));
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++) for( local y = y0; y < y1; y ++, i++){
+			if( !pen[i]) continue;	//	ペンにボクセル無し
+			foreach( fb in fba){
+				if( fb.collisionAt( x, y, z, -1)){ ret .. fb; removei; }
+			}
+		}
+		return ret;
+	}
+	
+	//	消しゴムツールでブロックと同時にフリーブロックを消去する場合は、eraceBlockに加えてこのメソッドを呼ぶ。
+	//	消しゴムの大きさのboxでb3World.contactTestで触れたFreeBlockを集める。
+	//	uids
+	function eraceFreeBlock( p){
+		local blkid = 0;	//	空気ブロック固定
+		foreach( uid in p.uids){
+			_ercfblk( uid);
+		}
+		return length( redoop);
+	}
+
+	//	塗りつぶしツール。
+	//	pos, blk
+	function floodfillBlock( p){
+		local r = bw.w-1, t = bw.h-1, f = bw.d-1;
+		local chk = {};
+		local x0 = p.hb.bx, y0 = p.hb.by, z0 = p.hb.bz;
+		local blk0 = bw.blockat( x0, y0, z0) & 0x3ff, blk = p.blk;
+		local pos = tp_0;
+		local stk = [x0,y0,z0];	//	一次元配列的に使う
+		local bm = -32, bp = 32;
+		do{
+			local z = stk.pop(), y = stk.pop(), x = stk.pop(), k = y^(x*128)^(z<<20);
+			if( chk[k]) continue;	//	調べたフラグ
+			chk[k] <- 1;
+			local oldblk = bw.blockat( x, y, z) & 0x3ff;
+			if( oldblk == blk0){
+				pos.set( x, y, z);
+				local ok = _plcblk( pos, blk);
+				if( ok){	//	塗りつぶしが成功した時に周りに伝える
+					if( x-x0 >= bm && x > 0) stk .. (x-1) .. y .. z;
+					if( x-x0 <= bp && x < r) stk .. (x+1) .. y .. z;
+					if( y-y0 >= bm && y > 0) stk .. x .. (y-1) .. z;
+					if( y-y0 <= bp && y < t) stk .. x .. (y+1) .. z;
+					if( z-z0 >= bm && z > 0) stk .. x .. y .. (z-1);
+					if( z-z0 <= bp && y < f) stk .. x .. y .. (z+1);
+				}
+			}
+		}while( length( stk));
+		return length( redoop);
+	}
+
+	function getTopY( x, z){
+		for( local y = bw.h-1; y >= 0; y --){
+			if( bw.blockat( x, y, z)) return y;
+		}
+		return h;	//	何返すのが良いんか
+	}
+
+	//	xz平面の指定したブロックをワイプ
+	//	
+	function wipeBlocks( p){
+		local r = p.box, fn = p.fn, pos = tp_0;
+		local x0 = r.x, x1 = x0 + r.w;
+		local z0 = r.z, z1 = z0 + r.d;
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++){
+			local y1 = getTopY( x, z), y0 = 0;
+			for( local y = y1; y >= y0; y --){
+				local blk = bw.blockat( x, y, z);
+				if( fn( blk)){
+					_plcblk( pos.set( x, y, z), 0);	//	消す
+				}
+			}
+		SKIP:
+			;
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	整地操作
+	//	
+	
+	//	pのパラメータで地形の高さを統一する。
+	//	トップブロックが水のときは整地できない。草は持ち上げられる。家みたいなのも基本整地できない。
+	//	pos : 統一の基準位置。
+	//	pen : VoxelData8 底面のみ使う
+	function levelSet( p){
+		local pen = p.pen, blk = p["blk"]||0;
+		local x0 = p.hb.bx-pen.pivot[0], x1 = x0 + pen.w;
+		local basey = p.hb.by, newy = p.newy;
+		local z0 = p.hb.bz-pen.pivot[2], z1 = z0 + pen.d;
+		local align = p.align;
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++, i++){
+			if( pen[i]) _lvset( x, z, newy, basey, blk, align);
+		}
+		return this;
+	}
+
+	//	y0から始まってhの空きがある最も低いyを求める
+	function _gettopy( x, z, y, h){
+		local c = 0, bwh = bw.h;
+		for( ; y < bwh; y ++){
+			local b = bw.blockat( x, y, z), f = ::Block.getFlags( b);
+			if( f&BLK_SOLID){
+				c = 0;
+			}else{
+				if( ++c >= h) return y;
+			}
+		}
+		return bw.h-1;
+	}
+
+	function _getfloory( x, z, ty){
+		for( local y = ty; y >= 0; y --){
+			local b = bw.blockat( x, y, z);
+			if( ::Block.isFullOcclude( b)) return y;
+		}
+		return -1;
+	}
+
+	//	levelSetから呼ぶ
+	function _lvset( x, z, y, basey, blk, align, maxd=16){
+		//
+		local th = Math.max( y-basey, 6);
+		local ty = _gettopy( x, z, basey, th);
+		local fy = _getfloory( x, z, ty);
+		if( fy < 0) return;
+		//
+		local dy = Math.clamp( y-fy, -maxd, maxd);	//	+-maxdでクランプ。あまり一気にやらないように。
+		if( dy < 0 && fy+dy < 0) dy = -fy;
+		//
+		if( (dy < 0 && align<=1) || (dy > 0 && align>=1)) _lvsft( x, z, dy ty, blk);
+	}
+
+	function _bottomgndy( x, z, ty, h){
+		//	tyは空気系
+		local y = ty, c = 0;
+		for( ; y >= 0; y --){
+			local b = bw.blockat( x, y, z), f = ::Block.getFlags( b);
+			if( f&BLK_SOLID) break;
+		}
+		//	_gyが最初の地面候補。下に向かって、縦に穴がh以上空いたときにその上の地面を更に検索。
+		local _gy = y;
+		for( ; y >= 0; y --){
+			local b = bw.blockat( x, y, z), f = ::Block.getFlags( b);
+			if( f&BLK_SOLID){
+				c = 0;
+			}else{
+				if( ++c >= h) return y+c-1;	//	空間の上にある地面最下部
+			}
+		}
+		return _gy;
+	}
+
+	//	levelShiftから呼ぶ
+	//	一番上の空気ブロックより下のFULLSOLIDから上を持ち上げる。
+	function _lvsft( x, z, dy, ty, blk){
+		local pos = tp_0.set( x, 0, z);
+		local gy = _bottomgndy( x, z, ty, Math.abs( dy));
+		if( dy > 0) --gy;	//	地面-1を持ち上げるようにする。
+		//	dy>0 上から順に下のものを引き上げていく
+		//	dy<0 下から順に上のものを引き下げていく
+		local y0=0, y1=0, d=0;
+		if( dy > 0){ y0 = ty; y1 = gy; d = -1; } else { y0 = gy+dy; y1 = ty; d = 1; blk=0; }
+		for( local y = y0; y != y1; y += d){
+			local srcblk = bw.blockat( x, Math.max( 0, y-dy), z);
+			local oldblk = bw.blockat( x, y   , z);
+			if( blk&&srcblk) srcblk = blk;
+			pos[1] = y;
+			_plcblk( pos, srcblk);
+			// local btmfb = bw.fblockat( x, y-dy, z);	//	フリーブロックも
+			// if( btmfb){
+			// 	_plcfblk( btmfb, (x, y, z, btmfb.rot));
+			// }
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	フリーブロック配置
+	//	
+
+	function placeFreeBlock( p){
+		local fb = p.fblk;
+		local fbpos = IPos( fb.x, fb.y, fb.z, fb.rot);
+		if( "rot" in p) fbpos.rot = p.rot;
+		if( p["pos"]){
+			fbpos.x = p.pos[0]; fbpos.y = p.pos[1]; fbpos.z = p.pos[2];
+		}
+		local fbuid = p["fbuid"] || bw.nextfbuid();
+		_plcfblk( fb, fbpos, fbuid);
+		return fbuid;
+	}
+
+	function deleteFreeBlock( p){
+		_ercfblk( p.fbuid);
+	}
+
+	//	屋根のフリーブロックを配置する。
+	//	
+	function placeRoof( p){
+		local fbuid = placeFreeBlock( p);
+		local fb = p.fblk;
+		local fbt = ::fblks[fb.fbtype], va = fbt.variations[fb.fbparam&0xfff];
+		local m = IMat( p.pos).rotate( p.rot);
+		local br = fb.br, rr = m.transform( fb.br);
+		local blk = bw.blockat( rr.x+rr.w/2, rr.y, rr.z+rr.d/2);
+		//	
+		//	ブロック自動配置
+		//	
+		local pos = tp_0;
+		local x0 = br.x+2, x1 = x0+br.w-4;
+		local y0 = br.y+1, y1 = y0+br.h-2;
+		local z0 = br.z+1, z1 = z0+br.d-2;
+		local div = fb.getRoofDiv();
+		//	※dが偶数の時は中心位置が+1
+		local rooftype = va["rooftype"];
+		if( rooftype == 0){	//	三角屋根
+			local topcap = (br.h-2)>=(br.d-2)/2/div;
+			local zoff = div==2 ? ( topcap ? 0 : 1) : (topcap ? (br.d&1)^1 : 1);	//	umm?
+			for( local z = z0; z < z1; z ++){
+				local yy1 = Math.min( y0+(z-z0)/div, y0+(z1-1-z)/div, y1-zoff);
+				// local yy1 = Math.min( y0+(z-z0)/div, y0+(z1-1-z)/div);
+				for( local x = x0; x < x1; x ++) for( local y = y0; y < yy1; y ++){
+					m.transform( pos.set( x, y, z));
+					_plcblk( pos, blk);
+				}
+			}
+		}else
+		if( rooftype == 1){	//	斜め屋根
+			for( local z = z0; z < z1; z ++){
+				local yy1 = Math.min( y0+(z-z0)/div, y1-1);
+				for( local x = x0; x < x1; x ++) for( local y = y0; y < yy1; y ++){
+					m.transform( pos.set( x, y, z));
+					_plcblk( pos, blk);
+				}
+			}
+		}
+		return fbuid;
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	アセット配置
+	//	
+
+	//	ワールドの描画。
+	function drawWorld( bw, br, m){
+		if( !br) br = IRect3D( 0, 0, 0, bw.w, bw.h, bw.d);
+		local rot = m.getRot();	//	ブロックに回転を加えるため
+		//	blocks
+		local x0 = br.x, y0 = br.y, z0 = br.z;
+		local w = br.w, h = br.h, d = br.d;
+		for( local z = 0; z < d; z ++) for( local x = 0; x < w; x ++){
+			local row = bw.collectBlocks( IRect3D( x+x0, y0, z+z0, 0, 1, h, 1));
+			local pos = m.transform( (x,0,z));
+			foreach( i, b in row){
+				if( b){	//	空気は置き換えない、、、
+					b = Block.rotate( b, rot);	//	ローテート可能なブロックはbが変化
+					_plcblk( pos, b);
+				}
+				++pos[1];
+			}
+		}
+		//	freeblocks
+		local fba = bw.collectFreeBlocks( br);
+		foreach( fb in fba){
+			fb.fbuid = 0;	//	描画時にuidはリセットされる。uidのみ変更可能
+			local fbp = m.transformv( (fb.x-x0,fb.y-y0,fb.z-z0,fb.rot));
+			_plcfblk( fb, fbp, bw.nextfbuid());
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	特別ブロック操作
+	//	
+
+	function _plcfence( pos, b, offs){
+		local b1 = bw.blockat( pos);
+		if( !(::Block.isFullOcclude( b1) && (b1&31)!=(b&31))){
+			_plcblk( pos, b | (offs<<14));
+		}
+	}
+	
+	function attachFence( p){
+		local r = p.box, pos = tp_0, blk = p.blk;
+		local x0 = r.x, x1 = x0 + r.w - 1;
+		local y0 = r.y, y1 = y0 + p.blkh - 1;
+		local z0 = r.z, z1 = z0 + r.d - 1;
+		//	ブロック描画オフセット
+		local hb0 = p.hb0;
+		local offs = (hb0.bx+hb0.bz)&1;
+		//	x
+		for( local x = x0; x < x1; x ++) for( local y = y0; y <= y1; y ++){
+			_plcfence( pos.set( x, y, z0), blk, offs);
+			_plcfence( pos.set( x+1, y, z1), blk, offs);
+		}
+		//	z
+		for( local z = z0; z < z1; z ++) for( local y = y0; y <= y1; y ++){
+			_plcfence( pos.set( x0, y, z+1), blk, offs);
+			_plcfence( pos.set( x1, y, z), blk, offs);
+		}
+		// for( local z = z0; z <= z1; z ++) for( local x = x0; x <= x1; x ++) for( local y = y0; y <= y1; y ++){
+		// 	if( z!=z0 && z!=z1 && x!=x0 && x!=x1) continue;
+		// 	local oldblk = bw.blockat( x, y, z);
+		// 	if( ::Block.isFullOcclude( oldblk) && (oldblk&31)!=bi) continue;	//	アタッチ不能なブロック。
+		// 	pos.set( x, y, z);
+		// 	_plcblk( pos, blk);
+		// }
+		return length( redoop);
+	}
+
+	function barriorSet( p){
+		local pen = p.pen, blk = p["blk"]||0;
+		local x0 = p.hb.bx-pen.pivot[0], x1 = x0 + pen.w;
+		local y0 = p.hb.by;
+		local z0 = p.hb.bz-pen.pivot[2], z1 = z0 + pen.d;
+		local v = p["mode"]==1 ? 1 : 0;
+		local _bw = bw;
+		for( local z = z0, i = 0; z < z1; z ++) for( local x = x0; x < x1; x ++, i++){
+			if( pen[i]){
+				local b = _bw.bmp? _bw.bmp.get( x, z) : 0;
+				if( b != v){
+					redoop    .. @(){ _bw.bmp.set( x, z, v); }
+					undoop[0] <- @(){ _bw.bmp.set( x, z, b); }
+				}
+			}
+		}
+		if( redoop[0] && !bw.bmp) bw.bmp = Bitmap( bw.w, bw.d);
+		return this;
+	}
+
+}

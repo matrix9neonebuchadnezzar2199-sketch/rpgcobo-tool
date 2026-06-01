@@ -1,0 +1,651 @@
+import SoundID;
+
+/**
+ *	新仕様のサウンドエンジンに合わせて大幅リニューアル。3Dサウンド、リバーブを活用できるようにする。
+ *	場面場面でのセッティング、同じシーン内での状況変化（屋外→洞窟みたいな移動）にも対応する。
+ *	
+ *	BGMはストリーム追加をメインスレッドで行う。StreamChargerによるバックグラウンドのストリーム追加をなくすことで、いくつかのケースでBGM
+ *	が途切れる恐れがあるが、ゲーム側でフェードさせたりポーズさせたりして対応する。OggVorbisのデコードのみ非同期(async,worker)で行う。
+ *	
+ *	VoicePlayerはSoundManagerに統合する。ボイスが3Dサウンドでなる場合とかもあるし、あまり特別扱いしないでワード毎にoggに変換したり。
+ *	oggでの効果音にも対応するため、wavへの変換、一時的キャッシングなど共通する仕様も多い。
+ *	
+ *	SoundSourceはplay(mixer)で鳴らした時点でSoundContextの再生中リストに参照が保持される。ctx.gc()で再生終了したSoundSourceを回収できる。
+ *	setTimeout()とかで定期的に呼べばよい。
+ */
+class SoundManager
+{
+	ctx = null;				//	SoundContext
+	bgmmixer = null;		//	SoundMixer : リバーブ無し。BGM用。
+	drymixer = null;		//	SoundMixer : リバーブ無し。UI音やボイスなどに。
+	wetmixer = null;		//	SoundMixer : リバーブ強。
+	defsndplayable = null;	//	SoundPlayable : 
+	defsrc3d = null;		//	Source3DParam : 
+	muteg = null;			//	table{id:SoundSource} : 
+	currentbgm = null;		//	BGMThread
+	pause = false;
+	
+	//	game setting
+	searchpath = null;
+	soundconf = null;		//	table{path:table} : 
+	alias = null;			//	table{id:path} : 
+	soundplayables = null;	//	table{name|path:SoundPlayable} : 
+	source3ds = null;		//	table{name:Source3DParam} : 
+	
+	//	client setting 1.0以上設定可。
+	bgmvol = 0.8;			//	
+	sevol = 0.8;			//	効果音の音量。playSoundの音量に乗算される。
+	// uivol = 1.0;			//	UI音の音量。playSoundで"UI"タグのついたサウンドを再生するときにつく。
+	// voicevol = 1.0;			//	ボイスの音量。playSoundで"VO"タグのついたサウンドを再生するときにつく。
+	// ambvol = 1.0;			//	環境音の音量。SK3DAmbiendSoundPlayerが参照する。
+
+	//	これ置き換えれば独自の読み込み先を指定できる
+	static confloader = @(){
+		local bb = ::getResourceContent( "sndconf.json");
+		if( bb){
+			try{
+				return decodeJSON( bb);
+			}catch( ex){
+				printexception( ex);
+			}
+		}
+		return null;
+	}
+	
+	constructor(){
+		searchpath = [];
+		muteg = {};
+		soundplayables = {};
+	}
+	
+	function checkctx(){
+		if( !ctx){
+			ctx = SoundContext.createContext( 0);
+			bgmmixer = ctx.createMixer();
+			bgmmixer[SK_SND_SEND] = 0;
+			bgmmixer.connect();
+			drymixer = ctx.createMixer();
+			drymixer[SK_SND_SEND] = 0;
+			drymixer.connect();
+			setInterval( gc.bindenv( this), 33);
+			defsndplayable = SoundPlayable();
+			defsndplayable.mixer = drymixer;
+		}
+	}
+
+	function gc(){
+		ctx.gc();
+	}
+	
+	////////////////////////////////////////////////////////////////////////////////
+	//	sound.conf
+	//	※読み込み方法を選択できる。
+	
+	function loadConf(){
+		checkctx();
+		soundconf = confloader();
+		if( !soundconf){
+			soundconf = {
+				sounds = {},
+				tags = ["UI","バトル"],
+			};
+		}
+		if( !soundconf["irwavs"]) soundconf["irwavs"] <- [null,null,null,null];
+		if( !soundconf["source3ds"]) soundconf["source3ds"] <- { "default"={conein=360,coneout=360,conecut=50,distout=50,distin=30,distcut=100,distmodel=0}};
+		if( !soundconf["reverbs"]) soundconf["reverbs"] <- { "default"={sends=0,gain=100,distrate=0}};
+		//	load reverb
+		//	※元のリバーブと同一ならロードを飛ばすこと！！！！
+		local t0 = skGetTime();
+		foreach( i, path in soundconf.irwavs){
+			local r = null;
+			try{
+				if( length( path)){
+					r = ::getResource( path);
+					local rv = ctx.createReverb( r.getContent());
+					r.flush();
+					ctx.setReverb( i, rv);
+				}
+			}catch( ex){
+				if( !r){ printf( "IR loading failed. path=%S\n", path); }
+				// printexception( ex);
+			}
+		}
+		local dt = skGetTime( t0);
+		if( dt > 4){
+			printf( "SoundManager.createReverb time= %S\n", dt);
+		}
+		updateAliases();
+		ctx[SK_SND_SOURCE3D] = defsrc3d;
+	}
+	
+	function createSource3D( v, s=null){
+		s = s || Source3DParam();
+		s.conein = v.conein * Math.DTOR;
+		s.coneout = v.coneout * Math.DTOR;
+		s.conegain = 1.0 - v.conecut*0.01;
+		s.maxdist = v.distout;
+		s.refdist = v.distin;
+		s.rolloff = v.distcut*0.01;
+		s.distmodel = v.distmodel;
+		return s;
+	}
+	
+	//	deprecated : loadConfまであらかじめ準備処理をしておく必要あり
+	function getConf(){
+		if( !soundconf) loadConf();
+		return soundconf;
+	}
+	
+	function updateAliases(){
+		if( !soundconf) return;
+		local olds = source3ds;
+		source3ds = {};
+		foreach( i, v in soundconf.source3ds){
+			if( !v["disable"]) source3ds[i] <- createSource3D( v, olds[i]);
+		}
+		defsrc3d = source3ds["NORMAL"];
+		soundplayables = {};
+		alias = {};
+		foreach( i, v in soundconf.sounds){
+			if( length( v["alias"])) alias[v.alias] <- i;
+			// flushSound( i);
+			local sp = createSoundPlayable( v);
+			if( !sp) continue;
+			sp.id = i;
+			soundplayables[i] <- sp;		//	i=SN000等
+		}
+		foreach( i, v in soundconf["alias"]){
+			alias[i] <- v;
+		}
+	}
+
+	function addAlias( i, v){
+		alias[i] <- v;
+	}
+	
+	function createSoundPlayable( v){
+		local r = ::getResource( v["wav"]);
+		if( !r) return;
+		local sp = SoundPlayable();
+		local gain = sevol;
+		// if( v.tags & 1) gain = uivol;		//	1はUI音
+		sp.gain = (v["gain"] || 1.0)*gain;
+		sp.muteg = v["muteg"] || 0;
+		sp.res = r;
+		sp.mixer = drymixer;
+		sp.src3d = source3ds[v["src3d"]];
+		sp.track3d = v["track3d"] || 0;
+		sp.detune = v["detune"] || 0.0;
+		sp.memcache = ("memcache" in v) ? v.memcache : 2;
+		return sp;
+	}
+	
+	////////////////////////////////////////////////////////////////////////////////
+	//	デフォルト音量設定
+
+	function setBGMVolume( vol){ 
+		bgmvol = vol;
+		if( currentbgm) currentbgm.setVolume( currentbgm.vol);
+	}
+
+	function setSEVolume( vol){
+		sevol = vol;
+		//	今なってるSEは音量変わらんけど
+	}
+
+	function setVoiceVolume( vol){
+		voicevol = vol;
+	}
+	
+	////////////////////////////////////////////////////////////////////////////////
+	//	効果音関係
+	//	
+	
+	function playSound( sid, params=null){
+		if( !sid) return null;
+		if( pause) return null;
+		local sp = getSoundPlayable( sid);
+		if( !sp) return null;
+		foreach( i,v in params) sp[i] = v;	//	パラメータ置き換え
+		//	ミュートグループ処理。
+		local g = sp.muteg;
+		if( g){
+			local s = muteg[g];
+			if( s) s.stop();
+			muteg[g] <- sp;		//	※ミュートグループに対してSoundPlayableの参照は残り続ける
+		}
+		//	スレッドを切り離して再生するケースもある
+		//	メインスレッド又はコルーチンでoggデコードが必要なとき
+		if( sp.needthread()){
+			newthread().start( sp.play, sp);
+		}else{
+			sp.play();
+		}
+		return sp;
+	}
+
+	function getSoundPlayable( sid){
+		if( !soundconf) return null;
+		local sp = null;
+		if( sid in alias) sid = alias[sid];
+		sp = clone soundplayables[sid];
+		if( !sp && sid.startsWith("/")){
+			local r = ::getResource( sid);
+			if( !r) return null;
+			sp = clone defsndplayable;	//	default SoundPlayable
+			sp.res = r;
+			sp.id = hashcode( sp.res.name);
+		}
+		return sp;
+	}
+	
+	function stopSound( g) {
+		if ( typeof( g) == SS_INTEGER) g = float( g);
+		local s = muteg[g];
+		if ( !s) return false;
+		s.stop();
+		delete muteg[g];
+		return true;
+	}
+	
+	function stopAllSounds() {
+		foreach ( s in muteg) {
+			if ( s.isPlaying()) s.stop();
+			removei;
+		}
+	}
+
+	////////////////////////////////////////////////////////////////////////////////
+	//	BGM関係
+
+	function playBGM( param){
+		checkctx();
+		local oldbgm = currentbgm;
+		if( currentbgm){
+			if( currentbgm.param == param && currentbgm.playing) return currentbgm;		//	鳴ってる
+		}
+		stopBGM();
+		local t;
+		if( param instanceof BGMThread){
+			t = param
+		}else{
+			t = BGMThread( param);
+			t.mixer = bgmmixer;
+		}
+		t.start();
+		t.pause( pause);
+		currentbgm = t;
+		return t;
+	}
+
+	function fadeBGM( param, fadetime=800){
+		checkctx();
+		local oldbgm = currentbgm;
+		if( currentbgm){
+			if( currentbgm.param == param && currentbgm.playing) return;		//	鳴ってる
+			currentbgm.fadeout( fadetime);
+		}
+		local t;
+		if( param instanceof BGMThread){
+			t = param
+		}else{
+			t = BGMThread( param);
+			t.mixer = bgmmixer;
+		}
+		t.fadein( fadetime, fadetime/2);
+		t.pause( pause);
+		currentbgm = t;
+		return t;
+	}
+
+	function fadeoutBGM( fadetime=1400){
+		local oldbgm = currentbgm;
+		if( currentbgm){
+			currentbgm.fadeout( fadetime);
+			currentbgm = null;
+		}
+		return oldbgm;
+	}
+
+	function stopBGM(){
+		local oldbgm = currentbgm;
+		if( currentbgm){
+			currentbgm.stop();
+			currentbgm = null;
+		}
+		return oldbgm;
+	}
+	
+	function pauseBGM( b){
+		if( currentbgm) currentbgm.pause( b);
+		pause = b;
+	}
+}
+
+//	SoundSourceをラップしてパラメータ設定、リソース読み込み、メモリキャッシングをカプセル化する。
+//	ある意味新仕様の肝。実装は慎重に。
+class SoundPlayable
+{
+	static cachetime = [0,8,16,32,-1];
+	static detunernd = Random( Date.currentTime()[0] ^ 413266123);
+
+	id = null;
+	res = null;
+	gain = 1.0;
+	pitch = 0.0;
+	muteg = 0;
+	src3d = null;
+	detune = 0.0;
+	track3d = 0;
+	memcache = 2;		//	0:no 1:short 2:normal 3:long 4:resident
+	
+	mixer = null;
+	ssref = null;
+	
+	//	サウンド再生に新しいスレッドが必要かを返す。wavキャッシュが無くリソースがoggで且つ↓の場合にtrue
+	//	1. 実行スレッドがautorunじゃない場合。ScriptRunnerを実行している場合にタイミングずれが起きるため。
+	//	2. 実行スレッドがメインスレッドの場合。読み込みの間に描画が止まってしまうため。
+	function needthread(){
+		if( res.userdata["wav"]) return false;	//	wavキャッシュが存在する
+		if( !res.name.endsWith( ".ogg")) return false;	//	oggじゃない
+		local t = currentthread();
+		return ( !t.isAutorun() || t==mainthread());
+	}
+
+	function play(){
+		local wav = null;
+		local r = res, cache = r.userdata;
+		//	スレッドブロックの場合あり
+		if( cache){ wav = cache.wav; } else { wav = r.name.endsWith( ".ogg")? _getovwav( r) : r.getContent(); r.flush(); }
+		if( memcache){
+			local ct = cachetime[memcache];
+			if( cache){
+				cache.cnt = ct;
+			}else{
+				cache = r.userdata = { wav = wav, cnt = ct};
+				if( ct > 0) setInterval( function(){ if( --cache.cnt <= 0){ r.userdata = null; return undefined; } },1000);
+			}
+		}
+		if( !mixer) return null;	//	wav読み込み時に別スレッドでstop()が呼ばれたらmixerがnullになる
+		//	SoundSource生成、再生
+		local ss = mixer.ctx.createWaveSoundSource( wav);
+		// if( gain!=1.0) ss[SK_SND_GAIN] = gain;
+		ss[SK_SND_GAIN] = gain * ::soundmanager.sevol;
+		local p = detune ? pitch + detune*detunernd.nextf(-7.0,7.0) : pitch;
+		if( p) ss[SK_SND_PITCH] = p;
+		ssref = weakref( ss);
+		ss.play( mixer);
+		ss.id = id;
+		return ss;
+	}
+	
+	function stop(){
+		mixer = null;
+		if( !ssref) return;
+		local ss = realref( ssref);
+		if( ss) ss.stop();
+	}
+
+	function isPlaying(){
+		//	※ssref==nullの時は読み込み中。mixer==nullの時はstopされた。
+		return mixer && (!ssref || realref( ssref)?.getState()==SK_SND_PLAYING);
+	}
+	
+	function setVolume( v){
+		gain = Math.min( v, 1.0);
+		if( !ssref) return;
+		local ss = realref( ssref);
+		if( ss) ss[SK_SND_GAIN] = gain * ::soundmanager.sevol;
+	}
+
+	function getSoundSource(){
+		return realref( ssref);
+	}
+
+	//	TODO : 同じResourceに対して複数スレッドからこれが呼ばれるケースを考える
+	function _getovwav( r){
+		local bb = r.loadData();
+		local wav = VorbisDecoder.decodeAll( bb);
+		return wav;
+	}
+}
+
+function VorbisDecoder::decodeAll( bb){
+	local ov = VorbisDecoder( bb);
+	ov.startDecode( ov.pcmlength);
+	for(;;){
+		local wav;
+		if( wav=ov.getResultWave()){ ov.close(); return wav; }
+		suspend();
+	}
+	ov.close();	//	kuru?
+}
+
+class BGMThread
+{
+	param = null;			//	table
+	name = null;			//	string
+	snd = null;				//	StreamSoundSource ... wavをつなげて再生していく。
+	ov = null;				//	VorbisDecoder
+	playing = false;		//	bool
+	wavbuf = null;			//	ByteBuffer ... 別に共通でも良い
+	thread = null;			//	thread
+	mixer = null;
+	paused = false;
+	
+	vol = 1.0;				//	再生音量。0-1
+	fadetype = 0;			//	0:なし 1:fadein 2:fadeout
+	fadespeed = 1.0;		//	
+	fadew = 1.0;			//	vol * fadew * ::soundmanager.bgmvol
+	
+	loopend = 0x7fffffff;
+	
+	constructor( p){
+		param = p;		// param = clone p;	clone iran
+		name = p.name;
+		local r = ::getResource( p["path"] || p["wav"] || ("/music/" .. name));
+		wavbuf = ByteBuffer( 44100 * 2 * 2 * 2);
+		local tb = r.loadData();
+		ov = VorbisDecoder( tb);
+		tb.dispose();
+		//	パラメータを判別してループポイントや再生範囲を設定する。
+		if( "vol" in param){
+			vol = param.vol;
+		}else
+		if( "gain" in param){
+			vol = param.gain;
+		}else{
+			vol = 1.0;
+		}
+	}
+	
+	function stop(){
+		if( !playing) return false;
+		playing = false;
+		fadetype = 0;
+		if( thread){
+			thread.wakeupThrow( "stop");
+			thread = null;
+		}
+		return true;
+	}
+	
+	function start( fw=1.0){
+		fadew = fw;
+		fadetype = 0;
+		snd = mixer.ctx.createStreamSoundSource( ov.freq, ov.ch, SK_WAVE_SHORTLE, 44100 * 2 * ov.ch * 6);	//	freq, ch, bits
+		snd[SK_SND_GAIN] = vol * ::soundmanager.bgmvol;
+		thread = newthread( "BGMThread(%S)" % name);
+		thread.start( run, this);
+		playing = true;
+	}
+	
+	function restart(){
+		if( thread){
+			thread.wakeupThrow( "restart");
+		}
+	}
+	
+	function pause( b){
+		if ( snd) snd[SK_SND_PAUSE] = b;
+		paused = b;
+	}
+
+	function tell(){
+		if( snd && snd.getState()==SK_SND_PLAYING){
+			local ovtime = ov.tell();
+			local buftime = snd[SK_SND_BUFREMAINING]/4;
+			local p = ovtime - buftime;
+			return p < 0 ? ov.pcmlength+p : p;
+		}
+		return 0;
+	}
+
+	function isPlaying(){
+		return playing;
+	}
+	
+	function isLoopEnd(){
+		return snd && snd[SK_SND_PCMTIME]>=loopend;
+	}
+
+	function fadein( fadetime){
+		if( !thread) start( 0.0);
+		fadespeed = 1.0 / fadetime;
+		fadetype = 1;
+	}
+	
+	function fadeout( fadetime){
+		fadespeed = 1.0 / fadetime;
+		fadetype = 2;
+	}
+
+	function resumein( fadetime){
+		if( thread) return false;
+		fadespeed = 1.0 / fadetime;
+		fadetype = 1;
+		snd = mixer.ctx.createStreamSoundSource( ov.freq, ov.ch, SK_WAVE_SHORTLE, 44100 * 2 * ov.ch * 6);	//	freq, ch, bits
+		snd[SK_SND_GAIN] = vol * ::soundmanager.bgmvol;
+		thread = newthread( "BGMThread(%S)" % name);
+		thread.start( runresume, this);
+		playing = true;
+	}
+	
+	//	フェード状態をアップデート。runスレッドから呼ばれる
+	function updateFade( dt){
+		local w = fadespeed * dt;
+		switch( fadetype){
+		case 0:
+			return;
+		case 1:
+			if( (fadew = Math.saturate( fadew+w)) >= 1.0) fadetype = 0;
+			break;
+		case 2:
+			if( (fadew = Math.saturate( fadew-w)) <= 0.0){ fadetype = 0; throw "stop"; }
+			break;
+		}
+		snd[SK_SND_GAIN] = Math.lerp( 0.0, vol, fadew) * ::soundmanager.bgmvol;
+	}
+
+	function charge( chargeframes){	//	529200 = 44100*3
+		if( !ov.startDecode( chargeframes)){		//	chargeframes分のデコードを指示
+		//	printf("ov.invokeDecode fail???? %S %S\n", name, currentthread());
+			return false;							//	再生終了
+		}
+		local t0 = skGetTime();
+		for(;;){
+			if( !snd) return;
+			local t1 = skGetTime(); updateFade( t1-t0); t0 = t1;
+			if( ov.getResult( wavbuf)){
+				// printf( "ov.getResult %S\n", wavbuf.size / 4);
+				snd[SK_SND_PUSHSTREAM] = wavbuf; break;
+			}
+			suspend();
+		}
+	}
+	
+	function setVolume( v){
+		vol = v;
+		if ( snd) snd[SK_SND_GAIN] = vol * fadew * ::soundmanager.bgmvol;
+	}
+	
+	function run(){
+		RESTART:
+		{
+			while( ov.isDecoding()){	//	RESTART時にデコード中だったら結果を破棄する
+				suspend();
+				ov.getResult( wavbuf);
+			}
+			local s  = param["startpoint"] ||  0;
+			local e  = param["endpoint"]   || -1;			//
+			local lp = param["looppoint"]  ||  0;			//	基本的にループは最初に戻る
+			ov.setRegion( s, e, lp);
+			loopend = 0x7fffffff;							//	一時的にループ判定を無視
+		}
+		try{
+			charge( 44100);									//	最初1秒分デコード
+			snd.play( mixer);								//	1秒分のバッファで再生開始。play指示からなる早で再生開始したい
+			loopend = snd[SK_SND_PCMTIME] + ov.pcmlength;	//	restart対応。ループの終わりの時間をここで指定
+			pause( paused);
+			local t0 = skGetTime();
+			for( ;;){
+				local t1 = skGetTime(); updateFade( t1-t0); t0 = t1;
+				if( snd[SK_SND_BUFREMAINING] < 44100*2*2) charge( 44100);	//	1秒づつチャージ
+				suspend();	//	空ループ
+			}
+		}catch( ex){
+			if( ex == "restart"){
+				goto RESTART;
+			}
+			if( ex != "stop"){
+				printf("BGMThread caused an Exception .. %S\n", name);
+				printexception( ex);
+			}
+		}
+		playing = false;
+		thread = null;
+		if( snd) {	//	fadeoutで既に消えるかも
+			snd.stop();
+			snd = null;
+		}
+	}
+
+	function runresume(){
+		try{
+			charge( 44100);									//	最初1秒分デコード
+			snd.play( mixer);								//	1秒分のバッファで再生開始。play指示からなる早で再生開始したい
+			local t0 = skGetTime();
+			for( ;;){
+				local t1 = skGetTime(); updateFade( t1-t0); t0 = t1;
+				if( snd[SK_SND_BUFREMAINING] < 44100*2*2) charge( 44100);	//	1秒づつチャージ
+				suspend();	//	空ループ
+			}
+		}catch( ex){
+			if( ex == "restart"){
+				return run();
+			}
+			if( ex != "stop"){
+				printf("BGMThread caused an Exception .. %S\n", name);
+				printexception( ex);
+			}
+		}
+		playing = false;
+		thread = null;
+		if( snd) {	//	fadeoutで既に消えるかも
+			snd.stop();
+			snd = null;
+		}
+	}
+}
+
+local m = SoundManager();
+::soundmanager <- m;
+
+::playSound <- m.playSound.bindenv( m);
+::stopSound <- m.stopSound.bindenv( m);
+::stopAllSounds <- m.stopAllSounds.bindenv( m);
+::playBGM <- m.playBGM.bindenv( m);
+::fadeBGM <- m.fadeBGM.bindenv( m);
+::fadeoutBGM <- m.fadeoutBGM.bindenv( m);
+::stopBGM <- m.stopBGM.bindenv( m);
+::pauseBGM <- m.pauseBGM.bindenv( m);

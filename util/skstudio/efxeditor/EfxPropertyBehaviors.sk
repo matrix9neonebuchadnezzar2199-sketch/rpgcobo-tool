@@ -1,0 +1,849 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+class PropertyBehaviors.NumSeed extends PropertyBehavior
+{
+	static proptype = 3300;
+	static uipath = "/skstudio/ui/efxeditor/prop_numseed.ui"
+	
+	numval = null;
+	seedval = null;
+
+	function init(){
+		numval = createNumInputBehavior( view.findChild( "val0"));
+		numval.setRange( 1, 1000, 1);
+		seedval = createNumInputBehavior( view.findChild( "val1"));
+		seedval.setRange( 0, 99999, 1);
+	}
+
+	function getParam(){
+		return (numval.getValue(), seedval.getValue());
+	}
+	
+	function setParam( v){
+		numval.setValue( v[0]);
+		seedval.setValue( v[1]);
+	}
+
+	function paramevent( e){
+		if( e.id == VALUE_CHANGED) return;
+		if( e.src["name"] == "rndbtn"){
+			local rnd = Random();
+			local v = rnd.nexti( 0, 100000);
+			seedval.setValue( v);
+		}
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.ScalarSpread extends PropertyBehavior
+{
+	static proptype = 3301;
+	static uipath = "/skstudio/ui/efxeditor/prop_scalar_spr.ui"
+	
+	val = null;
+	spr = null;
+	linebtn = null;
+
+	function init(){
+		val = createNumInputBehavior( view.findChild( "val0"));
+		val.setRange( 0, 10000, 1);
+		spr = createNumInputBehavior( view.findChild( "val1"));
+		spr.setRange( 0, 10000, 1);
+		linebtn = view.findChild( "linebtn");
+	}
+
+	function getParam(){
+		return (val.getValue(), spr.getValue(), linebtn.isSelected());
+	}
+	
+	function setParam( v){
+		val.setValue( v[0]);
+		spr.setValue( v[1]);
+		linebtn.setSelected( !!v[2]);
+	}
+
+	function paramevent( e){
+		if( e.id == VALUE_CHANGED) return;
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.Vec3Spread extends PropertyBehavior
+{
+	static proptype = 3302;
+	static uipath = "/skstudio/ui/efxeditor/prop_vec3_spr.ui"
+
+	vals = null;	//	[6]
+	lines = null;	//	[3]
+	
+	function init(){
+		vals = [];
+		local r = prop["range"]||#(0,100), q = prop["q"]||1;
+		for( local l = 0;l < 6;l ++){
+			local v = createNumInputBehavior( view.findChild( "val"..l));
+			v.setRange( r[0], r[1], q);
+			vals .. v;
+		}
+		lines = [];
+		for( local l = 0;l < 3;l ++){
+			lines .. view.findChild( "linebtn"..l);
+		}
+	}
+
+	function getParam(){
+		local a = tuple( 7);
+		for( local l = 0;l < 6;l ++){
+			a[l] = vals[l].getValue();
+		}
+		a[6] = (lines[0].isSelected()<<0) | (lines[1].isSelected()<<1) | (lines[2].isSelected()<<2);
+		return a;
+	}
+	
+	function setParam( v){
+		for( local l = 0;l < 6;l ++){
+			vals[l].setValue( v[l]);
+		}
+		lines[0].setSelected( !!(v[6]&1));
+		lines[1].setSelected( !!(v[6]&2));
+		lines[2].setSelected( !!(v[6]&4));
+	}
+
+	function paramevent( e){
+		if( e.id == VALUE_CHANGED) return;
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.EfxModVelocity extends PropertyBehavior
+{
+	static proptype = 3310;
+	static cntui = "cnt2.ui";
+	static uipath = "/skstudio/ui/efxeditor/mod_velocity.ui"
+	
+	vel = null;
+	vel_spr = null;
+
+	function init(){
+		vel = createNumInputBehavior( view.findChild( "vel"));
+		vel.setRange( -10.0, 10.0, 100);
+		vel_spr = createNumInputBehavior( view.findChild( "vel_spr"));
+		vel_spr.setRange( -10.0, 10.0, 100);
+	}
+
+	function getParam(){
+		return {vel:vel.getValue(), vel_spr:vel_spr.getValue(); }
+	}
+	
+	function setParam( v){
+		vel.setValue( v.vel);
+		vel_spr.setValue( v.vel_spr);
+	}
+
+	function paramevent( e){
+		if( e.id == VALUE_CHANGED) return;
+		postActionEvent( true);
+	}
+}
+
+local axischks = { "xchk":0, "ychk":1, "zchk":2, }
+
+local adddiv( a){ 
+	if( length( a)<16){
+		a .. a.last();
+		return true;
+	}
+	return false;
+}
+
+local remdiv( a){
+	if( length( a)>2){
+		a.pop();
+		return true;
+	}
+	return false;
+}
+
+
+
+class PropertyBehaviors.EfxModAccel extends PropertyBehavior
+{
+	static proptype = 3311;
+	static cntui = "cnt2.ui";
+	static uipath = "/skstudio/ui/efxeditor/mod_accel.ui"
+	
+	acc = null;
+	acc_spr = null;
+	xchk = null;
+	ychk = null;
+	zchk = null;
+	gchk = null;
+	
+	function init(){
+		acc = createNumInputBehavior( view.findChild( "acc"));
+		acc.setRange( -10.0, 10.0, 100);
+		acc_spr = createNumInputBehavior( view.findChild( "acc_spr"));
+		acc_spr.setRange( -10.0, 10.0, 100);
+		xchk = view.findChild( "xchk");
+		ychk = view.findChild( "ychk");
+		zchk = view.findChild( "zchk");
+		gchk = view.findChild( "gchk");
+	}
+
+	function getParam(){
+		return {
+			acc = acc.getValue(),
+			acc_spr = acc_spr.getValue(),
+			axisid = (xchk.isSelected()?0:ychk.isSelected()?1:2),
+			coord = gchk.isSelected() ? 1:0,
+		}
+	}
+	
+	function setParam( v){
+		acc.setValue( v.acc);
+		acc_spr.setValue( v.acc_spr);
+		gchk.setSelected( !!v.coord);
+		setAxis( v.axisid);
+	}
+
+	function setAxis( ax){
+		xchk.setSelected( ax==0);
+		ychk.setSelected( ax==1);
+		zchk.setSelected( ax==2);
+	}
+
+	function paramevent( e){
+		local ax = axischks[e.src["name"]];
+		if( ax!=undefined) setAxis( ax);
+		if( e.id == VALUE_CHANGED) return;
+		postActionEvent( true);
+	}
+}
+
+class EfxColorEditView extends SKView
+{
+	mgn = (6.0,4.0);
+	ah = 0.6;
+	div = 2;			//	2-8
+	col = null;			//	int[div]
+	valpm = null;
+
+	constructor(){
+		addEventListener( MOUSE_EVENT, mouseevent);
+	}
+
+	function setColors( a){
+		col = clone a;
+		div = length( a);
+		buildPolygonMesh();
+		repaint();
+	}
+
+	function getColors(){
+		return clone col;
+	}
+
+	function render(){
+		//	bg
+		if( valpm){
+			skPushRenderStates();
+			skPushMatrix( 0);
+			local m = #Matrix(); m.identity().translate( mgn[0], mgn[1], 0).scale( bnd.w-mgn[0]*2, bnd.h-mgn[1]*2, 1.0);
+			skMultMatrix( 0, m);
+			valpm.render();
+			skPopMatrix( 0);
+			skPopRenderStates();
+		}
+	}
+
+	//	0.0-1.0のサイズ
+	function buildPolygonMesh(){
+		local m0 = Material();
+		m0.cullface = m0.depthtest = m0.depthmask = 0;
+		m0.tec = skFXFindTechnique( "decal.def");
+		local mb = #PolygonMeshBuilder();
+		mb.clear();
+		mb.setMaterial( m0);
+		mb.begin( SK_TRIANGLESTRIP);
+		for( local l = 0;l < div;l ++){
+			local x = 1.0/(div-1)*l;
+			mb.color( col[l] | 0xff);
+			mb.vertex( x, 0, 0); mb.vertex( x, ah, 0);
+		}
+		mb.end();
+		mb.begin( SK_TRIANGLESTRIP);
+		for( local l = 0;l < div;l ++){
+			local x = 1.0/(div-1)*l, a = col[l]&255;
+			mb.color( (a<<24)|(a<<16)|(a<<8)|255);
+			mb.vertex( x, ah, 0); mb.vertex( x, 1.0, 0);
+		}
+		mb.end();
+		mb.begin( SK_LINES);
+		mb.color( 0xff);
+		for( local l = 0;l < div;l ++){
+			local x = 1.0/(div-1)*l;
+			mb.vertex( x, ah, 0); mb.vertex( x, 1.0, 0);
+		}
+		mb.vertex( 0.0, ah, 0); mb.vertex( 1.0, ah, 0);
+		mb.end();
+		valpm = mb.toPolygonMesh();
+	}
+
+	function itox( i){
+		local x0 = mgn[0], w = bnd.w-x0*2;
+		return div==1?x0:x0 + w/(div-1)*i;
+	}
+	
+	function xtoi( x){
+		local x0 = mgn[0], w = bnd.w-x0*2;
+		local i = Math.clamp( ((x-x0)/w*(div-1) + 0.5)|0, 0, div-1);
+		return i;
+	}
+
+	function showContextMenu( e){
+		local menudata = [
+			{ lbl="$T.lbl_hsv", id="hsv" },
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "hsv":
+			local col0 = col, col1 = clone col0, v = Vector3D(), self = this;
+			local ret = HSVEditPopup.run( this, @( m){
+				foreach( i, c in col0){
+					v( c>>>24, (c>>>16)&255, (c>>>8)&255).scale( 1.0/255.0);
+					v.transform( m).saturate().scale( 255.0);
+					col1[i] = (v.x<<24) | (v.y<<16) | (v.z<<8) | (c&0xff);
+				}
+				self.setColors( col1);
+			});
+			if( ret) postActionEvent();
+			break;
+		}
+	}
+
+	function mouseevent( e){
+		e.computeLocal( getInvMatrix());
+		switch( e.id){
+		case MOUSE_PRESSED:
+			e.consume();
+			if( e.isMouseDown( BUTTON2_MASK)){
+				e.consume();
+				return showContextMenu( e);
+			}
+			local i = xtoi( e.lx), c = col[i];
+			if( (e.ly-mgn[1])/(bnd.h-mgn[1]*2) < ah){
+				local r = ColorPopup.run( Vector3D(e.x,e.y,0).transform( ::rootview.getInvMatrix()), c|0xff);
+				if( r){
+					col[i] = (r&0xffffff00)|(c&0xff);
+					postActionEvent( col[i]);
+					buildPolygonMesh();
+					repaint();
+				}
+			}else{
+				local a = Popups.showNumInput({ val=c&255, range=(0,255), q=1, ui="bar"});
+				if( a != null && a != (c&255)){
+					col[i] = (c&0xffffff00)|(a&0xff);
+					postActionEvent( col[i]);
+					buildPolygonMesh();
+					repaint();
+				}
+			}
+			break;
+		}
+	}
+}
+
+class PropertyBehaviors.EfxModColor extends PropertyBehavior
+{
+	static proptype = 3312;
+	static cntui = "cnt2.ui";
+	static uipath = "/skstudio/ui/efxeditor/mod_color.ui"
+	
+	curv = null;
+
+	function init(){
+		local curvp = view.findChild( "curvp");
+		curv = EfxColorEditView();
+		curv.setRect( 0, 0, curvp.bnd.w, curvp.bnd.h);
+		curvp.addChild( curv);
+	}
+
+	function getParam(){
+		return { color: curv.getColors() };
+	}
+	
+	function setParam( v){
+		// printf( "vcolorrrrrrrrrrrrrrrrrrrrrrrrrr %S\n", encodeJSON( v));
+		curv.setColors( v.color);
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "addbtn": 
+			if( adddiv( curv.col)){ curv.setColors( curv.col); }else return;
+			break;
+		case "delbtn": 
+			if( remdiv( curv.col)){ curv.setColors( curv.col); }else return;
+			break;
+		}
+		postActionEvent( true);
+	}
+}
+
+//	scale, rotation, uv, texanimeで共通
+class EfxCurveEditView extends SKView
+{
+	mgn = (6.0,4.0);
+	div = 2;			//	2-8
+	val = null;			//	0.0-1.0
+	changed = false;
+
+	//	sprite, textbox
+	backsp = null;		//	Sprite
+	divsp = null;		//	Sprite
+	valsp = null;		//	Sprite
+	valpm = null;		//	
+
+	constructor(){
+		backsp = Sprite();
+		backsp.blend = SK_PMAMIX;
+		backsp.color = 0x000040FF;
+		divsp = Sprite();
+		divsp.blend = SK_PMAMIX;
+		valsp = getSprite( "/skstudio/img/ui/c6.png");
+		addEventListener( MOUSE_EVENT, mouseevent);
+		// stretchalign = 15;
+	}
+
+	function setCurves( a, mi, ma){
+		div = length( a);
+		val = array( div);
+		for( local l = 0;l < div;l ++){ val[l] = (a[l]-mi) / (ma-mi); }
+		buildPolygonMesh();
+		repaint();
+	}
+
+	function getCurves( mi, ma){
+		local a = tuple( div);
+		foreach( i, v in val) a[i] = v*(ma-mi) + mi;
+		return a;
+	}
+
+	function render(){
+		//	bg
+		skDrawSprite( backsp, 0, 0, bnd.w, bnd.h);
+		local dw = (bnd.w-mgn[0]*2) / (div-1), dh = bnd.h-mgn[1]*2;
+		for( local l = 0;l < div-1;l ++){
+			divsp.color = (l&1) ? 0x1A1A76FF : 0x000066FF;
+			skDrawSprite( divsp, mgn[0]+dw*l, mgn[2], dw, dh);
+		}
+		divsp.color = 0x20202020;	//	white 10%
+		skDrawSprite( divsp, 0, bnd.h/2, bnd.w, 1);
+		//	pm
+		if( valpm){
+			skPushRenderStates();
+			skPushMatrix( 0);
+			local m = #Matrix(); m.identity().translate( mgn[0], mgn[1], 0).scale( bnd.w-mgn[0]*2, dh, 1.0);
+			skMultMatrix( 0, m);
+			valpm.render();
+			skPopMatrix( 0);
+			skPopRenderStates();
+		}
+		//	sp
+		for( local l = 0;l < div;l ++){
+			local x = itox( l), y = vtoy( val[l]);
+			skDrawSprite( valsp, x-3, y-3, 6, 6);
+		}
+	}
+
+	//	0.0-1.0のサイズ
+	function buildPolygonMesh(){
+		local mate = Material();
+		mate.depthtest = 0;
+		mate.depthmask = 0;
+		mate.tec = skFXFindTechnique( "decal.def");
+		local mb = #PolygonMeshBuilder();
+		mb.clear();
+		mb.setMaterial( mate);
+		mb.begin( SK_LINES);
+		mb.color( 0xffffffff);
+		local _x = 0.0;
+		local _y = 1.0 - val[0];
+		for( local l = 1;l < div;l ++){
+			local x = 1.0/(div-1)*l, y = 1.0-val[l];
+			mb.vertex( _x, _y, 0); mb.vertex( x, y, 0);
+			_x = x; _y = y;
+		}
+		mb.end();
+		valpm = mb.toPolygonMesh();
+	}
+
+	function itox( i){
+		local x0 = mgn[0], w = bnd.w-x0*2;
+		return div==1?x0:x0 + w/(div-1)*i;
+	}
+	
+	function vtoy( v){
+		local y0 = mgn[1], h = bnd.h-y0*2;
+		return y0 + (1.0-v)*h;
+	}
+	
+	function ytov( y){
+		local y0 = mgn[1], h = bnd.h-y0*2;
+		local v = Math.clamp( 1.0-(y-y0)/h, 0.0, 1.0);
+		return v;
+	}
+	
+	function xtoi( x){
+		local x0 = mgn[0], w = bnd.w-x0*2;
+		local i = Math.clamp( ((x-x0)/w*(div-1) + 0.5)|0, 0, div-1);
+		return i;
+	}
+
+	function showContextMenu(){
+	}
+
+	//	
+	function mouseevent( e){
+		e.computeLocal( getInvMatrix());
+		switch( e.id){
+		case MOUSE_MOVED:
+			local i = xtoi( e.lx), v = ytov( e.ly);
+			tips = "%.2f" % v;
+			break;
+		case MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				e.consume();
+				return showContextMenu();
+			}
+			local i = xtoi( e.lx), v = ytov( e.ly);
+			val[i] = v;
+			buildPolygonMesh();
+			repaint();
+			changed = true;
+			break;
+		case MOUSE_DRAGGED:
+			local i = xtoi( e.lx), v = ytov( e.ly);
+			val[i] = v;
+			buildPolygonMesh();
+			repaint();
+			changed = true;
+			break;
+		case MOUSE_RELEASED:
+			if( changed){
+				changed = false;
+				postActionEvent();
+			}
+			break;
+		}
+	}
+}
+
+class PropertyBehaviors.EfxModScale extends PropertyBehavior
+{
+	static proptype = 3313;
+	static cntui = "cnt2.ui";
+	static uipath = "/skstudio/ui/efxeditor/mod_scale.ui"
+	
+	curv = null;		//	EfxCurveEditView
+	xchk = null;
+	ychk = null;
+	zchk = null;
+
+	function init(){
+		curv = EfxCurveEditView();
+		local curvp = view.findChild( "curvp");
+		curv = EfxCurveEditView();
+		curv.setRect( 0, 0, curvp.bnd.w, curvp.bnd.h);
+		curvp.addChild( curv);
+		xchk = view.findChild( "xchk");
+		ychk = view.findChild( "ychk");
+		zchk = view.findChild( "zchk");
+	}
+	
+	function getParam(){
+		return {
+			xyz = (xchk.isSelected()?1:0)|(ychk.isSelected()?2:0)|(zchk.isSelected()?4:0),
+			scale = curv.getCurves( 0.0, 2.0),
+		}
+	}
+	
+	function setParam( v){
+		curv.setCurves( v.scale, 0.0, 2.0);
+		xchk.setSelected( !!(v.xyz&1));
+		ychk.setSelected( !!(v.xyz&2));
+		zchk.setSelected( !!(v.xyz&4));
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "addbtn": 
+			if( adddiv( curv.val)){ curv.setCurves( curv.val, 0.0, 1.0); }else return;
+			break;
+		case "delbtn": 
+			if( remdiv( curv.val)){ curv.setCurves( curv.val, 0.0, 1.0); }else return;
+			break;
+		}
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.EfxModRotation extends PropertyBehavior
+{
+	static proptype = 3314;
+	static cntui = "cnt2.ui";
+	static uipath = "/skstudio/ui/efxeditor/mod_rot.ui"
+	
+	curv = null;		//	EfxCurveEditView
+	xchk = null;
+	ychk = null;
+	zchk = null;
+	scaleval = null;
+
+	function init(){
+		curv = EfxCurveEditView();
+		local curvp = view.findChild( "curvp");
+		curv = EfxCurveEditView();
+		curv.setRect( 0, 0, curvp.bnd.w, curvp.bnd.h);
+		curvp.addChild( curv);
+		xchk = view.findChild( "xchk");
+		ychk = view.findChild( "ychk");
+		zchk = view.findChild( "zchk");
+		scaleval = createNumInputBehavior( view.findChild( "scaleval"));
+		scaleval.setRange( 10, 720, 1);
+	}
+	
+	function getParam(){
+		return {
+			axisid = (xchk.isSelected()?0:ychk.isSelected()?1:2),
+			scale = scaleval.getValue()*Math.DTOR,
+			rot = curv.getCurves( -1.0, 1.0),
+		}
+	}
+	
+	function setParam( v){
+		curv.setCurves( v.rot, -1.0, 1.0);
+		setAxis( v.axisid);
+		scaleval.setValue( v.scale * Math.RTOD);
+	}
+	
+	function setAxis( ax){
+		xchk.setSelected( ax==0);
+		ychk.setSelected( ax==1);
+		zchk.setSelected( ax==2);
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "addbtn": 
+			if( adddiv( curv.val)){ curv.setCurves( curv.val, 0.0, 1.0); }else return;
+			break;
+		case "delbtn": 
+			if( remdiv( curv.val)){ curv.setCurves( curv.val, 0.0, 1.0); }else return;
+			break;
+		}
+		local ax = axischks[e.src["name"]];
+		if( ax!=undefined) setAxis( ax);
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.EfxModTexAnime extends PropertyBehavior
+{
+	static proptype = 3315;
+	static cntui = "cnt2.ui";
+	static uipath = "/skstudio/ui/efxeditor/mod_texanime.ui"
+	
+	curv = null;		//	EfxCurveEditView
+
+	function init(){
+		curv = EfxCurveEditView();
+		local curvp = view.findChild( "curvp");
+		curv = EfxCurveEditView();
+		curv.setRect( 0, 0, curvp.bnd.w, curvp.bnd.h);
+		curvp.addChild( curv);
+	}
+	
+	function getParam(){
+		return {
+			frame = curv.getCurves( 0.0, 10.0),
+		}
+	}
+	
+	function setParam( v){
+		curv.setCurves( v.frame, 0.0, 10.0);
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "addbtn": 
+			if( adddiv( curv.val)){ curv.setCurves( curv.val, 0.0, 1.0); }else return;
+			break;
+		case "delbtn": 
+			if( remdiv( curv.val)){ curv.setCurves( curv.val, 0.0, 1.0); }else return;
+			break;
+		}
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.EfxModUV2 extends PropertyBehavior
+{
+	static proptype = 3318;
+	static cntui = "cnt2.ui";
+	static uipath = "/skstudio/ui/efxeditor/mod_uv2.ui"
+	
+	curv = null;		//	EfxCurveEditView
+	uchk = null;
+	vchk = null;
+	scaleval = null;
+
+	function init(){
+		curv = EfxCurveEditView();
+		local curvp = view.findChild( "curvp");
+		curv = EfxCurveEditView();
+		curv.setRect( 0, 0, curvp.bnd.w, curvp.bnd.h);
+		curvp.addChild( curv);
+		uchk = view.findChild( "uchk");
+		vchk = view.findChild( "vchk");
+		scaleval = createNumInputBehavior( view.findChild( "scaleval"));
+		scaleval.setRange( 1.0, 8.0, 0.1);
+	}
+	
+	function getParam(){
+		return {
+			uv = (uchk.isSelected()?1:0) | (vchk.isSelected()?2:0),
+			scale = scaleval.getValue(),
+			scroll = curv.getCurves( -1.0, 1.0),
+		}
+	}
+	
+	function setParam( v){
+		curv.setCurves( v.scroll, -1.0, 1.0);
+		setAxis( v.uv);
+		scaleval.setValue( v.scale);
+	}
+	
+	function setAxis( ax){
+		uchk.setSelected( !!(ax&1));
+		vchk.setSelected( !!(ax&2));
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "addbtn": 
+			if( adddiv( curv.val)){ curv.setCurves( curv.val, 0.0, 1.0); }else return;
+			break;
+		case "delbtn": 
+			if( remdiv( curv.val)){ curv.setCurves( curv.val, 0.0, 1.0); }else return;
+			break;
+		}
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.EfxRandomize extends PropertyBehavior
+{
+	static proptype = 3319;
+	static cntui = "cnt2.ui";
+	static uipath = "/skstudio/ui/efxeditor/mod_random.ui"
+
+	hpbvals = null;		//	[3]
+	scaleval = null;	
+	rgbvals = null;		//	[4]
+
+	function init(){
+		hpbvals = [
+			_numinput( "hpb0", 10.0, 10),
+			_numinput( "hpb1", 10.0, 10),
+			_numinput( "hpb2", 10.0, 10),
+		];
+		scaleval = _numinput( "scale", 10.0, 10);
+		rgbvals = [
+			_numinput( "rgb0", 255, 1),
+			_numinput( "rgb1", 255, 1),
+			_numinput( "rgb2", 255, 1),
+			_numinput( "rgb3", 255, 1),
+		]
+	}
+
+	function _numinput( n, m, q){
+		local v = createNumInputBehavior( view.findChild( n));
+		v.setRange( 0, m, q);
+		return v;
+	}
+
+	function getParam(){
+		return {
+			h = hpbvals[0].getValue(),
+			p = hpbvals[1].getValue(),
+			b = hpbvals[2].getValue(),
+			scale = scaleval.getValue(),
+			color = (rgbvals[0].getValue()<<24) |
+					(rgbvals[1].getValue()<<16) |
+					(rgbvals[2].getValue()<<8) |
+					(rgbvals[3].getValue()),
+		}
+	}
+	
+	function setParam( v){
+		hpbvals[0].setValue( v.h);
+		hpbvals[1].setValue( v.p);
+		hpbvals[2].setValue( v.b);
+		scaleval.setValue( v.scale);
+		local c = v.color;
+		rgbvals[0].setValue( c>>24);
+		rgbvals[1].setValue( (c>>16)&255);
+		rgbvals[2].setValue( (c>>8)&255);
+		rgbvals[3].setValue( c&255);
+	}
+
+	function paramevent( e){
+		local s = e.src.name;
+		if( s=="scale" || s.startsWith( "rgb") || s.startsWith( "hpb")){
+			postActionEvent( true);
+		}
+	}
+}
+
+class PropertyBehaviors.EfxOffset extends PropertyBehavior
+{
+	static proptype = 3320;
+	static cntui = "cnt2.ui";
+	static uipath = "/skstudio/ui/prop/vec3.ui"
+
+	vals = null;		//	[3]
+
+	function init(){
+		vals = [
+			_numinput( "val0", -10.0, 10.0, 100),
+			_numinput( "val1", -10.0, 10.0, 100),
+			_numinput( "val2", -10.0, 10.0, 100),
+		];
+	}
+
+	function _numinput( n, mi, ma, q){
+		local v = createNumInputBehavior( view.findChild( n));
+		v.setRange( mi, ma, q);
+		return v;
+	}
+
+	function getParam(){
+		return {
+			x = vals[0].getValue(),
+			y = vals[1].getValue(),
+			z = vals[2].getValue(),
+		};
+	}
+	
+	function setParam( v){
+		vals[0].setValue( v.x);
+		vals[1].setValue( v.y);
+		vals[2].setValue( v.z);
+	}
+
+	function paramevent( e){
+		local s = e.src.name;
+		postActionEvent( true);
+	}
+}

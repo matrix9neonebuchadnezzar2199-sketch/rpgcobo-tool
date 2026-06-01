@@ -1,0 +1,95 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+/////////////////////////////////////////////////////////////////////////////////
+//	
+//	InstallTemplate : rpg-coboをportal経由しないで起動したときにデフォルトのテンプレートをインストールする。
+//	この状態だと恐らくrpgcobo.verも初期化されていない。タグが振られてないコミットの場合どのテンプレートが有効かわからんなー。
+//	やりようがある方法としては、どこかにrpgcobo_verみたいな値を書いておいて、それを仮のタグとする。
+//	gitenv.repo_assetには全てのバージョンのテンプレートを網羅しておく必要がある。
+
+local srcdir = dirname( callee().getSourceName());
+
+class InstallTemplateDialog extends Dialog
+{
+	static DIALOGUIPATH = "skstudio/ui/dialog/popen.ui";
+
+	static function run(){
+		local dlg = InstallTemplateDialog( DIALOGUIPATH);
+		dlg.view.setValue( "title", "$T.asset_install_title");
+		newthread().start( install, dlg);
+		dlg.show();
+	}
+	
+	//	
+	function install(){
+		local projdir = FileRef( skGetCurrentDir());
+		//	※gitのDL、アセットのDL、ファイルのコピーを全てこのtmpl_install.ps1で行う。※セキュリティのためにURLはps1内にハードコードされている。
+		view.setValue( "msg", "$T.asset_install");
+		sleep( 300);
+		local p = popen_s();
+		p.open( FileRef( "tools/tmpl_install.ps1"), []);
+		for( ;;){
+			if( !p.isrunning()) break;
+			suspend();
+		}
+		//	
+		local sf = FileRef( projdir, "project/data/setting.json");
+		local st = decodeJSON( sf.load());
+		//	言語を変換。これも一瞬。
+		if( st.projlang != ::lang.code){
+			changeProjectLanguage( projdir, ::lang.code, "en");
+		}
+		//	完了を表示して再起動
+		view.setValue( "msg", "$T.asset_install_done");
+		sleep( 2000);
+		skRestart();
+		suspend();
+	}
+	
+	//	プロジェクト言語を変更する。
+	//	対象の言語が無かった場合はenをコピー。
+	//	※このメソッドはinstallTemplateの後続処理で呼ばれることが多々ある。基本的にテンプレートは日本語で
+	//	作られて、いくつかの言語にローカライズされている状況。
+	function changeProjectLanguage( projdir, langcode, deflc="en"){
+		//	一時的にresrootを変えるとか？ちょっと考えないと。。。
+		local res = ::createResource( FileRef( projdir, "project"));
+		local newdict = ::loadconf( res.getResource( "/data/trns/%S.trns" % langcode));
+		//	confを全て翻訳適用したうえで再保存。dataのみ！
+		local tconf = ::loadconf( res.getResource( "/conf/load.conf"));
+		override( tconf, newdict.transdict, false);
+		local dataconfs = ("dict","setting","type","player","job","cond","skill","item","weapon","armor","enemy","map","quest","store","gvar","point","macro");
+		foreach( i in dataconfs){
+			local f = FileRef( projdir, "project/data/%S.conf" % i);
+			local json = encodeJSON( tconf[i]);
+			local bb = ByteBuffer();
+			bb.putText( json);
+			bb.pos = 0;
+			f.save( bb);
+		}
+		//	既存の翻訳言語にソース情報を移行。乱暴だが全ての辞書は変換チェック済み、srcver=1で統一する。
+		local created = string( Date.currentTime());
+		foreach( f in FileRef( projdir, "project/data/trns").getList( "*.trns")){
+			local t = decodeJSON( f.load());
+			t._meta.srcver <- 1;
+			t._meta.created <- created;
+			t.check <- "";
+			local json = encodeJSON( t);
+			local bb = ByteBuffer();
+			bb.putText( json);
+			bb.pos = 0;
+			f.save( bb);
+		}
+	}
+}
+
+::rootview.callInEventThread( @(){
+	runsk( "rpgtooldict.sk");
+	if( Dialogs.confirm( {msg="$T.confirm_asset_install", notxt="$T.lbl_closetool"})){
+		InstallTemplateDialog.run();
+	}else{
+		sleep( 300);
+		skExit( 0);
+		suspend();
+	}
+}, this);

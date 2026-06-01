@@ -1,0 +1,586 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import SKViewPropertyID;
+
+local renderpasslist  = ["0:Legacy","1:PBR Forward","2:PBR Deferred"]
+local foglist = [
+	{ lbl:"0:OFF", val = 0, },
+	{ lbl:"1:Simple Fog", val = 1, },
+	{ lbl:"2:Atmosphere Fog", val = 2, },
+	{ lbl:"3:PBR Fog", val = 3, },
+]
+
+//	ヘッダ
+local indirecthead = { pid="IL", lbl="$T.lbl_indirectlit", type=HEADER, }
+local exposurehead = { pid="EP", lbl="$T.lbl_exposure", type=HEADER, }
+local directhead = { pid="DL", lbl="$T.lbl_directlit", type=HEADER, }
+local shadowhead = { pid="SW", lbl="$T.lbl_shadow", type=HEADER, }
+local postfxhead = { pid="FX", lbl="$T.lbl_postfx", type=HEADER, }
+local sshead = { pid="SS", lbl="$T.lbl_ss", type=HEADER, }
+local foghead = { pid="FG", lbl="$T.lbl_fog", type=HEADER, }
+
+//	共通プロパティー
+local nameprop = { pid="name",	lbl="$T.lbl_name",	type=LANGSTRING };
+local renderpassprop = { pid="renderpass",	lbl="$T.lbl_renderpass",	type=LIST, list=renderpasslist };
+local ownbufferprop = { pid="ownbuffer",	lbl="$T.lbl_ownbuffer",	type=BOOL };
+local shadowtypeprop = { pid="shadowtype", lbl="$T.lbl_shadowtype",	type=LIST, list=["0:OFF","1:1 Cascade","2:2 Cascades","3:3 Cascades"] };
+local shadowresoprop = { pid="shadowreso", lbl="$T.lbl_shadowreso",	type=LIST, list=[{lbl:"512",val:512},{lbl:"1024",val:1024},{lbl:"2048",val:2048}] };
+local shadowdensprop = { pid="shadowdens", lbl="$T.lbl_shadowdens",	type=SCALAR, range=(0.0,1.0), q=100 };
+local shadowfarprop = { pid="shadowfar", lbl="$T.lbl_shadowfar",	type=SCALAR, range=(10,10000), q=1 };
+local shadowrayprop = { pid="shadowray", lbl="$T.lbl_shadowray",	type=SCALAR, range=(10,10000), q=1 };
+local shadowsoftprop = { pid="shadowsoft", lbl="$T.lbl_shadowsoft",	type=SCALAR, range=(0.0,1.0), q=100 };
+
+local litdirprop = { pid="litdir", lbl="$T.lbl_litdir",	type=VEC2, range=(-360,360), q=1 };
+local litcolorprop = { pid="litcolor", lbl="$T.lbl_litcolor",	type=RGB };
+local litpowprop = { pid="litpow", lbl="$T.lbl_litpow", type=SCALAR, range=(0,100000), q=1 };
+
+//	PBR 共通プロパティ
+local exposureprop = { pid="ev100", lbl="$T.lbl_ev100",	type=SCALAR, range=(-10.0,20.0), q=100 };
+local autoexposureprop = { pid="autoexposure", lbl="$T.lbl_autoexposure",	type=BOOL };
+local ibltexprop = { pid="ibltex", lbl="$T.lbl_ibltex",	type=PATH };
+local iblcolorprop = { pid="iblcolor", lbl="$T.lbl_iblcolor",	type=RGB };
+local iblspecprop = { pid="iblspec", lbl="$T.lbl_iblspec",	type=SCALAR, range=(0,100000), q=1 };
+local ibldiffprop = { pid="ibldiff", lbl="$T.lbl_ibldiff",	type=SCALAR, range=(0,100000), q=1 };
+local ibldirprop = { pid="ibldir", lbl="$T.lbl_ibldir",	type=SCALAR, range=(-180,180), q=1 };
+local bloomthrsprop = { pid="bloomthrs", lbl="$T.lbl_bloomthrs", type=SCALAR, range=(0.0,10.0), q=100 };
+local bloompowprop = { pid="bloompow", lbl="$T.lbl_bloompow",	type=SCALAR, range=(0.0,1.0), q=100 };
+local bloomblurprop = { pid="bloomblur", lbl="$T.lbl_bloomblur",	type=SCALAR, range=(0.0,10.0), q=100 };
+local dofrangeprop = { pid="dofrange", lbl="$T.lbl_dofrange",	type=SCALAR, range=(0,100), q=1 };
+local dofblurprop = { pid="dofblur", lbl="$T.lbl_dofblur",	type=SCALAR, range=(0.0,10.0), q=100 };
+local dofzprop = { pid="dofz", lbl="$T.lbl_dofz",	type=SCALAR, range=(0.0,100.0), q=10 };
+
+local gitypeprop = { pid="gitype", lbl="GIタイプ",	type=LIST, list=["SSAO","SSGI"], };
+local gipowprop = { pid="gipow", lbl="$T.lbl_gipow",	type=SCALAR, range=(0.0,8.0), q=100, hide=@( pl) pl.getParam( "gitype")!=1 };
+local aopowprop = { pid="aopow", lbl="$T.lbl_aopow",	type=SCALAR, range=(0.0,8.0), q=100 };
+local aoradiusprop = { pid="aoradius", lbl="$T.lbl_aoradius",	type=SCALAR, range=(0.1,9.0), q=10 };
+local aobiasprop = { pid="aobias", lbl="$T.lbl_aobias",	type=SCALAR, range=(0.01,8.0), q=100, hide=@( pl) pl.getParam( "gitype")!=0 };
+local aoexpprop = { pid="aoexp", lbl="$T.lbl_aoexp",	type=SCALAR, range=(0.01,8.0), q=100 };
+
+//	fog3
+local fogcolorprop = { pid="fogcolor", lbl="$T.lbl_fogcolor",	type=RGBA, };
+local fogdensprop = { pid="fogdens", lbl="$T.lbl_fogdens", type=SCALAR, range=(0.0,1.0), q=1000 };
+local fogstartprop = { pid="fogstart", lbl="$T.lbl_fogstart", type=SCALAR, range=(0.0,100.0), q=10 };
+local fogyplaneprop = { pid="fogyplane", lbl="$T.lbl_fogyplane", type=SCALAR, range=(0.0,100.0), q=10 };
+local fogyfalloffprop = { pid="fogyfalloff", lbl="$T.lbl_fogyfalloff", type=SCALAR, range=(0.0,10.0), q=100 };
+
+local fogprops = [
+	[],
+	[],
+	[],
+	[fogcolorprop,fogdensprop,fogstartprop,fogyplaneprop,fogyfalloffprop,],
+];
+
+local gs = (0.228912, 0.466611, 0.304478);
+
+local deffogs = [
+	{ type=0, },
+	{ type=1, zoffs=0.0, klin=1.0, kexp=0.0 },
+	{ type=2, sunvec=gs, esun=gs, br=gs, gm=gs, g=0.0 },
+	{ type=3, color=0x80, density=0.3, zoffs=1.0, yplane=0.0, yfalloff=0.2 },
+];
+
+//	レガシープロパティ
+local legacyprops = [
+	nameprop,
+	// renderpassprop,
+	ownbufferprop,
+	indirecthead,
+	{ pid="ambup", lbl="$T.lbl_ambup",	type=RGB },
+	{ pid="ambdown", lbl="$T.lbl_ambdown",	type=RGB },
+
+	directhead,
+	litdirprop,
+	litcolorprop,
+	litpowprop,
+	{ pid="pixellight", lbl="$T.lbl_pixellight", type=BOOL },
+
+	shadowhead,
+	shadowtypeprop,
+	shadowresoprop,
+	shadowdensprop,
+	shadowfarprop,
+	shadowrayprop,
+	shadowsoftprop,
+
+	foghead,
+	{ pid="fogtype", lbl="$T.lbl_fogtype",	type=LIST, list=[foglist[0],foglist[1],foglist[2]] },
+];
+
+//	PBR Forward
+local pbrfwprops = [
+	nameprop,
+	// renderpassprop,
+	ownbufferprop,
+	
+	exposurehead,
+	exposureprop,
+	autoexposureprop,
+	
+	indirecthead,
+	ibltexprop,
+	iblcolorprop,
+	iblspecprop,
+	ibldiffprop,
+	ibldirprop,
+	
+	directhead,
+	litdirprop,
+	litcolorprop,
+	litpowprop,
+
+	shadowhead,
+	shadowtypeprop,
+	shadowresoprop,
+	shadowdensprop,
+	shadowfarprop,
+	shadowrayprop,
+	shadowsoftprop,
+	
+	postfxhead,
+	bloomthrsprop,
+	bloompowprop,
+	bloomblurprop,
+	dofrangeprop,
+	dofblurprop,
+	// dofzprop
+	
+	foghead,
+	{ pid="fogtype", lbl="$T.lbl_fogtype",	type=LIST, list=[foglist[0],foglist[3]] },
+];
+
+//	PBR Deferred
+local pbrdfprops = [
+	nameprop,
+	// renderpassprop,
+	
+	exposurehead,
+	exposureprop,
+	autoexposureprop,
+	
+	indirecthead,
+	ibltexprop,
+	iblcolorprop,
+	iblspecprop,
+	ibldiffprop,
+	ibldirprop,
+
+	directhead,
+	litdirprop,
+	litcolorprop,
+	litpowprop,
+
+	shadowhead,
+	shadowtypeprop,
+	shadowresoprop,
+	shadowdensprop,
+	shadowfarprop,
+	shadowrayprop,
+	shadowsoftprop,
+
+	sshead,
+	gitypeprop,
+	gipowprop,
+	aopowprop,
+	aoradiusprop,
+	aobiasprop,
+	aoexpprop,
+	
+	postfxhead,
+	bloomthrsprop,
+	bloompowprop,
+	bloomblurprop,
+	dofrangeprop,
+	dofblurprop,
+	// dofzprop,
+
+	foghead,
+	{ pid="fogtype", lbl="$T.lbl_fogtype",	type=LIST, list=[foglist[0],foglist[3]] },
+];
+
+//	
+//	pm, efx, scene等のエディターからレンダラーの編集を行うために呼び出される。
+//	ダイアログと名前はついてるが、DialogBaseを継承しない。
+//	
+
+//	
+//	
+class RenderSettingDialog
+{
+	DIALOGUIPATH = "/skstudio/ui/dialog/rendersetting.ui"
+	static passicons = (
+		("\ue2bd", 0x999999ff),
+		("\ue430", 0x00ffffff),
+		("\ue430", 0xffcc00ff),
+	);
+	op = null;				//	OperationStack
+
+	view = null;
+	rsetlist = null;
+	proplist = null;
+	undobtn = null;
+	redobtn = null;
+
+	selrset = null;		//	選択中のレンダープロファイル
+
+	static function start( defrsetid){
+		local root = ::rootview.findChild( "menulayer") || ::rootview;
+		local p = RenderSettingDialog( ::loadSKView( DIALOGUIPATH));
+		local w = p.view.bnd.w, h = root.bnd.h-54;
+		p.view.bindrect = ((0,0),(w,p.view.bnd.h-46));	//	バインドの高さはなんでこうなるんか？？？
+		p.view.stretchSize( w, h);
+		p.view.pos( 8, 46, 0);
+		root.addChild( p.view);
+	}
+
+	constructor( v){
+		view = v;
+		v.name = "rendersetting";
+		v.addEventListener( ACTION_EVENT, actionevent);
+		//	
+		::RenderSettings.checkLoadData();
+		local pa = [];
+		foreach( v in ::RenderSettings.data){
+			local lbl = v.name;
+			pa .. { lbl=lbl, id=v.id, icon=passicons[v.renderpass], data=v }
+		}
+		rsetlist = ListBehavior( v.findChild( "rsetlist"), pa);
+		rsetlist.dndfunc = 3;
+		rsetlist.listview.addEventListener( ACTION_EVENT, listevent);
+		rsetlist.listview.addEventListener( ITEM_EVENT, listevent);
+		//
+		proplist = PropertyListBehavior( v.findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		//	
+		local rset = getRenderSettingItem( ::currentrsetid);
+		if( !rset){ ::currentrsetid = pa[0].data.id; rset = getRenderSettingItem( ::currentrsetid); }
+		assignProperties( rset.data);
+		rsetlist.setSelectedItem( rset);
+		//
+		undobtn = view.findChild( "undobtn");
+		redobtn = view.findChild( "redobtn");
+		op = OperationStack();
+		updateUndoable();
+	}
+
+	function updateUndoable(){
+		local undoable = op.undoable();
+		if( undoable != !!undobtn.enabled){
+			undobtn.enabled = undoable;
+			undobtn.anime( undoable?0:5);
+		}
+		local redoable = op.redoable();
+		if( redoable != !!redobtn.enabled){
+			redobtn.enabled = redoable;
+			redobtn.anime( redoable?0:5);
+		}
+	}
+
+	function getRenderSettingItem( rsetid, exid=-1){
+		foreach( i,v in rsetlist.items){
+			if( i!=exid && v.data.id == rsetid) return v;
+		}
+		return null;
+	}
+
+	function addRenderSetting( d){
+		local self = this;
+		local v = { lbl=d.name, id=d.id, icon=passicons[d.renderpass], data=d };
+		local oldsel = selrset;
+		local redo = [@(){
+			self.rsetlist.items .. v;
+			self.rsetlist.refreshItems();
+			self.syncRenderSettings();
+			self.updateUndoable();
+			//
+			self.rsetlist.setSelectedItem( v);
+			self.assignProperties( v.data);
+			::rootview.broadcastEvent( {cmd="renderset_listchanged", rset=v.data});
+		}];
+		local undo = [@(){
+			self.rsetlist.items.removeValue( v);
+			self.rsetlist.refreshItems();
+			self.syncRenderSettings();
+			self.updateUndoable();
+			//
+			self.rsetlist.setSelectedItem( self.getRenderSettingItem( oldsel.id));
+			self.assignProperties( oldsel);
+			::rootview.broadcastEvent( {cmd="renderset_listchanged", rset=v.data});
+		}];
+		op.submit( redo, undo, null);
+	}
+
+	//	ソートしたりアイテム追加したときに元データを同期する。dataの中身は元から共有
+	function syncRenderSettings(){
+		::RenderSettings.data.clear();
+		foreach( v in rsetlist.items){
+			::RenderSettings.data .. v.data;
+		}
+	}
+
+	function assignProperties( rset){
+		local props = null;
+		switch( rset.renderpass){
+		case 0:
+			props = legacyprops;
+			break;
+		case 1:
+			props = pbrfwprops;
+			break;
+		case 2:
+			props = pbrdfprops;
+			break;
+		}
+		if( rset.fog["type"]){
+			props = clone props;
+			props ... fogprops[rset.fog.type];
+		}
+		proplist.bindProperties( props);
+		local prms = {};
+		foreach( p in props){
+			prms[p.pid] <- getParam( rset, p.pid);
+		}
+		proplist.setParameters( prms);
+		selrset = rset;
+	}
+
+	function getParam( rset, pid){
+		local li = rset.envlights[0], sd = li["shadow"]||#{shadowtype:0,shadowdens:0.5,shadowfar:50.0,shadowray:30.0,shadowsoft:0.5};
+		local ibl = rset["ibl"] || #{ibltex = "/system/asset/defibl.ktx", iblspec = 10000.0, ibldiff = 10000.0, ibldir = 0 };
+		local ev = rset["exposure"], fx = rset["postfx"], fog = rset["fog"], ss = rset["ss"];
+
+		switch( pid){
+		case "name": return rset.name;
+		//	ev
+		case "ev100": return ev.ev100;
+		case "autoexposure": return ev.autoexposure;
+		//	light
+		case "litdir": return (li.head, li.pitch);
+		case "litcolor": return li.color;
+		case "litpow": return li.power;
+		case "pixellight": return li.pixellight;
+		//	shadow
+		case "shadowtype": return sd.shadowtype;
+		case "shadowreso": return sd.shadowreso;
+		case "shadowdens": return sd.shadowdens;
+		case "shadowfar": return sd.shadowfar;
+		case "shadowray": return sd.shadowray;
+		case "shadowsoft": return sd.shadowsoft;
+		//	ibl
+		case "ibltex": return ibl["ibltex"];
+		case "iblcolor": return ibl["iblcolor"];
+		case "iblspec": return ibl["iblspec"];
+		case "ibldiff": return ibl["ibldiff"];
+		case "ibldir": return ibl["ibldir"];
+		//	postfx
+		case "bloomthrs": return fx["bloomthrs"];
+		case "bloompow": return fx["bloompow"];
+		case "bloomblur": return fx["bloomblur"];
+		case "dofrange": return fx["dofrange"];
+		case "dofblur": return fx["dofblur"];
+		case "dofz": return fx["dofz"];
+		case "gitype": return ss["gitype"];
+		case "gipow": return ss["gipow"];
+		case "aopow": return ss["aopow"];
+		case "aoradius": return ss["aoradius"];
+		case "aobias": return ss["aobias"];
+		case "aoexp": return ss["aoexp"];
+		//	fog
+		case "fogtype": return fog["type"]||0;
+		case "fogcolor": return fog.color;
+		case "fogdens": return fog.density;
+		case "fogstart": return fog.zoffs;
+		case "fogyplane": return fog.yplane;
+		case "fogyfalloff": return fog.yfalloff;
+		default:
+			return rset[pid];
+		}
+	}
+
+	function setParam( rset, pid, v){
+		local li = rset.envlights[0], sd = li["shadow"];
+		local ibl = rset["ibl"];
+		local ev = rset["exposure"], fx = rset["postfx"], fog = rset["fog"], ss = rset["ss"];
+		
+		switch( pid){
+		case "name": return rset.name = v;
+		//	ev
+		case "ev100": return ev.ev100 = v;
+		case "autoexposure": return ev.autoexposure = v;
+		//	light
+		case "litdir": li.head = v[0]; li.pitch = v[1]; return v;
+		case "litcolor": return li.color = v;
+		case "litpow": return li.power = v;
+		case "pixellight": return li.pixellight = v;
+		//	shadow
+		case "shadowtype": return sd.shadowtype = v;
+		case "shadowreso": return sd.shadowreso = v;
+		case "shadowdens": return sd.shadowdens = v;
+		case "shadowfar": return sd.shadowfar = v;
+		case "shadowray": return sd.shadowray = v;
+		case "shadowsoft": return sd.shadowsoft = v;
+		//	ibl
+		case "ibltex": return ibl["ibltex"] = v;
+		case "iblcolor": return ibl["iblcolor"] = v;
+		case "iblspec": return ibl["iblspec"] = v;
+		case "ibldiff": return ibl["ibldiff"] = v;
+		case "ibldir": return ibl["ibldir"] = v;
+		//	postfx
+		case "bloomthrs": return fx["bloomthrs"] = v;
+		case "bloompow": return fx["bloompow"] = v;
+		case "bloomblur": return fx["bloomblur"] = v;
+		case "dofrange": return fx["dofrange"] = v;
+		case "dofblur": return fx["dofblur"] = v;
+		case "dofz": return fx["dofz"] = v;
+		case "gitype": return ss["gitype"] = v;
+		case "gipow": return ss["gipow"] = v;
+		case "aopow": return ss["aopow"] = v;
+		case "aoradius": return ss["aoradius"] = v;
+		case "aobias": return ss["aobias"] = v;
+		case "aoexp": return ss["aoexp"] = v;
+		//	fog
+		case "fogtype": return rset.fog = deepclone( deffogs[v]);
+		case "fogcolor": return fog.color = v;
+		case "fogdens": return fog.density = v;
+		case "fogstart": return fog.zoffs = v;
+		case "fogyplane": return fog.yplane = v;
+		case "fogyfalloff": return fog.yfalloff = v;
+		default:
+			if( pid in rset) return rset[pid] = v;
+		}
+		return null;
+	}
+	
+	function syncParam( rset, pid){
+		proplist.setParameters( {[pid]:getParam( rset, pid)});
+	}
+
+	////////////////////////////////////////////////////////////////////////////////////
+	//	event
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "addmenu":
+		{
+			local m = [
+				{ lbl:"0:Legacy", val=0, icon=passicons[0] }
+				{ lbl:"1:PBR Forward", val=1, icon=passicons[1] }
+				{ lbl:"2:PBR Deferred", val=2, icon=passicons[2] }
+			];
+			local ret = MenuPopup.run( m);
+			if( ret){
+				local rset = ::getResourceContent( "/system/3d/rendersets.sk") () [ret.val];
+				local i0 = rset.id;
+				for( local l = 0;;l ++){
+					if( !getRenderSettingItem( rset.id)) break;
+					rset.id = i0 .. "-" .. (l+1);
+				}
+				addRenderSetting( rset);
+			}
+			break;
+		}
+		case "closebtn":
+			view.removeFromParent();
+			break;
+		case "undobtn":
+			op.undo();
+			break;
+		case "redobtn":
+			op.redo();
+			break;
+		case "savebtn":
+			RenderSettings.confsaver( ::RenderSettings.data);
+			op.markSaved();
+			updateUndoable();
+			break;
+		}
+		e.consume();
+	}
+
+	function listevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ITEM_SELECTED:
+			selrset = cmd.data;
+			assignProperties( selrset);
+			break;
+		case ITEM_SORT:
+		{
+			local self = this;
+			local olddata = self.rsetlist.items, newdata = ::applyItemSort( clone olddata, e);
+			local redo = [@(){ self.rsetlist.items = newdata; self.rsetlist.refreshItems(); self.syncRenderSettings(); }];
+			local undo = [@(){ self.rsetlist.items = olddata; self.rsetlist.refreshItems(); self.syncRenderSettings(); }];
+			op.submit( redo, undo);
+			break;
+		}
+		case ACTION_PERFORMED:
+			local rset = cmd["data"];
+			if( e.isMouseDown( BUTTON2_MASK)){
+				if( rset){
+					rsetlist.setSelectedItem( cmd);
+					local m = [
+						{ val="dup", lbl:"$T.lbl_duplicate", icon="\ue2bd" }
+						"-"
+						{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+						{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f"},
+						"-",
+						{ id="delete", lbl="$T.lbl_delete", icon="\ue872"},
+					];
+					local ret = MenuPopup.run( m);
+					switch( ret["val"]){
+					case "dup":
+						local rset = deepclone( rset), i0 = rset.id;
+						for( local l = 0;;l ++){
+							if( !getRenderSettingItem( rset.id)) break;
+							rset.id = i0 .. "-" .. (l+1);
+						}
+						foreach( i, v in rset.name) rset.name[i] = v .. "+";
+						addRenderSetting( rset);
+						break;
+					}
+				}
+			}else{
+				if( rset){
+					selrset = rset;
+					selectCurrentRenderSettingID( selrset);
+				}
+			}
+			break;
+		}
+		e.consume();
+	}
+
+	function setParamOp( rset, pid, val){
+		local self = this;
+		return @(){
+			if( self.setParam( rset, pid, val) != null){
+				if( pid == "fogtype" || pid == "mtype"){
+					if( rset==self.selrset) self.assignProperties( self.selrset);
+				}else
+				if( pid == "name"){
+					local rid = rset.id, v = self.rsetlist.items.find( @( a) a.id==rid);
+					if( v){
+						v.lbl = rset.name;
+						self.rsetlist.refreshItems();
+					}
+				}
+				::rootview.broadcastEvent( {cmd="renderset_changed", rset=rset});
+				self.syncParam( rset, pid);
+				self.updateUndoable();
+			}
+		}
+	}
+
+	function propevent( e){
+		e.consume();
+		if( e.actioncmd["cmd"] != "prop") return;
+		local cmd = e.actioncmd, pid = cmd.prop.pid;
+		local oldval = getParam( selrset, pid);
+		local trk = null;
+		local redo = [setParamOp( selrset, pid, cmd.val)];
+		local undo = [setParamOp( selrset, pid, oldval)];
+		op.submit( redo, undo, trk);
+	}
+}

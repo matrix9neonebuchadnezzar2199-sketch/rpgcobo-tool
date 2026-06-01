@@ -1,0 +1,268 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorType : タイプ編集。
+//	
+//	RPGSystem.typepropsの定義の通りにタイプとプロパティのリストをセットアップする。
+//	
+
+local srcdir = dirname( callee().getSourceName());
+
+class DBEditorType extends EditorViewBase
+{
+	res = null;				//	Resource : 
+	data = null;			//	type.confのデータのコピー。
+	
+	//	
+	typelistview = null;		//	GPUIListView : 横並びにタイプが並ぶ
+
+	function init( path){
+		op = OperationStack();
+		typelistview = findChild( "typelist");
+
+		res = ::getResource( path);
+		data = deepclone( res.getContent());
+		//
+		typelistview.setRowCount( length( ::RPGSystem.typeprops));
+		foreach( i, typ in ::RPGSystem.typeprops){
+			local col = typelistview.rows[i];
+			local te = TypeEdit( col, this, typ);
+			te.setItems( data[typ.key]);
+		}
+		typelistview.updateLayout();
+	}
+
+	function refresh(){
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+}
+
+//	個々のタイプ編集。一つのGPUIListView
+//	タイプによって微妙に編集項目が変わる。
+//	pidは"00.name"のような文字列。
+//	
+class DBEditorType.TypeEdit
+{
+	editor = null;				//	submitOp用
+	proplist = null;			//	PropertyListBehavior
+	capsmenu = null;				//	GPUIButton
+	//
+	typedef = null;				//	このタイプに定義されているプロパティの配列
+	props = null;
+	items = null;				//	type.elem[]など。
+
+	constructor( v, e, def){
+		editor = e;
+		typedef = def;
+		proplist = PropertyListBehavior( v.findChild( "LIST"), null, "cnt4.ui");
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.ref = this;
+		capsmenu = v.findChild( "capsmenu");
+		capsmenu.addEventListener( ACTION_EVENT, capsevent);
+		v.setValue( "typelbl", def.lbl);
+	}
+
+	function setItems( a){
+		items = a;
+		bindProperties();
+		capsmenu.setValue( "lbl", "×"..length( a));
+		local t = {};
+		foreach( p in props){
+			if( p.type != HEADER) t[p.pid] <- getParam( p.pid);
+		}
+		proplist.setParameters( t);
+	}
+
+	//	タイプの要素数×props
+	function bindProperties(){
+		props = [];
+		foreach( i, v in items){
+			local tprops = fget( typedef, "props", typedef, v);
+			foreach( pi, p in tprops){
+				local pp = clone p;
+				pp.pid = sprintf( "%02d.%S", i, p.pid);
+				pp.orgprop <- p;
+				if( !pi) pp.lbl = sprintf( "%02d", i);
+				delete pp.set;	//	set,getはこっちでは消去しないといけない。。。
+				delete pp.get;
+				props .. pp;
+			}
+		}
+		proplist.bindProperties( props);
+	}
+
+	function refresh(){
+		bindProperties();
+		setItems( items);
+	}
+
+	function getParam( pid){
+		local prop = props.find( @( v) v.pid==pid);
+		local i = int( pid.substring( 0, 2)), k = pid.substring( 3);
+		return ::getProperty( prop.orgprop, items[i]);
+	}
+
+	function setParam( pid, val){
+		local prop = props.find( @( v) v.pid==pid);
+		local i = int( pid.substring( 0, 2)), k = pid.substring( 3);
+		::setProperty( prop.orgprop, items[i], val);
+		if( prop["refresh"]){
+			refresh();
+		}
+	}
+	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local pid = cmd.prop.pid;
+			local val = cmd.val;
+			local oldval = getParam( pid);
+			//	
+			local self = this;
+			local redo = [@(){
+				self.setParam( pid, val);
+				self.proplist.setParam( pid, val);
+			}];
+			local undo = [@(){
+				self.setParam( pid, oldval);
+				self.proplist.setParam( pid, oldval);
+			}];
+			editor.submitOp( redo, undo, null);
+			// refresh();	iranai
+		}
+		e.consume();
+	}
+
+	function capsevent( e){
+		showChangeCaps( e);
+	}
+
+	function showChangeCaps( e){
+		local menulist = [];
+		menulist .. { lbl:"リストを整頓", val="sort", };
+		menulist .. "-";
+		for( local l = 1;l < 32;l ++){
+			menulist .. { lbl:"$T.lbl_caps: "..l, val=l, icon=(length(items)==l)?"\ue5ca":null};
+		}
+		local ret = MenuPopup.run( menulist);
+		if( ret && ret.val != length(items)){
+			if( ret.val == "sort"){
+				return showSortListDialog();
+			}
+			local caps = ret.val;
+			local olditems = items || [], newitems = clone olditems;
+			newitems.resize( caps);
+			foreach( i, v in newitems){
+				if( !v) v = newitems[i] = {};
+				local tprops = fget( typedef, "props", typedef, {});
+				newitems[i] = setDefaultProperties( tprops, v);	//	defvalを割り振る
+			}
+			local self = this;
+			local redo = [@(){
+				self.setItems( newitems);
+				self.editor.data[self.typedef.key] <- newitems;
+			}];
+			local undo = [@(){
+				self.setItems( olditems);
+				self.editor.data[self.typedef.key] = olditems;
+			}];
+			editor.submitOp( redo, undo, null);
+		}
+	}
+
+	function showSortListDialog(){
+		local ret = TypeSortDialog.run( this);
+		if( ret){
+			local self = this;
+			local olditems = items, newitems = ret;
+			local redo = [@(){
+				self.setItems( newitems);
+				self.editor.data[self.typedef.key] <- newitems;
+			}];
+			local undo = [@(){
+				self.setItems( olditems);
+				self.editor.data[self.typedef.key] = olditems;
+			}];
+			editor.submitOp( redo, undo, null);
+		}
+	}
+}
+
+class DBEditorType.TypeEdit.TypeSortDialog extends UndoableDialog
+{
+	typeedit = null;
+
+	list = null;
+	items = null;
+
+	constructor( v, te){
+		super( v);
+		typeedit = te;
+		local olditems = te.items;
+		items = clone te.items;
+		list = ListBehavior( view.findChild( "LIST"));
+		list.setviewfunc = @( la, v, i){
+			defaultsetview( la, v, i);
+			local idx = la.items.indexOf( i);
+			local oldidx = olditems.indexOf( i);
+			v.setValue( "idx", "%02d" % idx);
+			//	位置が変わったアイテムは色を変える
+			v.findChild( "changed").anime( idx==oldidx?0:1);
+		}
+		list.setListItems( items);
+		list.multisel = true;
+		list.dndfunc = 3;
+		list.listview.addEventListener( ITEM_EVENT, listevent);
+		list.listview.addEventListener( ACTION_EVENT, listevent);
+	}
+
+	function listevent( e){
+		switch( e.id){
+		case ITEM_SORT:
+		{
+			local self = this;
+			local olddata = clone self.items, newdata = ::applyItemSwap( clone olddata, e);
+			local redo = [@(){ self.items.clear() ... newdata; self.list.refreshItems(); }];
+			local undo = [@(){ self.items.clear() ... olddata; self.list.refreshItems(); }];
+			submitOp( redo, undo);
+			break;
+		}
+		}
+	}
+
+	static function run( typeedit){
+		local dlg = this( srcdir .. "/ui/typesortdialog.ui", typeedit);
+		dlg.show();
+		if( dlg.ret && dlg.items <> typeedit.items){
+			return dlg.items;
+		}
+	}
+}

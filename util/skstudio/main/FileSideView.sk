@@ -1,0 +1,432 @@
+
+import VirtualKeyCode;
+import ModifiersMask;
+
+class FileSideView extends SKView
+{
+	currentdir = null;			//	Resource : 
+	dirhistory = null;			//	[dirpath,...] : 
+	dircurs = 0;				//	dirhistoryのカーソル
+
+	dirtree = null;				//	TreeBehavior : 
+	filelist = null;			//	ListBehavior : 
+	pathedit = null;			//	GPUITextEdit : 
+	preview = null;
+
+	dirpathmap = null;			//	{path:dirtreeitem} : パスに対するツリーディレクトリをキャッシュ。
+
+	prevbtn = null;
+	nextbtn = null;
+	upbtn = null;
+	favobtn = null;
+
+	//	
+	favomap = null;				//	{dirpath:1} : 
+
+	static function createSideView(){
+		local v = ::loadSKView( "/skstudio/ui/main/fileview.ui", FileSideView);
+		v.init();
+		return v;
+	}
+
+	function init(){
+		dirhistory = [];
+		favomap = {};
+		
+		//	dir tree
+		dirtree = TreeBehavior( findChild( "dirtree"));
+		dirtree.setviewfunc = @( la, v, i){
+			defaultsetview( la, v, i);
+			v.findChild( "favo").setVisible( ::skstudio.isFavorite( i.path));
+		};
+		local rdir = skstudio.rootdir;
+		dirpathmap = {};
+		dirpathmap[rdir.path] <- maketreedir( rdir, null);
+		dirtree.setItemTree( dirpathmap[rdir.path]);
+		
+		dirtree.listview.addEventListener( ACTION_EVENT, direvent);
+		dirtree.listview.addEventListener( ITEM_EVENT, direvent);
+		//	file list
+		filelist = ListBehavior( findChild( "filelist"), []);
+		filelist.setviewfunc = @( la, v, i){
+			defaultsetview( la, v, i);
+			v.findChild( "expand").setVisible( false);
+			v.findChild( "favo").setVisible( false);
+		};
+		filelist.dndfunc = 1;	//	drag only
+		//	btn
+		prevbtn = findChild( "prevbtn"); prevbtn.setEnabled( false);
+		nextbtn = findChild( "nextbtn"); nextbtn.setEnabled( false);
+		upbtn = findChild( "upbtn"); upbtn.setEnabled( false);
+		favobtn = findChild( "favobtn");
+		
+		filelist.listview.addEventListener( ACTION_EVENT, fileevent);
+		filelist.listview.addEventListener( ITEM_EVENT, fileevent);
+		filelist.listview.addEventListener( MOUSE_EVENT, fileevent);
+		//
+		pathedit = findChild( "pathedit");
+		
+		addEventListener( ACTION_EVENT, actionevent);
+	}
+
+	//	
+	function maketreedir( r, parent){
+		local _fileview = this;
+		return {
+			lbl = r.name
+			isdir = true
+			icon = skstudio.getResourceIcon( r)
+			path = r.path
+			parent = parent
+			_children = null
+			children = @( self){	//	childrenは遅延評価のために関数にする。一回走査したらキャッシュされる
+				local c = _children;
+				if( c) return c;
+				c = [];
+				foreach( cr in r.getList()){
+					if( cr.isdir) c .. _fileview.gettreedir( cr);
+				}
+				return _children=c;
+			}
+			isfavo = false
+		}
+	}
+
+	//	Resourceに対応するツリーディレクトリを返す
+	function gettreedir( r){
+		if( !r.isdir) return null;
+		if( dirpathmap[r.path]) return dirpathmap[r.path];
+		return dirpathmap[r.path] <- maketreedir( r, gettreedir( r.pres));
+	}
+
+	//	
+	function buildfilelist( dir){
+		local list = [];
+		if( dir.pres){
+			list .. {
+				lbl = ".."
+				isdir = true
+				icon = FileIcons.dir
+				path = dir.getResource( "../").path;
+				ext = ""
+			};
+		}
+		foreach( i, r in dir.getList()){
+			list .. {
+				lbl = r.name
+				isdir = r.isdir
+				icon = skstudio.getResourceIcon( r)
+				path = r.path
+				ext = r.name.substring( r.name.lastIndexOf( ".")+1).toLowerCase()
+			}
+		}
+		list.sort( function( a, b){
+			if( !a["isdir"] != !b["isdir"]){ return a["isdir"]?-1:1; }
+			else{
+				local n1 = a.lbl, n2 = b.lbl;
+				local e1 = a.ext, e2 = b.ext;
+				if( e1 != e2){
+					return e1 <> e2;
+				}else{
+					return n1 <> n2;
+				}
+			}
+		});
+		filelist.setListItems( list);
+	}
+
+	function setCurrentDir( path, hist=true, force=false){
+		if( !force && currentdir["path"] == path) return;
+		pathedit.setText( path);
+		currentdir = skstudio.rootdir.getResource( path);
+		buildfilelist( currentdir);
+		//
+		upbtn.setEnabled( !!currentdir.pres);
+		//	history
+		if( hist){
+			dirhistory = dirhistory.slice( 0, Math.min( dircurs+1, length( dirhistory)));
+			dirhistory .. path;
+			if( length( dirhistory) >= 100) delete dirhistory[0];
+			dircurs = length( dirhistory)-1;
+			updateDirButtons();
+		}
+	}
+
+	function updateDirButtons(){
+		prevbtn.setEnabled( !!dirhistory[dircurs-1]);
+		nextbtn.setEnabled( !!dirhistory[dircurs+1]);
+	}
+
+	function moveDirHistory( d){
+		setCurrentDir( dirhistory[dircurs+d], false);
+		setDirToVisible( currentdir.path);
+		dircurs += d;
+		updateDirButtons();
+	}
+
+	function setCurrentPath( path){
+		local r = skstudio.rootdir.getResource( path);
+		if( r.isdir){
+			setCurrentDir( path);
+			setDirToVisible( path);
+		}else{
+			setCurrentDir( r.pres.path);
+			setDirToVisible( r.pres.path);
+			local idx = -1;
+			foreach( i, v in filelist.items){
+				if( v.lbl == r.name){ idx = i; break; }
+			}
+			filelist.setSelectedIndex( idx);
+			filelist.listview.updateMatrixAll();
+			filelist.scrollSelectionsToVisible();
+		}
+		return true;
+	}
+
+	function setDirToVisible( path){
+		local d = gettreedir( ::getResource( path));
+		dirtree.expandToItem( d);
+		dirtree.setSelectedItem( d);
+		dirtree.scrollItemToVisible( d);
+	}
+
+	//	リソースツリーをリフレッシュする。
+	//	※変化のないリソースはリビジョンを保存しておきたい。保存命令でリビジョンをインクリメントして
+	//	他エディタのsetActive()で変化したリソースを再読み込みする処理を入れる。
+	//	↑ただUIEditorぐらいしか使わないから、UIEditor内でデータのハッシュなんかで更新かけるのもあり
+	function refreshDirs(){
+		local rdir = skstudio.rootdir;
+		local cpath = currentdir["path"];
+		local b = rdir.refresh();
+		//	refresh
+		Table.clear( dirpathmap);
+		dirpathmap[rdir.path] <- maketreedir( rdir, null);
+		dirtree.refreshItems();
+		if( cpath) setCurrentDir( cpath, false, true);
+		::rootview.broadcastEvent( {cmd="dir_refreshed", dir=rdir});
+		::skstudio.filetabbar.refreshTabs();
+	}
+
+	//	指定したパス以下をリフレッシュする。
+	function refreshDir( path){
+		local rdir = skstudio.rootdir;
+		local cpath = currentdir["path"];
+		local r = rdir.getResource( path);
+		//	test
+		local b = r.refresh();
+		if( b){
+			printf( "DIR refreshed. %S\n", r.path);
+			::rootview.broadcastEvent( {cmd="dir_refreshed", dir=r});
+			//	refresh
+			if( dirpathmap[path]) dirpathmap[path]._children = null;	//	遅延評価のキャッシュを解放
+			dirtree.refreshItems();
+			if( cpath) setCurrentDir( cpath, false, true);
+		}else{
+			printf( "DIR is up to date. %S\n", r.path);
+		}
+		::skstudio.filetabbar.refreshTabs();
+	}
+
+	function fileevent( e){
+		switch( e.id){
+		case ITEM_HOVER:
+			if( !(e.modifiers & (BUTTON1_MASK|BUTTON2_MASK))){
+				setMouseonFile( e.actioncmd, e);
+			}
+			e.consume();
+			break;
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showFileContextMenu( e);
+			}else{
+				local li = e.actioncmd;
+				if( li.isdir){
+					setCurrentDir( li.path);
+					setDirToVisible( li.path);
+				}else{
+					skstudio.openEditor( li.path);
+				}
+			}
+			e.consume();
+			break;
+		}
+	}
+	
+	function showFileContextMenu( e){
+		local path = e.actioncmd["path"];
+		local menudata = [
+			{ id="updir", lbl="$T.ctxmenu_file_updir", icon="\ue5d8" },
+			{ id="backdir", lbl="$T.ctxmenu_file_backdir", icon="\ue5c4" },
+			"-",
+			{ id="sync", lbl="$T.ctxmenu_file_sync", icon="\ue627" },
+			{ id="explor", lbl="$T.filetabs_ctxmenu_explor"},
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d", disable=!path},
+			"-",
+			{ id="rename", lbl="$T.lbl_rename", icon="\ue3c9" },
+			{ id="delete", lbl="$T.menu_edit_del", icon="\ue872" },
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "sync":
+			refreshDir( currentdir.path);
+			break;
+		case "updir":
+			if( currentdir.pres){
+				setCurrentDir( currentdir.pres.path);
+				setDirToVisible( currentdir.path);
+			}
+			break;
+		case "explor":
+			skstudio.explor( path || currentdir.path);
+			break;
+		case "copy":
+			skPutClipboardData( path);
+			break;
+		case "rename":
+			local iv = filelist.getItemView( e.actioncmd);
+			local lbl = iv.findChild( "lbl");
+			local n = Popups.showRename( lbl);
+			break;
+		}
+	}
+	
+	//	
+	function setMouseonFile( i, e){
+		if( preview){
+			preview.removeFromParent();
+			preview = null;
+		}
+		if( i){
+			preview = ::skstudio.createPreview( i.path);
+			if( preview){
+				local iv = filelist.getItemView( i);
+				local p = Vector3D( iv.bnd.w, e.ly-(preview.bnd.h>>1), 0).transform( iv.mat).transform( ::rootview.getInvMatrix());
+				preview.pos << p;
+				::rootview.addChild( preview);
+				preview.enabled = false;
+			}
+		}
+	}
+
+	function direvent( e){
+		e.consume();
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showDirContextMenu( e);
+			}
+			break;
+		case ITEM_SELECTED:
+			setCurrentDir( e.actioncmd.path);
+			break;
+		}
+	}
+
+	function showDirContextMenu( e){
+		local path = e.actioncmd.path;
+		local menudata = [
+			{ id="sync", lbl="$T.ctxmenu_file_sync", icon="\ue627" },
+			{ id="explor", lbl="$T.filetabs_ctxmenu_explor"},
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			"-",
+			( !::skstudio.isFavorite( path) ? 
+			    { id="addfavo", lbl="$T.ctxmenu_file_add_favorite", icon=("\ue838",0xA3D900ff) }
+			   :{ id="delfavo", lbl="$T.ctxmenu_file_del_favorite", icon=("\ue838",0x444444ff) }
+			),
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "sync":
+			refreshDir( path);
+			break;
+		case "explor":
+			skstudio.explor( path);
+			break;
+		case "copy":
+			skPutClipboardData( path);
+			break;
+		case "addfavo":
+			::skstudio.addFavorite( path);
+			dirtree.refreshItems();
+			break;
+		case "delfavo":
+			::skstudio.removeFavorite( path);
+			dirtree.refreshItems();
+			break;
+		}
+	}
+
+	function actionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "prevbtn":
+			moveDirHistory( -1);
+			break;
+		case "nextbtn":
+			moveDirHistory( 1);
+			break;
+		case "upbtn":
+			setCurrentDir( currentdir.pres.path);
+			setDirToVisible( currentdir.path);
+			break;
+		case "favobtn":
+			local path = FavoritePopup.run( e);
+			if( path){
+				setCurrentPath( path);
+			}
+			break;
+		}
+	}
+}
+
+class FileSideView.FavoritePopup extends Popup
+{
+	static UI_PATH = "/skstudio/ui/main/favopopup.ui";
+	favolist = null;		//	ListBehavior
+
+	function init( v){
+		super.init( v);
+		local a = [];
+		foreach( v in ::skstudio.favorites){
+			a .. {
+				icon: ::skstudio.getResourceIcon( ::getResource( v)),
+				lbl: v,
+				favo: true,
+			}
+		}
+		favolist = ListBehavior( v.findChild( "LIST"));
+		favolist.setviewfunc = @( la, v, i){
+			defaultsetview( la, v, i);
+			v.findChild( "favobtn").setSelected( i.favo);
+		};
+		favolist.setListItems( a);
+		//
+		favolist.listview.addEventListener( ITEM_EVENT, listevent);
+		favolist.listview.addEventListener( ACTION_EVENT, listevent);
+	}
+
+
+
+	function listevent( e){
+		switch( e.id){
+		case ITEM_SELECTED:
+			ret = favolist.getSelectedItems()[0].lbl;
+			close();
+			break;
+		case ACTION_PERFORMED:
+			local cmd = e.actioncmd;
+			if( cmd["src"]["name"] == "favobtn"){
+				cmd.item.favo = cmd.src.isSelected();
+			}
+			break;
+		}
+	}
+	
+	static function run( e){
+		local pop = ::FileSideView.FavoritePopup( loadSKView( UI_PATH));
+		pop.show( null, e.src);
+		return pop.ret;
+	}
+}

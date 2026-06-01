@@ -1,0 +1,563 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local v3_1 = Vector3D(), m_1 = Matrix(), r_1 = Rect2D();
+local srcdir = dirname( callee().getSourceName());
+
+//	ListBehaviorではなくて独自にマウス、キーハンドリング。めんどい。。。。
+//	プロパティの編集にも連動するために、EventCommandPropertyListも同時に。
+//	
+//	ACTION_EVENTでリストに対する変更をエディタに通知する。エディタ側はsubmitOpでその操作をそのまま実行？
+//	
+//	
+class EventCommandList
+{
+	listview = null;			
+	rootblkview = null;			//	EventCommandBlockView : listviewにはこれ1要素のみ。
+	spaceview = null;			//	SKView : スペース用
+	mrect = null;
+	rrect = null;
+
+	selection = null;			//	[cmdblockview, s, e||-1]
+	mview = null;				//	
+	mpress = false;
+	mdrag = false;
+	pressy = 0;
+	keypos = null;				//	キーで上下移動した際のインデックス位置。マウス操作されるとリセットされる
+	shiftpos = null;			//	シフトキー押しながらキー上下で選択
+
+	ref = null;					//	CustomEventEditor | DBEditorMacro
+	
+	constructor( li){
+		listview = li;
+		li.window.borderh = LINEH;
+		li.ref = this;
+		mrect = SKImageView( ::getSprite( "/skstudio/img/ui/b10.png"));
+		mrect.setColor( 0xaaaaaaff);
+		//
+		rrect = SKImageView( ::getSprite( "/skstudio/img/ui/_white.png"));
+		rrect.setColor( 0x164e9233);
+		
+		listview.content.addEventListener( MOUSE_EVENT, mouseevent);
+		listview.content.addEventListener( KEY_EVENT, keyevent);
+		setCommandBlock( []);
+	}
+
+	function setCommandBlock( cb){
+		rootblkview = EventCommandBlockView.create( null, cb, 0);
+		spaceview = SKView();
+		spaceview.setRect( 0, 0, 100, LINEH*16);
+		(spaceview.viewdata = ::SKViewEntityData()).staticparams = [( SKViewPropertyID.SIZE_STATIC, (100, LINEH*16))]
+		listview.clearRows();
+		listview.addRow( rootblkview);
+		listview.addRow( spaceview);
+		listview.updateLayout();
+		deselectCommand();
+	}
+
+	function getCommandBlock(){
+		return deepclone( rootblkview.cmdblock);
+	}
+	
+	function setCommandBlockView( cbv){
+		rootblkview = cbv;
+		listview.clearRows();
+		listview.addRow( rootblkview);
+		listview.addRow( spaceview);
+		listview.updateLayout();
+		deselectCommand();
+	}
+	
+	function showMouseRegion( y0, y1){
+		if( y0 > y1){ local tmp = y1; y1 = y0; y0 = tmp; }
+		local i0 = Math.ifloor( y0 / LINEH);
+		local i1 = Math.ifloor( y1 / LINEH);
+		rrect.setRect( 0, i0*LINEH, rootblkview.bnd.w, (i1-i0+1)*LINEH);
+		rrect.repaint();
+		if( !rrect.parent) rootblkview.addChild( rrect);
+	}
+	
+	function hideMouseRegion(){
+		rrect.removeFromParent();
+	}
+
+	//	
+	function selectCommand( sv){
+		sv = sv || rootblkview;
+		local lr;
+		if( sv instanceof EventCommandItemView){
+			selection = (sv.parent, sv.parent.cmdviews.indexOf( sv), -1);
+			local lmat = m_1.set( rootblkview.getInvMatrix()).mult44( sv.mat);
+			lr = Rect2D( 0, 0, sv.bnd.w, sv.h0).transform( lmat);
+		}else{
+			selection = (sv, length( sv.cmdblock), -1);	//	ブロックが選択されてたら
+			local lmat = m_1.set( rootblkview.getInvMatrix()).mult44( sv.mat);
+			lr = Rect2D( 0, sv.bnd.h-LINEH, sv.bnd.w, LINEH).transform( lmat);
+		}
+		mrect.setRect( 0, lr.y, rootblkview.bnd.w, lr.h);
+		if( !mrect.parent) rootblkview.addChild( mrect);
+	}
+
+	function deselectCommand(){
+		selection = null;
+		mrect.removeFromParent();
+	}
+
+	function setSelection( sels){
+		if( !rootblkview.contains( sels[0])){	//	恐らく別ページのundo,redo。
+			return;
+		}
+		selection = sels;
+		local blk = sels[0];
+		local c0 = blk.cmdviews[sels[1]];
+		local c0y = c0 ? c0.pos.y : blk.bnd.h-LINEH;	//	これでいいかな
+		local c1 = sels[2]>=0 ? blk.cmdviews[sels[2]-1] : c0;
+		local lmat = m_1.set( rootblkview.getInvMatrix()).mult44( blk.mat);
+		local lr = Rect2D( 0, c0y, 100, (c1?c1.pos.y+c1.bnd.h:blk.bnd.h)-c0y).transform( lmat);
+		//
+		mrect.removeFromParent();
+		mrect.setRect( 0, lr.y, rootblkview.bnd.w, lr.h);
+		rootblkview.addChild( mrect);
+	}
+
+	//	
+	function selectRegion( y0, y1){
+		if( y0 > y1){ local tmp = y1; y1 = y0; y0 = tmp; }
+		local c0 = rootblkview.commandAt( Math.max( y0, 0.0)), c1 = rootblkview.commandAt( y1);
+		if( c0 instanceof EventCommandBlockView) c0 = c0.parent;
+		if( c1 instanceof EventCommandBlockView) c1 = c1==rootblkview ? null : c1.parent;
+		if( !c0){ return deselectCommand(); }
+		//	
+		local d0 = c0.getDepth(), d1 = c1 ? c1.getDepth() : 0;
+		while( d1 > d0){ c1 = c1.parent.parent; --d1; }
+		while( d0 > d1){ c0 = c0.parent.parent; --d0; }
+		local blk = c0.parent;
+		local i0 = blk.cmdviews.indexOf( c0);
+		local i1 = c1 ? blk.cmdviews.indexOf( c1)+1 : length( blk.cmdviews);
+		selection = (blk, i0, i1);
+		local lmat = m_1.set( rootblkview.getInvMatrix()).mult44( blk.mat);
+		local lr = Rect2D( 0, c0.pos.y, 100, (c1?c1.pos.y+c1.bnd.h:blk.bnd.h)-c0.pos.y).transform( lmat);
+		//
+		mrect.removeFromParent();
+		mrect.setRect( 0, lr.y, rootblkview.bnd.w, lr.h);
+		rootblkview.addChild( mrect);
+	}
+	
+	function selectAll() {
+		selection = (rootblkview, 0, length( rootblkview.cmdviews));
+		mrect.removeFromParent();
+		mrect.setRect( 0, 0, rootblkview.bnd.w, rootblkview.bnd.h);
+		rootblkview.addChild( mrect);
+	}
+
+	function isSelectionContains( v){
+		if( !selection || !v) return false;
+		if( selection[2] < 0) return false;
+		local blk = selection[0];
+		if( blk == v) return true;
+		if( v instanceof EventCommandBlockView) v = v.parent;
+		while( v.parent != blk){
+			if( v.parent == rootblkview) return false;
+			v = v.parent;
+		}
+		local i = selection[0].cmdviews.indexOf( v);
+		return i>=selection[1] && i<selection[2];
+	}
+
+	function isSelectingRegion(){
+		return selection && selection[2]>=0;
+	}
+
+	function isSelectionEmpty(){
+		return !selection || !selection[0].cmdviews[selection[1]];
+	}
+
+	function getSelectedCommands(){
+		if( !selection) return null;
+		local blk = selection[0], s = selection[1], e = selection[2];
+		if( e < 0){
+			return s>=length( blk.cmdviews) ? null : [blk.cmdviews[s]];
+		}else{
+			return blk.cmdviews.slice( s, e);
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////////
+	//	イベント処理
+
+	function execMenu( m){
+		switch( m["uid"]){
+		case "menu_edit_copy":
+			copySelection( selection);
+			return true;
+		case "menu_edit_cut":
+			copySelection( selection);
+			deleteSelection( selection);
+			return true;
+		case "menu_edit_paste":
+			local cbdata = getClipboard( "evcmd");
+			if( cbdata) pasteSelection( cbdata);
+			return true;
+		case "menu_edit_selall":
+			selectAll();
+			return true;
+		}
+		return false;
+	}
+
+	function mouseevent( e){
+		e.computeLocal( rootblkview.getInvMatrix());
+		// e.consume();
+		switch( e.id){
+		case MOUSE_PRESSED:
+			keypos = null;
+			mpress = false;
+			mdrag = false;
+			pressy = e.ly;
+			mview = rootblkview.commandAt( e.ly);
+			if( !isSelectionContains( mview)){
+				selectCommand( mview);
+			}
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showContextMenu( e);
+			}else
+			if( e.count >= 2){
+				e.consume();
+				if( mview) editCommand( mview);
+			}else{
+				e.consume();
+				mpress = true;
+			}
+			listview.content.requestFocus();
+			break;
+		case MOUSE_CANCELLED:
+			mpress = false;
+			hideMouseRegion();
+			break;
+		case MOUSE_RELEASED:
+			if( !mpress) break;
+			mpress = false;
+			e.consume();
+			hideMouseRegion();
+			if( mdrag){
+				selectRegion( pressy, e.ly);
+			}else{
+				if( isSelectingRegion()){
+					selectRegion( pressy, pressy);
+				}
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( !mpress) break;
+			e.consume();
+			if( !mdrag){
+				local dy = Math.abs( e.ly-pressy);
+				if( dy >= 20){
+					mdrag = true;
+					showMouseRegion( pressy, e.ly);
+				}
+			}else{
+				showMouseRegion( pressy, e.ly);
+			}
+			break;
+		case MOUSE_MOVED:
+			local sv = rootblkview.commandAt( e.ly);
+			// if( sv != mview){
+				mview = sv;
+			// }
+			break;
+		}
+	}
+
+	//	
+	function keyevent( e){
+		local c = e.keycode;
+		local maxidx = Math.iround( rootblkview.bnd.h / LINEH)-1;
+		switch( c){
+		case VK_UP: case VK_DOWN:
+			if( e.id!=KEY_PRESSED && e.id!=KEY_REPEATED) break;
+			e.consume();
+			if( !e.isShiftDown()){	//	shiftselのチェックもしないとかな
+				if( keypos == null){
+					local keyy = c==VK_UP ? mrect.pos.y-LINEH : mrect.pos.y+mrect.bnd.h;
+					keypos = Math.clamp( Math.iround( keyy / LINEH), 0, maxidx);
+				}else{
+					keypos = Math.clamp( keypos+(c==VK_UP?-1:1), 0, maxidx);
+				}
+				local keyy = keypos*LINEH;
+				listview.gpui.scrollRectToVisible( rootblkview, Rect2D( 0, keyy, 100, LINEH), 0);
+				local sv = rootblkview.commandAt( keyy+LINEH/2);
+				selectCommand( sv);
+				mrect.setRect( 0, keyy, rootblkview.bnd.w, LINEH);	//	muriyari
+			}else{
+				shiftpos = Math.clamp( shiftpos+(c==VK_UP?-1:1), 0, maxidx);
+				mrect.removeFromParent();
+				showMouseRegion( keypos*LINEH, shiftpos*LINEH);
+			}
+			break;
+		case VK_DELETE:
+			if( e.id!=KEY_PRESSED) break;
+			e.consume();
+			deleteSelection( selection);
+			break;
+		case VK_SPACE:
+			if( e.id!=KEY_PRESSED) break;
+			local m = ::rootview.mouses[0]; e.x = m.mousex; e.y = m.mousey;
+			showAddCommand( e);
+			break;
+		case VK_ENTER:
+			if( e.id!=KEY_PRESSED || !selection) break;
+			editCommand( selection[0].cmdviews[selection[1]]);
+			break;
+		case VK_SHIFT:
+			if( e.id==KEY_PRESSED){
+				if( keypos == null){
+					keypos = Math.clamp( Math.iround( mrect.pos.y / LINEH), 0, maxidx);
+				}
+				shiftpos = keypos;
+			}else
+			if( e.id==KEY_RELEASED){
+				hideMouseRegion();
+				if( keypos != shiftpos){
+					selectRegion( keypos*LINEH, shiftpos*LINEH);
+				}
+			}
+			break;
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////////
+	//	コンテキストメニュー、編集メソッド
+	
+	//	
+	function showContextMenu( e){
+		local st = ::skstudio, empty = isSelectionEmpty();
+		local cbdata = getClipboard( "evcmd");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local ctxmenu = [
+			{ uid="addcmd", lbl="$T.lbl_addcmd", icon="\ue150", modkey="Space"},
+			{ uid="editcmd", lbl="$T.lbl_editcmd", icon="\ue745", modkey="Enter", disable=empty},
+			"-",
+			{ ...st.getMenu( "menu_edit_cut"), disable=empty},
+			{ ...st.getMenu( "menu_edit_copy"), disable=empty},
+			{ ...st.getMenu( "menu_edit_paste"), disable=!cbdata}, 
+			"-",
+			{ uid="delete", lbl="$T.lbl_delete", icon="\ue872", modkey="Delete", disable=empty},
+			"-",
+			{ uid="selall", lbl="$T.menu_edit_selall", icon="\ue162", modkey="^A"},	//	defkey付けられてないなー
+		];
+		switch( MenuPopup.run( ctxmenu)["uid"]){
+		case "addcmd":
+			showAddCommand( e);
+			break;
+		case "editcmd":
+			editCommand( selection[0].cmdviews[selection[1]]);
+			break;
+		case "delete":
+			deleteSelection( selection);
+			break;
+		case "menu_edit_cut":
+			copySelection( selection);
+			deleteSelection( selection);
+			break;
+		case "menu_edit_copy":
+			copySelection( selection);
+			break;
+		case "menu_edit_paste":
+			pasteSelection( cbdata);
+			break;
+		case "selall":
+			selectAll();
+			break;
+		}
+	}
+
+	function getcvpopr( cv){
+		local r = Rect2D().set( mrect.bnd).transform( mrect.mat);
+		return r;
+	}
+	
+	function editCommand( cv, post=true){
+		if( !cv) return;
+		if( cv instanceof EventCommandBlockView) cv = cv.parent;
+		local newcmd;
+		if( cv.cmddef["edit"]){
+			newcmd = cv.cmddef.edit( cv, cv.cmd);
+		}else{
+			local props = clone fget( cv.cmddef, "props", cv.cmddef, cv.cmd);
+			if( !length( props)) return;
+			local cmddef = ::RPGSystem.eventcmd[cv.cmd.cmd];
+			newcmd = PropertyEditPopupV.run( getcvpopr( cv), cmddef, cv.cmd, ref);
+		}
+		if( newcmd && newcmd<>cv.cmd){
+			local self = this, oldcv = cv;
+			local pblk = oldcv.parent, cvpos = pblk.cmdviews.indexOf( oldcv);
+			local newcv = ::EventCommandItemView.fromCommand( newcmd);
+			local redo = [@(){
+				pblk.changeCommand( cvpos, newcv);
+				self.rootblkview.updateMatrixAll( true);
+				self.selectCommand( newcv);
+			}];
+			local undo = [@(){
+				pblk.changeCommand( cvpos, oldcv);
+				self.rootblkview.updateMatrixAll( true);
+				self.selectCommand( oldcv);
+			}];
+			local acmd = { cmd="prop", op = (redo, undo, null), }
+			if( post) listview.postActionEvent( acmd);
+			return acmd;
+		}
+	}
+
+	function deleteSelection( sels){
+		if( isSelectionEmpty()) return;
+		local self = this;
+		local pblk = sels[0], si = sels[1], ei = sels[2];
+		local oldlist = getSelectedCommands();
+		local redo = [@(){
+			pblk.deleteCommands( si, ei);
+			self.rootblkview.updateMatrixAll( true);
+			if( pblk.cmdviews[si]){
+				self.selectCommand( pblk.cmdviews[si]);
+			}else{
+				self.setSelection( [pblk, length( pblk.cmdviews), -1]);
+			}
+			self.keypos = null;
+		}];
+		local undo = [@(){
+			pblk.insertCommands( si, oldlist);
+			self.rootblkview.updateMatrixAll( true);
+			self.setSelection( [pblk, si, ei]);
+			self.keypos = null;
+		}];
+		listview.postActionEvent({ cmd="list", op = (redo,undo,null), });
+	}
+
+	//	
+	function showAddCommand( e){
+		local cmddef = EventCommandSelectPopup.run( e);
+		if( cmddef){
+			local self = this;
+			local cmd = deepclone( fget( cmddef, "defval")); cmd.cmd <- cmddef.key;
+			local cv = ::EventCommandItemView.fromCommand( cmd);
+			local pblk = selection[0], inspos = selection[1], oldsel = clone selection;
+			local redo = [@(){
+				pblk.insertCommands( inspos, [cv]);
+				self.rootblkview.updateMatrixAll( true);
+				self.selectCommand( cv);
+			}];
+			local undo = [@(){
+				pblk.deleteCommands( inspos, -1);
+				self.rootblkview.updateMatrixAll( true);
+				self.setSelection( oldsel);
+			}];
+			listview.postActionEvent({ cmd="addcmd", op=(redo,undo,null), addcv=cv });
+		}
+	}
+
+	function copySelection( sels){
+		if( isSelectionEmpty()) return;
+		local pblk = sels[0], si = sels[1], ei = sels[2];
+		local cmdlist = [];
+		if( ei < 0) ei = si+1;
+		for( local l = si; l < ei; l ++){
+			local cmd = pblk.cmdblock[l];
+			cmdlist .. deepclone( cmd);
+		}
+		putClipboard( "evcmd", cmdlist);
+	}
+
+	function pasteSelection( cb){
+		if( !cb) return;
+		local sels = selection;
+		// if( isSelectionEmpty()) return;
+		local self = this;
+		local pblk = sels[0], si = sels[1], ei = sels[2], ei2 = si+length( cb);
+		local oldlist = getSelectedCommands();
+		local newlist = cb.map( @( v) ::EventCommandItemView.fromCommand( deepclone( v)) );
+		//
+		local redo = [@(){
+			if( ei>=0) pblk.deleteCommands( si, ei);
+			pblk.insertCommands( si, newlist);
+			self.rootblkview.updateMatrixAll( true);
+			self.setSelection( [pblk, ei2, -1]);
+			self.keypos = null;
+		}];
+		local undo = [@(){
+			pblk.deleteCommands( si, ei2);
+			if( ei>=0) pblk.insertCommands( si, oldlist);
+			self.rootblkview.updateMatrixAll( true);
+			if( pblk.cmdviews[si]){
+				self.selectCommand( pblk.cmdviews[si]);
+			}else{
+				self.deselectCommand();
+			}
+			self.keypos = null;
+		}];
+		listview.postActionEvent({ cmd="list", op = (redo,undo,null), });
+	}
+}
+
+//	map.M000.event.DEGYX23.page.0.0.message
+//	map.M000.event.DEGYX23.page.0.1.cmdblocks.0.0.texts.0
+
+class EventCommandSelectPopup extends Popup
+{
+	static POPUPUIPATH = srcdir .. "/ui/addevcmdpopup.ui";
+	static HEADUIPATH = srcdir .. "/ui/evcmdhead.ui";
+	static ROW3UIPATH = srcdir .. "/ui/evcmdrow3.ui";
+
+	listview = null;			//	GPUIListView
+
+	//	指定したプロパティ設定でデータ選択ポップアップを開始する。
+	//	
+	static function run( e){
+		local p = EventCommandSelectPopup( ::loadSKView( POPUPUIPATH));
+		// p.show( null, e.src);
+		local pos = Vector3D( e.x, e.y, 0.0).transform( rootview.getInvMatrix());
+		p.show( null, pos);
+		return p.ret;
+	}
+
+	constructor( v){
+		super( v);
+		listview = v.findChild( "cmdlist");
+		for( local l = 0; l < 7;l ++){	//	カテゴリ7個
+			local h = ::loadSKView( HEADUIPATH);
+			h.setValue( "lbl", "$T.cmd_category"..l);	//	namae
+			listview.addRow( h);
+			local ca = getCommands( l);
+			local row = null;
+			foreach( i, v in ca){
+				if( i%3==0){
+					row = ::loadSKView( ROW3UIPATH);
+					listview.addRow( row);
+					row.findChild( "c1").setVisible( false);
+					row.findChild( "c2").setVisible( false);
+				}
+				local c = row.findChild( "c"..(i%3));
+				c.setVisible( true);
+				c.setValue( "icon", (v.icon, v.color[0]));
+				c.setValue( "lbl", (v.name, v.color[1]));
+				c.ref = v;
+				c.tips = "$T.%S_tips" % v.key;
+			}
+		}
+		listview.updateLayout();
+		local r = view.bnd;
+		view.stretchSize( r.w, Math.max( r.h, ::rootview.bnd.h-100));
+	}
+
+	static function getCommands( catg){
+		return ::RPGSystem.eventcmd._list.filter( @( v) v["category"]==catg);
+	}
+	
+	function actionevent( e){
+		if( e.src["ref"]){
+			ret = e.src.ref;
+			return close();
+		}
+		return super.actionevent( e);
+	}
+}

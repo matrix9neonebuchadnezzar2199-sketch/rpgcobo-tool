@@ -1,0 +1,54 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+//	
+//	
+class TabsBehavior
+{
+	static TABUIPATH = "/skstudio/ui/parts/tabitem.ui"
+
+	listview = null;
+	tabitems = null;
+	seltab = null;
+
+	constructor( v, tabs){
+		listview = v.findChild( "LIST");
+		listview.addEventListener( ACTION_EVENT, actionevent);
+		setTabs( tabs);
+	}
+
+	function setTabs( tabs){
+		listview.clearRows();
+		foreach( i,v in tabs){
+			local row = ::loadSKView( TABUIPATH).findChild( "btn");	//	btn取り出しちゃう
+			row.removeFromParent();
+			row.setValue( "lbl", v["lbl"]||v);
+			row.ref = i;
+			local d = row.computeSizeDelta();
+			if( d.x > 0 || d.y > 0) row.stretchSize( row.bnd.w+d.x, row.bnd.h+d.y);
+			listview.addRow( row);
+		}
+		tabitems = tabs;
+		selectTab( 0);
+		listview.updateLayout();
+	}
+
+	function selectTab( i){
+		if( typeof( i) == SS_CLOSURE){
+			i = tabitems.findi( i);
+		}
+		local tab = listview.rows[i];
+		seltab?.setSelected( false);
+		tab?.setSelected( true);
+		seltab = tab;
+	}
+
+	function actionevent( e){
+		local ti = /*(e.src["name"]=="btn") && */e.src["ref"];
+		if( typeof( ti) == SS_INTEGER){
+			e.consume();
+			selectTab( ti);
+			listview.postActionEvent( ti, 0, e.modifiers);
+		}
+	}
+}

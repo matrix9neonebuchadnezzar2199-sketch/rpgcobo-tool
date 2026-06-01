@@ -1,0 +1,507 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorEnemy : エネミーのデータ編集エディター
+//	
+
+local filterenemyuse( v){ return v["enemyuse"]; }
+
+local createInitialAICommand(){
+	return { skillid=null, turnbits=0xfff, rate=50, affecttgr=true, target="random", rndwgt=20};
+}
+
+local createInitialAIPage(){
+	return { req0="none", req1="none", rate=100, turn=(1,3), actnum=(1,1), ailv=1, cmds=[ createInitialAICommand()]};
+};
+
+
+class DBEditorEnemy extends EditorViewBase
+{
+	//	エネミーの基本パラメータ。基本拡張はできない。が、プラグインでここ拡張することは可能。
+	static baseprops1 = [
+		RPGProperties.nameprop,	//	※エネミーにはアイコンが無くてOK?
+		RPGProperties.descprop,
+		{ pid="debug", lbl="$T.lbl_battletest", type=CUSTOMBUTTON, cnt="cnt5.ui", icon="\ue1c4", ui="1",
+			edit = @( val){
+				// ::skstudio.editor.editSelectedAsset();
+			}
+		}
+	];
+	static baseprops2 = [
+		{ pid="mdlid", lbl="$T.lbl_model", type=RESID_PREVIEW, restype=["enemy_pic","chara_vox"], defval="EP000", size="big" },
+	];
+	
+	res = null;				//	Resource : 
+	data = null;			//	P000等のデータのコピー。
+	
+	//	view
+	baseproplist1 = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	baseproplist2 = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	proplist = null;			//	PropertyListBehavior : 
+	optionlist = null;			//	OptionList : 汎用オプションパネル＋LV設定も可能に。
+	tabs = null;				//	TabBehavior
+
+	battleai = null;			//	BattleAI
+
+	function init( path){
+		op = OperationStack();
+		baseproplist1 = PropertyListBehavior( findChild( "baseproplist1"), null, "cnt3.ui");
+		baseproplist1.bindProperties( baseprops1);
+		baseproplist1.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist1.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist1.ref = this;
+		
+		baseproplist2 = PropertyListBehavior( findChild( "baseproplist2"), null, "cnt3.ui");
+		baseproplist2.bindProperties( baseprops2);
+		baseproplist2.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist2.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist2.ref = this;
+		
+		local props = ::RPGSystem.enemyprops;	//.filter( @(v) !v["lvcurve"]);	エネミーは成長カーブが無いので直接編集
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.bindProperties( props);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		
+		optionlist = OptionList( findChild( "optionlist"), this);
+
+		tabs = TabsBehavior( findChild( "tabs"),["$T.lbl_properties","$T.lbl_battleai"]);
+		tabs.listview.addEventListener( ACTION_EVENT, tabevent);
+
+		battleai = BattleAIEdit( findChild( "battleai"), this);
+		battleai.view.setVisible( false);
+		
+		res = ::getResource( path);
+		data = deepclone( res.getContent()) || {name:"",desc:""};
+		//	データ補間。存在しないプロパティにデフォルト値を挿入
+		setDefaultProperties( baseprops1, data);
+		setDefaultProperties( baseprops2, data);
+		setDefaultProperties( props, data);
+		if( !data["option"]) data.option <- [];
+		if( !data["ai"]) data.ai <- [createInitialAIPage()];
+
+		addEventListener( ACTION_EVENT, actionevent);
+		//
+		battleai.setAI( data.ai);
+		refresh();
+	}
+	
+	function refresh(){
+		baseproplist1.setParameters( data);
+		baseproplist2.setParameters( data);
+		proplist.setParameters( data);
+		optionlist.setOptions( data.option);		//	このやり方で良いかな・・・？
+		battleai.refresh();
+	}
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	function tabevent( e){
+		local ti = e.actioncmd;
+		proplist.listview.setVisible( !ti);
+		battleai.view.setVisible( !!ti);
+	}
+
+	//	
+	//	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+		}
+	}
+
+	//	
+	//	
+	function optionevent( e){
+		local oldopt = data.option;
+		local opt = deepclone( optionlist.getOptions());
+		//	
+		local self = this;
+		local redo = [@(){ data.option <- opt; }];
+		local undo = [@(){ data.option <- oldopt; }];
+		submitOp( redo, undo);
+	}
+
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		}
+	}
+}
+
+local turnbitslist = [
+	{ lbl="1/1", val=0xfff },
+	{ lbl="1/2", val=0x555 },
+	{ lbl="2/2", val=0xaaa },
+	{ lbl="1/3", val=0x249 },
+	{ lbl="2/3", val=0x492 },
+	{ lbl="3/3", val=0x924 },
+	{ lbl="1/4", val=0x111 },
+	{ lbl="2/4", val=0x222 },
+	{ lbl="3/4", val=0x444 },
+	{ lbl="4/4", val=0x888 },
+];
+
+local aireqlist(){
+	return RPGSystem.aipagereq._list.map( @( v)({ lbl:v.name, val:v.key, submenu:v["submenu"] }));
+}
+
+local ailvlist = [
+	{ lbl="低レベル", val=0 },
+	{ lbl="中レベル", val=1 },
+	{ lbl="中レベル", val=2 },
+	{ lbl="中レベル", val=3 },
+	{ lbl="高レベル", val=4 },
+]
+
+//	※プレイヤーでも編集できるようにしたい
+//	
+//	ai : [{ reqs:[reqid,reqid], turn:3, cmds:[cmd,...] }]
+//	aipage : ai[i]
+//	cmd : { skill, target, turnbits, rate }
+//	turn : 1/1,  1/2, 2/2,  1/3,2/3,3/3, 1/4,2/4,3/4,4/4 .... 12bitsのビットマスクで表現
+//	
+class BattleAIEdit
+{
+	static aiprops = [
+		{ pid="req0", lbl="${T.lbl_require}1", type=LIST, list=aireqlist, },
+		{ pid="req1", lbl="${T.lbl_require}2", type=LIST, list=aireqlist, },
+		{ pid="rate", lbl="$T.lbl_rate", type=SCALAR, range=(0,100) },
+		{ pid="turn", lbl="$T.lbl_contturns", type=VEC2, range=(1,9), ui="r" },
+		{ pid="actnum", lbl="$T.lbl_actnum", type=VEC2, range=(1,9), ui="r" },
+		{ pid="ailv", lbl="$T.lbl_ailv", type=LIST, list=ailvlist },
+	];
+
+	static cmdpropdef = {
+		name = "$T.lbl_command"
+		props = [
+			{ pid="skillid", lbl="$T.lbl_skill", type=DATAID, datatype=["skill"], nullable=true, },
+			{ pid="target", lbl="$T.lbl_target", type=LIST, list=@() RPGSystem.aitarget._list.map( @( v)({ lbl=v.name, val=v.key, })) },
+			{ pid="rndwgt", lbl="$T.lbl_rndwgt", type=SCALAR, range=(0,100), ui="bar", hide=@( pl) pl.getParam( "target")=="random" },
+			{ pid="affecttgr", lbl="$T.lbl_affecttgr", type=BOOL, },
+			{ pid="rate", lbl="$T.lbl_userate", type=SCALAR, range=(1,100), ui="bar"},
+			{ pid="turnbits", lbl="$T.lbl_turnbits", type=LIST, list=turnbitslist },
+		]
+	};
+
+	editor = null;
+	view = null;
+	ai = null;				//	array
+	pageidx = 0;
+	aipage = null;			//	table
+	aipagelist = null;			//	GPUIListView
+	proplist = null;		
+	reqmenus = null;		//	
+	rateval = null;			//	
+	turnval = null;			//	
+	actnummenu = null;		//	
+	cmdlist = null;			//	ListBehavior
+	
+	static function setviewfunc( la, v, i){
+		local skl = RPGData.getData( i.skillid);
+		v.setValue( "skill", skl?`$skl.icon $i.skillid: $skl.name`:"$T.lbl_defskill");
+		local tgt = RPGSystem.aitarget[i.target];
+		v.setValue( "target", "対象: "..(tgt?lang(tgt.name):"?"));
+		v.setValue( "rate", i.rate);
+		local tb = turnbitslist.find( @( v) v.val==i.turnbits);
+		v.setValue( "turnbits", tb?tb.lbl:("%03x",i.turnbits));
+		v.pickable = false;
+	}
+
+	constructor( v, e){
+		view = v;
+		editor = e;
+		aipagelist = v.findChild( "aipagelist");
+		proplist = PropertyListBehavior( v.findChild( "proplist"), null);
+		proplist.bindProperties( aiprops);
+		proplist.ref = e;
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		cmdlist = ListBehavior( v.findChild( "cmdlist"));
+		cmdlist.setviewfunc = setviewfunc;
+		cmdlist.listview.addEventListener( ACTION_EVENT, cmdlistevent);
+		cmdlist.listview.addEventListener( ITEM_EVENT, cmdlistevent);
+		cmdlist.multisel = true;
+		cmdlist.dndfunc = 3;
+		view.addEventListener( ACTION_EVENT, actionevent);
+	}
+
+	function setAI( _ai){
+		ai = _ai;
+		setAIPageNum( length( ai));
+		setAIPage( Math.clamp( pageidx, 0, length( ai)-1));
+	}
+
+	function refresh(){
+		setAIPageNum( length( ai));
+		setAIPage( Math.clamp( pageidx, 0, length( ai)-1));
+	}
+
+	function setAIPageNum( n){
+		aipagelist.setRowCount( n);
+		for( local l = 0;l < n;l ++){
+			local r = aipagelist.rows[l];
+			r.setValue( "icon", char( 0xf123+1+l));
+			local b = r.findChild( "aipagebtn");
+			b.ref = l;
+			b.setSelected( l==pageidx);
+			r.ref = b;
+			if( !b.dragsource) b.dragsource = PageDragSource( b);
+		}
+		aipagelist.updateLayout();
+	}
+	
+	function setAIPage( p){
+		if( p != pageidx){
+			aipagelist.rows[pageidx]?.ref.setSelected( false);
+			aipagelist.rows[p].ref.setSelected( true);
+			pageidx = p;
+		}
+		aipage = ai[p];
+		proplist.setParameters( aipage);
+		cmdlist.setListItems( aipage.cmds);
+	}
+	
+	function cmdlistevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ITEM_SORT:
+			sortCommands( e);
+			break;
+		case ITEM_REMOVE:
+			deleteCommands();
+			break;
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				if( !cmdlist.isItemSelected( e.actioncmd)) cmdlist.setSelectedItem( e.actioncmd);
+				showCommandContextMenu( e);
+			}else{
+				local src = cmdlist.getItemView( cmd);
+				local ret = PropertyEditPopup.run( src, cmdpropdef, cmd);
+				if( ret && ret<>cmd){
+					local i = aipage.cmds.indexOf( cmd);
+					local self = this;
+					local redo = [@(){ self.aipage.cmds[i] = ret; self.refresh(); }];
+					local undo = [@(){ self.aipage.cmds[i] = cmd; self.refresh(); }];
+					editor.submitOp( redo, undo, null);
+				}
+			}
+			break;
+		}
+	}
+
+	function showCommandContextMenu( e){
+		local ctxmenu = [
+			{ id="edit", lbl="$T.lbl_edit", icon="\ue745" },
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f"},
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872"},
+		];
+		switch( MenuPopup.run( ctxmenu)["id"]){
+		}
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = aipage;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); self.refresh(); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); self.refresh(); }];
+			editor.submitOp( redo, undo, trk);
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "aipagebtn":
+			local pidx = e.src.ref;
+			setAIPage( pidx);
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showAIContextMenu( e);
+			}
+			break;
+		case "aimenubtn":
+			showAIContextMenu( e);
+			break;
+		case "addcmdbtn":
+			addCommand( e);
+			break;
+		}
+	}
+
+	function addCommand( e){
+		local ai = this.ai, pageidx = this.pageidx, self = this;
+		local newcmd = createInitialAICommand();
+		local redo = [@(){ ai[pageidx].cmds .. newcmd; if( pageidx==self.pageidx) self.cmdlist.refreshItems(); }];
+		local undo = [@(){ ai[pageidx].cmds.removeValue( newcmd); if( pageidx==self.pageidx) self.cmdlist.refreshItems(); }];
+		editor.submitOp( redo, undo);
+	}
+
+	function deleteCommands(){
+		local ai = this.ai, pageidx = this.pageidx, self = this, li = cmdlist.items;
+		local delcmds = cmdlist.getSelectedItems().sort( @( v) -li.indexOf(v));	//	後ろから
+		local redo = [], undo = [];
+		foreach( cmd in delcmds){
+			local i = li.indexOf( cmd);
+			redo .. @(){ ai[pageidx].cmds.removeValue( cmd); };
+			undo[0] <- @(){ ai[pageidx].cmds[i] <- cmd; };
+		}
+		redo .. @(){ if( pageidx==self.pageidx) self.cmdlist.refreshItems(); };
+		undo .. @(){ if( pageidx==self.pageidx) self.cmdlist.refreshItems(); };
+		editor.submitOp( redo, undo);
+	}
+
+	function sortCommands( e){
+		local ai = this.ai, pageidx = this.pageidx, self = this, li = cmdlist.items;
+		local oldli = clone li, newli = ::applyItemSort( clone li, e);
+		local redo = [@(){ ai[pageidx].cmds.clear() ... newli; if( pageidx==self.pageidx) self.cmdlist.refreshItems(); }];
+		local undo = [@(){ ai[pageidx].cmds.clear() ... oldli; if( pageidx==self.pageidx) self.cmdlist.refreshItems(); }];
+		editor.submitOp( redo, undo);
+	}
+
+	function showAIContextMenu( e){
+		local ctxmenu = #[
+			{ id="add", lbl="$T.lbl_addpage", icon="\ue146"},
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f"},
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872"},
+		];
+		switch( MenuPopup.run( ctxmenu)["id"]){
+		case "add":
+		{
+			local ai = this.ai;
+			local oldpageidx = pageidx;
+			local newpage = createInitialAIPage(), self = this;
+			//	
+			local redo = [@(){ ai .. newpage; self.setAIPageNum( length( ai)); self.setAIPage( length( ai)-1); }];
+			local undo = [@(){ ai.removeValue( newpage); self.setAIPageNum( length( ai)); self.setAIPage( oldpageidx); }];
+			editor.submitOp( redo, undo);
+			break;
+		}
+		case "copy":
+		{
+			putClipboard( "aipage", ai[pageidx]);
+			break;
+		}
+		case "paste":
+		{
+			local cbdata = getClipboard( "aipage");
+			if( cbdata){
+				local ai = this.ai;
+				local pageidx = this.pageidx;
+				local oldpage = ai[pageidx], newpage = cbdata, self = this;
+				//	
+				local redo = [@(){ ai[pageidx] = newpage; self.setAIPage( pageidx); }];
+				local undo = [@(){ ai[pageidx] = oldpage; self.setAIPage( pageidx); }];
+				editor.submitOp( redo, undo);
+			}
+			break;
+		}
+		case "delete":
+			if( length( ai) > 1) deletePageOp( pageidx);
+			break;
+		}
+	}
+
+	function deletePageOp( idx){
+		local self = this, ai = this.ai;
+		local oldpage = ai[idx];
+		local redo = [@(){ delete ai[idx]; self.setAIPageNum( length( ai)); self.setAIPage( Math.max( idx-1, 0)); }];
+		local undo = [@(){ ai[idx] <- oldpage; self.setAIPageNum( length( ai)); self.setAIPage( idx); }];
+		editor.submitOp( redo, undo);
+	}
+}
+
+//	※カスタムイベントのページでも使う。。。
+class PageDragSource
+{
+	view = null;
+	dragitemsp = null;
+
+	constructor( v){
+		view = v;
+		v.addEventListener( DROPTARGET_EVENT, dropevent)
+	}
+	
+	//	ドラッグ中描画処理
+	function dndrender( m){
+		skDrawSprite( dragitemsp, m.mousex, m.mousey);
+	}
+	
+	function acceptDrag( e){
+		dragitemsp = view.capture();
+		dragitemsp.color = 0x99999999;
+		local p0 = Vector3D( 0).transform( view.mat).sub( e.x, e.y, 0.0);
+		dragitemsp.bnd.x = p0.x;
+		dragitemsp.bnd.y = p0.y;
+		return true;
+	}
+	
+	function acceptDrop( ds, x, y){
+		return ds != this && ( ds instanceof PageDragSource);
+	}
+
+	function dropevent( e){
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			view.anime( 1);
+			break;
+		case TARGET_DRAG_EXIT:
+			view.anime( 0);
+			break;
+		case TARGET_DROP:
+			view.anime( 0);
+			break;
+		}
+	}
+}

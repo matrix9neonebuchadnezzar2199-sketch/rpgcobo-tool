@@ -1,0 +1,248 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorDBEditor : コンディション編集
+//	
+
+class DBEditorCond extends EditorViewBase
+{
+	//	スキルの基本パラメータ。基本拡張はできない。が、プラグインでここ拡張することは可能。
+	static baseprops = [
+		RPGProperties.nameiconprop,
+		RPGProperties.descprop,
+	];
+
+	//////////////////////////////////////////////////////////////////////////////////////
+
+	res = null;				//	Resource : 
+	data = null;			//	S000等のデータのコピー。
+	
+	//	view
+	baseproplist = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	proplist = null;			//	PropertyListBehavior : 
+	optionlist = null;			//	OptionList : 汎用オプションパネル＋LV設定も可能に。
+
+	voxpreview = null;			//	キャラの見た目チェック用
+	presid = "CV000";
+	playtype = 0;
+
+	function init( path){
+		op = OperationStack();
+		baseproplist = PropertyListBehavior( findChild( "baseproplist"), null, "cnt3.ui");
+		baseproplist.bindProperties( baseprops);
+		baseproplist.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist.ref = this;
+		
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = int( path.substring( length( path)-3));
+		proplist.ref = this;
+		
+		optionlist = OptionListWithLV_Removal( findChild( "optionlist"), this);
+		
+		res = ::getResource( path);
+		data = deepclone( res.getContent()) || { name="", icon="", desc=""};
+		//	データ補間。存在しないプロパティにデフォルト値を挿入
+		setDefaultProperties( baseprops, data);
+		setDefaultProperties( ::RPGSystem.condprops, data);
+		if( !data["option"]) data.option <- [];
+
+		voxpreview = ResourcePreviewCanvas( findChild( "voxpreview"), true);
+		setPreviewChara( presid);
+		voxpreview.view.gpui.enablerclick = false;
+		voxpreview.wheelenabled = true;
+		voxpreview.setZoom( 4.0);
+		//
+		bindCondProperties();
+		refresh();
+		addEventListener( ACTION_EVENT, actionevent);
+	}
+
+	function setPreviewChara( resid){
+		presid = resid;
+		voxpreview.setResourceData( resid, ::conf._resource.chara_vox[resid]);
+		if( data["ani"]) voxpreview.sk3d.anime2( { id=data.ani["id"], part=AnimationPart.EN});
+	}
+
+	function updateAnime(){
+		if( data["ani"]) voxpreview.sk3d.anime2( { id=data.ani["id"]});
+	}
+
+	function bindCondProperties(){
+		proplist.bindProperties( ::RPGSystem.condprops);
+	}
+
+	function refresh(){
+		baseproplist.setParameters( data);
+		proplist.setParameters( data);
+		optionlist.setOptions( data.option);		//	このやり方で良いかな・・・？
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	//	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;//"-"..prop.pid;
+			local oldval = ::getProperty( cmd.prop, data);
+			//	
+			local self = this, pid = prop.pid;
+			local redo = [@(){
+				::setProperty( cmd.prop, data, val);
+				if( pid == "ani") self.updateAnime();
+			}];
+			local undo = [@(){
+				::setProperty( cmd.prop, data, oldval);
+				if( pid == "ani") self.updateAnime();
+			}];
+			submitOp( redo, undo, trk);
+			// printf( "vubub %S %S\n", pid, encodeJSON( val));
+		}
+	}
+
+	//
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "voxpreview":
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showPreviewContextMenu( e);
+			}else{
+				playEfx( playtype);
+			}
+			break;
+		}
+	}
+
+	function playEfx( type){
+		local rp3d = voxpreview.sk3d, mact = rp3d.manuaction;
+		local cd = data, condid = res.name;
+		if( !mact){
+			mact = rp3d.manuaction = ManualMoveAction( rp3d);
+		}
+		rp3d.manuaction.act( @(){
+			if( cd["efx_start"]){
+				efx( {id=cd.efx_start});
+				wait( 0x80000002);	//	エフェクト待ち
+			}
+			if( cd.showpop){
+				popcond( condid, "put");
+				wait( 300);
+			}
+		});
+	}
+	
+	function showPreviewContextMenu( e){
+		local menudata = [
+			{ id="efx0", lbl="$T.lbl_efx_start", icon="\ue037"},
+			{ id="efx1", lbl="$T.lbl_efx_cont", icon="\ue037"},
+			"-",
+			{ id="chara", lbl="キャラを変更", icon="\uf11c"},
+		];
+		switch( MenuPopup.run( menudata, null, menudata[0])["id"]){
+		case "chara":
+			local ret = ResourceSelectDialog.run( e, { restype = ["chara_vox", "enemy_pic"] }, previewres);
+			if( ret){
+				previewres = ret;
+				voxpreview.setResourceData( previewres, ::rpgres[previewres]);
+				voxpreview.sk3d.anime2( { id=data.ani["id"]});
+			}
+			break;
+		}
+	}
+}
+
+
+class OptionListWithLV_Removal extends OptionList
+{
+	static ITEMUIPATH = srcdir .. "/ui/optionitem2.ui";
+
+	static function setviewfunc( la, v, i){
+		local haslv = (la.ref.editor.data["MAXLV"]||0) > 0;
+		local lbl = ::OptionList.optiondesc( i);
+		v.setValue( "lbl", lbl);
+		local opt = ::RPGSystem.option[i.opttype];
+		v.setValue( "icon", opt["icon"]);
+		v.setValue( "pnt", sprintf( "LV.%S", haslv ? (i["LV"]||0) : ""));
+		v.findChild( "visichk").setSelected( !i["hide"]);
+		v.pickable = false;
+	}
+
+	function createOptionData( opt){
+		local opd = super.createOptionData( opt);
+		opd.LV <- 1;
+		return opd;
+	}
+	
+	//	
+	function showOptionEdit( opd0, isnew=false){
+		local opt = ::RPGSystem.option[opd0.opttype];
+		local props = clone fget( opt, "props", opt, opd0);
+		if( (editor.data["MAXLV"]||0) > 0){
+			props[0] <- #{ pid="LV", lbl="$T.lbl_condlv", type=SCALAR, range=(1,999), }
+			props[1] <- #{ pid="G1", lbl="", type=HEADER, cnt="header0.ui"};
+		}
+		if( opt["condrem"]){
+			props .. #{ pid="G2", lbl="", type=HEADER, cnt="header0.ui"};
+			local condid = editor.res.name;
+			props  .. { pid="countrem", lbl="$T.lbl_countrem", type=LIST,
+				list = [
+					{ lbl="$T.lbl_none", val=0, },
+					{ lbl="$T.times_1", val=1, },
+					{ lbl="$T.times_2", val=2, },
+					{ lbl="$T.times_3", val=3, },
+				],
+				get = @( prop, data) data[prop.pid]["val"]||0,
+				set = @( prop, data, val) data[prop.pid]<-(val?{condid=condid,val=val}:null),
+			}
+		}
+		//	
+		local propdef = {
+			name = opt.name, icon = opt.icon,
+			props = props,
+		}
+		local opd = PropertyEditPopup.run( null, propdef, opd0);
+		if( opd && opd<>opd0){
+			local li = optionitems;
+			local redo = [@(){ li[li.indexOf( opd0)] = opd; }];
+			local undo = [@(){ li[li.indexOf( opd)] = opd0; }];
+			if( isnew) editor.mergeOp( redo, undo); else editor.submitOp( redo, undo);
+			optionlist.refreshItems();
+		}
+	}
+}

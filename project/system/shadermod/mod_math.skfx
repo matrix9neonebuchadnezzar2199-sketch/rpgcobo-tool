@@ -1,0 +1,143 @@
+declare mod_math;
+
+fs bayer
+{
+	//	0.0  0.5
+	//	0.75 0.25
+	mediump float bayer2( mediump vec2 fp){
+		fp = mod( floor( fp), 2.0);
+		return fract( dot( fp, vec2( 0.5, 0.75)) );
+	}
+	
+	mediump float bayer4( mediump vec2 fp){
+		$( APILV >= 30){
+			mediump ivec2 ip = ivec2( fp) & 3;
+			const mediump mat4 m = mat4(
+				vec4( 0.031250, 0.531250, 0.156250, 0.656250),
+				vec4( 0.781250, 0.281250, 0.906250, 0.406250),
+				vec4( 0.218750, 0.718750, 0.093750, 0.593750),
+				vec4( 0.968750, 0.468750, 0.843750, 0.343750)
+			);
+			return m[ip.y][ip.x];
+		} : {
+			return bayer2( fp*0.5) * 0.25 + bayer2( fp);
+		}
+	}
+	//	mediump float bayer8( mediump ivec2 a){
+	//		return bayer4( a>>1)*0.25+bayer2( a);
+	//	}
+	//	mediump float bayer16( mediump ivec2 a){
+	//		return bayer8( a>>1)*0.25+bayer2( a);
+	//	}
+}
+
+////////////////////////////////////////////////////////////////////////
+//	color mix
+
+vsfs mixcolor
+{
+	mediump vec4 blendmix( mediump vec4 a, mediump vec4 b, mediump float w){
+		return mix( a, b, b.w*w);
+	}
+
+	mediump vec4 multmix( mediump vec4 a, mediump vec4 b, mediump float w){
+		mediump vec4 mul = 1.0-(1.0-b)*w;
+		return a * mul;
+	}
+
+	mediump vec4 overlaymix( mediump vec4 a, mediump vec4 b, mediump float w){
+		mediump vec3 p = (b.xyz-0.75)*w;//*2.0;
+		mediump vec4 mul = vec4( clamp( p+1.0 , 0.0, 1.0), 1.0);
+		mediump vec4 scr = vec4( clamp( p     , 0.0, 1.0), 0.0);
+		// MUL+SCR-a : MUL = a*mul, SCR = 1.0-(1.0-a)*(1.0-scr);
+		// return a*mul + ((1.0-a)-(1.0-a)*(1.0-scr));
+		return a*mul + (1.0-a)*scr;
+	}
+}
+
+define mixcolor_mult
+{
+	#define MIXCOLOR( A, B, W) multmix( A, B, W)
+}
+
+define mixcolor_blend
+{
+	#define MIXCOLOR( A, B, W) blendmix( A, B, W)
+}
+
+define mixcolor_overlay
+{
+	#define MIXCOLOR( A, B, W) overlaymix( A, B, W)
+}
+
+////////////////////////////////////////////////////////////////////////
+//	uv selector
+
+param texuvutil
+{
+	 uniform lowp vec4 uvsel <id=UVSELECTOR>;	//	0=uv.xy, 1=uv.zw   mix( v_uv.xy, v_uv.zw, uvch.x) => UV1( v_uv), UV2( v_uv),...
+}
+
+define texuvutil
+{
+	#define TEXUV1( UV) mix( (UV).xy, (UV).zw, uvsel.x)
+	#define TEXUV2( UV) mix( (UV).xy, (UV).zw, uvsel.y)
+	#define TEXUV3( UV) mix( (UV).xy, (UV).zw, uvsel.z)
+	#define TEXUV4( UV) mix( (UV).xy, (UV).zw, uvsel.w)
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//	reconstruct wvp
+//
+
+fs reconstwvp
+{
+	//	wvpxy -1.0~1.0 world view projection pos
+	//	uz 0~65535 linear view z
+	//	v.xy 1.0/prjmat[0],1.0/prjmat[5]
+	//	v.z (zfar-znear) / 65535.0
+	//	v.w znear (pers:>0, ortho:<=0)
+	highp vec3 reconstructWVP( highp vec2 wvpxy, mediump uint uz, highp vec4 v){
+		highp float vz = float( uz) * v.z + v.w;	//	vz = positive
+		return vec3( wvpxy * v.xy * mix( vz, 1.0, step( v.w, 0.0)), -vz);  //  step( v.w, 0.0) == float( v.w<=0.0)
+	}
+
+	highp vec3 reconstructWVPtex( mediump usampler2D ztex, highp vec2 uv, highp vec4 v){
+		return reconstructWVP( (uv-0.5)*vec2(2.0,-2.0), texture( ztex, uv).x, v);
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	pbr
+//
+
+vsfs colorspace
+{
+	mediump vec3 toSRGB( mediump vec3 c){
+		// return mix( c * 12.92, 1.055 * pow( c, vec3( 1.0/2.4)) - 0.055, step( 0.0031308, c));	//	0.0031308*12.92*255 = 10... 
+		return 1.055 * pow( c, vec3( 1.0/2.4)) - 0.055;
+	}
+	
+	mediump vec3 toLinear( mediump vec3 c){
+		// return mix( c * (1.0/12.92), pow( c * (1.0/1.055) + 0.0521327, vec3( 2.4) ), step( 0.04045, c));
+		return pow( c * (1.0/1.055) + 0.055, vec3( 2.4) );
+	}
+}
+
+fs tonemapping
+{
+	mediump vec3 tonemap( mediump vec3 v){
+		float x = dot( v, vec3(0.2125, 0.7154, 0.0721));
+		const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+		float y = (x*(a*x+b))/(x*(c*x+d)+e);	//	ACES Filmic Tonemapping
+		return v * (y / x);	// no clamp, no gamma collection
+	}
+
+	mediump vec3 tonemap_inv( mediump vec3 v) {
+		float x = dot( v, vec3(0.2125, 0.7154, 0.0721));
+		float y = (0.03 - 0.59 * x - sqrt(0.0009 + 1.3702 * x - 1.0127 * x * x)) / (-5.02 + 4.86 * x);
+		return x>0.00125 ? v * (y / x) : v;
+//		return (0.03 - 0.59 * v - sqrt(0.0009 + 1.3702 * v - 1.0127 * v * v)) / (-5.02 + 4.86 * v);
+	}
+}

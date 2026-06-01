@@ -1,0 +1,127 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorDict : 用語辞書編集
+//	
+//	RPGSystem.dictpropsの定義の通りにタイプとプロパティのリストをセットアップする。
+//	
+
+local srcdir = dirname( callee().getSourceName());
+
+class DBEditorDict extends EditorViewBase
+{
+	static GROUPUIPATH = srcdir .. "/ui/dictgroup.ui";
+	static ITEM1UIPATH = srcdir .. "/ui/dictitem1.ui";	//	category3
+	static ITEM2UIPATH = srcdir .. "/ui/dictitem2.ui";	//	category0~2
+
+	res = null;				//	Resource : 
+	data = null;			//	dict.confのデータのコピー。
+	
+	//	
+	dictlistview = null;		//	GPUIListView : 横並びにタイプが並ぶ
+
+	function init( path){
+		op = OperationStack();
+		dictlistview = findChild( "dictlist");
+		dictlistview.addEventListener( ACTION_EVENT, dictevent);
+		
+		res = ::getResource( path);
+		data = deepclone( res.getContent());
+		
+		createList();
+	}
+
+	function createList(){
+		dictlistview.clearRows();
+		local gv = [[],[],[],[]];
+		foreach( p in ::RPGSystem.dictprops){
+			gv[p.category] .. p;
+		}
+		local gview = [];
+		for( local l = 0;l < 4;l ++){
+			gview = ::loadSKView( GROUPUIPATH);
+			gview.setValue( "glbl", "$T.dict_category"..l);
+			local glist = gview.findChild( "LIST");
+			local r = null, uipath = ITEM2UIPATH;// l==3 ? ITEM1UIPATH : ITEM2UIPATH;
+			foreach( i, v in gv[l]){
+				local c;
+				if( !r){
+					r = ::loadSKView( uipath);
+					glist.addRow( r);
+					c = r.findChild( "c0"); r.findChild( "c1")?.setVisible( false);
+				}else{
+					c = r.findChild( "c1"); c.setVisible( true);
+					r = null;
+				}
+				c.setValue( "key", "T."..v.key);
+				c.setValue( "lbl", v.lbl);
+				local edit = c.findChild( "edit");
+				// if( !data[v.key]) data[v.key] <- ::lang( v.lbl);
+				local def = {...v.lbl, ...v["defval"]};
+				edit.setDefaultText( ::lang( def));
+				edit.setText( data[v.key]);
+				edit.ref = v.key;
+			}
+			local d = gview.computeSizeDelta();
+			if( d.x != 0.0 || d.y != 0.0){
+				gview.stretchSize( gview.bnd.w+d.x, gview.bnd.h+d.y);
+			}
+			dictlistview.addRow( gview);
+		}
+		dictlistview.updateLayout();
+	}
+
+	function refresh(){
+	}
+
+	function filterData( data){
+		local t = clone data;
+		foreach( v in t){
+			if( !v[0]) removei;
+		}
+		return t;
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( filterData( data));
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	function dictevent( e){
+		if( e.src["name"] == "edit"){
+			local src = e.src, key = e.src.ref, self = this;
+			local val = src.getText(), oldval = data[key];
+			local redo = [@(){
+				self.data[key] <- val; src.setText( val);
+			}];
+			local undo = [@(){
+				self.data[key] <- oldval; src.setText( oldval);
+			}];
+			submitOp( redo, undo, null);
+		}
+	}
+}

@@ -1,0 +1,29 @@
+﻿
+runsk( "keyload.sk");
+
+//	
+local path = arguments[0] || "private-key.pem";
+local pk = loadPrivateKeyFile( path);
+
+printf( "Public  exponent %S\n", pk.publicexp);
+printf( "Public  modulus  %S\n", pk.publicmod);
+printf( "Private exponent %S %S\n", pk.privateexp, pk.privateexp.size);
+printf( "\n");
+printf( "===== BEGIN sakana_crypt_local.h =====\n\n\n");
+
+//	print sakana_crypt_local.h
+printf( "#ifndef ___SAKANA_CRYPT_LOCAL___\n");
+printf( "#define ___SAKANA_CRYPT_LOCAL___\n\n");
+printf( "#define SAKANA_SXV2\n\n");
+printf( "constexpr uint RSA_BYTES = %d;\n\n", pk.privateexp.size*4);	//	RSAのバイト数は秘密鍵のサイズで良いんかな 128=1024/8
+printf( "constexpr uint PK_E = 65537;\n\n");		//	これ変わらないだろうから
+local modbb = pk.publicmod.getbytes();
+printf( "constexpr uchar PK_N[] = {\n\t");
+for( local l = 0;l < modbb.size;l ++){
+	printf( "0x%02x,", modbb[l]);
+	if( l!=modbb.size-1 && (l&15)==15) printf( "\n\t");
+}
+printf( "\n};\n\n");
+printf( "#endif /* ___SAKANA_CRYPT_LOCAL___ */\n");
+
+printf( "\n\n===== END sakana_crypt_local.h =====\n\n");

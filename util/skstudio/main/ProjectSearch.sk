@@ -1,0 +1,221 @@
+
+import VirtualKeyCode;
+import ModifiersMask;
+
+class ProjectSearchPopup extends Popup
+{
+	POPUPUIPATH = "/skstudio/ui/main/search/searchpopup.ui"
+
+	textedit = null;
+	list = null;		//	setRowPathで変えまくり
+
+	seacher = null;
+
+	//	中央上部に表示。サイズは可変
+	//	
+	static function run( cls=null){
+		if( !cls) cls = GotoFileSearch;
+		local root = ::rootview;
+		local w = Math.max( 548, root.bnd.w/2.0)|0, h = Math.max( 392, root.bnd.h*0.42)|0;
+		local p = ProjectSearchPopup( ::loadSKView( POPUPUIPATH), cls);
+		p.view.stretchSize( w, h);
+		local ppos = Vector3D( (root.bnd.w-w)>>1, 8.0, 0.0);
+		local ret = p.show( root, ppos);
+		if( ret){
+			p.seacher.gotoResult( ret);
+		}
+	}
+
+	constructor( v, cls){
+		super( v);
+		list = ListBehavior( view.findChild( "LIST"), []);
+		list.listview.addEventListener( ITEM_EVENT, listevent);
+		list.keyenable = false;
+		textedit = view.findChild( "textedit");
+		textedit.addEventListener( TEXT_EVENT, textevent);
+		textedit.checkdefocus = false;
+		
+		seacher = cls( this);
+		seacher.activate();
+	}
+
+	function shown(){
+		textedit.textedit?.addEventListener( KEY_EVENT, textkeyevent);	//	TextEdit実体はadded後に作られる。。。
+		textedit.startTextEdit();
+	}
+
+	function listevent( e){
+		seacher.listevent( e);
+	}
+	
+	function textevent( e){
+		seacher.textevent( e);
+	}
+
+	function textkeyevent( e){
+		if( e.id==KEY_PRESSED||e.id==KEY_REPEATED){
+			switch( e.keycode){
+			case VK_UP:
+			case VK_DOWN:
+				local i = Math.clamp( list.curidx+(e.keycode==VK_UP?-1:1), 0, length( list.items)-1);
+				list.setSelectedIndex( i);
+				list.scrollIndexToVisible( list.curidx);
+				break;
+			case VK_PAGE_DOWN:
+			case VK_PAGE_UP:
+				local listview = list.listview;
+				local sc = e.keycode==VK_PAGE_UP?-1:1;
+				local iv = listview.rows[list.curidx], w = listview.window, c = listview.content;
+				local ci = list.getViewIndexAt( w.bnd.w, Math.clamp( iv.pos.y + sc*w.bnd.h, 0, c.bnd.h-1));
+				if( ci >= 0){
+					list.setSelectedIndex( ci);
+					list.scrollIndexToVisible( ci);
+				}
+				e.consume();
+				break;
+			case VK_ESCAPE:
+				close();
+				e.consume();
+				break;
+			case VK_ENTER:
+				ret = list.getSelectedItems()[0];
+				close();
+				e.consume();
+				break;
+			}
+		}
+	}
+
+	function actionevent( e){
+		if( e.src == list.listview){
+			ret = list.getSelectedItems()[0];
+			close();
+			e.consume();
+		}
+		super.actionevent( e);
+	}
+}
+
+//	デフォルトのモード。$でDict, >でCommandに切り替える。
+//	
+class GotoFileSearch
+{
+	ITEMUIPATH = "/skstudio/ui/main/search/gotofileitem.ui"
+
+	popup = null;			//	ProjectSearchPopup
+
+	constructor( p){
+		popup = p;
+	}
+
+	function activate(){
+		popup.textedit.setDefaultText( "$T.search_gotofile");
+		local list = popup.list;
+		list.listview.setRowCount( 0);
+		list.listview.setRowPath( ITEMUIPATH);
+		
+		local hlfunc( lbl, str, k){
+			local tb = lbl.textbox, a0 = lbl.fontattr;
+			local a1 = with (clone a0){ flags |= 2; color = 0x00ccffff; }
+			local ci = 0, s = 0, klen = length( k);
+			str = str.toLowerCase();
+			k = k.toLowerCase();
+			for( ; ci < klen; ci++){
+				local i = str.indexOf( k[ci], s);  if( i < 0) break;
+				tb.setAttribute( a1, i, i+1);
+				s = i + 1;
+			}
+			return ci;
+		}
+		
+		list.setviewfunc = @( la, v, i){
+			local res = i[0], k = i[1], sc = i[2]%100000.0;
+			local name = res.name, dir = res.pres.path;
+			local dirlbl = v.findChild( "dir");
+			local namelbl = v.findChild( "name");
+			dirlbl.resetAttribute(); dirlbl.setText( dir.." "..sc);
+			namelbl.resetAttribute(); namelbl.setText( name);
+			v.setValue( "icon", ::skstudio.getResourceIcon( res));
+			v.findChild( "hist").setVisible( i[2] >= 100000.0);
+			if( sc >= 10000.0){
+				hlfunc( namelbl, name, k);
+			}else
+			if( sc >= 1000.0){
+				hlfunc( dirlbl, dir, k);
+			}else
+			if( sc > 0.0){
+				local ci = hlfunc( dirlbl, dir, k);
+				hlfunc( namelbl, name, k.substring( ci));
+			}
+		};
+		defaultlist();
+	}
+
+	function textevent( e){
+		local k = popup.textedit.getText();
+		if( k==""){
+			defaultlist();
+		}else{
+			search( k);
+		}
+	}
+
+	function listevent( e){
+	}
+
+	//	
+	static function getStringMatchScore( res, k){
+		local sc = ::getStringMatchScore( res.name, k);
+		if( sc > 0.0) return sc+10000.0;
+		local sc = ::getStringMatchScore( res.pres.path, k);
+		if( sc > 0.0) return sc+1000.0;
+		local sc = ::getStringMatchScore( res.path, k);
+		return sc;
+	}
+	
+	//	openhistoryを元に。
+	function defaultlist(){
+		local a = ::skstudio.openhistory.map( @( v){
+			local r = ::getResource( v);
+			if( !r) return undefined;
+			return ( r, "", 100000.0);
+		});
+		popup.list.setListItems( a);
+	}
+
+	//	
+	function _search( dir, k, a){
+		foreach( r in dir.getList()){
+			if( !r.isdir){
+				local sc = getStringMatchScore( r, k);
+				if( sc > 0.0){
+					if( ::skstudio.openhistory.contains( r.path)) sc += 100000.0;
+					a .. (r,k,sc);
+				}
+			}
+		}
+		foreach( r in dir.getList()){
+			if( r.isdir) _search( r, k, a);
+		}
+	}
+
+	//	最大200件まで
+	//	
+	function search( k){
+		local a = [];
+		_search( ::skstudio.rootdir, k, a);
+		a.sort( @( v) -v[2]);
+		if( length( a) > 200) a.resize( 200);
+		popup.list.setListItems( a);
+		if( length( a)) popup.list.setSelectedIndex( 0);
+	}
+
+	//	
+	function gotoResult( r){
+		::skstudio.openEditor( r[0].path);
+		if( !::workspace["tabsync"]){
+			::skstudio.fileview.setCurrentPath( r[0].path);
+			// ::skstudio.openSideView( "side_fileview");
+		}
+	}
+}

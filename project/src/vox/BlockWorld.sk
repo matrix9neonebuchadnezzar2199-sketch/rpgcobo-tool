@@ -1,0 +1,508 @@
+import BlockFlagID;
+
+local im_1 = IMat(), m_1 = Matrix();
+
+//	指定したbrはrot回転後のものとみなし、それを回転前のbr'に戻す。
+//	このややこしい変換はフリーブロックにのみ必要。
+
+//	※※※※※※※※　計算でうまく導き出せない！！！！！！！！！！！。。。。。。。。。。。。。。。
+//	仕方が無いからブルートフォースで回転後に合う位置を取得。。。。。まあ動いてるからいいけど。。。。。
+function unrotateRect( br, rot){
+	local cx = br.x+br.w/2, cz = br.z+br.d/2;
+	local r0 = IMat( cx, 0, cz).rotate( -rot).translate( -cx, 0, -cz).transform( IRect3D( br));
+	for( local dz = -3; dz <= 3; dz ++) for( local dx = -3; dx <= 3; dx ++){
+		local r = IRect3D( r0).offset( dx, 0, dz);
+		local rr = rotateRect( r, rot);
+		// if( rr.x==br.x && rr.z==br.z && rr.w==br.w&&rr.d==br.d) return r;
+		if( !(rr<>br)) return r;
+	}
+	throw Exception( "NANDEDAAAAAAAAAAAAAAAAAAAAAA");
+}
+
+function rotateRect( br, rot){
+	local cx0 = br.x+br.w/2, cz0 = br.z+br.d/2;
+	local im = IMat( cx0*8+4, 0, cz0*8+4).rotate( rot).translate( -cx0*8-4, 0, -cz0*8-4);
+	local vr = im.transform( IRect3D( br).scale( 8));
+	vr.scale( 1.0/8.0);
+	return vr;
+}
+
+function cameradiff( c0, c1, fz=100.0){
+	local v0 = Vector3D( 0, 0, fz).transform( c0.viewmat);
+	local v1 = Vector3D( 0, 0, fz).transform( c1.viewmat);
+	return v0.hypot( v1) >= 1.0;
+}
+
+///////////////////////////////////////////////////////////////////////////////////
+//
+//	BlockWorld : 
+//	
+
+with BlockWorld
+{
+	bmp <- null;		//	Bitmap : barrior bitmap
+	
+	function writeObject( o){
+		o.putb( 0);
+		store( o.bbuf);
+		o.puto( (bmp&&!bmp.empty())?bmp:null);	//	
+		o.puto( null);
+		o.puto( null);
+		o.puto( null);
+	}
+
+	function readObject( i){
+		local ver = i.getb();
+		load( i.bbuf);
+		bmp = i.geto();
+		i.geto();
+		i.geto();
+		i.geto();
+	}
+	
+	function getFloorY( x, z, mask=BLK_SOLID|BLK_LIQUID){
+		for( local y = 0; y < h; y ++){
+			local b = blockat( x, y, z);
+			if( !(::Block.getFlags( b)&mask)) return y;
+		}
+		return h;	//	何返すのが良いんか
+	}
+	
+	function checkError(){
+		local a = collectFreeBlocks( -1, []);
+		foreach( fb in a){
+			local fbt = ::fblks[fb.fbtype], va = fbt.variations[fb.fbparam&0xfff];
+			if( va["hide"] || va.vp0[0] == "def"){
+				// throw Exception();
+			}
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////
+	//
+	//	動的アセット配置
+	//	イベントコマンド等で
+
+	orgchunkmap <- null;	//	アセット配置時に更新が入るチャンクは予め元の状態を保存
+	dynassets <- null;		//	BlockWorld, pos, blend
+	
+	function getmat( v){
+		local p = v.pos, bw = v.bw;
+		local cx = bw.w/2, cz = bw.d/2;
+		local m = IMat().translate( p[0], p[1], p[2]).rotate( p[3]).translate( -cx, 0, -cz);
+		return m;
+	}
+
+	function _restoreorg( cr, doit=true){
+		local cx0 = cr.x, cx1 = cx0 + cr.w;
+		local cy0 = cr.y, cy1 = cy0 + cr.h;
+		local cz0 = cr.z, cz1 = cz0 + cr.d;
+		for( local cz = cz0; cz < cz1; cz ++){
+			for( local cx = cx0; cx < cx1; cx ++){
+				for( local cy = cy0; cy < cy1; cy ++){
+					local id = cy+(cx+cz*256)*256;
+					local orc = orgchunkmap[id];	//	orc=nullの場合もある！
+					if( orc != undefined){	//	元データがあればそれにリストア、なければ初回なのでこの状態を元として取得
+						if( doit) restoreChunkData( orc, cx, cy, cz);
+					}else{
+						if( !orgchunkmap) orgchunkmap = {};
+						orgchunkmap[id] <- getChunkData( cx, cy, cz);	//	nullもある
+					}
+				}
+			}
+		}
+	}
+
+	//	
+	function repaintDynamic( cr){
+		//	まずは元の状態に戻す
+		_restoreorg( cr);
+		//	次に順にアセットを描画
+		foreach( v in dynassets){
+			if( v && cr.contacts( v.cr)){
+				drawWorld( v.bw, v.m, v.blend);
+			}
+		}
+	}
+
+	//	ast: { idx, bw, pos, blend}
+	function placeDynamicAsset( ast){
+		if( !dynassets) dynassets = array( 100);
+		local ast0 = dynassets[ast.idx];
+		local p = ast.pos, bw = ast.bw, m = getmat( ast);
+		local cr = m.transform( IRect3D( 0, 0, 0, bw.w, bw.h, bw.d)) >> 3;
+		ast = { ...ast, cr=cr, m = m };
+		dynassets[ast.idx] = ast;
+		if( ast0){	//	元の消しつつ描画
+			_restoreorg( ast0.cr);
+			_restoreorg( cr);
+			foreach( v in dynassets){
+				if( v && (cr.contacts( v.cr) || ast0.cr.contacts( v.cr))){
+					drawWorld( v.bw, v.m, v.blend);
+				}
+			}
+		}else{
+			repaintDynamic( cr);
+		}
+	}
+
+	function removeDynamicAsset( idx){
+		local ast = dynassets[idx];
+		if( ast){
+			dynassets[idx] = null;
+			repaintDynamic( ast.cr);
+		}
+	}
+
+	//	一気に描画。初期化時のみ可能。
+	function placeDynamicAssetAll( a){
+		foreach( v in a){
+			if( !v) continue;
+			local p = v.pos, bw = v.bw, m = getmat( v);
+			local cr = m.transform( IRect3D( 0, 0, 0, bw.w, bw.h, bw.d)) >> 3;
+			v.cr <- cr;
+			v.m <- m;
+			_restoreorg( cr, false);	//	restoreをやらない
+			drawWorld( bw, m, v.blend);
+		}
+		dynassets = clone a;
+		dynassets.resize( 100);	//	100個まで対応するため
+	}
+}
+
+registerSerializable( BlockWorld, VALUE_BLOCKWORLD, BlockWorld.readObject, BlockWorld.writeObject );
+
+function cposToRect( p){
+	return IRect3D( (p&4095)*8, ((p>>>12)&255)*8, (p>>>20)*8, 8, 8, 8);
+}
+
+with BlockColiderInterface
+{
+	//	b3Resultからヒットしたブロックの情報を取得する。
+	//	@ret : bx,by,bz,blk,f, fp,t, fuid,fbp,
+	function getHitBlock( br, hb=null){
+		if( !hb) hb = #HitBlock();
+		return getHitBlock_( br.pointb, br.partidb, br.tridb, hb);
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////////
+//	
+//	SK3DBlockWorld :
+//		BlockWorldをSK3DObjectとして描画する。また、コリジョンも同時に配置する。シーン内にいくつも配置可能。
+//		・XXX ドアや宝箱みたいなものはchildのSK3DObjectとして配置される。
+//		・8x8x8ブロック単位のSK3DVoxelChunkを持つ。
+//		・チャンク内にライトがある場合あり。
+//	
+//	
+class SK3DBlockWorld extends SK3DObject
+{
+	bw = null;				//	
+	bwseq = 0;				//	カメラ移動もしくはbwseqが更新したらcollectInCameraMeshesを呼び出す
+	bwlseq = 0;				//	ライト用seq
+	meshseq = 0;			//	メッシュの状態が変化したときにインクリメント
+	lastcam = null;			//	Camera
+	vchunkmap = null;		//	
+	vchunklist = null;		//	chunkmapでカメラ内の描画対象となっているものをリスト化
+	
+	vs = 63;				//	
+	rembottom = true;		//	Y=0の下面を張らない
+	freeoutcamera = false;	//	カメラ外のメッシュを削除
+	
+	meshgenqueue = null;	//	メッシュ生成のキュー。8個単位で生成。フレームに間に合わないものは次のフレームに持ち越す
+	oldcam = null;			//	
+	lights = null;
+	lightmap = null;
+	
+	constructor( w){
+		super( null);
+		oldcam = Camera();
+		vchunklist = [];
+		meshgenqueue = [];
+		visiblemask = SK_VISIBLE_OPAQUE|SK_VISIBLE_SELECTOR|SK_VISIBLE_SHADOW_CASTER|SK_VISIBLE_SHADOW_RECEIVER;
+		lights = [];
+		lightmap = {};
+		if( w) setBlockWorld( w);
+	}
+
+	function addedToScene( scn){
+		super.addedToScene( scn);
+		scn.addLight( lights);
+	}
+
+	function removedFromScene( scn){
+		super.removedFromScene( scn);
+		scn.removeLight( lights);
+	}
+
+	function setBlockWorld( w){
+		bw = w;
+		bnd.set( bw.w*0.25, bw.h*0.25, bw.d*0.25, bw.w*0.25, bw.h*0.25, bw.d*0.25);
+		gbnd.set( bnd);
+		vchunkmap = {};
+		meshgenqueue = [];
+	}
+
+	function setVisibleFaceMask( vs){
+		if( this.vs != vs){
+			this.vs = vs;
+			foreach( ch in vchunkmap){
+				ch.seq = -100;	//	全チャンク再描画ー
+			}
+		}
+	}
+
+	function queueMeshGen( seqs){
+		vchunklist.clear();
+		foreach( cpos, seq in seqs){	//	seq=0はブロック、ボクセルが存在しないことを示し、ここでは取得されない
+			local ch = vchunkmap[cpos];
+			if( ch["seq"] != seq){
+				// printf( "QUEUE MESHGEN %S   %S %S %S   seq %S  ch??? %S %S\n", cpos, (cpos&4095), ((cpos>>>12)&255), (cpos>>>20), seq, ch, ch["seq"]);
+				if( !ch) ch = (vchunkmap[cpos] <- SK3DVoxelChunk( this, cpos));
+				ch.seq = seq;
+				local req = { bw:bw, id:cpos, br:cposToRect( cpos), border:1, hash:ch.hash, vs:vs, rembottom:rembottom };	//	生成用の情報を入れる
+				local i = meshgenqueue.findi( @(v) v.id==cpos );
+				if( i >= 0) delete meshgenqueue[i];
+				meshgenqueue .. req;
+			}
+			vchunklist .. ch;
+		}
+	}
+
+	//	全てのメッシュ生成を一気にやる。アセットのプレビュー用。
+	//	※巨大なワールドでやると鬼のようにメモリ、CPU、GPUを食うために非常に危険！！！！
+	function generateAllMesh(){
+		local seqs = bw.collectDrawChunks( #{});
+		queueMeshGen( seqs);
+		Table.clear( seqs);
+		generateChunkMeshes( 10000);
+	}
+
+	//	カメラを指定して描画範囲内でメッシュ生成が必要なチャンクをキューにためる。
+	//	また、カメラから一定以上離れたチャンクのメッシュの開放も行う。
+	//	※指定するカメラは、描画範囲より数m大きくしてマージンを取る。マージンはシャドウ用の範囲にも影響する。
+	//	※gmatにスケールが入っていた場合は失敗。
+	function updateInCameraMesh( wcam, cam){
+		// local wcam = #Camera();
+		// wcam.set( cam);
+		// wcam.viewmat.mult44( gmat.invert34u( #Matrix()));
+		wcam.updatePlanes();
+		local seqs = bw.collectDrawChunks( #{}, wcam, 5.0);	//	5.0mのマージンを付けて描画可能チャンクを取得する ※ここにgmat渡したほうが良いわ
+		queueMeshGen( seqs);
+		Table.clear( seqs);
+		//	camより更に2m程広く、、、
+		foreach( ch in vchunkmap){
+			// local r = ch.gbnd; printf( "camcheck! %S   %S %S %S %S %S %S      %S\n", ch.cpos, r.x,r.y,r.z,r.r,r.s,r.t,  cam.isInside( ch.gbnd, 7.0));
+			// if( !cam.isInside( ch.gbnd, 7.0)){	//	ch.gbndは親のgbndに合わせて変形しないといけない！！！！！！
+			// 	ch.purge( scn);	//	メッシュ、ライトなどを解放
+			// 	removei;
+			// }
+		}
+	}
+
+	function checkUpdateInCameraMesh( cam){
+		local wcam = #Camera();
+		wcam.set( cam);
+		if( bwlseq != bw.lseq){
+			updatePlaceLights();
+			bwlseq = bw.lseq;
+		}
+		// wcam.viewmat.mult44( gmat.invert34u( #Matrix()));
+		if( cameradiff( oldcam, wcam) >= 1.0 || bwseq != bw.seq){
+			oldcam.set( wcam);
+			bwseq = bw.seq;
+			updateInCameraMesh( wcam, cam);
+		}
+	}
+	
+	//	ワールドに配置されたライトを取得して配置する
+	//	多くても1000個ぐらいで済むと思うのでワールド内の全てのライト付きフリーブロックを取得してそれぞれライトを生成する。
+	function updatePlaceLights(){
+		local a = lights, m = {}, m0 = lightmap; lightmap = m;
+		a.clear();
+		foreach( fb in bw.collectFreeBlocks( BLK_HAS_LIGHT, [])){	//	ライトを持つFreeBlockの一覧取得
+			local li = m0[fb.fbuid];
+			if( li && li.ref.hash == fb.hashcode()){
+				;	//	fbが未変更なのでliも使いまわせる
+			}else{
+				local fbt = ::fblks[fb.fbtype], va = fbt.variations[fb.fbparam&0xfff];
+				if( va["lcol"]) li = makeFBLight( fb, va);
+			}
+			if( li){
+				a .. li;
+				m[fb.fbuid] <- li;
+			}
+		}
+	}
+	
+	function makeFBLight( fb, va){
+		local li = Light();
+		li.enabled = !(fb.fbparam&0x80000000);
+		li.ch = 1;
+		li.type = 2;
+		li.k1 = va.lr;		//	lr=有効半径
+		li.color = va.lcol | 0xff;
+		li.power = va.lcol & 255;	//	1-255?
+		li.spotout = Math.cos( va.lspot[0] * Math.DTOR);
+		li.spotsharp = va.lspot[1]+1;
+		local m = fb.fpmat( 0, im_1).toMatrix( Matrix(), 0.5/8.0).translate( va.lpos[0], va.lpos[1], va.lpos[2]).rotate( va.lhpb[0]*Math.DTOR, va.lhpb[1]*Math.DTOR, 0);
+		li.setMatrix( gmat.mult34( m, m_1));
+		li.ref = {
+			hash = fb.hashcode()
+			mat = m		//	ワールドの変形が起きた場合、gmat*mで変形可能
+		}
+		return li;
+	}
+	
+	//	SK3DObjectのアップデート処理の中で、キューにたまってるメッシュ生成要求を処理する。
+	//	
+	function update( dt, pmatdirty=true){
+		local b = super.update( dt, pmatdirty);
+		generateChunkMeshes( Math.max( 1, dt/4) | 0);
+		return b;
+	}
+
+	function runMatrix( pmatdirty=true){
+		local b = super.runMatrix( pmatdirty);
+		if( b){
+			foreach( ch in vchunkmap){	//	非表示のchも変形
+				ch.updateMatrix();
+			}
+			foreach( li in lights){	//	ライトの位置更新
+				li.setMatrix( gmat.mult34( li.ref.mat, m_1));
+			}
+		}
+		return b;
+	}
+	
+	//	キューにたまったメッシュをタイムアウトまで生成する。
+	//	フレーム時間の1/5まで許容。fps60(16.667ms)なら3ms, fps30(33.334ms)なら6ms
+	//	タイムアウトした場合にtrueを返す。
+	function generateChunkMeshes( timeout){
+		if( !length( meshgenqueue)) return false;
+		local t0 = skGetTime(), m0 = length( meshgenqueue);
+		do{
+			local alen = Math.min( 8, length( meshgenqueue));	//	1度に8個まで
+			local res = BlockRenderer.createVoxelMeshDatas( meshgenqueue.slice( 0, alen));
+			meshgenqueue = meshgenqueue.slice( alen);
+			foreach( id, r in res){	//	rはvmdかint
+				local ch = vchunkmap[id];
+				switch( r){
+				case -1:		//	エラーが起きた、、、
+					break;
+				case 1: 		//	前回と同じ状態なので処理不要
+					break;
+				case 2: 		//	何もないチャンク。
+					ch.setEmpty();
+					break;
+				default:
+					if( r instanceof VoxelMeshData) ch.setMesh( r);
+					break;
+				}
+				animating = true;
+			}
+		}while( length( meshgenqueue) && skGetTime( t0) < timeout);
+		++meshseq;
+		printf( "meshgenqueue %S time %S / %S\n", m0, skGetTime( t0), timeout);
+		return !!length( meshgenqueue);
+	}
+
+	function purgeChunkMeshes(){
+		foreach( ch in vchunkmap){
+			ch.purge();
+		}
+		Table.clear( vchunkmap);
+		vchunklist.clear();
+	}
+
+	function customDisplayList( displist, visiblemask){
+		displist.cullNodes( vchunklist, visiblemask);
+	}
+
+	//	これ呼んでも無視！
+	function updateVisibleMask(){
+	}
+
+	//	全てのチャンクのマテリアルを取得。。。生成前のは返さない。。。
+	function getMaterials( cache=true){
+		local ma = materials;
+		if( !materials){
+			ma = [];
+			if( cache) materials = ma;
+			foreach( ch in vchunkmap){
+				foreach( f in ch.mesh["face"]){
+					ma .. f.m;
+				}
+			}
+		}
+		return ma;
+	}
+}
+
+//	BlockChunkとは粒度が違うため、別管理する必要がある。
+//	8x8x8vox単位、BlockChunkとFreeBlockを含むレンダリング、
+//	
+class SK3DVoxelChunk extends SK3DRenderNode
+{
+	skbw = null;
+	cpos = 0;
+	mat = null;
+	seq = 0;
+	hash = null;		//	voxel➔meshの変換時をキャンセルさせるためにhashを。stringが良いかな
+	lights = null;		//	チャンク内のライト。
+
+	constructor( b, p){
+		skbw = b;
+		cpos = p;
+		mat = Matrix.fromTranslate( (p&4095)*4.0, ((p>>>12)&255)*4.0, (p>>>20)*4.0);
+		visiblemask = 0;
+	}
+
+	function updateMatrix(){
+		skbw.gmat.mult34( mat, gmat);
+		if( mesh) gbnd.set( mesh.bnd); else gbnd.set( 0, 0, 0, -10000, -10000, -10000);
+		gbnd.transform( gmat);
+	}
+	
+	function setEmpty(){
+		purge();
+		skbw.gmat.mult34( mat, gmat);
+		gbnd.set( 0,0,0, -10000,-10000,-10000).transform( gmat);
+		visiblemask = 0;
+	}
+
+	//	hash,lightsもvmdにある！
+	function setMesh( vmd){
+		purge();
+		mesh = vmd.createPolygonMesh();
+		hash = vmd.hash;
+		vmd.dispose();
+		skbw.gmat.mult34( mat, gmat);
+		gbnd.set( mesh.bnd).transform( gmat);
+		visiblemask = 0;
+		foreach( f in mesh.face){
+			visiblemask |= f.m.visiblemask;
+		}
+		//	sortどーしよ
+		sortoffset = 0.0;
+		sortscale = 1.0;
+	}
+
+	function purge(){
+		mesh?.purge();
+		foreach( li in lights) scn.removeLight( li);
+		mesh = null;
+		lights = null;
+		hash = null;
+	}
+
+	function vertlen(){
+		return mesh? mesh.vtx.len() : 0;
+	}
+
+	function trilen(){
+		local n = 0;
+		foreach( f in mesh["face"]){ n += f.len / 3; }
+		return n;
+	}
+}

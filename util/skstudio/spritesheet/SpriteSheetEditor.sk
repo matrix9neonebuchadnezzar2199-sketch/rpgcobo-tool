@@ -1,0 +1,420 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+class SpriteSheetEditor extends EditorViewBase
+{
+	res = null;				//	Resource : 
+	basedir = null;			//	FileRef : resのあるdir
+	data = null;			//	SpriteSheetGeneratorData
+	changed = false;		//	SpriteSheetEditorはundo,redoは無し。
+	
+	//	components
+	canvas = null;			//	SpriteSheetCanvas :
+	rightpanel = null;		//	SpriteSheetRightPanel : 
+	
+	static function createEditor( path){
+		if( !path.endsWith( ".ssg")) return null;
+		//	
+		local ed = ::loadSKView( "/skstudio/ui/spritesheet/sseditor.ui", SpriteSheetEditor);
+		ed.init( path);
+		return ed;
+	}
+
+	//	New File
+	static function newFile( filename, dirpath){
+		local imgdirpath = dirpath.substring( 1).replace( "/", ".") .. "." .. filename.substring( 0, filename.lastIndexOf( "."));
+		local imgdir = FileRef( skGetCurrentDir().."/work/img/"..imgdirpath);
+		imgdir.mkdirs();
+		//
+		local relpath = ::getRelativePath( ::getResource( dirpath).file.path, imgdir.path);
+		local d = SpriteSheetGeneratorData();
+		d.imagedir = relpath;
+		local t = d.writeJSON();
+		local bb = encodeJSON( t, 1, ByteBuffer());
+		bb.pos = 0;
+		//	
+		return bb;
+	}
+
+	function init( path){
+		canvas = SpriteSheetCanvas( this, findChild( "canvas"));
+		rightpanel = SpriteSheetRightPanel( this, findChild( "ssright"));
+		data = SpriteSheetGeneratorData();
+		openResource( ::getResource( path));
+	}
+	
+	function rootevent( e){
+		switch( e.id){
+		case SCREEN_RESIZED:
+			break;
+		}
+	}
+
+	function execMenu( m){
+		printf( "SpriteSheetEditor execMenu %S\n", encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			save();
+			return true;
+		}
+	}
+	
+	function isFileChanged(){
+		return changed;
+	}
+
+	function markChanged( b=true){
+		changed = b;
+		::skstudio.updateChangeFile( this);
+	}
+
+	/**
+	 *	FileResourceじゃないとあかん！
+	 */
+	function openResource( r){
+		res = r;
+		basedir = FileRef( r.file, "..");
+		local t = decodeJSON( r.getContent());
+		local d = SpriteSheetGeneratorData();
+		d.readJSON( t);
+		setData( d);
+	}
+	
+	function setData( d){
+		data = d;
+		rightpanel.setData( d);
+		canvas.setData( d);
+	}
+	
+	function generate(){
+		local dir = FileRef( basedir, data.imagedir);
+		if( !dir.isDirectory()){
+			Popups.showError( "$T.dlg_dir_notfound_error");
+			return;
+		}
+		data.scan( basedir);
+		setData( data);
+		markChanged();
+	}
+	
+	function save(){
+		local t = data.writeJSON();
+		local s = encodeJSON( t,1);
+		local bb = ByteBuffer();
+		bb.putText( s);
+		bb.pos = 0;
+		res.file.save( bb);
+		if( data.img){
+			local name = res.file.name, imgname = name.substring( 0, name.lastIndexOf( "."));
+			local pngf  = FileRef( basedir, imgname .. ".ss.png");
+			local webpf = FileRef( basedir, imgname .. ".ss.webp");
+			local f;
+			switch( data.filetype){
+			case 0:
+				local imgbb = data.generateSpriteSheetPNG();
+				pngf.save( imgbb);
+				webpf.deleteFile();			//	nen no tame
+				f = pngf;
+				break;
+			case 1:
+			case 2:
+			case 3:
+				local q = #[75,90,100];
+				local imgbb = data.generateSpriteSheetWebp( q[data.filetype-1]);
+				webpf.save( imgbb);
+				pngf.deleteFile();			//	nen no tame
+				f = webpf;
+				break;
+			}
+		}
+		markChanged( false);
+		::skstudio.fileview.refreshDir( res.pres.path);
+	}
+	
+	function getImage(){
+		local name = res.file.name;
+		local pngf = FileRef( basedir, name.substring( 0, name.lastIndexOf( ".")) .. ".ss.png");
+		local webpf = FileRef( basedir, name.substring( 0, name.lastIndexOf( ".")) .. ".ss.webp");
+		try{
+			if( pngf.exists()){
+				return skLoadImage( pngf.load());
+			}else
+			if( webpf.exists()){
+				return skLoadImage( webpf.load());
+			}
+			return null;
+		}catch( ex){
+			return null;
+		}
+	}
+}
+
+local iscalelist = [
+	10, 25, 50, 75, 100, 150, 200, 300, 400, 600, 800, 1200, 1600
+];
+
+class SpriteSheetCanvas
+{
+	editor = null;
+	view = null;
+	
+	backimg = null;				//	SKImageView
+	img = null;					//	SKImageView
+	wires = null;				//	SpriteSheetWires
+	iscale = 4;
+	spw = 512;
+	sph = 512;
+
+	dropimg = null;
+	
+	moving = false;
+	mx = 0;
+	my = 0;
+
+	static function gridtexgen(){
+		return #(@(){
+			local img = RGBAImage( 16, 16);
+			for( local l = 0;l < 256;l ++){
+				local b = ((l&15)>=8)^(l>=128);
+				img[l] = 0xff909090 + int( b) * 0xff6f6f6f;
+			}
+			local t = Texture(); t.load( img);
+			return t;
+		}());
+	}
+	
+	constructor( e, v){
+		editor = e;
+		view = v;
+		v.buf.tex0.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_POINT, SK_POINT));
+		
+		local tex = gridtexgen();
+		local backsp = Sprite( tex);
+		backsp.color = 0x333333ff;
+		backsp.bnd.set( 0, 0, 512, 512);
+		backsp.setSubBounds( backsp.bnd);
+		
+		backimg = SKImageView( backsp);
+		view.addChild( backimg);
+		
+		img = SKImageView();
+		view.addChild( img);
+		img.visible = false;
+		
+		wires = SpriteSheetWires( e);
+		view.addChild( wires);
+		wires.enabled = false;
+		
+		local dop = Sprite(); dop.color = 0x14140000; dop.blend = SK_ADD;
+		dropimg = SKImageView( dop);
+		dropimg.setVisible( false);
+		dropimg.stretchalign = 15;
+		(dropimg.viewdata = ::SKViewEntityData()).staticparams = [( SKViewPropertyID.SIZE_STATIC, (view.bnd.w, view.bnd.h))]
+		view.addChild( dropimg);
+		
+		view.addEventListener( MOUSE_EVENT, mouseevent);
+		view.addEventListener( DROPTARGET_EVENT, dropevent);
+		view.dragsource = this;
+	}
+	
+	function setData( d){
+		local i = d.img || editor.getImage();
+		if( i){
+			spw = i.width;
+			sph = i.height;
+			backimg.setRect( 0, 0, spw, sph);
+			backimg.sp.setSubBounds( backimg.sp.bnd);
+			local tex = Texture();
+			tex.load( i);
+			img.setSprite( Sprite( i));
+			img.sp.blend = SK_MIX;
+			img.setRect( 0, 0, spw, sph);
+			img.visible = true;
+		}
+		iscale = 4;
+	}
+	
+	function setScale( s, cx, cy){
+		local w0 = iscalelist[iscale] * 0.01;
+		iscale = Math.clamp( s, 0, length( iscalelist)-1 );
+		local w = iscalelist[iscale] * 0.01;
+		local mat = Matrix.fromTranslate( cx, cy, 0).scale( w*1.0/w0).translate( -cx, -cy, 0);
+		img.scale( w);
+		img.matdirty = 1;
+		backimg.scale( w);
+		backimg.matdirty = 1;
+		img.pos.transform( mat);
+		backimg.pos << img.pos;
+		view.repaint();
+	}
+	
+	function mouseevent( e){
+		switch( e.id){
+		case MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON3_MASK) || e.isMouseDown( BUTTON2_MASK)){
+				moving = 1;
+				mx = e.x;
+				my = e.y;
+			}else{
+				moving = 0;
+				e.computeLocal( img.getInvMatrix());
+				selectAt( e.lx, e.ly);
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( moving){
+				moveCanvas( e.x-mx, e.y-my, 0);
+				mx = e.x;
+				my = e.y;
+			}
+			break;
+		case MOUSE_WHEEL_MOVED:
+			e.computeLocal( view.getInvMatrix());
+			setScale( iscale + e.count, e.lx, e.ly);
+			break;
+		case MOUSE_PINCH:
+			e.computeLocal( view.getInvMatrix());
+			setScale( iscale + e.dx/100, e.lx, e.ly);
+			break;
+		case MOUSE_PAN:
+			moveCanvas( e.dx, e.dy, 0);
+			break;
+		}
+	}
+
+	function moveCanvas( dx, dy){
+		img.pos.add( dx, dy, 0);
+		backimg.pos << img.pos;
+		img.matdirty = 1;
+		backimg.matdirty = 1;
+		view.repaint();
+	}
+	
+	function selectAt( x, y){
+		local d = editor.data;
+		foreach( c in d.cliplist){
+			local b = c.subbnd;
+			if( x >= b[0] && y >= b[1] && x < b[0]+b[2] && y < b[1]+b[3]){
+				editor.rightpanel.selectImageClip( c);
+				break;
+			}
+		}
+	}
+
+	//	drop image........
+
+	function acceptDrag( e){
+		return false;
+	}
+	
+	function isDropable( f){
+		if( f.path.startsWith( editor.data.getImageDir( editor.basedir).path)){
+			return false;
+		}
+		local n = f.name.toLowerCase();
+		if( n.endsWith( ".png")) return true;
+		if( n.endsWith( ".jpg")) return true;	//	png以外はコンバート走る
+		if( n.endsWith( ".jpeg")) return true;
+		if( n.endsWith( ".webp")) return true;
+		return false;
+	}
+	
+	function acceptDrop( ds, x, y){
+		if( ds instanceof FileDragSource){
+			local a = ds.filelist;
+			foreach( f in a){
+				if( isDropable( f)) return true;
+			}
+		}
+		return false;
+	}
+
+	function dropevent( e){
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+			dropimg.setVisible( true);
+			break;
+		case TARGET_DRAG_EXIT:
+			dropimg.setVisible( false);
+			break;
+		case TARGET_DROP:
+			dropimg.setVisible( false);
+			dropimages( e.dragsrc.filelist);
+			break;
+		}
+	}
+
+	function dropimages( a){
+		local imgdir = editor.data.getImageDir( editor.basedir);
+		foreach( f in a){
+			if( !isDropable( f)) continue;
+			local fn = f.name;
+			if( fn.toLowerCase().endsWith( ".png")){
+				local nf = FileRef( imgdir, fn);
+				f.copyTo( nf);
+			}else{
+				local img = skLoadImage( f.load());
+				local bb = img.encodePNG();
+				bb.pos = 0;
+				local nf = FileRef( imgdir, fn.substring( 0, fn.lastIndexOf( "."))..".png");
+				nf.save( bb);
+			}
+		}
+		editor.generate();
+	}
+}
+
+class SpriteSheetWires extends SKView
+{
+	editor = null;
+	sp = null;
+	selsp = null;
+	
+	constructor( e){
+		editor = e;
+		sp = ::getSprite("/skstudio/img/ui/b8.png");
+		selsp = Sprite();
+		selsp.blend = SK_MIX;
+		selsp.color = 0xffff0044;
+		enabled = false;
+	}
+	
+	function render(){
+		local d = editor.data;
+		local _m = getInvMatrix().mult44( editor.canvas.img.mat);
+		if( editor.rightpanel.selclip){
+			local sb = editor.rightpanel.selclip.subbnd;
+			selsp.bnd.set( sb[0], sb[1], sb[2], sb[3]).transform( _m);
+			skDrawSprite( selsp);
+		}
+		foreach( ic in d.cliplist){
+			local sb = ic.subbnd;
+			sp.color = 0xffffffff;
+			sp.bnd.set( sb[0], sb[1], sb[2], sb[3]).transform( _m);
+			skDrawSprite( sp);
+			if( ic.stretch){
+				local st = ic.stretch;
+				sp.color = 0x99ccffff;
+				sp.bnd.set( sb[0]+st[0], sb[1]+st[1], sb[2]-st[0]-st[2], sb[3]-st[1]-st[3]).transform( _m);
+				skDrawSprite( sp);
+			}
+		}
+	}
+}
+
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+skstudio.registerEditor( {
+	uid = "editor_spritesheet",
+	matches = @( path){ return path.endsWith( ".ssg"); }
+	createEditor = SpriteSheetEditor.createEditor,
+
+	newfile = {
+		icon = FileIcons.ssg,
+		name = "$T.filetype_ssg",
+		ext = ".ssg",
+		func = SpriteSheetEditor.newFile
+	},
+});

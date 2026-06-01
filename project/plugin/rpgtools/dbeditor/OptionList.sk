@@ -1,0 +1,323 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	OptionList : オプションの追加、編集
+//	※オプションに対する編集操作は、元のDBEditorに委譲せずにこのクラスの中でやってしまう。
+//	
+
+//	
+//	
+class OptionList
+{
+	static ITEMUIPATH = srcdir .. "/ui/optionitem1.ui";
+	static dndfunc = 3;
+
+	editor = null;			//	DBEditor : submitOp用
+	view = null;
+	optionlist = null;		//	ListBehavior
+
+	optionitems = null;		//	{option}[]
+
+	static function setviewfunc( la, v, i){
+		local lbl = ::OptionList.optiondesc( i);
+		v.setValue( "lbl", lbl);
+		local opt = ::RPGSystem.option[i.opttype];
+		v.setValue( "icon", opt["icon"] || "\ueb8b");
+		v.findChild( "visichk").setSelected( !i["hide"]);
+		v.pickable = false;
+	}
+
+	static function optiondesc( opd){
+		local opt = ::RPGSystem.option[opd.opttype];
+		if( !opt){
+			return "Unknown option: %S" % opd.opttype;
+		}
+		local infofmt = opt["info"]||"---", info = "---";
+		if( typeof( infofmt)==SS_CLOSURE){
+			info = ~( infofmt, opd);
+		}else{
+			local fn = compiletemplate_c( infofmt);
+			info = ~( fn, opd);
+		}
+		return sprintf( "%S [ %S ]", opt.name, info);
+	}
+
+	constructor( v, e){
+		view = v;
+		editor = e;
+		optionlist = ListBehavior( v.findChild( "LIST"));
+		optionlist.listview.setRowPath( ITEMUIPATH);
+		optionlist.multisel = true;
+		optionlist.dndfunc = dndfunc;
+		optionlist.ref = this;
+		optionitems = [];
+		optionlist.setListItems( optionitems);
+		optionlist.setviewfunc = setviewfunc;
+		v.findChild( "addbtn").addEventListener( ACTION_EVENT, addevent);
+		optionlist.listview.addEventListener( ACTION_EVENT, listevent);
+		optionlist.listview.addEventListener( ITEM_EVENT, listevent);
+		optionlist.listview.addEventListener( KEY_EVENT, listevent);
+	}
+
+	function setOptions( a){
+		optionitems = a;
+		optionlist.setListItems( optionitems);
+	}
+
+	function refresh(){
+	}
+	
+	//	
+	function addevent( e){
+		e?.consume();
+		local opt = OptionAddPopup.run( e["src"]);
+		if( opt){
+			local opd = createOptionData( opt);
+			local li = optionitems;
+			local redo = [@(){ li..opd; }];
+			local undo = [@(){ delete li[li.indexOf( opd)]; }];
+			editor.submitOp( redo, undo);
+			optionlist.refreshItems();
+			showOptionEdit( opd, true);
+		}
+	}
+
+	//	
+	function createOptionData( opt){
+		local opd = {
+			opttype = opt.key,
+		};
+		local props = fget( opt, "props", opt, opd);
+		setDefaultProperties( props, opd);
+		return opd;
+	}
+
+	//	
+	function listevent( e){
+		switch( e.id){
+		case ITEM_REMOVE:	//	削除
+		{
+			deleteOptions( e.actioncmd);
+			break;
+		}
+		case ITEM_SORT:	//	並び替え。マルチ選択。
+		{
+			local li = optionitems;
+			local oldli = clone li, newli = ::applyItemSort( clone li, e);
+			local redo = [@(){ li.clear() ... newli; }];
+			local undo = [@(){ li.clear() ... oldli; }];
+			editor.submitOp( redo, undo);
+			optionlist.refreshItems();
+			break;
+		}
+		case ACTION_PERFORMED:
+			local cmd = e.actioncmd;
+			if( cmd["src"]){	//	visichk
+				if( cmd.src["name"] == "visichk"){
+					local item = cmd.item;
+					local val = !cmd.src.isSelected();
+					local li = optionitems;
+					local redo = [@(){ cmd.item.hide <- val; }];
+					local undo = [@(){ cmd.item.hide <- !val; }];
+					editor.submitOp( redo, undo);
+				}
+			}else{
+				if( e.isMouseDown( BUTTON2_MASK)){
+					if( !optionlist.isItemSelected( e.actioncmd)) optionlist.setSelectedItem( e.actioncmd);
+					showContextMenu( e);
+				}else{
+					showOptionEdit( e.actioncmd);
+				}
+			}
+			break;
+		}
+	}
+
+	function deleteOptions( a){
+		local redo = [], undo = [], li = optionitems;
+		a.sort( @( v) -li.indexOf( v));	//	後ろから
+		foreach( opd in a){
+			local i = li.indexOf( opd);
+			redo .. @(){ li.removeValue( opd); };
+			undo[0] <- @(){ li[i] <- opd; };
+		}
+		editor.submitOp( redo, undo);
+		optionlist.refreshItems();
+	}
+	
+	function pasteOptions( a, i){
+		local redo = [], undo = [], li = optionitems;
+		foreach( opd in a){
+			redo .. @(){ li[i] <- opd; };
+			undo[0] <- @(){ li.removeValue( opd); };
+			i ++;
+		}
+		editor.submitOp( redo, undo);
+		optionlist.refreshItems();
+	}
+	
+	function showOptionEdit( opd0, isnew=false){
+		local opt = ::RPGSystem.option[opd0.opttype];
+		if( !opt) return;
+		local propdef = {
+			name = opt.name, icon = opt.icon,
+			props = fget( opt, "props", opt, opd0),
+		}
+		local opd = PropertyEditPopup.run( null, propdef, opd0);
+		if( opd && opd<>opd0){
+			local li = optionitems;
+			local redo = [@(){ li[li.indexOf( opd0)] = opd; }];
+			local undo = [@(){ li[li.indexOf( opd)] = opd0; }];
+			if( isnew) editor.mergeOp( redo, undo); else editor.submitOp( redo, undo);
+			optionlist.refreshItems();
+		}
+	}
+
+	function showContextMenu( e){
+		local opds = optionlist.getSelectedItems( 1), selopd = opds[0];
+		local cbdata = getClipboard( "option");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local ctxmenu = [
+			{ id="add", lbl="$T.lbl_add", icon="\ue147" },
+			{ id="edit", lbl="$T.lbl_edit", icon="\ue745", disable=!selopd },
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d", disable=!selopd },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata },
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=!selopd},
+		];
+		switch( MenuPopup.run( ctxmenu)["id"]){
+		case "add": addevent( null); break;
+		case "edit": showOptionEdit( selopd); break;
+		case "copy": putClipboard( "option", opds); break;
+		case "paste":
+		{
+			local i = optionlist.curidx < 0 ? length( optionlist.items) : optionlist.curidx;
+			pasteOptions( cbdata, i);
+			break;
+		}
+		case "delete":
+		{
+			deleteOptions( opds);
+			break;
+		}
+		}
+	}
+}
+
+
+//	オプションリストにレベル入力を付ける
+//	挿入、編集時にLVで自動ソートされる。なので手動のソートは出来ない。
+//	
+class OptionListWithLV extends OptionList
+{
+	static ITEMUIPATH = srcdir .. "/ui/optionitem2.ui";
+	// static dndfunc = 0;
+
+	static function setviewfunc( la, v, i){
+		local lbl = ::OptionList.optiondesc( i);
+		v.setValue( "lbl", lbl);
+		local opt = ::RPGSystem.option[i.opttype];
+		v.setValue( "icon", opt["icon"]);
+		v.setValue( "pnt", sprintf( "LV.%S", i["LV"]||0));
+		v.findChild( "visichk").setSelected( !i["hide"]);
+		v.pickable = false;
+	}
+
+	function createOptionData( opt){
+		local opd = super.createOptionData( opt);
+		opd.LV <- 1;
+		return opd;
+	}
+	
+	//	
+	function showOptionEdit( opd0, isnew=false){
+		local opt = ::RPGSystem.option[opd0.opttype];
+		local props = clone fget( opt, "props", opt, opd0);
+		props[0] <- #{ pid="LV", lbl="$T.lbl_learnlv", type=SCALAR, range=(1,999), }
+		props[1] <- #{ pid="G1", lbl="", type=HEADER, cnt="header0.ui"};
+		//
+		local propdef = {
+			name = opt.name, icon = opt.icon,
+			props = props,
+		}
+		local opd = PropertyEditPopup.run( null, propdef, opd0);
+		if( opd && opd<>opd0){
+			local li = optionitems;
+			local redo = [@(){ li[li.indexOf( opd0)] = opd; }];
+			local undo = [@(){ li[li.indexOf( opd)] = opd0; }];
+			if( isnew) editor.mergeOp( redo, undo); else editor.submitOp( redo, undo);
+			optionlist.refreshItems();
+		}
+	}
+}
+
+local optioncategories = [
+	"$T.optcatg0", "$T.optcatg1", "$T.optcatg2", "$T.lbl_etc"
+];
+
+//	
+//	
+class OptionAddPopup extends Popup
+{
+	POPUPUIPATH = srcdir.."/ui/optionaddpopup.ui"
+	ITEMUIPATH = srcdir.."/ui/optionadditem.ui"
+	listview = null;
+	
+	//	中央上部に表示。サイズは可変
+	//	
+	static function run( cv){
+		local p = OptionAddPopup( ::loadSKView( POPUPUIPATH));
+		cv = cv || ::getMousePos( 0);
+		p.show( null, cv);
+		return p.ret;
+	}
+
+	function init( v){
+		super.init( v);
+		//	list setup
+		listview = v.findChild( "LIST");
+		local vd = ::getResourceContent( ITEMUIPATH);
+		foreach( ci, c in optioncategories){
+			local head = vd.createSKView();
+			head.setValue( "head", c);
+			head.findChild( "c0").setVisible( false);
+			head.findChild( "c1").setVisible( false);
+			listview.addRow( head);
+			local optrow = null;
+			foreach( opt in ::RPGSystem.option._list.filter( @( o) o["category"]==ci)){
+				local c;
+				if( !optrow){
+					optrow = vd.createSKView();
+					optrow.findChild( "head").setVisible( false);
+					optrow.findChild( "c1").setVisible( false);
+					c = optrow.findChild( "c0");
+					listview.addRow( optrow);
+				}else{
+					(c = optrow.findChild( "c1")).setVisible( true);
+					optrow = null;
+				}
+				c.setValue( "lbl", opt.name);
+				c.setValue( "icon", opt.icon);
+				c.ref = opt;
+			}
+		}
+		listview.updateLayout();
+	}
+
+	function actionevent( e){
+		if( e.src["ref"]){
+			ret = e.src.ref;
+			close();
+			return;
+		}
+		return super.actionevent( e);
+	}
+}

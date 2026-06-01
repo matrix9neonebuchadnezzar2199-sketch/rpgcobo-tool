@@ -1,0 +1,331 @@
+
+//	非圧縮でzip書き込み。データはすべてzstdで圧縮してあるので問題なし。
+//
+class ZipWriter
+{
+	fs = null;				//	FileStream
+	entries = null;
+
+	constructor( f=null){
+		if( f) open( f);
+	}
+
+	function open( f){
+		fs = f.open( "wb");
+		entries = [];
+	}
+
+	function close(){
+		fs.close();
+		fs = null;
+	}
+
+	function _writeentry( e){
+		local offset = fs.tell();
+		local bb = ByteBuffer(); bb.endian = 0;	//	little endian
+		bb.puti( 0x04034B50);	//	PK0304
+		bb.puts( 10);			//	ver
+		bb.puts( e.flags);		//	flags
+		bb.puts( e.comp);			//	comp method
+		bb.puts( e.hms);			//	hms
+		bb.puts( e.ymd);			//	ymd
+		bb.puti( e.crc32);		//	CRC32
+		bb.puti( e.csize);		//	size (compressed)
+		bb.puti( e.size);			//	size (uncompressed)
+		bb.puts( length( e.fn));	//	fn len
+		bb.puts( 0);			//	extra len
+		bb.putText( e.fn);		//	fn
+		bb.pos = 0;
+		fs.write( bb);
+		e.offset <- offset;
+	}
+
+	static nocompextmap = {
+		png=1, webp=1, jpg=1, ogg=1, 
+	};
+
+	static function _choosecomp( fn, size){
+		local ext = fn.substring( fn.lastIndexOf( ".")+1).toLowerCase();
+		return nocompextmap[ext]||(size<4096) ? 0 : 8;
+	}
+
+	//	f : FileRef
+	function writeLocalFile( f, fn){
+		//	local file header
+		local d = Date( f.lastmodified);
+		local ymd = ((d.tm_year-80)<<9) | ((d.tm_mon+1)<<5) | (d.tm_mday);
+		local hms = (d.tm_hour<<11) | (d.tm_min<<5) | (d.tm_sec/2);
+		//	
+		local fbb = f.load(), crc32 = fbb.crc32( 0);
+		local cbb = null;
+		local size = f.size, csize = size;
+		local comp = _choosecomp( fn, size), flags = (1<<11);		//	utf8
+		if( comp){
+			cbb = compressZ( fbb, ByteBuffer()); cbb.pos = 2; csize = cbb.remain;
+			fbb.dispose();
+		}else{
+			cbb = fbb;
+		}
+		local e = { hms = hms, ymd = ymd, crc32 = crc32, size = size, fn = fn, offset = 0, comp = comp, csize = csize, flags = flags};
+		entries .. e;
+		_writeentry( e);
+		fs.write( cbb);
+		cbb.dispose();
+		return e;
+	}
+
+	//	配列で渡したファイルを同時に書き出し。zipをマルチスレッドでやるため高速。
+	//	a : [[f,fn],[f,fn],...]
+	function writeLocalFilesAtOnce( a){
+		local ea = [], nptr = ptr( length( a));
+		local func( f, fn){
+			//	local file header
+			local d = Date( f.lastmodified);
+			local ymd = ((d.tm_year-80)<<9) | ((d.tm_mon+1)<<5) | (d.tm_mday);
+			local hms = (d.tm_hour<<11) | (d.tm_min<<5) | (d.tm_sec/2);
+			//
+			local fbb = f.load(), crc32 = fbb.crc32( 0);
+			local size = f.size, csize = size;
+			local comp = _choosecomp( fn, size), flags = (1<<11);		//	utf8
+			local e = { hms = hms, ymd = ymd, crc32 = crc32, size = size, fn = fn, offset = 0, comp = comp, csize = csize, flags = flags, bb = fbb};
+			ea .. e;
+			if( comp){
+				local cbb = compressZAsync( fbb, ByteBuffer()).suspendget();
+				cbb.pos = 2;
+				e.bb = cbb;
+				e.csize = cbb.remain;
+			}
+			nptr << (~nptr-1);
+		}
+		foreach( v in a){
+			newthread().start( func, this, v[0], v[1]);
+		}
+		while( ~nptr) suspend();
+		local csize = 0;
+		foreach( e in ea){
+			csize += e.csize;
+			entries .. e;
+			_writeentry( e);
+			fs.write( e.bb);
+			e.bb.dispose();
+		}
+		return csize;
+	}
+
+	//	buf : ByteBuffer
+	function writeLocalBuffer( buf, fn){
+		local offset = fs.tell();
+		local bb = ByteBuffer(); bb.endian = 0;	//	little endian
+		//	local file header
+		local d = Date();
+		local ymd = ((d.tm_year-80)<<9) | ((d.tm_mon+1)<<5) | (d.tm_mday);
+		local hms = (d.tm_hour<<11) | (d.tm_min<<5) | (d.tm_sec/2);
+		local size = buf.remain, csize = size;
+		local comp = _choosecomp( fn, size), flags = (1<<11);		//	utf8
+		//	
+		local crc32 = buf.crc32( 0, buf.pos, buf.size);
+		local cbb = buf, bufpos = buf.pos;
+		if( comp){
+			cbb = compressZ( buf, ByteBuffer()); cbb.pos = 2; csize = cbb.remain;
+		}
+		//
+		local e = { hms = hms, ymd = ymd, crc32 = crc32, size = size, fn = fn, offset = offset, comp = comp, csize = csize, flags = flags};
+		entries .. e;
+		_writeentry( e);
+		fs.write( cbb);
+		if( cbb != buf) cbb.dispose();
+		buf.pos = bufpos;
+		return e;
+	}
+
+	function writeCentral(){
+		//
+		local cdoffset = fs.tell();
+		local bb = ByteBuffer(); bb.endian = 0;	//	little endian
+		bb.clear();
+		foreach( e in entries){
+			bb.puti( 0x02014B50);	//	PK0102
+			bb.puts( 10);			//	version made by
+			bb.puts( 10);			//	required ver
+			bb.puts( e.flags);		//	flags
+			bb.puts( e.comp);		//	comp method
+			bb.puts( e.hms);		//	hms
+			bb.puts( e.ymd);		//	ymd
+			bb.puti( e.crc32);		//	CRC32
+			bb.puti( e.csize);			//	size (compressed)
+			bb.puti( e.size);			//	size (uncompressed)
+			bb.puts( length( e.fn));	//	fn len
+			bb.puts( 0);			//	extra len
+			bb.puts( 0);			//	comment len
+			bb.puts( 0);			//	disc idx
+			bb.puts( 0);			//	in attr
+			bb.puti( 0x20);			//	out attr
+			bb.puti( e.offset);		//	local header offset
+			bb.putText( e.fn);		//	fn
+		}
+		bb.pos = 0;
+		fs.write( bb);
+		local cdsize = fs.tell()-cdoffset;
+		//	finish
+		bb.clear();
+		bb.puti( 0x06054B50);	//	PK0506
+		bb.puts( 0);			//	disc idx
+		bb.puts( 0);			//	central disc idx
+		bb.puts( length( entries));		//	entries len on disc
+		bb.puts( length( entries));		//	entries len
+		bb.puti( cdsize);		//	central dir size
+		bb.puti( cdoffset);		//	central dir offset
+		bb.puts( 0);			//	.ZIP file comment length
+		bb.pos = 0;
+		fs.write( bb);
+	}
+}
+
+//	非圧縮またはdeflateのみ対応。読んだデータを展開するのは別
+//	
+class ZipReader
+{
+	file = null;
+	fs = null;				//	FileStream
+	entries = null;			//	open時に読み込まれる
+
+	static function _getbuf( bb, size){
+		if( !size) return null;
+		local b = ByteBuffer();
+		b.putBuffer( bb, size);
+		b.pos = 0;
+		return b;
+	}
+
+	static function _todate( ymd, hms){
+		local d = Date();
+		d.tm_year = (ymd>>>9)+80;
+		d.tm_mon = ((ymd>>>5)&15)-1;
+		d.tm_mday = ymd&31;
+		d.tm_hour = hms>>>11;
+		d.tm_min = (hms>>>5)&63;
+		d.tm_sec = (hms&31) * 2;
+		return d;
+	}
+
+	constructor( f=null){
+		if( f) open( f);
+	}
+
+	function open( f){
+		file = f;
+		fs = f.open( "rb");
+		entries = [];
+		fs.seek( f.size-2048, 0);
+		local bb = fs.readfor( 2048); bb.endian = 0;
+		//	PK0506検索
+		local idx = bb.lastIndexOf( "PK\u0005\u0006");
+		bb.pos = idx + 4;
+		//	ここから
+		local di = bb.gets();		//	disc idx
+		local cdi = bb.gets();		//	central disc idx
+		local edlen = bb.gets();	//	entries len on disc
+		local elen = bb.gets();		//	entries len
+		local cdsize = bb.geti();	//	central dir size
+		local cdoffs = bb.geti();	//	central dir offset
+		//	central dir読み込み
+		fs.seek( cdoffs, 0);
+		bb = fs.readfor( cdsize); bb.endian = 0;
+		for( local l = 0;l < elen;l ++){
+			local mc = bb.geti();	//	PK0102
+			local mver = bb.gets();		//	version made by
+			local rver = bb.gets();		//	required ver
+			local flags = bb.gets();	//	flags
+			local comp = bb.gets();	//	comp method
+			local hms = bb.gets();		//	hms
+			local ymd = bb.gets();		//	ymd
+			local crc32 = bb.geti();	//	CRC32
+			local csize = bb.geti();	//	size (compressed)
+			local size = bb.geti();		//	size (uncompressed)
+			local fnlen = bb.gets();	//	fn len
+			local exlen = bb.gets();	//	extra len
+			local cmlen = bb.gets();			//	comment len
+			local didx = bb.gets();			//	disc idx
+			local inattr = bb.gets();			//	in attr
+			local exattr = bb.geti();			//	out attr
+			local lhoffs = bb.geti();		//	local header offset
+			local fn = _getbuf( bb, fnlen).asText();		//	fn
+			local ex = _getbuf( bb, exlen);
+			local cm = _getbuf( bb, cmlen);
+			entries .. {	//	必要なのはlhoffsだけ
+				fn = fn, lhoffs=lhoffs, size=size, csize=csize,i=l, comp=comp, crc=crc32,
+			}
+		}
+	}
+
+	function close(){
+		fs?.close();
+		fs = null;
+		file = null;
+	}
+
+	function readFileEntry( fn){
+		local e = entries.find( @( v) v.fn == fn);
+		return e && readEntry( e);
+	}
+
+	function readEntry( e){
+		return readEntriesAtOnce( [e])[0];
+	}
+
+	function readEntriesAtOnce( a){
+		local ea = [], nptr = ptr( length( a));
+		local func( e){
+			fs.seek( e.lhoffs, 0);
+			local hbb = fs.readfor( 30); hbb.endian = 0;
+			//	fixed head (30)
+			local mc = hbb.geti();			//	PK0304	:	0x04034B50
+			local ver = hbb.gets();			//	ver : 10
+			local flags = hbb.gets();		//	flags : 0
+			local comp = hbb.gets();		//	comp method : 0
+			local hms = hbb.gets();			//	hms
+			local ymd = hbb.gets();			//	ymd
+			local _crc_h = hbb.geti();		//	CRC32					0???
+			local _csize = hbb.geti();		//	size (compressed)		0???
+			local _size = hbb.geti();		//	size (uncompressed)		0???
+			local fnlen = hbb.gets();		//	fn len
+			local exlen = hbb.gets();		//	extra len
+			//	skip filename extra
+			local d = { fn=e.fn, data=null, crc=e.crc, date=_todate( ymd, hms), csize=e.csize, size=e.size};
+			ea .. d;
+			//	body
+			switch( comp){
+			case 0:	//	no comp
+				fs.seek( e.lhoffs + 30 + fnlen + exlen, 0);
+				d.data = fs.readfor( e.csize);
+				break;
+			case 8:	//	deflate
+			// CMF |  FLG
+			// 0x78 | 0x01 - No Compression/low
+			// 0x78 | 0x9C - Default Compression
+			// 0x78 | 0xDA - Best Compression
+				fs.seek( e.lhoffs + 30 + fnlen + exlen - 2, 0);
+				local cdata = fs.readfor( e.csize + 2);
+				cdata.pos = 0; cdata.putb( 0x78); cdata.putb( 0x9C); cdata.pos = 0;	//	ヘッダ付与
+				d.data = ByteBuffer();
+				uncompressZAsync( cdata, d.data).suspendget();
+				d.data.pos = 0;
+				break;
+			default:
+				//	error!!!!
+				throw Exception( "invalid compression method");
+				break;
+			}
+			local crc_d = d.data.crc32( 0);
+			nptr << (~nptr-1);
+			if( d.data.remain != e.size || crc_d != e.crc){
+				throw Exception( sprintf( "zip read error h:%S %S, d:%S %S", size, crc_h, d.data.remain, crc_d));
+			}
+		}
+		foreach( e in a){
+			newthread().start( func, this, e);
+		}
+		while( ~nptr) suspend();
+		return ea;
+	}
+}

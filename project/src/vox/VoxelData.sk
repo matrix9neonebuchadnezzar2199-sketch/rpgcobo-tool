@@ -1,0 +1,580 @@
+
+module.loadAddon( "voxengine");
+
+///////////////////////////////////////////////////////////////////////////////////
+//
+//	VoxelMaterial
+//	128*4のマテリアルテクスチャ
+//	128*256*32のパターンテクスチャ
+//	※パターンテクスチャはYXZ座標系そのままテクスチャに書き込まれる。そのため横にひっくり返ったようなテクスチャになる
+//	　また、パレット番号はそのままグレイスケールの輝度になる。
+//	
+//	voxmtl = VoxMaterial([
+//		{ rough=255, metal=45, mparam=0xff000000, ptn="xyz", },
+//	])
+
+
+VoxelPalette.name <- "default";		//	vd8毎にパレット名の指定が可能。VoxelContainerには複数のパレットがあり、それを選択できる
+VoxelPalette.tex <- null;			//	VoxelData8からVoxelMeshDataを生成したときに作られる
+VoxelPalette.dirty <- false;
+
+//	※tint用のHSV変形をx8ぐらい自動で
+function VoxelPalette::getTexture(){
+	if( !tex || dirty){
+		local img = #RGBAImage( 256, 1);
+		for( local l = 0;l < 256;l ++) img[l] = this[l];
+		(tex = tex||Texture()).load( img, 4|8);	//	sRGB, immutable
+		dirty = false;
+	}
+	return tex;
+}
+
+function VoxelPalette::updateTexture(){
+	dirty = true;
+	return getTexture();
+}
+
+//	※TODO キャッシュしちゃう。
+function VoxelPalette::getModPalette( palmod){
+	local pal = clone this;
+	pal.tex = null;
+	pal.dirty = true;
+	for( local l=0, len=length(palmod); l<len; l+= 2) pal[palmod[l]] = palmod[l+1];
+	return pal;
+}
+
+/*
+	アニメーションへの対応...
+	"anime":{
+		"r":[0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7],	//	uvrのrのオフセット
+		"mparams.1":[0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8],	//	発光点滅
+	},
+	"animespd":1.0,		//	1秒で1コマ
+	//
+	"#81#":{
+		"metal":0.3,
+		"mparams":[1.0,0.04,1.0,1.0],
+		"mtype":0,
+		"name":{"en":"Water Top1","ja":"水面1"},
+		"ptn":["watertop0",1.0],
+		"rough":0.12,
+	},
+*/
+class VoxelMaterial
+{
+	mtltex = null;				//	Texture : 128*4 ubyte4
+	ptntex = null;				//	Texture : 128*256*32 ubyte1
+	
+	ptnmap = null;				//	{ "name" : [_zxy,_dwh]}
+	voxmtls = null;				//	table[128]
+	animtlmap = null;			//	{i:voxmtl}
+
+	//	anime
+	orgimg = null;
+	lastimg = null;
+	frametime = 0;
+	fw = 0;						//	
+	fmod = 33;					//	
+	
+	constructor(){
+		mtltex = Texture();
+		ptntex = Texture();		//	テクスチャとしてだけ作っておく。ロードされなければテクスチャはempty
+		local defmtl = { rough = 0.6, metal = 0.0, mtype = 0, mparams = (1.0, 0.0, 1.0, 1.0) }
+		voxmtls = tuple( 128, defmtl);
+	}
+	
+	function setConf( tb){
+		animtlmap = {};
+		foreach( i, v in tb){
+			voxmtls[i] = v;
+			if( v["anime"]) animtlmap[i] <- v;
+		}
+		updateMaterialTexture();
+		frametime = fw = 0;
+	}
+
+	//	指定したvoxファイルでパターンを読み込む。現在は3Dテクスチャのサイズは固定。
+	function loadPatternTexture( voxpath){
+		local vd8 = VoxelData8( 256, 128, 32);
+		local cv8 = VoxelCanvas8( vd8);
+		cv8.fill( 0);	//	25が標準カラー
+		ptnmap = {};
+		local voxbb = getResource( voxpath).loadData();
+		local vl = VoxLoader( voxbb);
+		local vc = vl.toVoxelContainer();
+		for( local l = 0;l < vc.partsnum;l ++){
+			local p = vc.partsAt( l), vd8 = vc.modelAt( p.vdid);
+			if( vd8){
+				local w = vd8.w, h = vd8.h, d = vd8.d;
+				cv8.draw( vd8, p.mat());
+				ptnmap[p.name] <- ((p.y-h/2)|((p.x-w/2)<<8)|((p.z-d/2)<<16), h|(w<<8)|(d<<16));		//	yxz座標系！
+			}
+		}
+		local bb = vd8.getByteBuffer();
+		local r = ptntex.create3D( 128, 256, 32, SK_R8, 8, bb);	//	4=sRGB 8=IMMUTABLE 今は3Dテクスチャでは8は無視される
+	}
+	
+	//	mtltexを現在のマテリアルリストで更新する。
+	//	
+	function updateMaterialTexture(){
+		local defptn = #(0,0x010101);
+		local img = orgimg = RGBAImage( 4, 128);
+		foreach( i, m in voxmtls){
+			img[i*4  ] = (m.rough*255.0)|((m.metal*255.0)<<8)|(m.mtype<<24);
+			local b = m.mparams;
+			img[i*4+1] = (b[0]*255.0)|((b[1]*255.0)<<8)|((b[2]*255.0)<<16)|((b[3]*255.0)<<24);
+			local ptn = ptnmap[m["ptn"][0]] || defptn;
+			img[i*4+2] = ptn[0] | (((m["ptn"][1]||0.5)*255.0)<<24);	//	
+			img[i*4+3] = ptn[1];
+		}
+		mtltex.load( img, 8);	//	8=IMMUTABLE 途中でサイズを変えられない
+		lastimg = RGBAImage( 4, 128);
+		lastimg.draw( orgimg, 0, 0);
+		// printf( "ptnmap ha kore.....\n%S\n", encodeJSON( ptnmap, 1));
+	}
+
+	static uvrscale = { u=1, v=256, r=256*256, };	//	r,g,b
+
+	function setFrame( f){
+		local img = #RGBAImage( 4, 128); img.draw( orgimg, 0, 0);
+		foreach( i, m in animtlmap){
+			local ptn0 = (ptnmap[m["ptn"][0]] || defptn)[0];
+			local b = m.mparams;
+			foreach( pid, a in m.anime){
+				local v = a[f%length( a)];
+				switch( pid){
+				case "u": case "v": case "r": ptn0 += v * uvrscale[pid]; break;
+				case "b0": case "b1": case "b2": case "b3": b[pid[1]-'0'] = v; break;
+				}
+			}
+			img[i*4  ] = (m.rough*255.0)|((m.metal*255.0)<<8)|(m.mtype<<24);
+			img[i*4+1] = (b[0]*255.0)|((b[1]*255.0)<<8)|((b[2]*255.0)<<16)|((b[3]*255.0)<<24);
+			img[i*4+2] = ptn0 | (((m["ptn"][1]||0.5)*255.0)<<24);	//	
+		}
+		if( img <> lastimg){
+			mtltex.load( img);	//	テクスチャ転送。4*128*4 = 2kb
+			lastimg.draw( img, 0, 0);
+		}
+	}
+
+	//	
+	function updateFrame( dt){
+		fw += dt;
+		if( fw >= fmod){
+			setFrame( frametime += int(fw/fmod));
+			fw = fw % fmod;
+		}
+	}
+}
+
+::voxmtl <- VoxelMaterial();	//	グローバル
+
+
+///////////////////////////////////////////////////////////////////////////////////
+//
+//	VoxelData8
+//
+
+function VoxelData8::toVoxByteBuffer(){
+	local bb = ByteBuffer();
+	local bb_1 = #ByteBuffer();
+	bb.endian = 0;
+	bb.put4Code( "VOX ");
+	bb.puti( 150);
+	bb.put4Code( "MAIN");
+	bb.putis( 0, 0);			//	ato de ireru
+	//	SIZE
+	bb.put4Code( "SIZE");
+	bb.putis( 12, 0, w, d, h);
+	//	XYZI
+	local xyzi = getXYZI( bb_1);
+	bb.put4Code( "XYZI");
+	bb.putis( xyzi.remain + 4, 0);
+	bb.puti( xyzi.remain / 4);
+	bb.putBuffer( xyzi);
+	//	RGBA
+	if( pal){
+		bb.put4Code( "RGBA");
+		bb.putis( 1024, 0);
+		local rgba = pal.getColorBuffer( bb_1, 1, 256);
+		bb.putBuffer( rgba);
+	}
+	bb.pos = 0;
+	bb.pos = 16;
+	bb.puti( bb.size-20);
+	bb.pos = 0;
+	return bb;
+}
+
+///////////////////////////////////////////////////////////////////////////////////
+//
+//	VoxelMeshData
+//	ボクセルのfaceと、トランスペアレントのfaceがある。どちらも同じVertxBufferをシェアする。
+//	x,y,z,f,  u,v,?,?  
+//	
+
+function VoxelMeshData::createVertexBuffer( vbo, vbb){
+	if( !vbo){
+		vbo = VertexBuffer();
+		vbo.create(#[
+			{attr=SK_POSITION  ,type=SK_BYTE   ,elems=4, offset=0 ,stride=8 },
+			{attr=SK_COLOR1    ,type=SK_UBYTE   ,elems=4, offset=4 ,stride=8, normalize=1 },
+		],null);
+	}
+	vbo.load( vbb);
+	return vbo;
+}
+
+function VoxelMeshData::createIndexBuffer(){
+	local bb = getIndexData();
+	if( !bb) return null;
+	local ibo = IndexBuffer();
+	ibo.create( SK_USHORT);
+	ibo.load( bb, 0, vtxnum-1);
+	return ibo;
+}
+
+//	VoxelMeshは一つのIndexBufferとVertexBufferに対してPolygonFaceが複数で、オフセット、レングス、VertexBufferに対するオフセットがそれぞれ入る。
+//	この構造で65536を超えるインデックスと、ボクセル以外の構造のメッシュに両方対応することができる
+function VoxelMeshData::createPolygonFace( pal){
+	local ib = createIndexBuffer();
+	//	
+	local _mtl = #Material(){
+		tec = skFXFindTechnique( "vox.basic");	//	vox.patternでパターンボクセル
+		visiblemask = SK_VISIBLE_OPAQUE|SK_VISIBLE_SELECTOR|SK_VISIBLE_SHADOW_CASTER|SK_VISIBLE_SHADOW_RECEIVER;
+	};
+	local m = clone _mtl;
+	m.tex0 = voxmtl.mtltex;
+	m.tex1 = voxmtl.ptntex;
+	m.tex2 = pal?.getTexture();
+	//	
+	local fa = [], vmf = #(0,0,0,0);
+	for( local l = 0; getFaceInfo( l, vmf); l++){
+		local f = PolygonFace();
+		f.mode	= SK_TRIANGLES;
+		f.idx	= ib;
+		f.offs  = vmf[1];
+		f.len   = vmf[2];
+		f.voffs = vmf[3];
+		f.m     = m;
+		fa .. f;
+	}
+	return fa;
+}
+
+//	パレットを指定した場合には32bitカラーではなくRをパレットインデックスとする。
+function VoxelMeshData::createPolygonMesh( pal=null){
+	local pm = PolygonMesh();
+	pm.vtx = createVertexBuffer( null, getVertexData());
+	// pm.vtx[0].describe();
+	pm.bnd = getSubBounds().toRect3D() * VOX_SCALE;
+	local f = createPolygonFace( pal);
+	pm.face = f;
+	return pm;
+}
+
+///////////////////////////////////////////////////////////////////////////////////
+//	
+//	VoxelContainer
+//	
+
+with VoxelContainer
+{
+	pal <- null;
+	pals <- null;
+	meta <- null;
+
+	//	VoxEditorで編集したデータを適用する。
+	//	conf._voxconf.vcdatamapにvc名で入ってる
+	function applyEditData( vcdata){
+		pals = [];
+		//	material map
+		for( local l = 0;l < 4; l ++){
+			local p = l? clone pal: pal; pals .. p;
+			local mm = vcdata.mtlmap[l], mp = vcdata.mtlpal[l];
+			for( local j = 0; j < 256;j ++){
+				p[j] = (p[j]&0xffffff) | ((mp[mm[j]]&127)<<24);	//	materialのみ置き換え
+			}
+		}
+		//	ルートのパーツ名
+		for( local l = 0, vp; vp=partsAt( l); l++){
+			if( vp.parent) continue;	//	ルートじゃない
+			local palid = vcdata.partsmtl[vp.name];
+			if( palid == undefined) continue;	//	map nasi
+			local ma = getModelsUnder( vp, []);
+			foreach( m in ma){
+				local p = pals[palid];
+				if( (m.flags & 4) && m.pal != p){	//	コンフリクトは防げそうではあるなー、、、、
+					printf( "WARNING!!!! conflict palette material....\n");
+				}
+				m.pal = pals[palid];
+				m.flags |= 4;	//	パレット割り当て済み
+			}
+		}
+	}
+
+	//	指定したパーツ以下のvd8を全て取得
+	/*static*/ function getModelsUnder( vp, a){
+		if( vp.vd8){
+			a .. vp.vd8;
+		}else
+		for( local cp = vp.children; cp; cp = cp.next){ getModelsUnder( cp, a); }
+		return a;
+	}
+
+	//	r以下のリソース内のVoxelContainerを全てグローバルに登録する。
+	//	"_"から始まるフォルダ、ファイルは無視される。
+	/*static*/ function registerGlobalResources( r){
+		local n = r.name;
+		if( n[0] == '_') return;
+		if( n.endsWith( ".vox")){
+			local vc = r.getContent();
+			vc.registerGlobal( n.substring( 0, n.lastIndexOf( ".")));	//	.voxを外した名前に。。。ダブると落ちる！
+			printf( "VoxelContainer registered. path=%S name=%S, vcid=%S\n", r.path, vc.name, vc.vcid);
+		}
+		if( r.isdir){
+			foreach( v in r.getList()) registerGlobalResources( v);
+		}
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////////
+//
+//	contentloader
+//	.voxのファイルはVoxelContainerとしてロードされる
+
+::contentloaders ..
+	function( name, exp, bbuf, res){
+		switch( exp){
+		case "vox":
+			{
+				local vl = VoxLoader( bbuf);
+				local vc = vl.toVoxelContainer();
+				// local vcdata = ::conf._voxconf.vcdatamap[name];
+				// if( vcdata) vc.applyEditData( vcdata);
+				return vc;
+			}
+		case "bw":
+			{
+				local bw = ::ObjectInput.decode( bbuf);
+				return bw;
+			}
+		}
+		return null;
+	}
+
+//	MagicaVoxel .voxを読み込んでVoxelContainerを生成する。
+//	※VoxelContainerはパーツの階層構造には未対応。
+//	また、外部ファイルにマテリアル情報が含まれたconf/vox/vcdata.jsonファイルがある。これはエディターで編集する。
+//	vcdatamap = {
+//		"vcname":{ "mtlmap":[[1,2,3,n],[...],...], "mtlpal":[[1,2,3,4],...] "partsmtl":{"name":1, "name":3, ... }}	: n < length( mtlpal)
+//	}
+//	
+class VoxLoader
+{
+	// static palmap = {};		//	{md5:VoxelPalette} : 同じパレットでいくつもVoxelPaletteを作らないように => マテリアル変わるからダメだ
+
+	bb = null;
+
+	pal = null;				//	VoxelPalette : voxpalで置き換わられる
+	models = null;			//	VoxelData8
+	nodes = null;			//	VoxelParts
+	meta = null;			//	{id:val} : LAYRから入れられる
+	
+	//	temp
+	vd = null;
+
+	constructor( _bb){
+		bb = _bb;
+		bb.endian = 0;
+		models = [];
+		nodes = {};
+		//
+		local head = bb.get4Code();
+		local ver = bb.geti();
+		loadchunk();
+		if( pal){
+			foreach( vd in models){ vd.pal = pal; }
+		}
+	}
+
+	//	nGRP.children[nTRN,...]からツリー構造に対応したパーツリスト
+	//	nameはtrnにある
+	function _partslist( grp, a, pid){
+		foreach( i in grp.children){
+			local trn = nodes[i];
+			local _t = trn["_t"]||#(0,0,0);
+			local p = {
+				name = trn["_name"] || ("n"..i)
+				x = _t[0]
+				y = _t[1]
+				z = _t[2]
+				rot = trn["_r"]||0
+			}
+			if( pid>=0) p.parentid <- pid;
+			a .. p;
+			local n = nodes[trn.childid];
+			if( n.id == "nGRP"){
+				_partslist( n, a, length( a)-1);
+			}else{
+				p.vdid <- n.modelid;
+			}
+		}
+		return a;
+	}
+
+	function printnodes(){
+		foreach( i, n in nodes){
+			printf( "node[%d]:%S\n", i, encodeJSON( n));
+		}
+	}
+
+	function toVoxelContainer(){
+		// printnodes();
+		local parts = _partslist( nodes[nodes[0].childid], [], -1);
+		local vc = VoxelContainer( models, parts);
+		vc.pal = pal;
+		vc.meta = meta;
+		return vc;
+	}
+	
+	function str(){
+		local size = bb.geti();
+		local _bb = #ByteBuffer();
+		_bb.putBuffer( bb, size);
+		_bb.pos = 0;
+		local s = _bb.asText();
+		_bb.clear();
+		return s;
+	}
+
+	function dict( d){
+		local num = bb.geti();
+		for( local l = 0;l < num;l ++){
+			local n = str();
+			if(n == "_t") d[n] <- vtr( str());
+			else if(n == "_r") d[n] <- rot( str());
+			else d[n] <- str();
+		}
+		return d;
+	}
+	
+	//	位置取得
+	function vtr( s){
+		local xi = s.indexOf( ' '), yi = s.indexOf( ' ', xi+1);
+		return ( int(s.substring( 0, xi)), int(s.substring( yi+1)), int(s.substring( xi+1, yi)));	//	xzy
+	}
+	
+	//	回転取得 0-3 ... z軸回転のみ
+	// 0-1 : index of the non-zero entry in the first row
+	// 2-3 : index of the non-zero entry in the second row
+	// 4   : the sign in the first row (0 : positive; 1 : negative)
+	// 5   : the sign in the second row (0 : positive; 1 : negative)
+	// 6   : the sign in the third row (0 : positive; 1 : negative)
+	function rot( s){
+		local a = tuple( 9, 0);
+		local i = int( s), x = i&3, y = ((i>>2)&3), z = 3-(x+y);
+		a[x  ] = (i&16) ? -1 : 1;
+		a[y+3] = (i&32) ? -1 : 1;
+		a[z+6] = (i&64) ? -1 : 1;
+		local r = a[0]?(a[0]>0?0:2):(a[1]>0?1:3);	//	時計回りに。。。
+		return r;
+	}
+	
+	function palette( bb){
+		local p0 = bb.pos;
+		// local d = MD5.toDigest( bb, 256*4);
+		// if( palmap[d]) return palmap[d];
+		local p = VoxelPalette();
+		for( local l = 1;l <= 255;l ++){ p[l] = (bb.geti()&0xffffff)|0x01000000; }	//	マテリアルはこの時点では1固定
+		// palmap[d] <- p;
+		bb.pos = p0;	//	一戻し
+		return p;
+	}
+
+	function loadchunk(){
+		if( !bb.remain) return false;
+		local id = bb.get4Code();
+		local size = bb.geti();
+		local numc = bb.geti();
+		//	load data
+		local pos0 = bb.pos;
+		local c = null;
+		switch( id){
+		case "SIZE":
+			local w = bb.geti(), d = bb.geti(), h = bb.geti();
+			vd = VoxelData8( w, h, d);
+			models .. vd;
+			break;
+		case "XYZI":
+			local num = bb.geti();
+			vd.loadXYZI( bb, num);
+			bb.pos += size-4;
+			vd = null;
+			break;
+		case "nTRN":
+			c = {};
+			c.id <- id;
+			c.nodeid <- bb.geti();
+			dict( c);
+			c.childid <- bb.geti();
+			bb.geti();
+			c.layerid <- bb.geti();
+			bb.geti();
+			dict( c);
+			nodes[ c.nodeid] <- c;
+			break;
+		case "nGRP":
+			c = {};
+			c.id <- id;
+			c.nodeid <- bb.geti();
+			dict( c);
+			c.children <- array( bb.geti());
+			foreach( i, v in c.children){
+				c.children[i] = bb.geti();
+			}
+			nodes[ c.nodeid] <- c;
+			break;
+		case "nSHP":
+			c = {};
+			c.id <- id;
+			c.nodeid <- bb.geti();
+			dict( c);
+			bb.geti();
+			c.modelid <- bb.geti();
+			dict( c);
+			nodes[ c.nodeid] <- c;
+			break;
+		case "RGBA":
+			pal = palette( bb);
+			bb.pos += size;
+			break;
+		case "LAYR":
+		{
+			local lid = bb.geti();
+			local c = {};
+			dict( c);
+			bb.geti();	//	reserved
+			//	※レイヤー名をvox単位のメタデータマップとして使う！！16個まで？
+			if( c["_name"]){
+				local s = c._name, i = s.indexOf( "=");
+				if( i >= 0){
+					if( !meta) meta = {};
+					meta[s.substring( 0, i)] <- s.substring( i+1);
+				}
+			}
+			break;
+		}
+		default:
+			bb.pos += size;
+		}
+		//	load children
+		if( numc > 0){
+			for( local l = 0;l < numc;l ++){
+				local b = loadchunk();
+				if( !b) break;
+			}
+		}
+		return true;
+	}
+}

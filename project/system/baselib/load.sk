@@ -1,0 +1,13 @@
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	Sakana System classes / functions
+//	
+
+runsk("conf.sk");
+runsk("Serializer.sk");
+runsk("IO.sk");
+runsk("Graphics2D.sk");
+runsk("HTTPClient.sk");
+runsk("Easing.sk");
+runsk("utils.sk");

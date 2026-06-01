@@ -1,0 +1,203 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import MoveScreenFlags;
+
+//	完全にview依存になっちゃってるが、、、しかたないか
+//	※viewのリサイズに応じてキーやラベルを更新したい。。。イベントではだめ。
+//	updateLayoutにフック？
+//	
+class TimelineBarBehavior
+{
+	view = null;
+	selview = null;			//	選択表示用専用SKView。view[0]に追加される
+	dx = 12.0;
+	mgn = 8.0;
+	
+	keyedfunc = null;
+
+	//	state
+	time = 0;
+	timeoffs = -10;			//	※10の倍数
+	timerange = null;
+	
+	//	マウス状態
+	mx = 0, dmx = 0;
+	pandelta = 0;
+	
+	//	selection
+	selfrom = -100;
+	selto = -100;
+
+	constructor( v){
+		view = v;
+		selview = SelView();
+		timerange = (0, 1000);
+		v.insertChild( 1, selview);
+		v.addEventListener( MOUSE_EVENT, mouseevent);
+		v.addEventListener( BROADCAST_EVENT, broadevent);	//	リサイズハンドリング
+		updateLayout();
+	}
+
+	function updateLayout(){
+		updateSelsp();
+		makeLabels();
+		makeKeys();
+		setTime( time);
+	}
+
+	function setTimeRange( mi, ma){
+		timerange.set( mi, ma);
+		setTimeOffset( mi);
+		setTime( time);
+		view.repaint();
+	}
+
+	function getTime(){
+		return time;
+	}
+	
+	function setTime( t){
+		selview.cursp.bnd.set( timeToX( t)-3, 1, 12, view.bnd.h-2);
+		if( time != t){
+			time = t;
+			view.repaint();
+		}
+		return t;
+	}
+
+	function timeToX( t){
+		return mgn + (t-timeoffs)*dx;
+	}
+	
+	function xToTime( x){
+		x = Math.clamp( x, 0.0, view.bnd.w);
+		return Math.clamp( Math.iround( timeoffs + (x-mgn)/dx), timerange[0], timerange[1]);
+	}
+	
+	function setTimeOffset( t){
+		timeoffs = Math.max( timerange[0], t) | 0;
+		updateLayout();
+	}
+
+	function makeLabels(){
+		local llen = ((view.bnd.w-mgn) / dx/10)|0;
+		for( local l = 0;l <= llen;l ++){
+			local lbl = view.findChild( sprintf( "l%02d", l));
+			if( !lbl) break;
+			lbl.setText( string( l*10+timeoffs));
+		}
+	}
+	
+	function updateSelsp(){
+		local mx1 = timeToX( selfrom), mx2 = timeToX( selto);
+		if( mx2 < mx1){ local tmp = mx2; mx2 = mx1; mx1 = tmp; }
+		selview.selsp.bnd.set( mx1-6, 0, mx2-mx1+16, view.bnd.h);
+		selview.selsp.visible = true;
+		view.repaint();
+	}
+	
+	function makeKeys(){
+		selview.keysps.clear();
+		if( !keyedfunc) return;
+		local klen = ((view.bnd.w-mgn) / dx)|0;
+		local h = view.bnd.h;
+		for( local l = 0;l < klen;l ++){
+			if( keyedfunc( timeoffs+l)){
+				local sp = Sprite();
+				sp.color = 0xff9900ff;
+				sp.bnd.set( timeToX( timeoffs+l), h-20, 6, 18);
+				selview.keysps .. sp;
+			}
+		}
+	}
+	
+	function setKeyFrame( k){
+		keyedfunc = k;
+		makeKeys();
+		view.repaint();
+	}
+
+	function postValueEvent(){
+		local e = Event();
+		e.id = VALUE_CHANGED;
+		e.src = view;
+		e.actioncmd = time;
+		::rootview.postEvent(e);
+	}
+
+	function mouseevent( e){
+		switch( e.id){
+		case MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				view.postActionEvent( {selfrom:selfrom, selto:selto}, 1, e.modifiers);
+			}else{
+				e.computeLocal( view.getInvMatrix());
+				if( time != setTime( xToTime( e.lx))){
+					postValueEvent();
+				}
+				if( e.isShiftDown()){
+					selfrom = selto = time;
+					updateSelsp();
+				}else{
+					if( time < selfrom || time > selto){
+						selfrom = selto = -100;
+						updateSelsp();
+					}
+				}
+			}
+			break;
+		case MOUSE_DRAGGED:
+			e.computeLocal( view.getInvMatrix());
+			if( time != setTime( xToTime( e.lx))){
+				postValueEvent();
+			}
+			if( e.isShiftDown()){
+				selto = time;
+				updateSelsp();
+			}
+			break;
+		case MOUSE_RELEASED:
+			if( selto < selfrom){ local tmp = selto; selto = selfrom; selfrom = tmp; }
+			break;
+		case MOUSE_WHEEL_MOVED:
+			setTimeOffset( (timeoffs - e.count*10) );
+			e.consume();
+			break;
+		case MOUSE_PAN:
+			if( e.dx){
+				pandelta += e.dx;
+				if( pandelta/100){
+					setTimeOffset( (timeoffs - pandelta/100*10) );
+					pandelta = pandelta%100;
+					e.consume();
+				}
+			}
+			break;
+		}
+	}
+
+	function broadevent( e){
+		if( e.actioncmd["cmd"] == "resized"){
+			updateLayout();
+		}
+	}
+}
+
+class TimelineBarBehavior.SelView extends SKView
+{
+	cursp = null;		//	Sprite
+	selsp = null;		//	Sprite
+	keysps = null;		//	Sprite[]
+
+	constructor(){
+		cursp = Sprite(); cursp.color = 0xff3300ff; cursp.bnd.set( -3, 1, 12, 20);
+		selsp = Sprite(); selsp.color = 0x0000ffff; selsp.visible = false;
+		keysps = [];
+		// stretchalign = 15;
+		enabled = false;
+	}
+
+	function render(){
+		skDrawSprites( selsp, cursp, keysps);
+	}
+}

@@ -1,0 +1,199 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+
+/////////////////////////////////////////////////////////////////////////////////
+//	
+
+class PropertyEditPopup extends Popup
+{
+	static POPUPUIPATH = "/skstudio/ui/dialog/proppopup.ui";
+	modalclose = 2;
+	poplayout = 1;
+	minheight = 80.0;
+	
+	op = null;
+	proplist = null;			//	PropertyListBehavior
+	
+	propdef = null;				//	
+	data = null;				//	
+
+	menus = null;				//	menu
+
+	//	指定したプロパティ設定でデータ選択ポップアップを開始する。
+	//	
+	static function run( cv, propdef, data, ref=null){
+		local p = this( ::loadSKView( POPUPUIPATH), propdef, data, ref||getcaller( 1));
+		cv = cv || ::getMousePos( 0);
+		p.show( null, cv);
+		return p.ret ? p.data : null;
+	}
+	
+	constructor( v, p, d, ref){
+		super( v);
+		op = OperationStack();
+		propdef = p;
+		data = deepclone( d);
+		proplist = PropertyListBehavior( view.findChild( "proplist"), null, "cntv.ui");
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, listevent);
+		proplist.ref = ref;
+		proplist.immediate = true;	//	テキストを即時入力
+		if( p["tipskey"]) proplist.tipskey = p.tipskey;
+		local head = view.findChild( "evhead");
+		if( head){
+			head.setValue( "icon", propdef["icon"]);
+			head.setValue( "name", propdef.name);
+			head.setParam( SKViewPropertyID.BUFFERCOLOR, propdef["color"][0]||-1);
+		}
+		setupProperties();
+		local mv = view.findChild( "menubtn");
+		if( mv){
+			menus = fget( p, "menu", p);
+			if( !menus){
+				mv.setVisible( false);
+			}
+		}
+		//
+		view.updateMatrixAll( true);
+		local bndw = p["width"] || view.bnd.w;
+		local d = view.computeSizeDelta();
+		local h = Math.max( minheight, view.bnd.h+d.y);
+		view.stretchSize( bndw, h);
+	}
+
+	function setupProperties(){
+		local props = fget( propdef, "props", propdef, data);
+		proplist.bindProperties( props);
+		setDefaultProperties( props, data);
+		proplist.setParameters( data);
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "menubtn":
+			local d = propdef.menufunc( e.actioncmd, deepclone( data));
+			if( d && d <> data){
+				data = d;
+				local props = fget( propdef, "props", propdef, data);
+				proplist.bindProperties( props);
+				proplist.setParameters( d);
+				updateViewSize();
+			}
+			break;
+		}
+		return super.actionevent( e);
+	}
+
+	function submitOp( redo, undo, trk=null){
+		op.submit( redo, undo, trk);
+	}
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			// if( op.undo()){ proplist.setParameters( data);}
+			op.undo();
+			return true;
+		case "menu_edit_redo":
+			// if( op.redo()){ proplist.setParameters( data);}
+			op.redo();
+			return true;
+		}
+		return false;
+	}
+
+	function listevent( e){
+		switch( e.id){
+		case 599:
+			local d = view.computeSizeDelta();
+			if( d.y != 0.0){
+				view.stretchSize( view.bnd.w, view.bnd.h+d.y);
+				adjustBounds( view, null, view.parent);
+			}
+			break;
+		}
+	}
+
+	function propevent( e){
+		e.consume();
+		local cmd = e.actioncmd;
+		if( cmd.cmd == "prop"){
+			setParamOp( cmd.prop, cmd.val);
+		}
+	}
+
+	function setParamOp( prop, val){
+		local self = this;
+		local data = this.data, oldval = ::getProperty( prop, data);
+		local makefn = @( v, d) @(){
+			::setProperty( prop, data, v);
+			if( d){ Table.clear( data) ... d; }
+			if( self.propdef["setprop"]) self.propdef.setprop( prop, data, v, self);
+			if( prop["refresh"]){
+				self.setupProperties();
+			}else{
+				self.proplist.setParam( prop.pid, v);
+			}
+			self.updateViewSize();
+		}
+		local redo = [makefn( val, null)];
+		local undo = [makefn( oldval, prop["refresh"] && deepclone( data))];
+		submitOp( redo, undo, null);	//	trk無し
+	}
+
+	function updateViewSize(){
+		local d = view.computeSizeDelta();
+		local h = Math.max( minheight, view.bnd.h+d.y);
+		if( view.bnd.h != h){
+			view.stretchSize( view.bnd.w, h);
+			adjustBounds( view, null, view.parent);
+		}
+	}
+}
+
+class HSVEditPopup
+{
+	static function run( view, hsvfunc){
+		local hsvpropdef = {
+			name = "hsv",
+			props = [
+				{ pid="hsv", lbl="$T.lbl_hsv", type=VEC3, ui="bar", range=((-180,180),(-100,100),(-100,100)), dynamic=true },
+			],
+			setprop = @( prop, data, val){
+				if( prop.pid != "hsv") return;
+				local hv = Math.lerp( -Math.PI, Math.PI, val[0]/360.0+0.5);
+				local sv = Math.lerp( 0.0, 2.0, val[1]/200.0 + 0.5);
+				local vv = Math.lerp( 0.0, 2.0, val[2]/200.0 + 0.5);
+				local m = Matrix.fromHSV( hv, sv, vv);
+				hsvfunc( m);
+			}
+		}
+		local d0 = #{hsv=[0,0,0]};
+		local ret = PropertyEditPopup.run( view, hsvpropdef, deepclone( d0));
+		if( ret && ret<>d0){
+			return ret.hsv;
+		}
+	}
+}
+
+//	決定ボタン付き
+class PropertyEditPopup_OK extends PropertyEditPopup
+{
+	static POPUPUIPATH = "/skstudio/ui/dialog/proppopup_ok.ui";
+	modalclose = 1;
+	
+	function actionevent( e){
+		local name = e.src["name"];
+		switch( name){
+		case "btn_apply":
+			e.consume();
+			if( !checkCancel( VK_ENTER)){
+				ret = 1;
+				close();
+			}
+			break;
+		}
+	}
+}

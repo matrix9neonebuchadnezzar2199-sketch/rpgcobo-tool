@@ -1,0 +1,190 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorArmor : 防具編集
+//	
+//	
+
+////////////////////// 基本プロパティ ///////////////////////
+
+local priceprop = {
+	pid = "price"
+	lbl = "$T.lbl_price",
+	type = SCALAR
+	range = (0, 1000000)
+	defval = 100,
+}
+
+local eqtypeprop = {
+	pid = "eqtype"
+	lbl = lang( {"ja":"装備タイプ", "en":""}),
+	type = LIST
+	//	武器の編集なら武器のみ、防具の編集なら防具のみにフィルタ
+	list = @( pl) typelist( "eqtype").filter( @( v) pl.ref.eqmask & (1<<v.data.eqctg))
+	defval = 0
+};
+
+local eqflagprop = {
+	pid = "eqflag"
+	lbl = lang( {"ja":"専用装備フラグ", "en":""}),
+	type = LIST
+	list = @() [{lbl="$T.lbl_none",val=-1,icon=""}, ...typelist( "eqflag")]
+	defval = -1
+};
+
+local wmdlprop = { pid="mdlid", lbl="$T.lbl_model", type=RESID_PREVIEW, restype=["equip_vox"], defval="EV000" }
+local amdlprop = { pid="mdlid", lbl="$T.lbl_model", type=RESID_PREVIEW, restype=["equip_vox"], defval=null, hide=@( pl) !isShield( pl.getParam( "eqtype")) }
+
+local eqoptprop = { pid="opttype", lbl="-", type=NOEDITOR, defval="opt_equip" };	//	隠しパラメータでオプション効果を与える
+
+local _ctgeqtype( bits){
+	local v = ::conf.type.eqtype.findi( @( v) (1<<v.eqctg) & bits);
+	return v<0 ? 0:v;
+}
+
+
+class DBEditorArmor extends EditorViewBase
+{
+	//	スキルの基本パラメータ。基本拡張はできない。が、プラグインでここ拡張することは可能。
+	static baseprops1 = [
+		RPGProperties.nameiconprop,
+		RPGProperties.descprop,
+		eqoptprop,
+	];
+	
+	//	右側に表示されるパラメータ。扱いは1と同じ
+	static baseprops2 = [
+		priceprop,
+		{ ...eqtypeprop, defval=@() _ctgeqtype( 6) },	//	2|4
+		eqflagprop,
+		amdlprop,
+	];
+
+	static propsid = "armorprops";
+
+	static titlelbl = "$T.lbl_dbedit : $T.side_dbview_armor";
+
+	static eqmask = 2|4;
+
+	//////////////////////////////////////////////////////////////////////////////////////
+
+	res = null;				//	Resource : 
+	data = null;			//	S000等のデータのコピー。
+
+	props = null;
+	
+	//	view
+	baseproplist1 = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	baseproplist2 = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	proplist = null;			//	PropertyListBehavior : 
+	optionlist = null;			//	OptionList : 汎用オプションパネル＋LV設定も可能に。
+
+	function init( path){
+		setValue( "titlelbl", titlelbl);
+		op = OperationStack();
+		baseproplist1 = PropertyListBehavior( findChild( "baseproplist1"), null, "cnt3.ui");
+		baseproplist1.bindProperties( baseprops1);
+		baseproplist1.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist1.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist1.ref = this;
+		
+		baseproplist2 = PropertyListBehavior( findChild( "baseproplist2"), null, "cnt3.ui");
+		baseproplist2.bindProperties( baseprops2);
+		baseproplist2.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist2.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist2.ref = this;
+		//
+		props = ::RPGSystem[propsid];
+
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.bindProperties( props);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		
+		optionlist = OptionListWithLV( findChild( "optionlist"), this);
+		
+		res = ::getResource( path);
+		data = deepclone( res.getContent()) || {name:"",icon:"",desc:""};
+		//	データ補間。存在しないプロパティにデフォルト値を挿入
+		setDefaultProperties( baseprops1, data);
+		setDefaultProperties( baseprops2, data);
+		setDefaultProperties( props, data);
+		if( !data["option"]) data.option <- [];
+		//
+		proplist.bindProperties( props);
+		refresh();
+	}
+
+	function refresh(){
+		baseproplist1.setParameters( data);
+		baseproplist2.setParameters( data);
+		proplist.setParameters( data);
+		optionlist.setOptions( data.option);		//	このやり方で良いかな・・・？
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	//	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+		}
+	}
+}
+
+class DBEditorWeapon extends DBEditorArmor
+{
+	static baseprops2 = [
+		priceprop,
+		{ ...eqtypeprop, defval=@() _ctgeqtype( 1) },
+		eqflagprop,
+		wmdlprop,
+	];
+	
+	static propsid = "weaponprops";
+
+	static titlelbl = "$T.lbl_dbedit : $T.side_dbview_weapon";
+
+	static eqmask = 1;
+}

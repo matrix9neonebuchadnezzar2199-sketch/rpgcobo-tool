@@ -1,0 +1,592 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+import BlockFlagID;
+import CollisionGroupID;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	colsはコリジョンのボクセルをjson化する。vox部分はBASE64化した8bitバイト配列(shp:6, rot:2)。
+//	{ w:4, h:4, d:4, vox64:"DHwdgy6egfefe2=="}
+//	
+
+//	
+class MapVoxCollisionDialog extends UndoableDialog
+{
+	data = null;			//	map_voxのデータ
+	cols = null;			//	data.cols;
+	bw = null;
+
+	shplist = null;			//	GPUIListView
+	canvas = null;			//	CanvasBehavior
+	wmenu = null;
+	hmenu = null;
+	dmenu = null;
+	alignmenu = null;
+
+	shpcamera = null;		//	
+
+	//	ペン
+	mode = 0;
+	selshp = null;			//	{shp,pm}
+	shprot = 0;				//	0-3
+	shpviewlist = null;		//	[null,SKView,...]
+	
+	static function run( d){
+		local dlg = this( srcdir.."/ui/collisiondialog.ui", d);
+		dlg.show();
+		local ret = dlg.encodeData();
+		if( d.cols <> ret){
+			return ret;
+		}
+	}
+
+	constructor( v, d){
+		super( v);
+		shplist = view.findChild( "shplist");
+		shplist.addEventListener( ACTION_EVENT, shplistevent);
+		createShapeList();
+		data = d;
+		cols = deepclone( data.cols);
+		//
+		local vcvp = d["vp0"];
+		local vc = VoxelContainer.getGlobal( vcvp[0]), vp = vc.findParts( vcvp[1]);
+		vp = (d.type=="door"||d.type=="lamp") ? vp.children : vp;	//	ドア、ランプは最初の子パーツ
+		local vr = vp.wholebnd();
+		wmenu = sizemenu( "wmenu", (vr.w+7)/8, cols.w);
+		hmenu = sizemenu( "hmenu", (vr.h+7)/8, cols.h);
+		dmenu = sizemenu( "dmenu", (vr.d+7)/8, cols.d);
+		//
+		alignmenu = MenuBehavior( view.findChild( "alignmenu"), ResEditorMapVox.alignlist);
+		//
+		canvas = Canvas( view.findChild( "3D"), null, this, vp);
+		setMode( 0);
+		setCollisonData( cols);
+		refresh();
+	}
+
+	function setMode( m){
+		view.findChild( "mode"..mode).setSelected( false);
+		view.findChild( "mode"..m).setSelected( true);
+		mode = m;
+	}
+
+	//	
+	function setCollisonData( cols){
+		local _bw = BlockWorld( cols.w, cols.h, cols.d);
+		local bb = uncompressZSTD( decodeBASE64( cols.vox64, ByteBuffer()));
+		local n = cols.w * cols.h * cols.d;
+		// printf( "nnnnnnnnnnn %S %S %S\n", cols.w,cols.h,cols.d);
+		local p = (0,0,0);
+		for( local l = 0;l < n;l ++){
+			local b = bb[l];
+			if( b&63){
+				p[0] = (l/cols.h)%cols.w;
+				p[1] = l%cols.h;
+				p[2] = l/(cols.h*cols.w);
+				// printf( "aru %S %S %S    shp %S rot %S\n", p[0], p[1], p[2], b&63, b>>6);
+				_bw.placeBlock( p, 27|(b<<8));
+			}
+		}
+		setBlockWorld( _bw);
+	}
+
+	function createShapeList(){
+		local sw = BlockWorld( 1, 1, 1);
+		local sci = BlockColiderInterface( sw);
+		local scr = IRect3D( 0.25, 0.25, 0.25, 0.25, 0.25, 0.25);
+		sci.setFlagMask( -1);
+		local shpnum = 15;
+		shplist.setRowCount( (shpnum-2+1) / 2);
+		//	コリジョンメッシュ
+		local mb = PolygonMeshBuilder();
+		local m = Material();
+		m.tec = skFXFindTechnique( "decal.def");
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.depthtest = SK_ALWAYS;
+		m.depthmask = false;
+		m.blend = SK_MIX;
+		//
+		shpcamera = Camera();
+		// shpcamera.ortho( -0.4, 0.4, -0.4, 0.4, -100, 100);
+		shpcamera.perspective( 20.0, 2.0, 0.1, 100.0);
+		shpcamera.lookat( Vector3D( 0.0, 0.0, -2.0), Vector3D( 0.0, 0.0, 0.0));
+		shpcamera.updatePlanes();
+		shpviewlist = [null,];
+		//	
+		::Block.registerBlock( 27, { cls="collision", variations=[{}]});
+		local pos0 = #(0,0,0);
+		for( local l = 1; l < shpnum;l ++){
+			local c = shplist.rows[(l-1)/2].findChild( "c"..((l-1)&1));
+			local v3d = c.findChild( "3d");
+			sw.placeBlock( pos0, 27 | (l<<8));
+			mb.setMaterial( m);
+			local scollist = #[(128, 0xff0033ff),(16, 0xffff9966),(0, 0xffffffff),];
+			mb.appendConcaveInterface( sci, scr, SK_LINES, scollist);
+			local pm = mb.toPolygonMesh();
+			local sk = SK3DObject( pm);
+			sk.setPivot( Vector3D( -0.25))
+			v3d.scn.addObject( sk);
+			v3d.renderer.setCamera( shpcamera);
+			mb.clear();
+			c.ref = { shp=l, pm=pm, sk=sk, c=c };
+			shpviewlist .. c;
+			if( l == 1){
+				c.setSelected( true); selshp = c.ref;
+			}
+		}
+	}
+
+	function sizemenu( id, v, sel){
+		local menu = MenuBehavior( view.findChild( id), [
+			{ lbl=string( v), val=v},
+			{ lbl=string( v+1), val=v+1},
+		]);
+		return menu;
+	}
+
+	function setBlockWorld( w){
+		bw = w;
+		canvas.setBlockWorld( w);
+	}
+
+	function refresh(){
+		local w = cols.w, h = cols.h, d = cols.d, a = cols.align;
+		wmenu.selectItem( @( v) v.val==w);
+		hmenu.selectItem( @( v) v.val==h);
+		dmenu.selectItem( @( v) v.val==d);
+		alignmenu.selectItem( @( v) v.val==a);
+	}
+	
+	function updateShapeCamera(){
+		local hpb = canvas.camwork.hpb;
+		shpcamera.viewmat.identity().rotate( hpb).translate( 0.0, 0.0, -3.0).invert34u( shpcamera.viewmat);
+		shpcamera.viewmat.lscale( 1.0, 1.0, -1.0);
+		shpcamera.updatePlanes();
+		shplist.content.repaint();
+	}
+
+	function setShape( shp){
+		local ca = #("c0","c1");
+		foreach( r in shplist.rows){
+			foreach( ci in ca){
+				local c = r.findChild( ci);
+				local b = c.ref==shp;
+				if( c.isSelected() != b) c.setSelected( b);
+			}
+		}
+		selshp = shp;
+	}
+
+	function shplistevent( e){
+		setShape( e.src.ref);
+	}
+
+	function actionevent( e){
+		local self = this, cmd = e.actioncmd;
+		switch( e.src["name"]){
+		case "menubtn":
+			showContextMenu( e);
+			break;
+		case "mode0": case "mode1": case "mode2":
+			setMode( e.src.name[4]-'0');
+			break;
+		case "wmenu":
+		case "hmenu":
+		case "dmenu":
+		{	//	サイズ変更はワールドの作り直しが入る！
+			local walign = (cols.align/9)*3;
+			//
+			local k = e.src.name.substring( 0, 1);	//	w,h,d
+			local oldval = cols[k], newval = cmd.val;
+			local s = clone cols; s[k] = newval;
+			local newbw = bw.createResized( s.w, s.h, s.d, walign), oldbw = bw;
+			local redo = [@(){ self.cols[k] = newval; self.setBlockWorld( newbw); }]
+			local undo = [@(){ self.cols[k] = oldval; self.setBlockWorld( oldbw); }]
+			submitOp( redo, undo);
+			break;
+		}
+		case "alignmenu":
+		{	//	vp3dだけ作り直す
+			local oldalign = cols.align;
+			local redo = [@(){ self.cols.align = cmd.val; self.canvas.changeAlign( cmd.val); }]
+			local undo = [@(){ self.cols.align = oldalign; self.canvas.changeAlign( oldalign); }]
+			submitOp( redo, undo);
+			break;
+		}
+		case "rot_cw":
+			setRotate( shprot+1);
+			break;
+		case "rot_ccw":
+			setRotate( shprot-1);
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	function setRotate( v){
+		shprot = v & 3;
+		foreach( c in shpviewlist){
+			if( !c) continue;
+			local sk = c.ref.sk;
+			sk.rot.setHPB( shprot*Math.PI*0.5, 0.0, 0.0);
+			sk.matdirty = true;
+			c.repaint();
+		}
+	}
+
+	function showContextMenu( e){
+		local cbdata = getClipboard( "mapcol");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local ctxmenu = [
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-",
+			{ id="reset", lbl="$T.lbl_reset", icon="\uf053"},
+		];
+		switch( MenuPopup.run( ctxmenu)["id"]){
+		case "copy":
+			local d = encodeData();
+			putClipboard( "mapcol", d);
+			printf( "copy collision : %S\n", encodeJSON( d));
+			break;
+		case "paste":
+			paste( cbdata);
+			break;
+		case "reset":
+			resetCollision();
+			break;
+		}
+	}
+
+	function paste( col){
+		local vr = canvas.vp.wholebnd();
+		local bw = (vr.w+7)/8, bh = (vr.h+7)/8, bd = (vr.d+7)/8;
+		if( col.w >= bw && col.w <= bw+1 && col.h >= bh && col.h <= bh+1 && col.d >= bd && col.d <= bd+1){
+			local newcols = deepclone( col);
+			local self = this, oldcols = encodeData();
+			local redo = [@(){ self.cols = newcols; self.setCollisonData( newcols); self.canvas.changeAlign( newcols.align); }]
+			local undo = [@(){ self.cols = oldcols; self.setCollisonData( oldcols); self.canvas.changeAlign( oldcols.align); }]
+			submitOp( redo, undo);
+			refresh();
+		}
+	}
+
+	//	リセットというか、再度自動生成
+	function resetCollision(){
+		local newcols = ResEditorMapVox.makeAutoCollisionData( canvas.vp, cols.w, cols.h, cols.d, cols.align);
+		local self = this, oldcols = encodeData();
+		local redo = [@(){ self.cols = newcols; self.setCollisonData( newcols); self.canvas.changeAlign( newcols.align); }]
+		local undo = [@(){ self.cols = oldcols; self.setCollisonData( oldcols); self.canvas.changeAlign( oldcols.align); }]
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	//	BlockWorldからコリジョン情報を取りだして保存データにエンコードする
+	function encodeData(){
+		local br = IRect3D( 0, 0, 0, bw.w, bw.h, bw.d);
+		local bb = ByteBuffer();
+		local ca = canvas.bci.collectCollisions( br, []);
+		foreach( v in ca){
+			// printf( "%X ",v);
+			bb.putb( v&0xff);	//	shp:6, rot:2
+		}
+		// printf( "  %S\n", ca);
+		bb.pos = 0;
+		local bb2 = compressZSTD( bb);
+		local vox64 = encodeBASE64( bb2);
+		return { w:bw.w, h:bw.h, d:bw.d, vox64:vox64, align=cols.align};
+	}
+}
+
+class MapVoxCollisionDialog.Canvas extends CanvasBehavior
+{
+	dlg = null;				//	MapVoxCollisionDialog
+
+	//	vp情報
+	vp = null;				//	bwにplaceされるfb。fbtype=1025固定。サイズ==bwのサイズ
+	vppal = null;			//	
+	vpalign = 12;			//	
+
+	//	描画、プレビュー表示
+	bw3d = null;			//	SK3DBlockWorld
+	bci = null;				//	
+	bwcol = null;
+	skcol = null;			//	SK3DCollisionPreview
+	vp3d = null;			//	SK3DObject : ガイド用ボクセル描画。
+	bndgrid3d = null;		//	SK3DObject : 
+
+	bndplanes = null;		//	Plane[6] : ボックス平面
+	pen3d = null;			//	SK3DObject : 
+	penhb = null;			//	HitBlock
+	
+	constructor( v, h, d, _vp){
+		super( v, h);
+		view.renderer.setEnvironment( ::RenderSettings.getEnvironment( "pbr_fw"));
+		dlg = d;
+		gridsk.visible = false;
+		vp = _vp;
+		local d = dlg.data;
+		vpalign = d.cols.align;
+		if( d["pal0"]){
+			vppal = vp.vc.pal.getModPalette( d["pal0"]);
+		}
+		camwork.fovy = 20.0;
+	}
+
+	function procevent( e){
+		super.procevent( e);
+		if( e.id == MOUSE_DRAGGED){
+			dlg.updateShapeCamera();
+		}
+	}
+
+	function makeVoxelParts3D(){
+		local bw = dlg.bw;
+		local vd = ::ResEditorMapVox.makeAlignedVoxelData( vp, bw.w, bw.h, bw.d, vpalign);
+		local pm = RPGToolMesh.getVoxelMesh( vd, vppal, false);
+		// pm.pivot( 0.0);
+		pm.face[0].m.colormat = Matrix.fromScale( 0.2, 0.2, 0.2);
+		return SK3DObject( pm);
+	}
+
+	function changeAlign( a){
+		if( vpalign != a){
+			vpalign = a;
+			if( vp3d) vp3d.kill();
+			vp3d = makeVoxelParts3D();
+			scn.addObject( vp3d);
+			view.repaint();
+		}
+	}
+
+	//	BlockWorldを設定しなおす。サイズ変更、初期化、voxインポートなど、同じBlockWorldを使い続けられない場合にも
+	//	これが呼ばれる。undo/redoからも呼ばれる。
+	function setBlockWorld( bw){
+		if( bw3d) bw3d.kill();
+		if( bwcol) b3world.removeBody( bwcol);
+		if( skcol) skcol.kill();
+		if( vp3d) vp3d.kill();
+		if( bndgrid3d) bndgrid3d.kill();
+		
+		bci = BlockColiderInterface( bw);
+		bci.setFlagMask( BLK_BARRIOR);
+		local bcshp = b3Shape.createCustomConcave( bci);
+		bwcol = b3Body( 0, bcshp, Matrix(), G_STAGE, G_VIEW|G_CHARA|G_OBJECT);
+		bwcol.ref = bci;
+		b3world.addBody( bwcol);
+		
+		skcol = SK3DCollisionPreview( b3world);
+		scn.addObject( skcol);
+		//
+		local pm = RPGToolMesh.createBoundsGridMesh( bw.w, bw.h, bw.d);
+		bndgrid3d = SK3DObject( pm);
+		bndgrid3d.setLayer( -10);
+		scn.addObject( bndgrid3d);
+		//
+		vp3d = makeVoxelParts3D();
+		scn.addObject( vp3d);
+		//
+		camwork.setTo( bw.w*0.25, bw.h*0.25, bw.d*0.25);
+		camwork.updateMatrix();
+		view.repaint();
+		bndplanes = (
+			Plane( 0, 1, 0, -bw.h*0.5+0.0001),
+			Plane( 0, 0,-1, 0.0001),
+			Plane(-1, 0, 0, 0.0001),
+			Plane( 0, 0, 1, -bw.d*0.5+0.0001),
+			Plane( 1, 0, 0, -bw.w*0.5+0.0001),
+			Plane( 0,-1, 0, 0.0001),
+		);
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	collision paint....
+
+	function defevent( e){
+		switch( dlg.mode){
+		case 0: return toolevent_erace( e);
+		case 1: return toolevent_attach( e);
+		case 2: return toolevent_paint( e);
+		}
+	}
+
+	function _removepen(){
+		penhb = null; pen3d?.kill(); pen3d = null;
+	}
+
+	function spoitBlock( hb){
+		local blk = hb.blk;
+		local ref = dlg.shpviewlist[(blk>>8)&63].ref;
+		dlg.setShape( ref);
+		dlg.setRotate( blk>>14);
+	}
+
+	function placeBlock( pos, blk){
+		local self = this, oldblk = dlg.bw.blockat( pos);
+		local redo = [@(){ self.dlg.bw.placeBlock( pos, blk, 0); self.dlg.refresh(); }]
+		local undo = [@(){ self.dlg.bw.placeBlock( pos, oldblk, 0); self.dlg.refresh(); }]
+		dlg.submitOp( redo, undo);
+	}
+
+	function toolevent_erace( e){
+		switch( e.id){
+		case MOUSE_EXITED:
+			_removepen();
+			break;
+		case MOUSE_MOVED:
+			local hb = rayTest( e, -1, false);
+			if( hb){
+				local blk = hb.blk;
+				if( e.isAltDown()){
+					hb.fbparam = 1;
+					placeHitBlock( hb, (blk>>8)&63, (blk>>14)&3, 0x33ffffff);
+				}else{
+					placeHitBlock( hb, (blk>>8)&63, (blk>>14)&3, 0x0000ffff);
+				}
+			}else{
+				_removepen();
+			}
+			break;
+		case MOUSE_PRESSED:
+			if( penhb){
+				if( penhb.fbparam == 1){
+					spoitBlock( penhb);
+				}else{
+					placeBlock( (penhb.bx,penhb.by,penhb.bz), 0);
+					_removepen();
+				}
+			}
+			break;
+		}
+	}
+
+	function toolevent_attach( e){
+		switch( e.id){
+		case MOUSE_EXITED:
+			_removepen();
+			break;
+		case MOUSE_MOVED:
+			local hb = rayTest( e, -1, true);
+			if( hb){
+				local blk = hb.blk;
+				if( e.isAltDown()){
+					if( blk==1){
+						_removepen();
+					}else{
+						hb.fbparam = 1;
+						placeHitBlock( hb, (blk>>8)&63, (blk>>14)&3, 0x33ffffff);
+					}
+				}else{
+					hb.push( 1);
+					placeHitBlock( hb, dlg.selshp.shp, dlg.shprot, 0xff9900ff);
+				}
+			}else{
+				_removepen();
+			}
+			break;
+		case MOUSE_PRESSED:
+			if( penhb){
+				if( penhb.fbparam == 1){
+					spoitBlock( penhb);
+				}else{
+					local blk = 27 | (dlg.selshp.shp<<8) | (dlg.shprot<<14);
+					placeBlock( (penhb.bx,penhb.by,penhb.bz), blk);
+					_removepen();
+				}
+			}
+			break;
+		}
+	}
+
+	function toolevent_paint( e){
+		switch( e.id){
+		case MOUSE_EXITED:
+			_removepen();
+			break;
+		case MOUSE_MOVED:
+			local hb = rayTest( e, -1, false);
+			if( hb){
+				local blk = hb.blk;
+				if( e.isAltDown()){
+					hb.fbparam = 1;
+					placeHitBlock( hb, (blk>>8)&63, (blk>>14)&3, 0x33ffffff);
+				}else{
+					placeHitBlock( hb, dlg.selshp.shp, dlg.shprot, 0xff9900ff);
+				}
+			}else{
+				_removepen();
+			}
+			break;
+		case MOUSE_PRESSED:
+			if( penhb){
+				if( penhb.fbparam == 1){
+					spoitBlock( penhb);
+				}else{
+					local blk = 27 | (dlg.selshp.shp<<8) | (dlg.shprot<<14);
+					placeBlock( (penhb.bx,penhb.by,penhb.bz), blk);
+					_removepen();
+				}
+			}
+			break;
+		}
+	}
+
+	function placeHitBlock( hb, shpi, rot, col){
+		if( penhb <> hb){
+			pen3d?.kill();
+			local pm = clone dlg.shpviewlist[shpi].ref.pm, bw = dlg.bw;
+			local outofbnd = hb.bx<0||hb.by<0||hb.bz<0||hb.bx>=bw.w||hb.by>=bw.h||hb.bz>=bw.d;
+			pm.face[0].m.Kd = outofbnd?0xff0000ff:col;
+			local sk = SK3DObject( pm);
+			sk.setPivot( Vector3D( -0.25));
+			sk.pos( hb.bx*0.5+0.25, hb.by*0.5+0.25, hb.bz*0.5+0.25);
+			sk.rot.setHPB( rot*Math.PI*0.5, 0, 0);
+			penhb = hb;
+			pen3d = sk;
+			scn.addObject( sk);
+			view.repaint();
+		}
+	}
+
+	static oppof = (5,3,4,1,2,0);
+
+	function rayTest( e, blkflag, hitbhd=false){
+		bwcol.ref.setFlagMask( blkflag);
+		local qw = getRay( e.lx, e.ly), q = qw[0], w = qw[1]-qw[0], bw = dlg.bw;// w.scale( 100.0);
+		local hb = _raytest( q, w);
+		if( !hb && hitbhd){
+			foreach( i, p in bndplanes){
+				if( p.dot( w) <= 0.0) continue;
+				local t = p.getIntersectTime( q, w);
+				if( t >= 0.0 && t < 1.0){
+					local p = Vector3D( w).scale( t).add( q);
+					if( p.x >= 0.0 && p.x < bw.w*0.5 && p.y >= 0.0 && p.y < bw.h*0.5 && p.z >= 0.0 && p.z < bw.d*0.5){
+						hb = HitBlock();
+						hb.bx = (p.x*2.0)|0; hb.by = (p.y*2.0)|0; hb.bz = (p.z*2.0)|0;
+						hb.setFace( oppof[i]); hb.push( -1);
+						hb.fx = p.x; hb.fy = p.y; hb.fz = p.z;
+						hb.blk = 1;
+						return hb;
+					}
+				}
+			}
+		}
+		return hb;
+	}
+
+	function _raytest( q, w){
+		local b3res = scn.b3world.rayTest( 1, q, q+w, -1, G_STAGE);	//	closest
+		foreach( br in b3res){
+			if( br.bodyb == bwcol){
+				local hb = br.bodyb.ref.getHitBlock( br, HitBlock());	//	毎回インスタンス作る。。。
+				return hb;
+			}
+		}
+	}
+}

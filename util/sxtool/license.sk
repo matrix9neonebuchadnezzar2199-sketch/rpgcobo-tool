@@ -1,0 +1,117 @@
+﻿//	
+//	license.sk
+//		秘密鍵を指定してライセンス文字列を出力する。
+//		このコマンドは実行時刻を埋め込むので、毎回違うライセンス文字列となる。
+//	
+//	引数
+//		-key : 秘密鍵のファイル名を指定する。デフォルトはprivate-key.pem
+//		-licenser : 8文字のライセンサーIDを指定する。デフォルトはSakanaGL。
+//		-user : 10文字のユーザー名。
+//		-appname : 10文字のアプリIDを指定する。sakana.projのappnameと同じにする。
+
+runsk( "keyload.sk");
+
+local path = "private-key.pem";
+local licenser = "SakanaGL";
+local user = "SakanaGL";
+local appname = null;
+
+local path = arguments[0] || "private-key.pem";
+local pk = loadPrivateKeyFile( path);
+
+printf( "Public  exponent %S\n", pk.publicexp);
+printf( "Public  modulus  %S\n", pk.publicmod);
+printf( "Private exponent %S %S\n", pk.privateexp, pk.privateexp.size);
+printf( "\n");
+printf( "===== BEGIN sakana_crypt_local.h =====\n\n\n");
+
+
+local arraybb( a){
+	local bb = ByteBuffer();
+	foreach( v in a) bb.putb( v);
+	bb.pos = 0;
+	return bb;
+}
+
+local arrayval( a){
+	local bb = ByteBuffer();
+	foreach( v in a) bb.putb( v);
+	bb.pos = 0;
+	return bigint( bb);
+}
+
+function RSASign( msg){
+	local N = arrayval( modhex);
+	local D = arrayval( privhex);
+	if( typeof( msg) == SS_STRING){
+		local bb = ByteBuffer();
+		bb.putText( msg); bb.pos = 0;
+		msg = bb;
+	}
+//	for( local l = 0;l < msg.size;l ++) printf( "%02x ", msg[l]);	printf( "\n");
+	local M = bigint( msg);
+	local C = M.powmod( D, N);
+	return C.getbytes();
+}
+
+function RSAVerify( cmsg){
+	local N = arrayval( modhex);
+	local E = arrayval( pubhex);
+	if( typeof( cmsg) == SS_STRING){
+		local bb = ByteBuffer();
+		bb.putText( cmsg); bb.pos = 0;
+		msg = bb;
+	}
+	local C = bigint( cmsg);
+	local M = C.powmod( E, N);
+	return M.getbytes();
+}
+
+function intbase64( i){
+	local bb = ByteBuffer(); bb.puti( i); bb.pos = 0;
+	return encodeBASE64( bb);
+}
+
+local timebase = Date( 124, 0, 1);		//	2024/01/01 GMT
+local time0 = Date( 125, 0, 1);
+local time1 = Date( 180, 0, 1);
+
+function time6(){
+	return (Date.currentTime()-timebase.getTime())[0];
+}
+
+//	licenser8 userid8 appid8 time8 crc8  => 36bytes
+//	※userid8の中にauth含む
+//	
+function main( args){
+	local msg = ByteBuffer(), time, crc;
+	msg.endian = 0;
+	msg.putText( args[0]);				//	
+	msg.putText( args[1]);				//	
+	msg.putText( args[2]);				//	
+	msg.puti( time = time6());
+	msg.puti( crc = msg.crc32( 0, msg.size));
+	msg.pos = 0;
+	printf( "PUBLIC MODULO BASE64 %S\n", encodeBASE64( arraybb( modhex)));
+	printf( "PRIVATE KEY BASE64 %S\n", encodeBASE64( arraybb( privhex)));
+	
+	printf( "timebase %S - %S\n", timebase.asString(), timebase.getTime());
+	printf( "time0 %S - %S\n", time0.asString(), time0.getTime());
+	printf( "time1 %S - %S\n", time1.asString(), time1.getTime());
+	printf( "LICENSER %S USER %S APPID %S time %S crc %S  size %S\n", args[0], args[1], args[2], time, crc, msg.size);
+	
+	local bb = RSASign( msg);
+	printf( "LICENSE {\n", bb.pos, bb.size);
+	for( local l = 0;l < bb.size;l ++){
+		printf( "0x%02x, ", bb[l]); if( (l&15)==15) printf( "\n");
+	}
+	printf( "\n};\n");
+	printf( "LICENSE BASE64 %S\n", encodeBASE64( bb));
+	
+	local bb2 = RSAVerify( bb);
+//	printf( "VERIFY %S %S\n", bb2.pos, bb2.size);
+//	for( local l = 0;l < bb2.size;l ++) printf( "%02x ", bb2[l]);	printf( "\n");
+	printf( "VERIFY %S\n", msg<>bb2);
+}
+
+main( ::arguments);

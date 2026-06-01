@@ -1,0 +1,921 @@
+declare spritefx;
+
+param common
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	attribute mediump vec4 in_col <id=COLOR1>;
+	
+	uniform mediump sampler2D coltex1 <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform mediump sampler2D coltex2 <id=COLORTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform mediump sampler2D coltex3 <id=COLORTEX3, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;		//	PolygonMesh+Material
+	uniform mediump sampler2D coltex4 <id=COLORTEX4, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;		//	PolygonMesh+Material
+	uniform highp vec2 coltex1scale <id=COLORTEX1_PIX>;
+	
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform mediump mat4 p1 <id=MISC1MAT>;
+	uniform mediump mat4 p2 <id=MISC2MAT>;	//	PolygonMesh+Material
+	uniform mediump vec4 subcolor <id=UNICOLOR1>;
+	
+	varying highp vec4 v_uv;
+	varying mediump vec4 v_col;
+	
+	fragout mediump vec4 fragcolor;
+}
+
+vs def
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv;
+		v_col = in_col;
+	}
+}
+
+fs uvclamp
+{
+	lowp vec4 tex2d_clamp( sampler2D tex, lowp vec2 uv){
+		lowp vec2 fuv = floor( uv);
+		return texture2D( coltex1 , uv) - vec4( 0, 0, 0, fuv.dot( fuv));
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	mosaic shader
+
+fs mosaic
+{
+	void main(){
+		lowp vec4 pix;
+		$(COLORTEX1) { pix = tex2d_clamp( coltex1 , v_uv.xy) * v_col; } : { pix = v_col; }
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.zw);
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique mosaic
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = mosaic;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	universal transition shader
+
+fs unitrans
+{
+	void main(){
+		lowp vec4 pix;
+		$(COLORTEX1) {
+			pix = texture2D( coltex1 , v_uv.xy) * v_col;
+		} : {
+			pix = v_col;
+		}
+		$(COLORTEX2) {
+			lowp float d = texture2D( coltex2, v_uv.zw).x;
+			lowp float a2 = (p1[0].x - p1[0].y*d) * p1[0].z;
+			pix *= clamp( a2, 0.0, 1.0);
+		}
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique unitrans
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = unitrans;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	blur
+
+fs blur
+{
+	void main(){
+		mediump vec4 pix;
+		$(COLORTEX1) {
+			mediump vec2 uv = v_uv.xy;
+			mediump vec2 d = p1[0].xy;
+			pix  = ( texture2D( coltex1, uv + d     ) + texture2D( coltex1, uv - d     )) * p1[1].x
+			     + ( texture2D( coltex1, uv + d*3.0 ) + texture2D( coltex1, uv - d*3.0 )) * p1[1].y
+			     + ( texture2D( coltex1, uv + d*5.0 ) + texture2D( coltex1, uv - d*5.0 )) * p1[1].z
+			     + ( texture2D( coltex1, uv + d*7.0 ) + texture2D( coltex1, uv - d*7.0 )) * p1[1].w
+			     + ( texture2D( coltex1, uv + d*9.0 ) + texture2D( coltex1, uv - d*9.0 )) * p1[2].x
+			     + ( texture2D( coltex1, uv + d*11.0) + texture2D( coltex1, uv - d*11.0)) * p1[2].y;
+		} : {
+			pix = vec4( 1, 0, 0, 1);
+		}
+		$(COLORTEX2) {
+			pix.w = texture2D( coltex1, uv).x;	//	for dof z
+		}
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique blur
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = blur;
+	}
+}
+
+fs blurx2
+{
+	void main(){
+		mediump vec4 pix;
+		$(COLORTEX1) {
+			mediump vec2 uv = v_uv.xy;
+			mediump vec2 d = p1[0].xy;
+			pix  = ( texture2D( coltex1, uv + d     ) + texture2D( coltex1, uv - d     )) * p1[1].x
+			     + ( texture2D( coltex1, uv + d*3.0 ) + texture2D( coltex1, uv - d*3.0 )) * p1[1].y
+			     + ( texture2D( coltex1, uv + d*5.0 ) + texture2D( coltex1, uv - d*5.0 )) * p1[1].z
+			     + ( texture2D( coltex1, uv + d*7.0 ) + texture2D( coltex1, uv - d*7.0 )) * p1[1].w
+			     + ( texture2D( coltex1, uv + d*9.0 ) + texture2D( coltex1, uv - d*9.0 )) * p1[2].x
+			     + ( texture2D( coltex1, uv + d*11.0) + texture2D( coltex1, uv - d*11.0)) * p1[2].y
+			     + ( texture2D( coltex1, uv + d*13.0) + texture2D( coltex1, uv - d*13.0)) * p1[2].z
+			     + ( texture2D( coltex1, uv + d*15.0) + texture2D( coltex1, uv - d*15.0)) * p1[2].w
+			     + ( texture2D( coltex1, uv + d*17.0) + texture2D( coltex1, uv - d*17.0)) * p1[3].x
+			     + ( texture2D( coltex1, uv + d*19.0) + texture2D( coltex1, uv - d*19.0)) * p1[3].y
+			     + ( texture2D( coltex1, uv + d*21.0) + texture2D( coltex1, uv - d*21.0)) * p1[3].z
+			     + ( texture2D( coltex1, uv + d*23.0) + texture2D( coltex1, uv - d*23.0)) * p1[3].w;
+		} : {
+			pix = vec4( 1, 0, 0, 1);
+		}
+		$(COLORTEX2) {
+			pix.w = texture2D( coltex1, uv).x;	//	for dof z
+		}
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique blurx2
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = blurx2;
+	}
+}
+
+fs blurx4
+{
+	void main(){
+		mediump vec4 pix;
+		$(COLORTEX1) {
+			mediump vec2 uv = v_uv.xy;
+			mediump vec2 d = p1[0].xy;
+			pix  = ( texture2D( coltex1, uv + d     ) + texture2D( coltex1, uv - d     )) * p1[1].x
+			     + ( texture2D( coltex1, uv + d*3.0 ) + texture2D( coltex1, uv - d*3.0 )) * p1[1].y
+			     + ( texture2D( coltex1, uv + d*5.0 ) + texture2D( coltex1, uv - d*5.0 )) * p1[1].z
+			     + ( texture2D( coltex1, uv + d*7.0 ) + texture2D( coltex1, uv - d*7.0 )) * p1[1].w
+			     + ( texture2D( coltex1, uv + d*9.0 ) + texture2D( coltex1, uv - d*9.0 )) * p1[2].x
+			     + ( texture2D( coltex1, uv + d*11.0) + texture2D( coltex1, uv - d*11.0)) * p1[2].y
+			     + ( texture2D( coltex1, uv + d*13.0) + texture2D( coltex1, uv - d*13.0)) * p1[2].z
+			     + ( texture2D( coltex1, uv + d*15.0) + texture2D( coltex1, uv - d*15.0)) * p1[2].w
+			     + ( texture2D( coltex1, uv + d*17.0) + texture2D( coltex1, uv - d*17.0)) * p1[3].x
+			     + ( texture2D( coltex1, uv + d*19.0) + texture2D( coltex1, uv - d*19.0)) * p1[3].y
+			     + ( texture2D( coltex1, uv + d*21.0) + texture2D( coltex1, uv - d*21.0)) * p1[3].z
+			     + ( texture2D( coltex1, uv + d*23.0) + texture2D( coltex1, uv - d*23.0)) * p1[3].w
+				 + ( texture2D( coltex1, uv + d*25.0) + texture2D( coltex1, uv - d*25.0)) * p2[0].x
+			     + ( texture2D( coltex1, uv + d*27.0) + texture2D( coltex1, uv - d*27.0)) * p2[0].y
+			     + ( texture2D( coltex1, uv + d*29.0) + texture2D( coltex1, uv - d*29.0)) * p2[0].z
+			     + ( texture2D( coltex1, uv + d*31.0) + texture2D( coltex1, uv - d*31.0)) * p2[0].w
+			     + ( texture2D( coltex1, uv + d*33.0) + texture2D( coltex1, uv - d*33.0)) * p2[1].x
+			     + ( texture2D( coltex1, uv + d*35.0) + texture2D( coltex1, uv - d*35.0)) * p2[1].y
+				 + ( texture2D( coltex1, uv + d*37.0) + texture2D( coltex1, uv - d*37.0)) * p2[1].z
+			     + ( texture2D( coltex1, uv + d*39.0) + texture2D( coltex1, uv - d*39.0)) * p2[1].w
+			     + ( texture2D( coltex1, uv + d*41.0) + texture2D( coltex1, uv - d*41.0)) * p2[2].x
+			     + ( texture2D( coltex1, uv + d*43.0) + texture2D( coltex1, uv - d*43.0)) * p2[2].y
+			     + ( texture2D( coltex1, uv + d*45.0) + texture2D( coltex1, uv - d*45.0)) * p2[2].z
+			     + ( texture2D( coltex1, uv + d*47.0) + texture2D( coltex1, uv - d*47.0)) * p2[2].w;
+		} : {
+			pix = vec4( 1, 0, 0, 1);
+		}
+		$(COLORTEX2) {
+			pix.w = texture2D( coltex1, uv).x;	//	for dof z
+		}
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique blurx4
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = blurx4;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	zoomblur
+
+fs zoomblur
+{
+	void main(){
+		const int N = 16;
+		const float d = 1.0/16.0;
+		
+		lowp vec4 pix;
+		$(COLORTEX1) {
+			highp vec2 uv = v_uv.xy;
+			highp vec2 v = ((p1[0].xy - uv) * p1[0].z) * d;
+			// mediump vec2 cs = sin( p1[1].xx + vec2( 0.5*3.1415926535, 0.0));
+			// v = vec2( dot( v, cs.xy), dot( v, cs.yx*vec2(-1.0,1.0)));	//	rotate
+			//
+			pix  = ( texture2D( coltex1, uv )) * d;
+			for( int l = 1;l < N;l ++){
+				uv += v;
+				pix += ( texture2D( coltex1, uv)) * d;
+			}
+		} : {
+			pix = vec4( 1, 0, 0, 1);
+		}
+		// $(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique zoomblur
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = zoomblur;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	cheap boxblur
+
+param texscale
+{
+	uniform highp vec2 coltex1scale <id=COLORTEX1_PIX>;
+}
+
+fs boxblur
+{
+	void main(){
+		lowp vec4 pix;
+		$(COLORTEX1) {
+			highp vec3 v = vec3( coltex1scale, 0.0)*2.0;
+			highp vec2 uv = v_uv.xy-v.xy*0.75;
+			pix  = (
+				texture2D( coltex1, uv )+texture2D( coltex1, uv+v.xz)+texture2D( coltex1, uv+v.xz*2.0)+
+				texture2D( coltex1, uv+v.zy )+texture2D( coltex1, uv+v.xy )+texture2D( coltex1, uv+v.xy+v.xz )+
+				texture2D( coltex1, uv+v.zy*2.0 )+texture2D( coltex1, uv+v.zy*2.0+v.xz )+texture2D( coltex1, uv+v.xy*2.0 )
+			)/9.0;
+		} : {
+			pix = vec4( 1, 0, 0, 1);
+		}
+		fragcolor = pix;
+	}
+}
+
+technique boxblur
+{
+	pass {
+		using texscale;
+
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = boxblur;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	halo
+
+param halo
+{
+}
+
+fs halo
+{
+	mediump float rn( lowp float xx){
+		mediump float x0=floor( xx);
+		mediump float x1=x0+1.0;
+		mediump float v0 = fract( sin( x0*.014686)*31718.927+x0);
+		mediump float v1 = fract( sin( x1*.014686)*31718.927+x1);          
+		return (v0*(1.0-fract(xx))+v1*(fract(xx)))*2.0-sin(xx);
+	}
+	
+	void main(){
+		lowp vec4 pix;
+		$(COLORTEX1) {
+			mediump vec2 uv = v_uv.xy;
+			mediump vec2 v = (p1[0].xy - v_uv.zw);
+			mediump float w = rn( (p1[1].x + atan( -v.x, v.y)) * p1[1].y) * p1[1].z + p1[1].w;	//	raydelta, rayw, raypow*0.5, 1.0-raypow
+			v *= p1[0].zw * 0.1;
+			mediump float ha = 0.0;
+			pix  = texture2D( coltex1, v_uv.xy );
+			for( int l = 0;l < 10;l ++){
+				uv += v;
+				ha += texture2D( coltex1, uv).w;
+			}
+			pix = pix + subcolor * (min( w + (ha*ha*0.01)*p1[2].x, 1.0) * pow( ha*0.1, 0.3) * (1.0 - pix.w));		//	glow
+		} : {
+			pix = vec4(1.0,0.0,0.0,1.0);
+		}
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique halo
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = halo;
+	}
+}
+
+
+
+//////////////////////////////////////////////////////////////////////
+//	solidshadow
+
+fs solidshadow
+{
+	void main(){
+		lowp vec4 pix;
+		$(COLORTEX1) {
+			pix  = texture2D( coltex1, v_uv.xy );
+			lowp vec4 pix2 = texture2D( coltex1, v_uv.xy+p1[0].xy );
+			pix += subcolor * min( pix2.w, 1.0-pix.w);
+		} : {
+			pix = vec4(1.0,0.0,0.0,1.0);
+		}
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique solidshadow
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = solidshadow;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//	cubic lens
+
+vs lens
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv-vec4( 0.5);
+	}
+}
+
+fs lens
+{
+	void main(){
+		//	-0.5 <= uv <= 0.5
+		lowp vec4 pix;
+		$(COLORTEX1) {
+			mediump vec2 uv = v_uv.xy;
+			mediump float r2 = dot( uv, uv);
+			mediump float f = 1.0 + r2 * (p1[0].x + p1[0].y*sqrt( r2));
+			pix = texture2D( coltex1, f*uv+vec2( 0.5));
+		} : {
+			pix = vec4( 1, 0, 0, 1);
+		}
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+ 
+technique lens
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = lens;
+		fs = lens;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//	alpha gaussfilter
+
+fs alphablur
+{
+	void main(){
+		mediump float a;
+		$(COLORTEX1) {
+			mediump vec2 uv = v_uv.xy;
+			mediump vec2 d = p1[0].xy;
+			a  = ( texture2D( coltex1, uv + d     ).w + texture2D( coltex1, uv - d     ).w) * p1[1].x;
+			a += ( texture2D( coltex1, uv + d*3.0 ).w + texture2D( coltex1, uv - d*3.0 ).w) * p1[1].y;
+			a += ( texture2D( coltex1, uv + d*5.0 ).w + texture2D( coltex1, uv - d*5.0 ).w) * p1[1].z;
+			a += ( texture2D( coltex1, uv + d*7.0 ).w + texture2D( coltex1, uv - d*7.0 ).w) * p1[1].w;
+			a += ( texture2D( coltex1, uv + d*9.0 ).w + texture2D( coltex1, uv - d*9.0 ).w) * p1[2].x;
+			a += ( texture2D( coltex1, uv + d*11.0).w + texture2D( coltex1, uv - d*11.0).w) * p1[2].y;
+		} : {
+			a = 1.0;
+		}
+		$(COLORTEX2) {	//	composit
+			lowp vec4 pix = texture2D( coltex2, v_uv.xy);
+			$(COLORMAT) pix = colormat * pix;
+			lowp float da = pix.w - a;
+			// pix += vec4( subcolor.xyz, 1.0) * (clamp( da+a*subcolor.w, 0.0, 1.0) + clamp( -da, 0.0, 1.0));
+			pix = mix( pix, vec4( subcolor.xyz, 1.0), clamp( clamp( da+a*subcolor.w, 0.0, 1.0) + clamp( -da, 0.0, 1.0), 0.0, 1.0));
+		} : {
+			lowp vec4 pix = v_col * a;
+		}
+		fragcolor = pix;
+	}
+}
+
+technique alphablur
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = alphablur;
+	}
+}
+
+fs strokeblur
+{
+	void main(){
+		mediump float a;
+		$(COLORTEX1) {
+			mediump vec2 uv = v_uv.xy + p1[0].zw;
+			mediump vec2 d = p1[0].xy;
+			a  = ( texture2D( coltex1, uv + d     ).w + texture2D( coltex1, uv - d     ).w) * p1[1].x;
+			a += ( texture2D( coltex1, uv + d*3.0 ).w + texture2D( coltex1, uv - d*3.0 ).w) * p1[1].y;
+			a += ( texture2D( coltex1, uv + d*5.0 ).w + texture2D( coltex1, uv - d*5.0 ).w) * p1[1].z;
+			a += ( texture2D( coltex1, uv + d*7.0 ).w + texture2D( coltex1, uv - d*7.0 ).w) * p1[1].w;
+			a += ( texture2D( coltex1, uv + d*9.0 ).w + texture2D( coltex1, uv - d*9.0 ).w) * p1[2].x;
+			a += ( texture2D( coltex1, uv + d*11.0).w + texture2D( coltex1, uv - d*11.0).w) * p1[2].y;
+		} : {
+			a = 1.0;
+		}
+		$(COLORTEX2) {	//	composit
+			mediump vec4 pix = texture2D( coltex2, v_uv.xy);
+			$(COLORMAT) pix = colormat * pix;
+			a = clamp( pow( a, p1[3].x) * 1.25, 0.0, 1.0);		//	0.1 ~ 1.0
+			pix = subcolor*a*(1.0-pix.w) + pix;		//	subcolor=PMA
+		} : {
+			mediump vec4 pix = v_col * a;
+		}
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique strokeblur
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = strokeblur;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	circlemask
+
+fs circlemask
+{
+	void main(){
+		lowp vec4 pix;
+		$(COLORTEX1) { pix = texture2D( coltex1 , v_uv.xy) * v_col; } : { pix = v_col; }
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.zw);
+		$(COLORMAT) pix = colormat * pix;
+		mediump vec2 d = (v_uv.xy - p1[0].xy) * p1[0].zw;
+		float dd = p1[1].y*(1.0-length( d));
+		mediump float da = clamp( dd * p1[1].x, 0.0, 1.0);
+		pix *= da;
+		fragcolor = pix;
+	}
+}
+
+technique circlemask
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = circlemask;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//	shine
+
+fs shine
+{
+	float hash( vec2 p) {
+		return fract( sin( dot( p, vec2(127.1, 311.7))) * 43758.5453);
+	}
+
+	void main(){
+		highp vec2 uv = v_uv.xy;
+		mediump vec4 pix;
+		$(COLORTEX1) { pix = texture2D( coltex1 , uv) * v_col; } : { pix = v_col; }
+		//	params
+		float w = p1[0].x;
+		float angle = p1[0].y;	//	0.6		0~pi
+		float corew = p1[0].z;	//	0.01	0.005〜0.02
+		float gloww = p1[0].w;	//	0.1		0.05〜0.2
+		vec3 corecol = p1[1].xyz;	//	vec3(1.0)
+		vec3 glowcol = p1[2].xyz;	//	vec3(1.0, 0.85, 0.5)
+		float noise = p1[1].w;	//	0.02
+		// 光の帯の角度
+		float line = uv.x * cos(angle) + uv.y * sin(angle);
+		// 光の中心位置（左下→右上）
+		float pos = mix(-0.3, 1.6, w);
+		// ノイズで帯を揺らす
+		float n = hash( floor( uv * 200.0));
+		pos += (n - 0.5) * noise;
+		// コア部分（鋭い光）
+		float core = exp( -pow((line - pos), 2.0) / corew);
+		// グロー部分（広がる光）
+		float glow = exp( -pow((line - pos), 2.0) / gloww);
+		// 色（中心は白、外側は金色）
+		vec3 color = mix( glowcol, corecol, core);
+		// 残光（wが進むほど弱くなる）
+		float trail = 1.0;//smoothstep(0.0, 1.0, 1.0 - w);
+		vec3 final = pix.xyz + pix.w * (color * (core * 0.8 + glow * 0.4) * trail);
+		fragcolor = vec4( final, pix.w);
+	}
+}
+
+technique shine
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = shine;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	wave
+
+fs wave
+{
+	float hash(vec2 p) {
+	    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+	}
+
+	float noise( vec2 p) {
+		vec2 i = floor(p);
+		vec2 f = fract(p);
+		float a = hash(i);
+		float b = hash(i + vec2(1.0, 0.0));
+		float c = hash(i + vec2(0.0, 1.0));
+		float d = hash(i + vec2(1.0, 1.0));
+		vec2 u = f*f*(3.0-2.0*f);
+		return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+	}
+
+	float fbm(vec2 p, float z) {
+		float sum = 0.0;
+		float amp = 0.66;
+		for (int i = 0; i < 2; i++) {
+			sum += amp * noise(p+z);
+			p = p*2.0 + z;
+			amp *= 0.5;
+		}
+		return sum;
+	}
+
+	highp float Pseudo3dNoise2( highp vec3 pos) {
+		return (fbm( pos.xy, pos.z) * 2.0 - 1.0);
+	}
+
+	highp vec2 GetGradient( highp vec2 intPos, highp float t) {
+		float rand = fract( sin( dot( intPos, vec2(12.9898, 78.233))) * 43758.5453);;
+		float angle = 6.283185 * rand + 4.0 * t * rand;
+		return vec2(cos(angle), sin(angle));
+	}
+
+	highp float Pseudo3dNoise( highp vec3 pos) {
+		vec2 i = floor( pos.xy);
+		vec2 f = pos.xy - i;
+		vec2 blend = f * f * (3.0 - 2.0 * f);
+		float noiseVal = 
+			mix(
+				mix(
+					dot(GetGradient(i + vec2(0, 0), pos.z), f - vec2(0, 0)),
+					dot(GetGradient(i + vec2(1, 0), pos.z), f - vec2(1, 0)),
+					blend.x),
+				mix(
+					dot(GetGradient(i + vec2(0, 1), pos.z), f - vec2(0, 1)),
+					dot(GetGradient(i + vec2(1, 1), pos.z), f - vec2(1, 1)),
+					blend.x),
+			blend.y
+		);
+		return noiseVal / 0.7; // normalize to about [-1..1]
+	}
+
+	void main(){
+		highp float z = p1[0].x * 4.0, su = p1[0].y, sv = p1[0].z, fu = p1[0].w, fv = p1[1].x;
+		highp vec2 uv = v_uv.xy;
+		mediump vec4 pix;
+		highp float s = Pseudo3dNoise2( vec3( uv*fu, z));
+		highp float t = Pseudo3dNoise2( vec3( uv*fv, -z));
+		pix = vec4( texture( coltex1, uv+vec2( su*s, sv*t)*0.3));
+		fragcolor = pix;
+	}
+}
+
+technique wave
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = wave;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//	slice
+
+fs slice
+{
+	void main(){
+		highp vec2 v = p1[0].xy, t = p1[1].xy;
+		highp float div = p1[0].z, z = p1[0].w;
+		highp float d = mod( floor( dot( v_uv.xy, v) / div), 2.0) * 2.0 - 1.0;
+		mediump vec4 pix = vec4( texture2D( coltex1, v_uv.xy+d*z*t));
+		fragcolor = pix;
+	}
+}
+
+technique slice
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = slice;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	wslice
+//	time, div
+//	freq1, freq2, amp1, amp2
+//	phase1, phase2,
+
+fs wslice
+{
+	void main(){
+		highp float t = p1[0].x, div = p1[0].y;
+		highp vec2 du = sin( v_uv.yy * p1[1].xy + t + p1[2].xy) * p1[1].zw;
+		mediump vec4 pix0 = texture2D( coltex1, v_uv.xy);
+		mediump vec4 pix1 = (texture2D( coltex1, v_uv.xy + vec2( du.x, 0.0)) + texture2D( coltex1, v_uv.xy + vec2( du.y, 0.0))) * 0.5;
+		mediump vec4 pix = mix( pix0, pix1, p1[0].z);
+		fragcolor = pix;
+	}
+}
+
+technique wslice
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = wslice;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//	tvnoise		https://www.shadertoy.com/view/WsBGRW
+//	timeh, timel, ybug, dirty
+//	color, ghost, vnoise, hnoise
+//	xgrain, ygrain, scan, blink/vig
+//	n1, n2, n3
+//	
+
+param wraptex
+{
+	uniform mediump sampler2D coltex1 <id=COLORTEX1, WRAP_S=WRAP, WRAP_T=WRAP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+}
+
+fs tvnoise
+{
+	float rand2d( highp vec2 co) {
+		return fract( sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+	}
+
+	float rand( highp float n) {
+		return fract( sin(n) * 43758.5453123);
+	}
+
+	vec3 color( highp vec2 uv, float w){
+		vec3 color = texture( coltex1, uv).xyz;
+	    float bw = dot( color, vec3( 1.0/3.0));	//	vec3( 1.0/3.0) | vec3( 0.2126, 0.7152, 0.0722)
+		color = mix( color, vec3( bw), w);	//	0.95
+		color = pow( color, vec3( 1.5, 1.4, 1.5));
+		return color;
+	}
+
+	vec3 ghost( vec3 n, highp vec2 uv, float w){
+		// float n1 = threshold( snoise( t*10.), 0.85);
+		// float n2 = threshold( snoise( 2000.0+t*10.), 0.85);
+		// float n3 = threshold( snoise( 3000.0+t*10.), 0.85);
+		// float os = 0.05;
+		// highp vec2 or = vec2( n1*os, 0.0);
+		// highp vec2 og = vec2( n2*os, 0.0);
+		// highp vec2 ob = vec2( 0.0, n3*os);
+		highp vec2 or = vec2( n.x, 0.0);
+		highp vec2 og = vec2( n.y, 0.0);
+		highp vec2 ob = vec2( 0.0, n.z);
+		float r = color( uv + or, w).r;
+		float g = color( uv + og, w).g;
+		float b = color( uv + ob, w).b;
+		vec3 color = vec3(r,g,b);
+		return color;
+	}
+	
+	// vec2 uv_ybug(vec2 uv){
+	// 	float n4 = clamp(noise(200.0+iTime*12.)*14.,0.,2.);
+	// 	uv.y += n4;
+	// 	uv.y = mod(uv.y,1.);
+	// 	return uv;
+	// }
+
+	// vec2 uv_hstrip(vec2 uv){
+	// 	float vnoise = snoise(iTime*6.);
+	// 	float hnoise = threshold(snoise(iTime*10.),.5);
+
+	// 	float line = (sin(uv.y*10.+vnoise)+1.)/2.;
+	// 	line = (clamp(line,.9,1.)-.9)*10.;
+		
+	// 	uv.x += line * 0.03 * hnoise;
+	// 	uv.x = mod(uv.x,1.);
+	// 	return uv;
+	// }
+	
+	void main(){
+		highp float t = dot( p1[0].xy, vec2( 1.0, 1.0/1000.0) * 11.0);
+		highp vec2 uv = v_uv.xy, ouv = uv;
+		
+		// GRAINS
+		float r = rand2d( uv+(t+100.0)*0.01);
+		uv = uv + p1[2].xy * r;
+		
+		//	YBUG
+		uv.y = fract( uv.y + p1[0].z);
+
+		//	STRIP
+		float line = (sin(uv.y*10.+p1[1].z)+1.0) / 2.0;
+		line = (clamp(line,0.9,1.0)-0.9)*10.0;
+		uv.x = fract( uv.x + line * p1[1].w);
+		
+		vec3 color = ghost( p1[3].xyz, uv, p1[1].x);
+		
+		//	SCANS
+		float scanA = (sin(uv.y*3.1415/coltex1scale.y/2.7)+1.0)/2.0;
+		color *= mix( 1.0, scanA, p1[2].z);
+		
+		//	BLINK
+		// float blink = 0.96 + 0.04*(sin(iTime*100.)+1.)/2.;
+		// color *= blink;
+		
+		// VIG
+		// float vig = 44.0 * (ouv.x * (1.0-ouv.x) * ouv.y * (1.0-ouv.y));
+		// vig *= mix( 0.7, 1.0, rand(t + 0.5));
+		// color *= 0.6 + 0.4*vig;
+		
+		//	BLINK/VIG
+		color *= p1[2].w;
+		
+		//	DIRTY
+		color *= mix( 1.0, 0.5+rand2d( uv+t*0.01), p1[0].w);		// color *= 1.0 + rand2d( uv+t*0.01) * 0.2;
+		
+		const vec3 backColor = vec3( 0.4);
+		if( ouv.x < 0.0 || ouv.x > 1.0 || ouv.y < 0.0 || ouv.y > 1.0){
+			color = backColor;
+		}
+		fragcolor = vec4( color, 1.0);
+	}
+}
+
+technique tvnoise
+{
+	apilevel = 30;
+
+	pass {
+		using wraptex;
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = tvnoise;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	switch movie renderer
+
+param switch_movrender
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	uniform sampler2D movtex <id=COLORTEX1, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>; 
+	uniform highp vec2 movtexscale <id=COLORTEX1_PIX>;
+	varying highp vec2 v_uv;
+	uniform mediump mat4 p1 <id=MISC1MAT>;
+}
+
+vs switch_movrender
+{
+	void main(){
+		gl_Position = in_pos; v_uv = in_uv.xy;
+	}
+}
+
+fs switch_movrender
+{
+	void main(){
+		const mediump vec3 mm = vec3( 255.0/219.0, 255.0/224.0, 255.0/224.0);
+		const mediump vec3 aa = vec3( -16.0/219.0, -128.0/224.0, -128.0/224.0);
+		// highp vec2 yuv = v_uv*vec2(1.0,0.5);
+		// highp vec2 uuv = v_uv*vec2(1.0,0.25) + vec2(0.0,0.5); uuv.x -= mod( uuv.x, movtexscale.x*2.0);
+		// highp int iu = int(v_uv.x / movtexscale.x) & 0xfffe; highp float fu = float( iu) * movtexscale.x;
+		// highp vec2 uuv = vec2( fu, v_uv.y*0.25+0.5);
+		// highp vec2 vuv = uuv + vec2( movtexscale.x, 0.0);
+		// mediump vec3 v = vec3( texture2D( movtex, yuv).x, texture2D( movtex, uuv).x, texture2D( movtex, vuv).x) * mm + aa;
+		// mediump vec4 rgb = vec4( dot( v, p1[0].xyz), dot( v, p1[1].xyz), dot( v, p1[2].xyz), 1.0);
+		// //
+		// gl_FragColor = rgb;
+		highp ivec2 yuv = ivec2( v_uv*vec2(1.0,0.5) / movtexscale);
+		highp int iu2 = int(v_uv.x / movtexscale.x) & 0xfffe;
+		highp int iv2 = int((v_uv.y*0.25+0.5) / movtexscale.y);
+		highp ivec2 uuv = ivec2( iu2, iv2);
+		highp ivec2 vuv = uuv + ivec2( 1, 0);
+		mediump vec3 v = vec3( texelFetch( movtex, yuv, 0).x, texelFetch( movtex, uuv, 0).x, texelFetch( movtex, vuv, 0).x) * mm + aa;
+		mediump vec4 rgb = vec4( dot( v, p1[0].xyz), dot( v, p1[1].xyz), dot( v, p1[2].xyz), 1.0);
+		// gl_FragColor = texelFetch( movtex, ivec2( iu2, iv2), 0).xxxx;
+		gl_FragColor = rgb;
+	}
+}
+
+technique switch_movrender
+{
+	apilevel = 30;
+	pass {
+		param = switch_movrender;
+		vs = switch_movrender;
+		fs = switch_movrender;
+	}
+}

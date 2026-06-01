@@ -1,0 +1,7 @@
+
+runsk( "SKStudio.sk");
+runsk( "FileTabBehavior.sk");
+runsk( "FileSideView.sk");
+runsk( "ProjectSearch.sk");
+runsk( "RenderSettingDialog.sk");
+runsk( "ToolCommands.sk");

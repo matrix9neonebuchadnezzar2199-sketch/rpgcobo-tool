@@ -1,0 +1,229 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import MoveScreenFlags;
+
+//	ウィンドウのトップバー（アプリ名、アイコン、クローズなどがあるバー）の機能を追加する
+//	タイトルメニューもここ
+//	
+class TitlebarBehavior
+{
+	MENUITEMUIPATH = "/skstudio/ui/main/titlemenuitem.ui"
+
+	view = null;
+	
+	//	ウィンドウドラッグ
+	//	グローバル座標を保存。ウィンドウドラッグとともにグローバル座標も移動する。
+	mx0 = 0.0; my0 = 0.0;
+	winmoving = false;
+
+	//	メニュー
+	menulistview = null;	//	GPUIListView : 
+	menug = null;			//	SKView|null
+	selmenu = null;			//	SKView : 
+	menulist = null;		//	[menu,...] : メニュー実体の配列。各メニューはテーブル
+	menupopup = null;		//	bool : 
+
+	constructor( v){
+		view = v;
+		v.addEventListener( MOUSE_EVENT, mouseevent);
+		v.addEventListener( ACTION_EVENT, actionevent);
+		menug = v.findChild( "titlemenug");
+		menulistview = v.findChild( "titlemenulist");
+		if( menulistview) menulistview.content.addEventListener( MOUSE_EVENT, menuevent);
+		if( ::sakana["appicon"]){
+			setAppIcon( sakana.appicon);
+		}
+		setTitle( sakana.appname);
+		::rootview.addEventListener( BROADCAST_EVENT, broadevent);	//	生成時にrootviewは存在する！
+	}
+	
+	function setAppIcon( i){
+		local sp = getSprite( i);
+		view.setValue( "appicon", sp);
+	}
+
+	function setTitle( n){
+		view.setValue( "projectname", n);
+		skMoveScreen( { name=n });
+	}
+
+	function mouseevent( e){
+		switch( e.id){
+		case MOUSE_PRESSED:
+			mx0 = e.x; my0 = e.y;
+			if( e.count == 2){
+				toggleMaximize();
+			}else{
+				if( !isMaximized()) winmoving = true;
+			}
+			::rootview.broadcastEvent( {cmd="cancel_popup", });
+			break;
+		case MOUSE_DRAGGED:
+			if( winmoving){
+				local mx = e.x, my = e.y;
+				if( mx != mx0 || my != my0){
+					skMoveScreen( { flags=MOVESCREEN_DELTA, x = mx-mx0, y = my-my0 });
+				}
+			}
+			break;
+		case MOUSE_RELEASED:
+		case MOUSE_CANCELLED:
+			winmoving = false;
+			break;
+		}
+	}
+
+	function isMaximized(){
+		return view.findChild( "btn_winmax")?.isSelected();
+	}
+
+	function toggleMaximize(){
+		local btn = view.findChild( "btn_winmax");
+		if( !btn) return;
+		local sel = btn.isSelected();
+		skMoveScreen( { flags=sel?MOVESCREEN_RESTORE:MOVESCREEN_MAXIMIZE});
+		btn.setSelected( !sel);
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_winmin":
+			skMoveScreen( { flags=MOVESCREEN_MINIMIZE});
+			break;
+		case "btn_winmax":
+			toggleMaximize();
+			break;
+		case "btn_winclose":
+		{
+			local e = Event();
+			e.id = QUIT_REQUESTED;
+			e.src = ::rootview;
+			::rootview.postEvent( e);
+			break;
+		}
+		}
+	}
+
+	function broadevent( e){
+		local bc = e["actioncmd"];
+		switch( bc["cmd"]){
+		case "app_active":
+			view.anime( bc.state==1 ? 0 : -1);
+			break;
+		case "dialog_active":
+			if( menug) menug.anime( bc.state?1:0);
+			break;
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////
+	//	タイトルメニュー
+
+	function setTitleMenus( ma){
+		menulistview.clearRows();
+		menulist = ma;
+		foreach( m in menulist){
+			addTitleMenu( m);
+		}
+		menulistview.updateLayout();
+	}
+
+	function addTitleMenu( menu){
+		local mv = ::loadSKView( MENUITEMUIPATH);
+		mv.ref = menu;
+		mv.setValue( "lbl", menu.lbl);
+		//	ラベルの幅でviewの幅を伸張
+		local d = mv.computeSizeDelta();
+		if( d.x > 0.0){
+			mv.stretchSize( mv.bnd.w+d.x, mv.bnd.h);
+		}
+		menulistview.addRow( mv);
+	}
+
+	function getTitleMenuAt( gx, gy){
+		local cnt = menulistview.content;
+		local p = (#Vector3D()) ( gx, gy, 0.0).transform( cnt.getInvMatrix());
+		if( p.y < 0.0 || p.y >= cnt.bnd.h) return null;
+		local lx = p.x;
+		foreach( r in menulistview.rows){
+			if( lx >= r.pos.x && lx < r.pos.x+r.bnd.w) return r;
+		}
+		return null;
+	}
+
+	function setSelectedTitleMenu( v){
+		if( selmenu == v) return;
+		selmenu?.anime( 0);
+		selmenu = v;
+		v?.anime( 1);
+	}
+
+	function showMenuPopup( mv){
+		local pp = menupopup = MenuPopup( ::loadSKView( MenuPopup.POPUPUIPATH));
+		pp.rootmenu = pp;		//	rootmenuは自身
+		pp.itemuidata = ::getResourceContent( "/skstudio/ui/parts/menuitem.ui").rootdata;
+		pp.setMenu( mv.ref.submenu);
+		newthread().start( @(){
+			pp.show( ::rootview.findChild( "menulayer"), mv);
+			if( menupopup == pp) menupopup = null;
+			if( pp.ret){
+				menulistview.postActionEvent( pp.ret);	//	skstudioで処理
+			}
+			local m = ::rootview.mouses[0];
+			setSelectedTitleMenu( getTitleMenuAt( m.mousex, m.mousey));
+		}, this);
+	}
+
+	function closeMenuPopup(){
+		if( menupopup){
+			menupopup.close();
+		}
+	}
+
+	function menuevent( e){
+		local mv = getTitleMenuAt( e.x, e.y), oldmv = selmenu;
+		switch( e.id){
+		case MOUSE_EXITED:
+			if( !menupopup) setSelectedTitleMenu( null);
+			break;
+		case MOUSE_PRESSED:
+			if( !e.isMouseDown( BUTTON1_MASK)) break;
+			local mpop = menupopup; menupopup = null;
+			if( mpop){
+				mpop.close();
+				if( mpop.menus == mv["ref"]["submenu"]){
+					e.consume();
+					break;
+				}
+			}
+			if( mv){
+				e.consume();
+				showMenuPopup( mv);
+			}
+			break;
+		case MOUSE_ENTERED:
+			if( menupopup && e.isMouseDown( BUTTON1_MASK)) e.src.requestDrag( e);
+			break;
+		case MOUSE_DRAGGED:
+			if( !e.isMouseDown( BUTTON1_MASK)) break;
+			if( !menupopup) break;
+		case MOUSE_MOVED:
+			e.consume();
+			if( mv != oldmv){
+				setSelectedTitleMenu( mv);
+				if( mv && menupopup){	//	MenuPopupの切り替え。元のはモーダルでイベントループを回しているので一度抜ける必要がある。
+					newthread().start( @(){
+						closeMenuPopup();
+						suspend();
+						showMenuPopup( mv);
+					}, this);
+				}
+			}
+			break;
+		case MOUSE_RELEASED:
+			break;
+		case MOUSE_CANCELLED:
+			break;
+		}
+	}
+}

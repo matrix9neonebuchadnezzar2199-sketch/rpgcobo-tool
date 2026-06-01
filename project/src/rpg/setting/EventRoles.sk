@@ -1,0 +1,753 @@
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	EventRoles.sk
+//	マップエディタで配置するイベントに設定するロールを定義する。
+//	イベント動作を直接編集するカスタムイベントの他は決まったIDのマクロを呼び出す。
+//	あとついでにマーカータイプの定義も行う。
+//	
+//	ロールの設定されたイベントは基本プロパティをロールのものに設定したうえで置き換える
+//	{ role="itemchest", mdlid="CV123", "page.0.reqs"=[{lvar="W",op="=",rvar=false}] }
+//	
+
+import PropertyType;
+import RPGPropertyType;
+
+/////////////////// 共通パラメータ、関数
+
+local nameprop = RPGProperties.nameprop;
+local nameiconprop = RPGProperties.nameiconprop;
+
+//	モデル
+local mdlprop = {
+	pid = "mdlid"
+	lbl = "$T.lbl_model"
+	type = RESID
+	restype = ["chara_etc", "chara_vox", "efx", "map_asset"]
+	filter=@( i, d){
+		switch( i[0]){
+		case 'F': case 'M': return d["eventuse"];
+		}
+		return true;
+	}
+}
+
+//	移動アクション
+local moveactionprop = {
+	pid = "moveaction"
+	lbl = "$T.lbl_moveaction"
+	type = LIST
+	list = @() ::RPGSystem.moveaction._list.map( @( v)({ lbl=v.name, val=v.key, icon=v["icon"] }))
+	refresh = 1
+}
+
+//	ポップ表示
+local popprop = {
+	pid = "pop"
+	lbl = "ポップ表示"
+	icon = ""
+	type = LIST
+	list = @(){ return ::RPGSystem.moveaction._list; }
+}
+
+//	トリガー
+local triggerprop = {
+	pid = "trigger"
+	lbl = "$T.evtrigger"
+	icon = ""
+	type = LIST
+	list = [
+		{ lbl="$T.evtrigger0", val=0 }
+		{ lbl="$T.evtrigger1", val=1 }
+		{ lbl="$T.evtrigger2", val=2 }
+		{ lbl="$T.evtrigger3", val=3 }
+		{ lbl="$T.evtrigger4", val=4 }
+		{ lbl="$T.evtrigger5", val=5 }
+		{ lbl="$T.evtrigger6", val=6 }
+		{ lbl="$T.evtrigger7", val=7 }
+	]
+}
+
+//	スポーン距離
+local spawndistprop = {
+	pid="spawndist"
+	lbl="$T.spawndist"
+	type = LIST
+	list = [
+		{ lbl="$T.spawndist0", val=0 }
+		{ lbl="$T.spawndist1", val=1 }
+		{ lbl="$T.spawndist2", val=2 }
+		{ lbl="$T.spawndist3", val=3 }
+		{ lbl="$T.spawndist4", val=4 }
+		{ lbl="$T.spawndist5", val=5 }
+	]
+}
+
+//	ページ条件
+local reqsprop = {
+	pid = "reqs"
+	lbl = "$T.lbl_pagereqs"
+	icon = ""
+	type = REQUIREMENTS
+	cnt = "cnt6.ui"
+
+	defval = null
+}
+
+//	ページ条件(page0)
+local reqs0prop = {
+	pid = "reqs0"
+	lbl = "$T.lbl_appearreqs"
+	icon = ""
+	type = REQUIREMENTS
+	cnt = "cnt6.ui"
+}
+
+local reqs1prop = { ...reqs0prop, pid="reqs1" }
+
+//	コレクション選択をアイテムボックスに限る
+local collectionFilterBox( p){
+	local data = ::rpgdata[p[0]];
+	return p[0][0]!='B' || data["settype"]=="treasure";
+}
+
+//	方向。180°指定
+local dirprop = {
+	pid = "dir"
+	lbl = "$T.lbl_direction"
+	type = SCALAR
+	range = (-180,180)
+	defval = 0
+	ui = "bar"
+}
+
+local wipeprop = {
+	pid = "wipe"
+	lbl = "$T.wipe"
+	type = LIST
+	list = @() ::mapwipelist.map( @( v, i) +{ lbl=v.lbl, val=i})
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	ポータルのイベントロール。
+//	
+
+RPGSystem.eventrole .. {
+	key = "portal"
+	name = "$T.lbl_portal"
+	icon = "\uea77"
+	desc = ""
+	
+	props = [
+		nameprop,
+		{ pid="dest", lbl="$T.cmd_mapmove_dest", type=PORTAL, cnt="cnt6.ui", },
+		wipeprop,
+		{ pid="remap", lbl="$T.lbl_remap", type=BOOL, },
+	]
+	
+	defdata = {
+		mdl = { r = [0,1.0,0,0.5,1.0,0.5] }
+		spawndist = 1
+		dest = null
+		wipe = 1
+		remap = true
+	}
+	
+	defpage = [
+		{
+			ani=null
+			trigger = 5
+			wvarmap = { W="dest", X="wipe",Y="remap" }
+			cmdblock = [
+				{ cmd="cmd_mapmove", dest=null, _var={dest="W",wipe="X",remap="Y"}, }
+			]
+		},
+	],
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	ドア用のイベントロール。
+//	
+
+//	通常ドア。AがリストアIDと同値だと開く。
+//	マップリストアがくるとリストアIDがカウントアップし、closeに戻る。
+//	
+RPGSystem.eventrole .. {
+	menutype = "door"
+	key = "door"
+	name = {"ja":"開閉ドア","en":"Openable Door"}
+	icon = "\ueffd"
+	desc = ""
+	
+	props = [
+		nameprop,
+		{ pid="opensnd", lbl="$T.lbl_sound", type=RESID, restype="snd", },
+	]
+
+	defdata = {
+		spawndist = 1,
+		opensnd = "SE100",
+	}
+	
+	defpage = [
+		{
+			standani = {id="close"}
+			trigger = 3
+			wvarmap = { W="opensnd" }
+			cmdblock = [
+				{ cmd="cmd_compute", lvar="A", op="=", rvar="REMAPID" }
+				{ cmd="cmd_snd", who=1, _var={sndid="W"} }
+				{ cmd="cmd_wait", time=100 }
+			]
+		},
+		{
+			standani = {id="open"}
+			trigger = 0
+			reqs = { lvar="A", op="==", rvar="REMAPID"},
+			cmdblock = []
+		},
+	],
+}
+
+//	条件によっていつでも開閉するドア。
+//	
+RPGSystem.eventrole .. {
+	menutype = "door"
+	key = "autodoor"
+	name = {"ja":"オートドア","en":"Auto Door"}
+	icon = "\uf1b5"
+	desc = ""
+	
+	props = [
+		nameprop,
+		reqs1prop,		//	開閉条件
+		{ pid="locksnd", lbl="$T.lbl_sound", type=RESID, restype="snd", },
+	]
+
+	defdata = {
+		spawndist = 1
+		reqs1 = null,
+		locksnd = "SE103"
+	}
+	
+	defpage = [
+		{
+			standani = {id="close"}
+			trigger = 3
+			wvarmap = { W="locksnd" }
+			cmdblock = [
+				{ cmd="cmd_snd", who=1, _var={sndid="W"} }
+			]
+		},
+		{
+			standani = {id="open"}
+			trigger = 0
+			cmdblock = []
+		},
+	],
+}
+
+//	ポータルドア。
+//	
+RPGSystem.eventrole .. {
+	menutype = "door"
+	key = "pdoor"
+	name = {"ja":"ポータルドア","en":"Portal Door"}
+	icon = "\uf118"
+	desc = ""
+	
+	props = [
+		nameprop,
+		{ pid="dest", lbl="$T.cmd_mapmove_dest", type=PORTAL, cnt="cnt6.ui", },
+		wipeprop,
+		{ pid="remap", lbl="$T.lbl_remap", type=BOOL, },
+	]
+
+	defdata = {
+		spawndist = 1,
+		dest = null
+		wipe = 2
+		remap = false
+	}
+
+	defpage = [
+		{
+			standani = {id="close"}
+			trigger = 3
+			cmdblock = [
+				{ cmd="cmd_compute", lvar="A", op="=", rvar="REMAPID" }
+				{ cmd="cmd_snd", sndid="SE100", who=1 }
+				{ cmd="cmd_wait", time=100 }
+			]
+		},
+		{
+			standani = {id="open"}
+			reqs = { lvar="A", op="==", rvar="REMAPID"},
+			trigger = 5
+			wvarmap = { W="dest", X="wipe",Y="remap" }
+			cmdblock = [
+				{ cmd="cmd_mapmove", dest=null, _var={dest="W",wipe="X",remap="Y"}, }
+			]
+		},
+	],
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	イベントキャラ
+//	
+
+//	固定宝箱ロール。
+//	arg1 : dataid+num( point, item, weapon, armor, store)
+//	
+RPGSystem.eventrole .. {
+	menutype = "event"
+	key = "itemchest"
+	name = {"ja":"宝箱","en":"Item Chest"}
+	icon = "\ue8b1"
+	desc = ""
+
+	props = [
+		nameprop,
+		mdlprop,
+		{
+			pid = "itemid"
+			lbl = "$T.lbl_item"
+			type = DATAID
+			datatype = ["point","item","weapon","armor","store"]
+			filter = @( p){	//	コレクションはお宝のタイプに限る
+				return p[0][0]!='B' || ::rpgdata[p[0]]["storetype"]=="treasure";
+			}
+			refresh=true
+			set = @( prop, data, val){
+				data[prop.pid] <- val;
+				data.num = 1;	//	itemidが変わったら個数も1にリセット。
+			}
+		},
+		{
+			pid = "num"
+			lbl = "$T.lbl_amount"
+			type = SCALAR
+			hide = @( pl){
+				local dataid = pl.getParam( "itemid"), item = RPGData.getData( dataid);
+				return (item["stacknum"]||0)<=1;
+			}
+			range = @( pl){
+				local dataid = pl.getParam( "itemid"), item = RPGData.getData( dataid);
+				return (1,item["stacknum"]||1);
+			}
+		}
+	]
+	
+	defdata = {
+		mdlid="CV001",
+		itemid = "I000"
+		num=1,
+		spawndist=1,
+	}
+
+	defpage = [
+		//	page0 : 開いた状態。トリガー0で無反応
+		{
+			standani = {id="open"}
+			trigger = 0
+			reqs = null
+			cmdblock = []
+		},
+		//	page1 : 中身が入っている状態。マクロX011を呼び出すだけ。結果はAに入る
+		{
+			standani = {id="close"}
+			trigger = 1
+			reqs = [{lvar="A",op="==",rvar=false}]
+			wvarmap = { W="itemid", X="num" }	//	変数をdataにマップ
+			cmdblock = [
+				{ cmd="cmd_snd", sndid="SE102", vol=100, who=2 }
+				{ cmd="cmd_anime", who=2, ani={id="open"} }
+				{ cmd="cmd_macro", macroid="X011", retvar="A" }
+			]
+		}
+	]
+}
+
+//	拾い物ロール。ステージなんかにばらまかれるやつ
+// { lbl:"ランダム出現", val:1 },
+// { lbl:"レア出現", val:2 },
+// { lbl:"超レア出現", val:3 },
+//	
+// RPGSystem.eventrole .. {
+// }
+
+//	村人ロール
+//	
+RPGSystem.eventrole .. {
+	menutype = "event"
+	key = "villager"
+	name = {"ja":"村人","en":"Villager"}
+	icon = "\ue91f"
+	editmanuaction = true
+
+	width = 520
+	
+	props = @( cmd)[
+		nameprop,
+		mdlprop,
+		moveactionprop, ...RPGSystem.moveaction[cmd["moveaction"]]["props"],
+		{ pid="msg", lbl="$T.lbl_text", type=MESSAGE, multiline=true, cnt="cnt6.ui" },
+		popprop,
+		reqs0prop,		//	スポーン条件。
+	]
+	
+	defdata = {
+		mdlid = "CV000",
+		moveaction = "stop", movespd = 4,
+		spawndist = 1,
+		msg = "MESSAGE",
+		pop = null,
+		reqs0 = null,
+	}
+	
+	defpage = [
+		{
+			trigger = 2
+			wvarmap = { W="msg", }	//	変数をdataにマップ
+			cmdblock = [
+				{ cmd="cmd_macro", macroid="X012", retvar=null }
+			]
+		},
+	]
+}
+
+//	エネミーロール
+//	動き回り、キャラが近くに来たら追いかけてくる。
+//	
+RPGSystem.eventrole .. {
+	menutype = "event"
+	key = "enemy"
+	name = "$T.lbl_enemy"
+	icon = "\ue859"
+	editmanuaction = true
+	
+	props = @( cmd)[
+		nameprop,
+		mdlprop,
+		{ pid="gid", lbl="$T.lbl_group", type=LIST, list=@( pl){
+			local e = ::skstudio.editor;
+			if( !e["enemies"]) return [{ lbl="エネミー設定なし", val=1}];	//	とりあえずgid=1
+			return e.data["encount"].map( @( v, i) ({ lbl=::enemyGroupString( v.enemies), val=v.gid}) );
+		}},
+		moveactionprop, ...RPGSystem.moveaction[cmd["moveaction"]]["props"],
+		reqs0prop,		//	スポーン条件。
+	]
+	
+	defdata = {
+		mdlid = "CV000",
+		spawndist = 1,
+		gid = 1,
+		reqs0 = null,
+		moveaction = "chase1",
+	}
+	
+	//	バトルして勝利なら消し(=>ページ1)、引分けならそのまましばらく硬直。
+	//	ページ1は消えた状態。
+	defpage = [
+		{
+			standani = {id="stand"}
+			trigger = 3
+			wvarmap = { X="gid", }	//	変数をdataにマップ
+			cmdblock = [
+				{ cmd="cmd_timescale", timescale=10}
+				{ cmd="cmd_macro", macroid="X003", retvar="W" },
+				{	//	バトルして勝ったらA=REMAPID、それ以外ではしばらくフリーズ？
+					cmd="cmd_if",
+					reqs=[ { lvar="RESULT",op="==",rvar=1} ],
+					cmdblocks=[
+						[ { cmd="cmd_compute", lvar="A", op="=", rvar="REMAPID" } ]
+					],
+				}
+				{ cmd="cmd_timescale", timescale=100}
+				{ cmd="cmd_freeze", who=2, time=800 },
+			]
+		},
+		{
+			trigger = 0, moveaction = "hide",
+			reqs = [{ lvar="A", op="==", rvar="REMAPID"}],
+		}
+	]
+}
+
+
+//	ショップ店員
+//	
+RPGSystem.eventrole .. {
+	menutype = "event"
+	key = "clerk"
+	name = "$T.lbl_storeclerk"
+	icon = "\ue54c"
+	editmanuaction = true
+	
+	props = @( cmd)[
+		nameprop,
+		mdlprop,
+		moveactionprop, ...RPGSystem.moveaction[cmd["moveaction"]]["props"],
+		{ pid="storeid", lbl="$T.lbl_storeid", type=DATAID, datatype=["store"], filter=@( v) v.type==0 },
+		{ pid="sell", lbl="$T.sell", type=BOOL, }
+		reqs0prop,		//	スポーン条件。
+	];
+	
+	defdata = @() +{
+		mdlid = "CV000",
+		spawndist = 1,
+		storeid = "R000",
+		sell = true,
+		reqs0 = null,
+		moveaction = "stop",
+	}
+	
+	defpage = [
+		{
+			trigger = 2
+			wvarmap = { X="storeid", Y="sell" }	//	変数をdataにマップ
+			cmdblock = [
+				{ cmd="cmd_macro", macroid="X013", retvar=null }
+			]
+		},
+	]
+}
+
+//	宿屋店員
+//	HPMP回復、状態回復（死亡もか選択）、値段
+//	
+RPGSystem.eventrole .. {
+	menutype = "event"
+	key = "hotel"
+	name = "$T.lbl_hotelclerk"
+	icon = "\ue53a"
+	editmanuaction = true
+
+	// width = 520
+	
+	props = @( cmd)[
+		nameprop,
+		mdlprop,
+		moveactionprop, ...RPGSystem.moveaction[cmd["moveaction"]]["props"],
+		{ pid="price", lbl="$T.lbl_price", type=SCALAR, range=(0,100000), },
+		reqs0prop,		//	スポーン条件。
+	];
+	
+	defdata = @() +{
+		mdlid = "CV000",
+		spawndist = 1,
+		reqs0 = null,
+		moveaction = "stop",
+		price = 10
+	}
+	
+	defpage = [
+		{
+			trigger = 2
+			wvarmap = { W="price" }	//	変数をdataにマップ
+			cmdblock = [
+				{ cmd="cmd_macro", macroid="X014", retvar=null }
+			]
+		},
+	]
+}
+
+//	医者
+//	回復手段その2
+//	
+RPGSystem.eventrole .. {
+	menutype = "event"
+	key = "doctor"
+	name = "$T.lbl_doctor"
+	icon = "\uf109"
+	editmanuaction = true
+
+	// width = 520
+	
+	props = @( cmd)[
+		nameprop,
+		mdlprop,
+		moveactionprop, ...RPGSystem.moveaction[cmd["moveaction"]]["props"],
+		{ pid="price", lbl="$T.lbl_price", type=SCALAR, range=(0,100000), },
+		reqs0prop,		//	スポーン条件。
+	];
+	
+	defdata = @() +{
+		mdlid = "CV000",
+		spawndist = 1,
+		reqs0 = null,
+		moveaction = "stop",
+		price = 10
+	}
+	
+	defpage = [
+		{
+			trigger = 2
+			wvarmap = { W="price" }	//	変数をdataにマップ
+			cmdblock = [
+				{ cmd="cmd_macro", macroid="X015", retvar=null }
+			]
+		},
+	]
+}
+
+
+::lightflickerlist <- [
+	{ lbl="$T.lbl_none", val=0 },
+];
+
+//	ライト
+//	
+RPGSystem.eventrole .. {
+	menutype = "event"
+	key = "light"
+	name = "$T.lbl_light"
+	icon = "\uf02a"
+	editmanuaction = true
+
+	// width = 520
+	
+	props = @( cmd)[
+		nameprop,
+		reqs0prop,		//	スポーン条件。
+		//	以下ライト
+		{ pid="lcol", lbl="$T.lbl_color", type=RGBA, defval=0xffffcc66 }
+		{ pid="lr", lbl="$T.lbl_size", type=SCALAR, range=(0.1,99.9), q=10, defval=10.0 }
+		{ pid="lhpb", lbl="$T.lbl_direction", type=VEC2, range=(-180,180), defval=(0,-60) }
+		{ pid="lspot", lbl="$T.lbl_litspot", type=VEC2, range=((0,180),(0,100)), defval=(180,10), ui="r", rlbl0="#" }
+		{ pid="flicker", lbl="$T.lbl_filcker", type=LIST, list=::lightflickerlist, defval=0 }
+	];
+	
+	defdata = {
+		mdlid = "CE000",
+		spawndist = 1,
+		reqs0 = null,
+		lcol = 0xffffcc66, lr = 10.0, lhpb = [0,60], lspot = [180,10], flicker = 0,
+	}
+	
+	defpage = [
+		{
+			trigger = 6				//	spawn
+			wvarmap = { W="data" }	//	dataはdata自身。
+			pararun = true,
+			cmdblock = [
+				{ cmd="cmd_light", op=0, fadetime=0, _var={lcol="\tW.lcol",lr="\tW.lr",lhpb="\tW.lhpb",lspot="\tW.lspot",flicker="\tW.flicker"}, }
+			]
+		},
+	]
+}
+
+
+//	カスタムイベント。専用の編集パネルを表示する
+RPGSystem.eventrole .. {
+	key = "custom"
+	name = "$T.lbl_customevent"
+	icon = "\ue01e"
+	editmanuaction = true
+	
+	baseprops = [
+		nameprop,
+		spawndistprop,
+		{
+			pid="mdlid", lbl="$T.lbl_model", type=RESID_PREVIEW, restype=["chara_etc","chara_vox","efx","map_asset"], cnt="cnt3.ui",
+			filter=@( i, d){
+				switch( i[0]){
+				case 'F': case 'M': return d["eventuse"];
+				}
+				return true;
+			}
+			set= @( prop, data, val){
+				data.mdlid <- val;
+				if( val=="CE000"){
+					data.mdl <- { r=[0.0,0.5,0.0,0.5,0.5,0.5] };
+				}else{
+					delete data.mdl;
+				}
+			}
+		}
+	]
+	
+	pageprops = @( cmd)[
+		{ pid="memo", lbl="$T.lbl_pagememo", type=STRING }
+		moveactionprop, ...RPGSystem.moveaction[cmd["moveaction"]]["props"],
+		triggerprop,
+		{ pid="pararun", lbl="$T.lbl_pararun", type=BOOL}
+		reqsprop,
+	]
+	
+	//	展開用
+	defdata = {
+		mdlid="CV000",
+		spawndist = 1,
+		page = [
+			{ memo="", moveaction="stop", movespd=4, standani={id="stand"}, trigger=1, pararun=false, reqs=null, cmdblock = [], }
+		]
+	}
+}
+
+
+//	カメラマーカー
+//	
+RPGSystem.markerdef .. {
+	key = "camera"
+	name = {"ja":"カメラ","en":"Camera"}
+	icon = "\ue3af"
+	desc = ""
+	
+	props = [
+		nameprop,
+		{ pid="fovy", lbl="$T.lbl_fovy", type=SCALAR, range=(10,80), defval=40 },
+		{ pid="viewport", lbl="$T.lbl_viewport", type=SCALAR, range=(0.1,100.0), q=10, defval=4.0 },
+		{ pid="hpb", lbl="$T.lbl_rotation", type=VEC3, range=(-180,180), ui="bar", lbls=["$T.lbl_hpb_h","$T.lbl_hpb_p","$T.lbl_hpb_b"], defval=(0,45,0) },
+		{ pid="yoffs", lbl="$T.lbl_offset", type=SCALAR, range=(-5.0,5.0), q=10, defval=1.5 },
+	]
+	
+	edit = @( data){
+		local e = ::skstudio.editor;
+		local cd0 = e.canvas.camwork.getCameraData(), cd1 = RPGCameraworkMarker( data);
+		e.canvas.moveCameraData( cd1, 1.77777778);
+		local newcam = PropertyEditPopup.run( null, this, data);
+		e.canvas.moveCameraData( cd0);
+		return newcam;
+	}
+
+	setprop = @( prop, data, val){
+		local e = ::skstudio.editor;
+		e.canvas.moveCameraData( RPGCameraworkMarker( data), 1.77777778);
+	}
+}
+
+//	ランドマーク
+//	
+RPGSystem.markerdef .. {
+	key = "landmark"
+	name = {"ja":"ランドマーク","en":"Landmark"}
+	icon = "\ueab1"
+	desc = ""
+	
+	props = [
+		nameiconprop,
+		reqsprop,
+	]
+}
+
+//	ポイント
+//	
+RPGSystem.markerdef .. {
+	key = "route"
+	name = {"ja":"ポイント","en":"Pointer"}
+	icon = "\ue55d"
+	desc = ""
+	
+	props = [
+		nameiconprop,
+		dirprop,
+	]
+}
+
+
+

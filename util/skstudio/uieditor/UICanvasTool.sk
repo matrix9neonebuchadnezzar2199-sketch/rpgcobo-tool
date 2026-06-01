@@ -1,0 +1,302 @@
+
+import SKViewPropertyID;
+import ModifiersMask;
+import VirtualKeyCode;
+import UIOP;
+
+local v_1 = Vector3D();
+local v_2 = Vector3D();
+local v_3 = Vector3D();
+
+
+class UICanvasTool
+{
+	editor = null;
+	canvas = null;
+
+	toolfunc = null;		//	function( UITool, Event)
+
+	constructor( e, c){
+		editor = e;
+		canvas = c;
+	}
+
+	function procevent( e){
+		if( toolfunc){
+			toolfunc = toolfunc( e);
+		}
+		if( !e.consumed) defevent( e);
+	}
+
+	function endmode( m, e){
+		toolmode = null;
+	}
+
+	function defevent( e){
+		switch( e.id){
+		case MOUSE_PRESSED:
+			local mon = canvas.selection.mouseon;
+			if( e.modifiers & BUTTON1_MASK){	//	左クリックのみ判定
+				if( mon){
+					if( typeof( mon) == SS_INTEGER){
+						if( length( editor.sellist) == 1){
+							toolfunc = UIResizeFunc( this, e);
+						}
+					}else
+					if( editor.isSelecting( mon)){
+						if( e.count == 2){
+							if( editor.uiright.viewtree.expandToItem( mon)){
+								editor.uiright.viewtree.setSelectedItem( mon);
+								editor.uiright.viewtree.scrollItemToVisible( mon);
+							}else{
+								if( mon["isdir"]) editor.uiright.viewtree.expandItem( mon, true);
+							}
+						}else
+						if( e.isCommandDown() || e.isAltDown()){
+							toolfunc = UISelectFunc( this, e);
+						}else{
+							toolfunc = UIMoveFunc( this, e);
+						}
+					}else{
+						if( e.isCommandDown() || e.isShiftDown() || e.isAltDown()){
+							toolfunc = UISelectFunc( this, e);
+						}else{
+							editor.setSelection( [mon]);
+							toolfunc = UIMoveFunc( this, e);
+						}
+					}
+				}else{
+					toolfunc = UISelectFunc( this, e);
+				}
+			}
+			break;
+		case MOUSE_MOVED:
+			local mon = canvas.selection.getMouseOn( e.x, e.y);
+			if( mon != canvas.selection.mouseon){
+				canvas.selection.setMouseOn( mon);
+			}
+			break;
+		case KEY_PRESSED:
+		case KEY_REPEATED:
+			keyevent( e);
+			break;
+		}
+		return false;
+	}
+
+	static cursdirs = { [VK_UP]=Vector3D(0,-1,0), [VK_DOWN]=Vector3D(0,1,0), [VK_LEFT]=Vector3D(-1,0,0), [VK_RIGHT]=Vector3D(1,0,0) }
+
+	function keyevent( e){
+		switch( e.keycode){
+		case VK_UP:
+		case VK_DOWN:
+		case VK_LEFT:
+		case VK_RIGHT:
+			{
+				e.consume();
+				local time = editor.getFrameTime();
+				local vec = cursdirs[e.keycode];
+				if( e.isShiftDown()) vec = vec * 10.0;
+				local redo = [], undo = [];
+				local trackkey = "keymov.";
+				foreach( i,v in editor.tflist){
+					local p0 = v.getParam( POSITION);
+					local val = [p0[0]+vec.x, p0[1]+vec.y];
+					local mot = v.getMotion( POSITION), k0 = mot?.existingkey( time);
+					local op = editor.setSKViewParamOP( v, POSITION, time, val, k0?k0.tween:null);
+					redo .. op[0][0];
+					undo[0] <- op[1][0];
+					trackkey = trackkey..v;
+				}
+				editor.submitOp( redo, undo, trackkey);
+				canvas.selection.updateSelection();
+				editor.uiright.refreshParams();
+				editor.updateSelectionTimeline();
+				break;
+			}
+		case VK_DELETE:
+			{
+				e.consume();
+				editor.deleteSelection();
+				break;
+			}
+			break;
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	各操作の関数。classではなくてfunctionで、、、、、、
+
+	function UISelectFunc( tool, e){
+		local editor = tool.editor, canvas = tool.canvas, selection = canvas.selection, mon = selection.mouseon;
+		//	選択モード選択
+		local mode = 0;
+		if( e.isShiftDown()){
+			if( mon) editor.addSelection( mon);
+		}else
+		if( e.isAltDown()){
+			mode = 1;			//	選択消去モード
+			if( mon) editor.removeSelection( mon);
+		}else
+		if( e.isCommandDown()){
+			mode = 2;			//	選択反転モード
+			if( mon) editor.removeSelection( mon);
+		}else{
+			editor.setSelection([]);
+		}
+		local oldsels = clone tool.editor.sellist, sels = clone oldsels;
+		local r = Rect2D();
+		//
+		local fn( e){
+			local m = e.getMouseState();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				e.consume();
+				local x0 = m.downx, y0 = m.downy, x1 = e.x, y1 = e.y;
+				r.set( Math.min(x0,x1), Math.min(y0,y1), Math.abs(x1-x0), Math.abs(y1-y0));
+				selection.setSelectRegion( r);
+				local a = canvas.selectRegion( r);
+				sels.clear();
+				sels ... oldsels;
+				switch( mode){
+				case 0: foreach( v in a){ if( !sels.contains( v)){ sels .. v;} } break;
+				case 1: foreach( v in a){ sels.removeValue( v); } break;
+				case 2: foreach( v in a){ if( !sels.contains( v)){ sels .. v;}else{ sels.removeValue( v);} } break;
+				}
+				selection.setTempSelection( sels);
+				break;
+			case MOUSE_CANCELLED:
+			case MOUSE_RELEASED:
+				if( e.modifiers & BUTTON1_MASK){
+					e.consume();
+					selection.setSelectRegion( null);
+					editor.setSelection( sels);
+					editor.uiright.syncListSelection();
+					return null;
+				}
+				break;
+			}
+			return fn;
+		}
+		return fn;
+	}
+
+	function UIMoveFunc( tool, e){
+		local editor = tool.editor, canvas = tool.canvas, selection = canvas.selection, mon = selection.mouseon;
+		local time = editor.getFrameTime();
+		//	ドラッグ開始位置を退避
+		local tflist = tool.editor.tflist;
+		local backuppos = [];
+		local trackkey = "dragmv.";
+		foreach( v in tflist){
+			backuppos .. v.getParam( POSITION);
+			trackkey = trackkey..v;
+		}
+		//	ドラッグ
+		local mat0 = clone mon.parent.mat;
+		local invmat0 = mat0.invert44( Matrix());
+		local gp0 = Vector3D( e.x, e.y, 0).transform( invmat0);
+		local grid = canvas.root.grid;
+		local downpx = Math.round( mon.pos.x) % grid;
+		local downpy = Math.round( mon.pos.y) % grid;
+		//	実際に動かす関数
+		local dragto = @( e){
+			local gp = Vector3D( e.x, e.y, 0).transform( invmat0);
+			if( !dragged && gp0.hypot( gp)<4.0) return;
+			local redo = [], undo = [];
+			gp.x = ( Math.round((gp.x - gp0.x)/grid)*grid) - downpx;
+			gp.y = ( Math.round((gp.y - gp0.y)/grid)*grid) - downpy;
+			gp.z = 0.0;
+			gp.transform0( mat0);
+			local dx = gp.x, dy = gp.y;
+			dragged = true;
+			if( e.isShiftDown()){ if( dx*dx > dy*dy) dy = 0; else dx = 0; }
+			local redo = [], undo = [];
+			foreach( i,v in tool.editor.tflist){
+				local p0 = backuppos[i];
+				local val = Vector3D( dx, dy, 0.0).transform0( v.parent.getInvMatrix()).add( p0[0], p0[1], 0.0);
+				local mot = v.getMotion( POSITION), k0 = mot?.existingkey( time);
+				local op = editor.setSKViewParamOP( v, POSITION, time, val, k0?k0.tween:null);
+				redo .. op[0][0];
+				undo[0] <- op[1][0];
+			}
+			editor.submitOp( redo, undo, trackkey);
+			canvas.selection.updateSelection();
+			editor.uiright.refreshParams();
+			editor.updateSelectionTimeline();
+		}.bindenv( {dragged=false});
+		//	イベントハンドラ。こっちを返す
+		local fn( e){
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				e.consume();
+				dragto( e);
+				break;
+			case MOUSE_CANCELLED:
+			case MOUSE_RELEASED:
+				if( e.modifiers & BUTTON1_MASK){
+					e.consume();
+					editor.uiright.syncListSelection();
+					return null;
+				}
+				break;
+			}
+			return fn;
+		}
+		return fn;
+	}
+
+	function UIResizeFunc( tool, e){
+		local editor = tool.editor, canvas = tool.canvas, selection = canvas.selection, mon = selection.mouseon;
+		local time = editor.getFrameTime();
+		local ms = e.getMouseState();
+		//	ドラッグ開始位置を退避
+		local v = tool.editor.tflist[0];
+		local bnd0 = clone v.bnd, bnd = clone bnd0;
+		local trackkey = "dragresize."..v;
+		local mat0 = clone v.mat;
+		local invmat0 = mat0.invert44( Matrix());
+		//	実際に動かす関数
+		local dragto = @( e){
+			local d = Vector3D( e.x, e.y, 0.0).sub( ms.downx, ms.downy, 0.0).transform0( invmat0);
+			bnd.set( bnd0);
+			//	X
+			switch( mon){
+			case 1: case 4: case 6: bnd.x += d.x; bnd.w -= d.x; break;
+			case 3: case 5: case 8: bnd.w += d.x; break;
+			}
+			//	Y
+			switch( mon){
+			case 1: case 2: case 3: bnd.y += d.y; bnd.h -= d.y; break;
+			case 6: case 7: case 8: bnd.h += d.y; break;
+			}
+			local redo = [], undo = [];
+			local sop = editor.setSKViewParamOP( v, SIZE, time, (Math.round( bnd.w), Math.round( bnd.h)));
+			local pop = editor.setSKViewParamOP( v, PIVOT, time, (Math.round( -bnd.x), Math.round( -bnd.y)));
+			redo .. sop[0][0] .. pop[0][0];
+			undo .. sop[1][0] .. pop[1][0];
+			editor.submitOp( redo, undo, trackkey);
+			canvas.selection.updateSelection();
+			editor.uiright.refreshParams();
+		}
+		//	イベントハンドラ。こっちを返す
+		local fn( e){
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				e.consume();
+				dragto( e);
+				break;
+			case MOUSE_CANCELLED:
+			case MOUSE_RELEASED:
+				if( e.modifiers & BUTTON1_MASK){
+					e.consume();
+					return null;
+				}
+				break;
+			}
+			return fn;
+		}
+		return fn;
+	}
+}

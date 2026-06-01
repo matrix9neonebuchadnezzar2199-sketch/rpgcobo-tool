@@ -1,0 +1,233 @@
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	
+//
+
+class RigidBodyData
+{
+	partsname = null;			// string 対応ボーン名
+	shapes = null;				// RigidBodyShapeData[] 形状リスト
+	dynamic = false;			// bool RigidBodyを物理シミュレーションさせるかどうか
+	mass = 0.01;				// float 質量
+	lineardamp = 0.1;			// float Linear減衰
+	angulardamp = 0.5;			// float Angular減衰
+	constraints = null;			// RigidBodyConstraintData[] Constraintデータ
+	collisiongroup = 0x1;		// int 属するグループ
+	collisionmask = 0x3f;		// int コリジョンマスク
+	
+	function _cloned( org){
+		shapes = clone shapes;
+		foreach( i,v in shapes){
+			shapes[i] = clone v;
+		}
+		constraints = clone constraints;
+		foreach( i,v in constraints){
+			constraints[i] = clone v;
+		}
+	}
+	
+	function createRigidBody( sk3d, bone, gscale){
+		
+		local bonezinv = (bone.mat.abs() < 0.0); //printf("bonezinv %S   %S\n", bonezinv, gscale.z);
+		local shapenum = length( shapes);
+		//	bodyの基準位置はshape[0]の位置になる！
+		local mat = shapes[0].getMatrix( gscale);
+		// b3Shape作成
+		local b3shape = null;
+		if( shapenum == 1 ){
+			b3shape = shapes[0].createShape( gscale);
+		}else{
+			b3shape = b3Shape.createCompound();
+			local invmat = mat.invert34();
+			foreach( shape in shapes ){
+				local child = shape.createShape( gscale);
+				shape.getMatrix( gscale)
+				b3shape.addChild( child, invmat.mult34( shape.getMatrix( gscale)));
+			}
+		}
+		mat << bone.mat.mult34( mat);
+//		mat.scale( 1.0/gscale.x, 1.0/gscale.y, 1.0/gscale.z);	//	スケールするならこの位置か ... いらん？いった・・・
+		mat.scale( 1.0/gscale.x, 1.0/gscale.y, (bonezinv?-1.0:1.0)/gscale.z);	//	スケールするならこの位置か ... いらん？いった・・・
+		//
+		// RigidBodyからボーンへの変換行列
+		//bone.r2bmat = bone.mat.mult34( mat.invert34());
+		bone.r2bmat = mat.invert34().mult34( bone.mat);
+		//
+		// ジョイントからRigidBodyへの変換行列 (==r2bmatの逆行列？)
+		bone.b2rmat = bone.r2bmat.invert34();
+		
+		//	gmat * matでグローバル座標にしてb3Body
+		local bmat = sk3d.gmat.mult34( mat);
+		local body = b3Body( dynamic?mass:0.0, b3shape, bmat, collisiongroup, collisionmask);
+		body.setDamping( lineardamp, angulardamp);
+		
+		//if( !dynamic ){
+		//	body.setCollisionFlags( body.getCollisionFlags() | 2);
+		//}
+		//body.setActivationState( 4);	// DISABLE_DEACTIVATION		これしないと一度停止すると動かなくなる。うまくactivation()できればいいかもしれない。
+		//	↑skPhysicalPoseToBoneListで対応。ネイティブを更新すること！
+		
+		return body;
+	}
+
+	function writeJSON(){
+		local t = {
+			partsname = partsname,
+			shapes = null,
+			dynamic = dynamic,
+			mass = mass,
+			lineardamp = lineardamp,
+			angulardamp = angulardamp,
+			constraints = null,
+			collisiongroup = collisiongroup,
+			collisionmask = collisionmask,
+		};
+		if( length( shapes)){
+			local a = t.shapes = [];
+			foreach( s in shapes){
+				a .. {
+					shapetype = s.shapetype,
+					pos  = [s.pos.x ,s.pos.y ,s.pos.z ],
+					size = [s.size.x,s.size.y,s.size.z],
+					rot  = [s.rot.x ,s.rot.y ,s.rot.z ],
+				};
+			}
+		}
+		if( length( constraints)){
+			local a = t.constraints = [];
+			foreach( c in constraints){
+				a .. {
+					pairpartsname = c.pairpartsname,
+					limit = c.limit,
+					bounce = c.bounce,
+					damp = c.damp,
+					spring = c.spring,
+				};
+			}
+		}
+		return t;
+	}
+}
+
+class RigidBodyShapeData
+{
+	shapetype = 0;				// 形状タイプ。SK_SHAPE_BOX等
+	pos = null;					// Vector3D Shapeの位置
+	rot = null;					// Vector3D Shapeの角度(HPB)(rad)
+	size = null;				// Vector3D Shapeのサイズ
+	
+	function _cloned( org){
+		pos = clone pos;
+		rot = clone rot;
+		size = clone size;
+	}
+	
+	function getMatrix( gscale){
+		return Matrix.fromTranslate( gscale?pos*gscale:pos).rotate( Quaternion.fromHPB( rot.x, rot.y, rot.z));
+	}
+	
+	function createShape( gscale){
+		local s = size * gscale;
+		switch( shapetype){
+		case SK_SHAPE_BOX:
+			return b3Shape.createBox( s.x, s.y, s.z);
+		case SK_SHAPE_SPHERE:
+			return b3Shape.createSphere( s.x);
+		case SK_SHAPE_CYLINDER:
+			return b3Shape.createCylinder( s.x, s.y, s.z);
+		case SK_SHAPE_CAPSULE:
+			return b3Shape.createCapsule( s.x, s.y);
+		}
+		throw Exception("createShape error %S\n", shapetype);
+	}
+}
+
+local vec1 = Vector3D(), vec2 = Vector3D();
+
+class RigidBodyConstraintData
+{
+	pairpartsname = null;	// string 他方の接続先パーツ
+	limit = null;			// [llx,lly,llz,lux,luy,luz, lax,lay,laz,uax,uay,uaz]
+	bounce = null;			// [x,y,z] 回転の復元力
+	damp = null;			// [x,y,z] 回転の減衰
+	spring = null;			// [spring, stiffness, damping * 6] バネ設定
+	
+	function _cloned( org){
+		limit = clone limit;
+		bounce = clone bounce;
+		damp = clone damp;
+		spring = clone spring;
+	}
+	
+	function createConstraint( body1, body2, frame1, frame2){
+		
+		//	P2P test
+	//	local vec1 = frame1.getTranslation();
+	//	local vec2 = frame2.getTranslation();
+	//	return b3Constraint.createP2P( body1, body2, vec1, vec2);
+		
+		local cons = b3Constraint.createDOF6Spring( body1, body2, frame1, frame2);
+		//	移動、回転制限
+		if( limit){
+			cons.setLinearLimit ( [limit[0], limit[1], limit[2], limit[3], limit[4] , limit[5]] );
+			cons.setAngularLimit( [limit[6], limit[7], limit[8], limit[9], limit[10], limit[11]]);
+		}else{
+			cons.setLinearLimit ( #[ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+			cons.setAngularLimit( #[-0.5,-0.5,-0.5, 0.5, 0.5, 0.5]);
+		}
+		// 回転の復元力、減衰
+		if( bounce){
+			cons.setAngularBounce( bounce[0], bounce[1], bounce[2]);
+		}
+		if( damp){
+			cons.setAngularDamping( damp[0], damp[1], damp[2]);
+		}
+		// スプリング
+		if( spring){
+			for( local l = 0;l < 18;l += 3){
+				cons.setSpring( l/3, spring[l], spring[l+1], spring[l+2]);
+			}
+		}
+		return cons;
+	}
+	
+	function isDeflpos(){
+		for( local l = 0; l < 6;l ++){
+			if( limit[l] != 0.0) return false;
+		}
+		return true;
+	}
+}
+
+function createRigidBodyData( t){
+	local rbdata = RigidBodyData();
+	foreach( i,v in t){
+		rbdata[i] = v;
+	}
+	//	constraints, shapesについては作り直す
+	if( t["shapes"]){
+		local a = [];
+		foreach( v in t.shapes){
+			local s = RigidBodyShapeData();
+			s.shapetype = v.shapetype
+			s.pos  = Vector3D( v.pos[0],  v.pos[1],  v.pos[2]);
+			s.size = Vector3D( v.size[0], v.size[1], v.size[2]);
+			s.rot  = Vector3D( v.rot[0],  v.rot[1],  v.rot[2]);
+			a .. s;
+		}
+		rbdata.shapes = a;
+	}
+	if( t["constraints"]){
+		local a = [];
+		foreach( tv in t.constraints){
+			local c = RigidBodyConstraintData();
+			foreach( i,v in tv){
+				c[i] = v;
+			}
+			a .. c;
+		}
+		rbdata.constraints = a;
+	}
+	return rbdata;
+}

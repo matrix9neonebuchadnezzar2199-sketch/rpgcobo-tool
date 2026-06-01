@@ -1,0 +1,228 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorEnemyPic : 敵ピクチャの編集
+//	
+//	
+
+//	
+class ResEditorEnemyPic extends ResEditor
+{
+	static props = [
+		{ pid="name", lbl="$T.lbl_name", type=LANGSTRING, defval=null}
+		{ pid="pic3d", lbl="$T.lbl_picture", type=GRAPHIC, dir="/resource/enemy_pic", restype="enemy_pic", defval=null, refresh=true,
+			set=@( prop, data, val){
+				data[prop.pid] <- val;
+				if( val && !length( data["name"])){
+					local n = val.substring( val.lastIndexOf( "/")+1, val.lastIndexOf( "."));
+					data.name <- { [::conf.setting.projlang]=n };
+				}
+			}
+		}
+		{ pid="aniuv", lbl="$T.lbl_aniuv", type=VEC2, range=(1,8), defval=[1,1] }
+		{ pid="scale", lbl="$T.lbl_scale", type=SCALAR, range=(0.1,10.0), q=10, defval=1.0 }
+		{ pid="hsv", lbl="$T.lbl_hsv", type=VEC3, ui="bar", range=((-180,180),(-100,100),(-100,100)) defval=[0,0,0]}
+		{ pid="flipx", lbl="$T.lbl_flipx", type=BOOL, defval=false }
+		{ pid="cntpos", lbl="$T.lbl_centerpos", type=VEC2, range=(0.0,1.0), q=100, defval=[0.5,0.5] }
+		{ pid="atkpos", lbl="$T.lbl_attackpos", type=VEC2, range=(0.0,1.0), q=100, defval=[0.8,0.5] }
+		{ pid="gndpos", lbl="$T.lbl_groundpos", type=VEC2, range=(-1.0,1.0), q=100, defval=[0.5,0.0] }
+		{ pid="animap", lbl="$T.lbl_anime", type=ANIMEMAP, defval=[], cnt="cnt6.ui", },
+		{ pid="memo", lbl="$T.lbl_memo", type=STRING, multiline=true, cnt="cnt6.ui", defval="" }
+	];
+
+	static titlelbl = "$T.lbl_resedit : $T.side_res_enemy_pic";
+	
+	function init( path){
+		super.init( path);
+		resdirpath = ::resroot.file.path .. "/resource/enemy_pic";
+	}
+
+	function isValidData( d){
+		return length( d["pic3d"]);
+	}
+	
+	function itemSelected( v){
+		proplist.bindProperties( props);
+		//	
+		local d = v.data;
+		if( !d) d = v.data = data[v.id] <- { name=""};
+		setDefaultProperties( props, d);
+		
+		proplist.setParameters( d);
+		preview.setResourceData( v.id, d);
+		preview.setAnimations();
+		// printf( "preview................ %S\n", encodeJSON( d,1));
+	}
+
+	function updateItemView( resid, d){
+		super.updateItemView( resid, d);
+		if( resid == selitem.id){
+			preview.setResourceData( resid, d);
+			preview.setAnimations();
+		}
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd.cmd != "prop") return;
+		local pid = cmd.prop.pid, val = cmd.val;
+		switch( pid){
+		default:
+			setParamOp( selitem.id, cmd.prop, val);
+			if( cmd.prop["refresh"]){
+				itemSelected( selitem);
+			}else{
+				preview.setResourceData( selitem.id, selitem.data);// preview.updatePos();
+			}
+			break;
+		}
+	}
+}
+
+class ResEditorEnemyPic.ResPreview extends ResEditor.ResPreview
+{
+	cntsk = null;
+	atksk = null;
+	gndsk = null;
+
+	constructor( v, e){
+		super( v, e);
+		local pm = PrimitiveMeshes.createSphere( 0.06, 12, 12);
+		pm.face[0].m.Kd = 0xffff00ff;
+		cntsk = SK3DObject( pm);
+		pm = clone pm;
+		pm.face[0].m.Kd = 0xff3300ff;
+		atksk = SK3DObject( pm);
+		pm = clone pm;
+		pm.face[0].m.Kd = 0x3366ffff;
+		gndsk = SK3DObject( pm);
+		anig.setVisible( true);
+	}
+
+	function setResourceData( id, val){
+		super.setResourceData( id, val);
+		if( sk3d){
+			sk3d.addChild( cntsk);
+			sk3d.addChild( atksk);
+			sk3d.addChild( gndsk);
+			updatePos();
+		}
+	}
+
+	function updatePos(){
+		local rid = editor.selitem.id;
+		local d = editor.data[rid];
+		if( sk3d && d){
+			local r = sk3d.bnd;
+			local p0 = Vector3D( r.x-r.r, r.y-r.s, 0.0), v = Vector3D( r.r*2, r.s*2, 0.0);
+			cntsk.pos << (p0 + v*Vector3D( d.cntpos[0], d.cntpos[1], 0.0));
+			atksk.pos << (p0 + v*Vector3D( d.atkpos[0], d.atkpos[1], 0.0));
+			gndsk.pos << (p0 + v*Vector3D( d.gndpos[0], d.gndpos[1], 0.0));
+			cntsk.matdirty = atksk.matdirty = gndsk.matdirty = 1;
+		}
+	}
+
+	function setAnimations(){
+		local rid = editor.selitem.id;
+		local aa = editor.data[rid]["animap"];
+		if( length( aa)){
+			local menudata = aa.map( @( v){
+				return { lbl = "$T.anim_"..v.id, icon = "\uf2c0", id = v.id, val = v, icon = "\ue566" }
+			});
+			animenu.setMenu( menudata);
+		}else{
+			animenu.setMenu( [{lbl="$T.lbl_none", val = null, icon="\ue566"}]);
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "playbtn":
+			local v = animenu.selitem.val;
+			if( v) sk3d.tanime( v);
+			break;
+		case "pntchk":
+			cntsk.setVisible( pntchk.isSelected());
+			atksk.setVisible( pntchk.isSelected());
+			gndsk.setVisible( pntchk.isSelected());
+			break;
+		case "animenu":
+			local v = animenu.selitem.val;
+			if( v) sk3d.tanime( v);
+			break;
+		case "rbtn":
+		case "lbtn":
+			local i = animenu.menuitems.indexOf( animenu.selitem);
+			i = Math.clamp( i+(e.src.name=="rbtn"?1:-1), 0, length( animenu.menuitems)-1);
+			local v = animenu.menuitems[i];
+			animenu.selectItem( v);
+			if( v) sk3d.tanime( v.val);
+			break;
+		}
+	}
+}
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorEventPic : イベントピクチャの編集
+//	
+
+//	
+class ResEditorEventPic extends ResEditor
+{
+	static props = [
+		{ pid="name", lbl="$T.lbl_name", type=LANGSTRING, defval=null}
+		with (clone ResEditorEnemyPic.props[1]){ pid="pic", dir=["/resource/event_pic","/resource/enemy_pic"], restype="event_pic"},
+		{ pid="aniuv", lbl="$T.lbl_aniuv", type=VEC2, range=(1,8), defval=[1,1] }
+		{ pid="blend", lbl="$T.lbl_blend", type=LIST, list=::SKVP[SKViewPropertyID.IMAGEBLEND].list, defval=SK_PMAMIX},	//	PMAMIX, ADD
+		{ pid="scale", lbl="$T.lbl_scale", type=SCALAR, range=(0.1,10.0), q=10, defval=1.0 }
+		{ pid="cntpos", lbl="$T.lbl_centerpos", type=VEC2, range=(0.0,1.0), q=100, defval=[0.5,0.5] }
+		{ pid="animap", lbl="$T.lbl_anime", type=ANIMEMAP, defval=[], cnt="cnt6.ui", },
+		{ pid="memo", lbl="$T.lbl_memo", type=STRING, multiline=true, cnt="cnt6.ui", defval="" }
+	];
+
+	static titlelbl = "$T.lbl_resedit : $T.side_res_event_pic";
+	
+	function init( path){
+		super.init( path);
+	}
+
+	function isValidData( d){
+		return length( d["pic"]);
+	}
+	
+	function itemSelected( v){
+		proplist.bindProperties( props);
+		//	
+		local d = v.data;
+		if( !d) d = v.data = data[v.id] <- {};
+		setDefaultProperties( props, d);
+		
+		proplist.setParameters( d);
+		// preview.setResourceData( v.id, d);
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd.cmd != "prop") return;
+		local pid = cmd.prop.pid, val = cmd.val;
+		switch( pid){
+		default:
+			setParamOp( selitem.id, cmd.prop, val);
+			// preview.setResourceData( selitem.id, selitem.data);// preview.updatePos();
+			break;
+		}
+	}
+}

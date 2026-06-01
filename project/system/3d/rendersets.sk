@@ -1,0 +1,99 @@
+//	
+//	デフォルトのシーン
+//	
+
+return [
+	{
+		id = "legacy"
+		name = {"en":"Legacy","ja":"レガシー"}
+		lock = true
+		renderpass = 0
+		envlights = [{
+			type = 1,
+			color  = 0xffffffff,
+			scolor = 0xffffffff,
+			head = 24,
+			pitch = 70,
+			power = 0.9,
+			pixellight = 1,
+			shadow = { shadowtype = 2, shadowreso = 1024, shadowdens = 0.5, shadowfar = 50.0, shadowray = 30.0, shadowsoft = 0.5, },
+		}],
+		fog = { type = 0, }
+		ambup   = 0xeecceeff
+		ambdown = 0xeeddccff
+	},
+	{
+		id = "pbr_fw"
+		name = {"en":"PBR Forward","ja":"PBRフォワード"}
+		lock = true
+		renderpass = 1
+		ownbuffer = true
+		envlights = [{
+			type = 1
+			color  = 0xffffffff
+			head = 124
+			pitch = 40
+			power = 10000.0
+			shadow = { shadowtype = 2, shadowreso = 1024, shadowdens = 0.5, shadowfar = 50.0, shadowray = 30.0, shadowsoft = 0.5, },
+		}],
+		exposure = {
+			ev100 = 12.4
+			autoexposure = false
+			evrange = [-4.0,14.0]
+		},
+		ibl = { ibltex = "/system/asset/defibl.ktx", iblspec = 10000.0, ibldiff = 10000.0, ibldir = 0, iblcolor = -1 },
+		postfx = { bloomthrs = 0.9, bloompow = 0.12, bloomblur = 3.2, dofrange = 8.0, dofblur = 0.0, dofz = 4.0, },
+		fog = { type = 0, }
+	},
+	{
+		id = "pbr_df"
+		name = {"en":"PBR Deferred","ja":"PBRディファード"}
+		lock = true
+		renderpass = 2
+		envlights = [{
+			type = 1
+			color  = 0xffffffff
+			head = 124
+			pitch = 40
+			power = 10000.0
+			shadow = { shadowtype = 2, shadowreso = 1024, shadowdens = 0.5, shadowfar = 100.0, shadowray = 100.0, shadowsoft = 0.5, },
+		}],
+		exposure = {
+			ev100 = 12.3
+			autoexposure = false
+			evrange = [-4.0,14.0]
+		},
+		ibl = { ibltex = "/system/asset/defibl.ktx", iblspec = 10000.0, ibldiff = 10000.0, ibldir = 0, iblcolor = -1 },
+		postfx = {
+			bloomthrs = 0.9, bloompow = 0.12, bloomblur = 3.2, 
+			dofrange = 26.0, dofblur = 0.5, dofz = 4.0, 
+		},
+		ss = {
+			gitype = 0, gipow = 1.0, aopow = 1.0, aoradius = 3.0, aobias = 0.3
+		},
+		fog = { type = 0, }
+	},
+	{
+		id = "pbr_draft"
+		name = {"en":"PBR Draft","ja":"PBRドラフト"}
+		lock = true
+		renderpass = 1
+		ownbuffer = false
+		envlights = [{
+			type = 1
+			color  = 0xffffffff
+			head = 124
+			pitch = 40
+			power = 10000.0
+			shadow = { shadowtype = 0, shadowreso = 1024, shadowdens = 0.5, shadowfar = 50.0, shadowray = 30.0, shadowsoft = 0.5, },
+		}],
+		exposure = {
+			ev100 = 12.4
+			autoexposure = false
+			evrange = [-4.0,14.0]
+		},
+		ibl = { ibltex = "/system/asset/defibl.ktx", iblspec = 10000.0, ibldiff = 10000.0, ibldir = 0, iblcolor = -1},
+		postfx = { bloomthrs = 0.9, bloompow = 0.12, bloomblur = 0.0, dofrange = 8.0, dofblur = 0.0, dofz = 4.0, },
+		fog = { type = 0, }
+	},
+]

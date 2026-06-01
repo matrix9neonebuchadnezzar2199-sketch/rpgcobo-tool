@@ -1,0 +1,11 @@
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	GameCore classes / functions
+//
+
+runsk( "VoxelConstants.sk");
+runsk( "VoxelData.sk");
+runsk( "BlockWorld.sk");
+runsk( "VoxelConfig.sk");
+

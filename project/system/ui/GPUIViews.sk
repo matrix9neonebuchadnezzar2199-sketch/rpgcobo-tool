@@ -1,0 +1,2483 @@
+/**
+ *	GPUIの実装を施したSKView
+ *	UIEditorで配置できる。
+ *
+ *	GPUIButton : UIEditorでグループを選択してTo Buttonで作る。
+ *	GPUIListView   : UIEditorでLISTウィジェットをD&Dして作る。
+ *
+ */
+
+import VirtualKeyCode;
+import ModifiersMask;
+import SKViewPropertyID;
+import GamepadButtonCode;
+
+local v_1 = Vector3D();
+local v_2 = Vector3D();
+local r_1 = Rect2D();
+local r_2 = Rect2D();
+local m_1 = Matrix();
+
+const VIEW_ENABLED = 123456
+const VIEW_DISABLED = 123457
+
+class GPUIButtonTarget extends GPUITarget
+{
+	//	パラメータ
+	buttontype = 0;				//	0:tap,  1:push, 2:repeat, 3:press
+	animetype = 4;				//	x0:none, x1:pop,  x2:blink,  3:action, 4:anime
+	snd = "ui_click";
+	
+	// consumeevent = true;
+	enablerclick = true;		//	右クリ有効
+
+	mousefunc = null;			//	MouseEventの処理関数。presstypeによって分かれる。
+	syncanime = null;			//	アニメーションの処理関数。同期型。
+	asyncanime = null;			//	syncanimeを非同期化。
+
+	animethread = null;			//	asyncanimeで作られる。
+	repeatdelay = 300;			//	repeat時に初回と2回目プッシュの間隔
+	
+	//	共通状態
+	entered = false;			//	※あくまで表示状態。実際に入ってなくてもtrueの場合あり
+	entertime = 0;
+	pressed = false;
+	x0 = 0;
+	y0 = 0;
+	t0 = 0;
+	//	タイプ別のイベント、アニメーションの状態テーブル。バッティングしないように
+	ctx = null;
+
+	constructor(){
+		syncanime = animefunc0;
+		asyncanime = asyncanimex;
+		ctx = {};
+	}
+
+	function setGPUIView( v){
+		super.setGPUIView( v);
+		v.addEventListener( GPUI_EVENT, gpuievent);
+		setButtonType( buttontype);
+	}
+
+	function setButtonType( t){
+		if( mousefunc) view.removeEventListener( MOUSE_EVENT, mousefunc);
+		local mf = null;
+		switch( buttontype = t){
+		case 1:  mf = mousefunc1; break;
+		case 2:  mf = mousefunc2; break;
+		case 3:  mf = mousefunc3; break;
+		case 4:  mf = mousefunc4; break;
+		default: mf = mousefunc0; break;
+		}
+		mousefunc = view.addEventListener( MOUSE_EVENT, mf, this);
+	}
+
+	function setAnimeType( t){
+		cancelasyncanime();
+		switch( animetype = t){
+		case 3: syncanime = syncanimefunc3; asyncanime = animefunc3; break;
+		case 4: syncanime = syncanimefunc4; asyncanime = animefunc4; break;
+		default: syncanime = asyncanime = animefunc0; break;
+		}
+	}
+
+	function asyncanimex( eid){
+		local t = newthread();
+		t.start( syncanime, this, eid);
+		animethread = t;
+	}
+
+	//	今走っている非同期アニメーションをキャンセル
+	//	自分自身のスレッドは止めない。syncanimeで実行したアニメーションも止められない。
+	//	syncanimeはイベントスレッドからのみ実行するように。また、asyncanimeはsyncanime
+	//	実行中には呼ばないように。
+	function cancelasyncanime(){
+		if( animethread && animethread!=currentthread()){
+			animethread.wakeupThrow( "stop");
+			animethread = null;
+		}
+	}
+
+	//	スクロール内にある場合。
+	//	UIFeature.UI_TOUCHのモードでない場合は常にfalse。
+	function isScrollable(){
+		return (::uifeature&UIFeature.UI_TOUCH) && (getGPUIGroup() instanceof ::GPUIScrollGroup);
+	}
+
+	//	※gpui.enabled時以外は反応してはいけないが、enableGPUI( false)時はgpuitargetがnullなので問題なしかな
+	function gpuievent( e){
+		switch( e.id){
+		case GPUI_PRESSED:	//	GPUI_REPEATEDは使わない
+		case GPUI_RELEASED:
+			if( ::gpui["enabled"]){
+				local pp = getCursorPos();
+				local eid = e.id==GPUI_RELEASED?MOUSE_RELEASED:MOUSE_PRESSED;
+				local mod = e.keycode==BTN_A ? BUTTON1_MASK : e.keycode==BTN_X ? BUTTON2_MASK : BUTTON3_MASK;
+				local e = Event().setMouseEvent( 0, view, eid, pp.x, pp.y, mod | GPUI_MASK, 1, false);
+				mousefunc( e);	//	マウス処理に渡す
+			}
+			break;
+		case GPUI_SELECTED:
+			if( !entered){
+				entered = true;
+				asyncanime( MOUSE_ENTERED);
+			}
+			break;
+		case GPUI_DESELECTED:
+			if( entered && view.enabled){	//	!enabledのときはbackupCursor状態
+				entered = false;
+				if( pressed){	//	press時に選択が移動した。
+
+				}
+				asyncanime( MOUSE_EXITED);
+			}
+			break;
+		}
+	}
+
+	////////////////////////////////////////////////////////////////////////
+	//	タイプ別マウス処理
+
+	function lensq( e){
+		local dx = e.lx-x0, dy = e.ly-y0;
+		return dx*dx+dy*dy;
+	}
+
+	//	※gpui.enabledの時には、cursmovableなボタンはマウス移動でMOUSE_EXITEDにならない。表示上の対応。
+
+	function updateMouseEntered( b){
+		if( !entered && b){
+			entered = true;
+			if( !pressed) asyncanime( MOUSE_ENTERED);
+			if( cursmovable) ::gpui.setGPUITarget( this);
+			entertime = skGetTime();
+			::playSound( "ui_move");
+		}else
+		if( entered && !b){
+			if( !::gpui["enabled"] || !cursmovable){
+				entered = false;
+				if( !pressed) asyncanime( MOUSE_EXITED);
+			}
+		}
+	}
+
+	//	buttontype=0 : タップ型ボタン。
+	//
+	function mousefunc0( e){
+		e.computeLocal( view.parent.getInvMatrix());	//	view自体はスケール等で動く
+		switch( e.id){
+		case MOUSE_PRESSED:
+			x0 = e.lx;
+			y0 = e.ly;
+			t0 = e.time;
+			//	右クリだったらPRESSEDの時点でイベントポスト。
+			if( e.isMouseDown( BUTTON2_MASK)){
+				if( enablerclick){
+					::playSound( snd);
+					syncanime( MOUSE_PRESSED);
+					view.postActionEvent( null, 1, e.modifiers);		//	ここでActionEvent発火。右クリックかはmodifiersで見る
+					asyncanime( MOUSE_CLICKED);
+				}else{
+					break;
+				}
+			}else
+			if( e.isMouseDown( BUTTON1_MASK)){
+				::playSound( snd);
+				pressed = true;
+				//	300ミリ秒後にキャンセルを予約
+				ctx.pressiv <- setTimeout( @(){
+					asyncanime( MOUSE_RELEASED);
+					ctx.pressiv = null;
+					pressed = false;
+				}.bindenv( this), 300 );
+				asyncanime( MOUSE_PRESSED);
+				if( !isScrollable()) e.consume();
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( pressed){
+				if( (e.time-t0) >= 300 || lensq( e) > 800){
+					_cancelpress();
+					syncanime( MOUSE_RELEASED);
+				}
+				if( !isScrollable()) e.consume();
+			}
+			break;
+		case MOUSE_RELEASED:
+			if( pressed){
+				_cancelpress();
+				syncanime( MOUSE_CLICKED);
+				view.postActionEvent( null, e.count, e.modifiers);		//	ここでActionEvent発火
+				if( entered) asyncanime( MOUSE_ENTERED);
+				if( !isScrollable()) e.consume();
+			}
+			break;
+		case MOUSE_CANCELLED:
+			if( pressed){
+				_cancelpress();
+				asyncanime( MOUSE_RELEASED);
+			}
+			break;
+		case MOUSE_MOVED:
+		case MOUSE_ENTERED:
+			updateMouseEntered( view.contains( e.src));
+			break;
+		case MOUSE_EXITED:
+			updateMouseEntered( view.contains( e.dst));
+			break;
+		}
+	}
+
+	function _cancelpress(){
+		pressed = false;
+		if( ctx["pressiv"]){ clearInterval( ctx.pressiv); ctx.pressiv = null; }
+	}
+
+	//	buttontype=1 : プッシュ型ボタン。
+	//	※タッチ操作でスクロールに含まれている場合にはタップ型になる？？？？？？？←ボツ
+	//
+	function mousefunc1( e){
+		// if( isScrollable()) return mousefunc0( e);
+		e.computeLocal( view.getInvMatrix());
+		switch( e.id){
+		case MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON3_MASK)) break;	//	プッシュ型ボタンはホイールクリックを判断しない
+			if( e.isMouseDown( BUTTON2_MASK) && !enablerclick) break;
+			pressed = true;
+			::playSound( snd);
+			syncanime( MOUSE_PRESSED);
+			view.postActionEvent( null, e.count, e.modifiers);		//	ここでActionEvent発火 右クリックかはmodifiersで見る
+			if( !isScrollable()) e.consume();
+			newthread().start( @(){
+				syncanime( MOUSE_CLICKED);
+				if( entered) syncanime( MOUSE_ENTERED);
+			}, this);
+			break;
+		case MOUSE_DRAGGED:
+			if( pressed){
+				e.consume();	// if( !isScrollable()) e.consume();	//	スクロール変になるからconsumeする
+			}
+			break;
+		case MOUSE_RELEASED:
+		case MOUSE_CANCELLED:
+			if( pressed){
+				e.consume();
+				pressed = false;
+				if( entered){
+					asyncanime( MOUSE_ENTERED);
+				}else{
+					asyncanime( MOUSE_RELEASED);
+				}
+			}
+			break;
+		case MOUSE_MOVED:
+		case MOUSE_ENTERED:
+			updateMouseEntered( view.contains( e.src));
+			break;
+		case MOUSE_EXITED:
+			updateMouseEntered( view.contains( e.dst));
+			break;
+		}
+	}
+
+	//	buttontype=2 : プレス型ボタン。
+	//	※GPUIのキー入力からのMOUSE_PRESSEDの場合は即時にACTION_PERFORMEDする(プッシュ型ボタンと同一)
+	function mousefunc2( e){
+		e.computeLocal( view.parent.getInvMatrix());	//	view自体はスケール等で動く
+		switch( e.id){
+		case MOUSE_PRESSED:
+			x0 = e.lx;
+			y0 = e.ly;
+			t0 = e.time;
+			//	右クリだったらPRESSEDの時点でイベントポスト。
+			if( e.isMouseDown( BUTTON2_MASK)){
+				if( enablerclick){
+					::playSound( snd);
+					syncanime( MOUSE_PRESSED);
+					view.postActionEvent( null, 1, e.modifiers);		//	ここでActionEvent発火 右クリックかはmodifiersで見る
+					asyncanime( MOUSE_CLICKED);
+				}
+			}else{
+				::playSound( snd);
+				pressed = true;
+				//	600ミリ秒後にプレスを予約
+				local modif = e.modifiers | BUTTON2_MASK;
+				ctx.pressiv <- setTimeout( @(){
+					view.postActionEvent( null, 1, modif);		//	ここでActionEvent発火 強制的に右クリック判定
+					asyncanime( MOUSE_CLICKED);
+					ctx.pressiv = null;
+					pressed = false;
+				}.bindenv( this), 600);
+				asyncanime( MOUSE_PRESSED);
+			}
+			if( !isScrollable()) e.consume();
+			break;
+		case MOUSE_DRAGGED:
+			if( pressed){
+				if( (e.time-t0) >= 600 || lensq( e) > 800){
+					_cancelpress();
+					syncanime( MOUSE_RELEASED);
+				}
+			}
+			if( !isScrollable()) e.consume();
+			break;
+		case MOUSE_RELEASED:
+			if( pressed){
+				pressed = false;
+				_cancelpress();
+				syncanime( MOUSE_CLICKED);
+				view.postActionEvent( null, 1, e.modifiers);		//	ここでActionEvent発火
+				if( entered) asyncanime( MOUSE_ENTERED);
+			}
+			if( !isScrollable()) e.consume();
+			break;
+		case MOUSE_CANCELLED:
+			if( pressed){
+				pressed = false;
+				_cancelpress();
+				asyncanime( MOUSE_RELEASED);
+			}
+			break;
+		case MOUSE_MOVED:
+		case MOUSE_ENTERED:
+			updateMouseEntered( view.contains( e.src));
+			break;
+		case MOUSE_EXITED:
+			updateMouseEntered( view.contains( e.dst));
+			break;
+		}
+	}
+
+	//	buttontype=3 : リピート型ボタン。
+	//
+	function mousefunc3( e){
+		e.computeLocal( view.getInvMatrix());
+		switch( e.id){
+		case MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON1_MASK)){	//	リピートボタンは右クリックを判断しない
+				e.consume();
+				::playSound( snd);
+				pressed = true;
+				view.postActionEvent( 0, 1, e.modifiers);		//	ここでActionEvent発火
+				syncanime( MOUSE_PRESSED);
+				if( !isScrollable()) e.consume();
+				ctx.repeatcnt <- 1;
+				//	初回300ms, 以降60ms。GPUIと同じ
+				local func60 = @(){
+					if( entered){
+						::playSound( snd);
+						asyncanime( MOUSE_CLICKED);
+						view.postActionEvent( null, ++ctx.repeatcnt, e.modifiers);	//	リピートフラグはcntで見る
+					}
+				}.bindenv( this);
+				local func300 = @(){
+					if( entered){
+						::playSound( snd);
+						asyncanime( MOUSE_CLICKED);
+						view.postActionEvent( null, ++ctx.repeatcnt, e.modifiers);	//	リピートフラグはcntで見る
+					}
+					ctx.pressiv <- setInterval( func60, 30);
+				}.bindenv( this);
+				ctx.pressiv <- setTimeout( func300, repeatdelay);
+				asyncanime( MOUSE_CLICKED);
+			}
+			break;
+		case MOUSE_DRAGGED:
+			e.consume();	// if( !isScrollable()) e.consume();	//	スクロール変になるからconsumeする
+			break;
+		case MOUSE_RELEASED:
+			if( pressed){
+				_cancelpress();
+				syncanime( MOUSE_RELEASED);
+			}
+			if( entered) asyncanime( MOUSE_ENTERED);
+			break;
+		case MOUSE_MOVED:
+		case MOUSE_ENTERED:
+			updateMouseEntered( view.contains( e.src));
+			break;
+		case MOUSE_EXITED:
+			updateMouseEntered( view.contains( e.dst));
+			break;
+		}
+	}
+	
+	//	buttontype=4 : リストアイテム型ボタン。
+	//	プレス時にentered状態じゃなかったら、もしくはenteredになってすぐの時はプッシュを発行しない。
+	//	この動作が必要になるのは、タッチパネルではマウスムーブが行われないため、カーソルを合わせて情報表示のような機能を実現するには
+	//	タップ操作でカーソル移動をする必要があるため。
+	//	また、スワイプでのリストスクロールでもこの動作が必要となってくる。
+	//	※SKRootViewの実装では、先にMOUSE_ENTERED、直後にMOUSE_PRESSEDが来る。
+	//	
+	function mousefunc4( e){
+		e.computeLocal( view.getInvMatrix());
+		switch( e.id){
+		case MOUSE_PRESSED:
+			if( skGetTime( entertime) < 10) break;		//	
+			if( e.isMouseDown( BUTTON3_MASK)) break;	//	プッシュ型ボタンはホイールクリックを判断しない
+			if( e.isMouseDown( BUTTON2_MASK) && !enablerclick) break;
+			pressed = true;
+			::playSound( snd);
+			syncanime( MOUSE_PRESSED);
+			view.postActionEvent( null, e.count, e.modifiers);		//	ここでActionEvent発火 右クリックかはmodifiersで見る
+			if( !isScrollable()) e.consume();
+			newthread().start( @(){
+				syncanime( MOUSE_CLICKED);
+				if( entered) syncanime( MOUSE_ENTERED);
+			}, this);
+			break;
+		case MOUSE_DRAGGED:
+			if( pressed){
+				e.consume();	// if( !isScrollable()) e.consume();	//	スクロール変になるからconsumeする
+			}
+			break;
+		case MOUSE_RELEASED:
+		case MOUSE_CANCELLED:
+			if( pressed){
+				e.consume();
+				pressed = false;
+				if( entered){
+					asyncanime( MOUSE_ENTERED);
+				}else{
+					asyncanime( MOUSE_RELEASED);
+				}
+			}
+			break;
+		case MOUSE_MOVED:
+		case MOUSE_ENTERED:
+			updateMouseEntered( view.contains( e.src));
+			break;
+		case MOUSE_EXITED:
+			updateMouseEntered( view.contains( e.dst));
+			break;
+		}
+	}
+
+	////////////////////////////////////////////////////////////////////////
+	//	タイプ別アニメーション処理
+
+	//	animetype=0 : 何もしない
+	function animefunc0( eid){
+	}
+
+	static eidactions = {
+		[MOUSE_PRESSED] = "gpui_press",
+		[MOUSE_RELEASED] = "gpui_release",
+		[MOUSE_CLICKED] = "gpui_click",
+		[MOUSE_ENTERED] = "gpui_enter",
+		[MOUSE_EXITED] = "gpui_exit",
+	}
+
+	//	animetype=3 : アクション実行型アニメーション
+	//
+	function animefunc3( eid){
+		switch( eid){
+		case MOUSE_RELEASED:
+			if( !entered) eid = MOUSE_EXITED;
+			break;
+		case VIEW_DISABLED:
+			if( entered) eid = MOUSE_EXITED;
+			break;
+		}
+		local m = eidactions[eid];
+		if( m){
+			view.action( m);
+		}
+	}
+
+	function syncanimefunc3( eid){
+		animefunc3( eid);
+		view.waitAction();
+	}
+
+	static eidanimes = {
+		[MOUSE_PRESSED] = (2,null,null,  0),
+		[MOUSE_RELEASED] = (1,null,null,  0),
+		[MOUSE_CLICKED] = (3,1,30,  50),
+		[MOUSE_ENTERED] = (1,null,null, 0),
+		[MOUSE_EXITED] = (0,20,null, 50),
+		[VIEW_DISABLED] = (5,null,null,  0),
+		[VIEW_ENABLED] = (0,null,null,  0),
+	}
+	
+	//	animetype=4 : フレームアニメーション(固定)
+	//	
+	function animefunc4( eid){
+		switch( eid){
+		case MOUSE_RELEASED:
+			if( !entered) eid = MOUSE_EXITED;
+			break;
+		}
+		local a = eidanimes[eid];
+		if( a) view.anime( a[0], a[1], a[2]);
+	}
+
+	function syncanimefunc4( eid){
+		animefunc4( eid);
+		sleep( eidanimes[eid][3]||0);
+	}
+	
+	function enableStateChanged( b){
+		asyncanime( b ? VIEW_ENABLED : VIEW_DISABLED);
+		entered = false;
+		pressed = false;
+	}
+}
+
+class GPUIButton extends SKNestableView
+{
+	static icontype = "button";
+	isdir = true;
+
+	syncanime = false;
+	sizechangeable = false;
+	imports = null;				//	LibView機能
+	selected = false;			//	トグル機能用
+	togglable = false;
+	
+	constructor(){
+		local t = GPUIButtonTarget();
+		t.setGPUIView( this);
+	}
+
+	function getProperties(){
+		local vp = #[
+			( SKVP[VISIBLE]),
+			( SKVP[POSITION]),
+			( SKVP[SCALE]),
+			( SKVP[ROTATION]),
+			( SKVP[STRETCHALIGN]),
+			( SKVP[BUTTONTYPE]),
+			( SKVP[BUTTONANIMETYPE]),
+			( SKVP[CURSMOVABLE]),
+			( SKVP[TOGGLABLE]),
+			( SKVP[ENABLED]),
+			( SKVP[TIPS]),
+		];
+		local cloned = false;
+		if( !viewdata["link"] || sizechangeable){
+			if( !cloned) vp = clone vp;
+			cloned = true;
+			vp[2] <- ( SKVP[SIZE_STATIC]);
+			vp[3] <- ( SKVP[PIVOT])
+			if( !viewdata["link"]) vp[length(vp)-2] <- ( SKVP[SYNC_ANIMATION]);
+		}
+		if( length( imports)){
+			if( !cloned) vp = clone vp;
+			cloned = true;
+			foreach( v in imports){
+				vp .. with( clone SKVP[v[2]]){ pid = v[0]; };
+			}
+		}
+		return vp;
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case BUTTONTYPE : return gpui.buttontype;
+		case BUTTONANIMETYPE : return gpui.animetype;
+		case CURSMOVABLE : return gpui.cursmovable;
+		case SYNC_ANIMATION : return syncanime;
+		case SIZE_CHANGEABLE : return sizechangeable;
+		case TOGGLABLE : return togglable;
+		}
+		foreach( v in imports){
+			if( v[0] == pid) return v[1].getParam( v[2]);
+		}
+		return super.getParam( pid);
+	}
+
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case BUTTONTYPE : gpui.setButtonType( p0); break;
+		case BUTTONANIMETYPE : gpui.setAnimeType( p0); break;
+		case CURSMOVABLE : gpui.cursmovable = p0; break;
+		case SYNC_ANIMATION : syncanime = p0; break;
+		case SIZE_CHANGEABLE : sizechangeable = p0; break;
+		case TOGGLABLE : setAutoToggle( !!p0); break;
+		case EXPORTS : imports = parseExports( p0); break;
+		}
+		foreach( v in imports){
+			if( v[0] == pid) return v[1].setParam( v[2], p0, p1, w);
+		}
+		return super.setParam( pid, p0, p1, w);
+	}
+
+	//	
+	function blink(){
+		gpui.syncanime( MOUSE_CLICKED);
+	}
+
+	function loadFinished(){
+		if( viewdata["link"]){
+			isdir = false;
+			syncanime = false;
+		}
+	}
+
+	function setSelected( b, anim=false){
+		selected = b;
+		local spd = anim ? 200.0 : null;
+		findChild( "tgl")?.anime( b?10:0, spd);
+	}
+
+	function isSelected(){
+		return selected;
+	}
+
+	function toggleevent( e){
+		if( e.id == ACTION_PERFORMED){
+			setSelected( !selected, true);
+		}
+	}
+
+	function setAutoToggle( b){
+		(b?addEventListener:removeEventListener)( ACTION_EVENT, toggleevent);
+		togglable = b;
+	}
+
+	//	見た目のマウスインの状態をロックする。
+	//	このメソッドは、アイテムを選択してそれに対するポップアップメニューを表示させるときに
+	//	アイテムの選択表示が解除されないようにするために行う。
+	function lockMousein(){
+		enabled = false;
+		gpui.entered = false;
+		gpui.pressed = false;
+	}
+
+	//	見た目のマウスインの状態ロックを解除する。同時に、自分にカーソルを戻す。
+	function unlockMousein(){
+		enabled = true;
+		if( ::gpui.enabled){
+			::gpui.updateGPUIMap();
+			::gpui.moveCursorTo( gpui, true);
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+//	リストビュー実装
+//	複数タイプの挙動を動的に切り替えることができる。
+//	PC,キーボード : マウスホイール、スクロールバークリック。
+//	ゲームパッド  : 上下左右でカーソル(GPUITargetによる)、画面スクロールは無し？
+//	タッチパネル  : タッチ操作で加速度付きスクロール。
+//	スクロールバーとコンテント領域のドラッグをon/off出来ればよい。スクロールバーはフェードも出来るように(viewの機能)。
+//
+//	縦横どちらにもスクロールできるように。
+//	ドラッグ中はピクセル単位のスクロールをし、離した時にscrollsnap単位の位置に補正する。
+//
+class GPUIScrollGroup extends GPUIGroup
+{
+	xloop = 0;						//	override
+	yloop = 0;						//	override
+	scrollable = true;				//	override
+	contentdraggable = true;		//	タッチパネルの時だけ有効にする
+
+	//	scroll params
+	scrollrect = null;				//	Rect2D : スクロール範囲 : contentのウィンドウ領域より大きく。
+	scrollsnap = null;				//	[x,y] : x,yのスクロールする単位
+	scrollunit = 60;				//	
+
+	mousex = 0;
+	mousey = 0;
+	dxlog = 0.0;					//	tobe scrollvel
+	dylog = 0.0;					//	tobe scrollvel
+	mousetime = 0;
+	presstime = 0;
+	dxscale = 1.0;
+	dyscale = 1.0;
+	pushback = 0.75;				//	はみ出した時の押し戻し率
+	intr = 0;						//	interval-id
+
+	ori = 0;						//	ホイール、バーに影響される
+
+	//	views
+	content = null;					//	スクロールするview。scrollrectの範囲に収まるようにposが移動する。
+	window = null;					//	content.parent。
+	bars = null;					//	GPUIScrollBar
+
+	function setGPUIView( v){
+		super.setGPUIView( v);
+		content = v.content;
+		window = v.window;
+		window.addEventListener( MOUSE_EVENT, mouseevent);	//	リスナーは大本のviewにのみ配置する。
+		window.addEventListener( DROPTARGET_EVENT, dndevent);
+		window.dragsource = this;
+		scrollrect = clone window.bnd;
+		//
+		contentdraggable = !(::uifeature&UIFeature.UI_MOUSE) && (::uifeature&UIFeature.UI_TOUCH);
+	}
+
+	function updateLayout(){
+		scrollrect.set( 0.0, 0.0, Math.max( content.bnd.w, window.bnd.w), Math.max( content.bnd.h, window.bnd.h));
+		local divunit = view.ori ? 128 : 128;
+		local s = view.calcScrollSnap( divunit);
+		if( s){
+			scrollsnap = ( s, s);
+			scrollunit = s;
+		}else{
+			scrollsnap = ( 1, 1);
+			scrollunit = 60;
+		}
+	}
+
+	function isScrolling(){
+		return !!intr;	//	TODOドラッグ中も取る
+	}
+
+	function scrollUnit( cnt){
+		local d = scrollunit * cnt;
+		local w = content.getWindowRect();
+		local wx = snapval( content.pos.x + d*ori, w.w, scrollrect.x, scrollrect.w, scrollsnap[0]);
+		local wy = snapval( content.pos.y + d*(1-ori), w.h, scrollrect.y, scrollrect.h, scrollsnap[1]);
+		if( wx==content.pos.x && wy==content.pos.y) return false;
+		if( intr){ clearInterval( intr); intr = null; }
+		if( !intr){
+			_moveto( wx, wy, 40);
+		}
+		return true;
+	}
+
+	function scrollDelta( dx, dy){
+		local w = content.getWindowRect();
+		local x = Math.clamp( content.pos.x+dx, w.w-scrollrect.w, scrollrect.x);
+		local y = Math.clamp( content.pos.y+dy, w.h-scrollrect.h, scrollrect.y);
+		return _moveto( x, y, 0);
+	}
+
+	function hasParentList( ori){
+		for( local p = view.parent; p; p = p.parent){
+			if( p instanceof ::GPUIListView && p.ori==ori) return true;
+		}
+		return false;
+	}
+	
+	//	コンテントウィンドウ内のマウス操作。
+	function mouseevent( e){
+		e.computeLocal( window.getInvMatrix());
+		switch( e.id){
+		case MOUSE_HWHEEL_MOVED:
+		case MOUSE_WHEEL_MOVED:
+		{
+			local _ori = (e.id==MOUSE_HWHEEL_MOVED || e.isShiftDown())?1:0;
+			if( _ori != ori && hasParentList( _ori)) break;	//	このイベントを親に回す
+			if( scrollUnit( e.count)) e.consume();
+			break;
+		}
+		case MOUSE_PAN:
+			if( !e.isShiftDown()){
+				local _ori = e.dx?1:0;
+				if( _ori != ori){
+					if( hasParentList( _ori)) break;
+					local tmp = e.dx; e.dx = e.dy; e.dy = tmp;
+				}
+				if( scrollDelta( e.dx, e.dy) || hasParentList( 1-ori)) e.consume();
+			}
+			break;
+		case MOUSE_PRESSED:
+			if( !(e.modifiers & BUTTON1_MASK)) break;
+			if( !contentdraggable) return;
+			mousex = e.lx;
+			mousey = e.ly;
+			dxlog = 0.0;
+			dylog = 0.0;
+			presstime = mousetime = e.time;
+			if( intr){ clearInterval( intr); intr = null; }
+			e.consume();
+			break;
+		case MOUSE_DRAGGED:
+			if( !(e.modifiers & BUTTON1_MASK)) break;
+			if( !contentdraggable) return;
+			if( presstime){
+				if( Math.abs( mousex-e.lx) > 24 || Math.abs( mousey-e.ly) > 24){	//	24 / 1280
+					presstime = 0;
+					//	continue
+				}else
+				if( skGetTime() >= presstime+100){
+					presstime = 0;
+					mousex = e.lx;
+					mousey = e.ly;
+					//	continue
+				}else{
+					break;
+				}
+			}
+			local dx = (mousex-e.lx)*dxscale;
+			local dy = (mousey-e.ly)*dyscale;
+			content.pos.sub( dx, dy, 0.0);
+			//	スクロール範囲外ではドラッグ速度を落とす。
+			local w = content.getWindowRect();
+			if( content.pos.x > 0.0 && dx < 0.0){ content.pos.x += dx*pushback; }
+			if( content.pos.y > 0.0 && dy < 0.0){ content.pos.y += dy*pushback; }
+			if( w.x + w.w > scrollrect.x+scrollrect.w && dx > 0.0){ content.pos.x += dx*pushback; }
+			if( w.y + w.h > scrollrect.y+scrollrect.h && dy > 0.0){ content.pos.y += dy*pushback; }
+			content.matdirty = true;
+			content.repaint();
+			mousex = e.lx;
+			mousey = e.ly;
+			local dt = 1.0 + ((e.time-mousetime)+0.0)*0.1;
+			dxlog = dxlog / dt - dx;
+			dylog = dylog / dt - dy;
+			mousetime = e.time;
+			e.consume();
+			view.scrolled( this);
+			break;
+		case MOUSE_RELEASED:
+			if( !contentdraggable) return;
+			local dt = 1.0 + ((e.time-mousetime)+0.0)*0.1;
+			dxlog = dxlog / dt;
+			dylog = dylog / dt;
+			local w = content.getWindowRect();
+			local d = dxlog*dxlog + dylog*dylog;
+			if( d > 10*10){
+				_moveto(
+					snapval( content.pos.x+dxlog*14.0, w.w, scrollrect.x, scrollrect.w, scrollsnap[0]),
+					snapval( content.pos.y+dylog*14.0, w.h, scrollrect.y, scrollrect.h, scrollsnap[1]),
+					340 + ((Math.sqrt(d)*0.1)|0)
+				);
+			}else{
+				_moveto(
+					snapval( content.pos.x, w.w, scrollrect.x, scrollrect.w, scrollsnap[0]),
+					snapval( content.pos.y, w.h, scrollrect.y, scrollrect.h, scrollsnap[1]),
+					60
+				);
+			}
+			content.matdirty = true;
+			content.repaint();
+			e.consume();
+			break;
+		}
+	}
+
+	function snapval( x, w, sx, sw, snap){
+		local x0 = x;
+		x = Math.iround( x-snap*0.4999) / snap * snap;	//	0.5だとマイナス時にどんどんズレてく。。。
+		if( x > sx) return sx;
+		if( x+sw < w) return w-sw;
+		return x;
+	}
+
+	function _moveto( x, y, time){
+		if( content.pos.x == x && content.pos.y == y) return false;
+		//	timeが0の場合は即行う
+		if( time == 0){
+			content.pos( x, y, 0);
+			content.matdirty = true;
+			content.repaint();
+			view.updateMatrixAll();	//	直後の計算のためにMatrixを全部更新。
+			view.scrolled( this);
+			return true;
+		}
+		local env = {
+			self = this
+			content = content
+			p0 = Vector3D( content.pos)
+			p1 = Vector3D( x, y, 0)
+			t = 0
+		}
+		local func = function( dt){
+			if( (t += dt) >= time){
+				content.pos( p1);
+				content.matdirty = true;
+				content.repaint();
+				self.intr = null;
+				self.view.scrolled( this);
+				return undefined;
+			}else{
+				content.pos( p0.lerp( p1, Math.pow( (t+0.0)/time, 0.4) ));
+				content.matdirty = true;
+				content.repaint();
+				self.view.scrolled( this);
+			}
+		}.bindenv( env);
+		intr = setInterval( func, 1);
+		return true;
+	}
+
+	function moveFor( dx, dy, time, snap=true){
+		local w = content.getWindowRect();
+		local newx = snapval( content.pos.x+dx, w.w, scrollrect.x, scrollrect.w, snap?scrollsnap[0]:1);
+		local newy = snapval( content.pos.y+dy, w.h, scrollrect.y, scrollrect.h, snap?scrollsnap[1]:1);
+		local _dx = newx-content.pos.x;
+		local _dy = newy-content.pos.y;
+		local d1 = Math.sqrt( dx*dx+dy*dy);
+		local d2 = Math.sqrt( _dx*_dx+_dy*_dy);
+		if( d1 <= 0.01) return;
+		if( d1 != d2){
+			time = time * d2 / d1;
+		}
+		if( intr){ clearInterval( intr); intr = null; }
+		_moveto( newx, newy, time);
+	}
+
+	function scrollRectToVisible( v, r, time) {
+		content.updateMatrixAll();	//	位置を最新に
+		local w = content.getWindowRect();
+		local cpos = content.pos;
+		local m = content.getInvMatrix().mult44( v.mat, #Matrix());
+		r.transform( m);	//	rをcontent座標系に。
+		if( ori){ w.y -= 100.0; w.h += 200.0; } else { w.x -= 100.0; w.w += 200.0; }	//	
+		if( w.contains( r)) return false;	//	スクロールの必要なし
+		local newx = cpos.x, newy = cpos.y;
+		if( dxscale){
+			if( r.x + r.w > w.x + w.w) { newx = cpos.x - (r.x + r.w - w.x - w.w); }
+			if( r.x < w.x) { newx = cpos.x - (r.x - w.x); }
+		}
+		if( dyscale){
+			if( r.y + r.h > w.y + w.h) { newy = cpos.y - (r.y + r.h - w.y - w.h); }
+			if( r.y < w.y) { newy = cpos.y - (r.y - w.y); }
+		}
+		if( intr){ clearInterval( intr); intr = null; }
+		_moveto( newx, newy, time);		//	TODO : snapが出来てない。rをsnapしちゃうのが一番簡単。
+		return true;
+	}
+
+	//	GPUI
+	function scrollTargetToVisible( tgt, time=46){
+		return scrollViewToVisible( tgt.view, time);
+	}
+
+	function scrollViewToVisible( v, time=46){
+		local r = r_1.set( 0.0, 0.0, v.bnd.w, v.bnd.h);
+		if( scrollRectToVisible( v, r, time)){
+			while( intr) suspend();	//	アニメーション中は待つ。。。
+			return true;
+		}
+	}
+	
+	function scrollNameToVisible( n, time){
+		local v = view.findChild( n);
+		if( v) return scrollViewToVisible( v, time);
+	}
+
+	function scrollToScrollBounds( time=0){
+		local w = content.getWindowRect();
+		local wx = snapval( content.pos.x, w.w, scrollrect.x, scrollrect.w, scrollsnap[0]);
+		local wy = snapval( content.pos.y, w.h, scrollrect.y, scrollrect.h, scrollsnap[1]);
+		if( wx==content.pos.x && wy==content.pos.y) return false;
+		if( intr){ clearInterval( intr); intr = null; }
+		_moveto( wx, wy, time);
+		return true;
+	}
+
+	//	スクロールバーから呼ばれる
+
+	function pageScroll( bar, inc){
+		if( ori){
+			moveFor( inc * window.bnd.w, 0, 46);
+		}else{
+			moveFor( 0, inc * window.bnd.h, 46);
+		}
+	}
+
+	function barDragTo( bar, p){
+		_moveto( -p*ori, -p*(1-ori), 0.0);
+	}
+
+	function barDragDone( bar){
+		local w = content.getWindowRect();
+		_moveto(
+			snapval( content.pos.x, w.w, scrollrect.x, scrollrect.w, scrollsnap[0]),
+			snapval( content.pos.y, w.h, scrollrect.y, scrollrect.h, scrollsnap[1]),
+			60
+		);
+	}
+
+	///////////////////////////////////////////////////////////
+	//	Drag&Dropでスクロール
+	//	
+	//	mouse exitをリストを上下に切れるようにした場合はスクロール継続。
+	//	↑の時はTARGET_DROPが来ない。
+
+	dragscroll = null;		//	interval id
+
+	function acceptDrag( e){
+		return false;
+	}
+
+	function acceptDrop( ds, x, y){
+		return true;
+	}
+
+	function dndevent( e){
+		e.computeLocal( window.getInvMatrix());
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			if( !dragscroll){ startDragScroll( e); }
+			break;
+		case TARGET_DRAG_EXIT:
+			break;
+		case TARGET_DROP:
+			break;
+		}
+	}
+	
+	//	このリスト上をドラッグされた状態で上下端でスクロールさせる
+	function startDragScroll( e){
+		local m = ::rootview.mouses[e.mouseid];
+		local w = window;
+		local m0 = (m.mousex, m.mousey), drag = ptr();
+		local func = function(){
+			if( !~drag){
+				drag << (Math.abs( m.mousex-m0[0])>=12 || Math.abs( m.mousey-m0[1])>=12);
+			}else{
+				m0.set( m.mousex, m.mousey);
+				local d = 0;
+				local dndy = Vector3D( m.mousex, m.mousey, 0.0).transform( w.getInvMatrix())[view.Y];
+				if( dndy < 32) d = 1;
+				if( dndy > w.bnd[view.H]-32) d -= 1;
+				if( d){
+					scrollUnit( d);
+				}
+			}
+			if( !( m.modifiers & (ModifiersMask.BUTTON1_MASK))){
+				dragscroll = null;
+				return undefined;
+			}
+		}.bindenv( this);
+		//
+		dragscroll = setInterval( func, 160);
+	}
+
+	function stopDragScroll(){
+		if( dragscroll){
+			clearInterval( dragscroll);
+			dragscroll = null;
+		}
+	}
+
+	//	gpuigroup
+
+	static btnvec = [
+		{[BTN_UP]=-1, [BTN_DOWN]=1, },
+		{[BTN_LEFT]=-1, [BTN_RIGHT]=1, },
+	];
+
+	function moveCursor( tgt0, dir, searchparent=true, _r0=null){
+		local i0 = view.rows.findi( @( v) v.contains( tgt0["view"]));
+		local c = super.moveCursor( tgt0, dir, searchparent, _r0), tgt = c[0];
+		if( i0 >= 0 && tgt){
+			local d = btnvec[ori][dir] ?? 0;
+			local i = view.rows.findi( @( v) v.contains( tgt.view));
+			if( !d && i0!=i){	//	縦リストに横キー操作で選択行が変わった場合は無効
+				return 0;
+			}
+			// local y0 = tgt0.getCursorPos().y;
+			// local y1 = tgt.getCursorPos().y;
+			// if( d<0 && i0==0){
+			// 	if( y1 > y0){
+			// 		foreach( i,v in gpuimap["targets"]) printf( "  [%d] - %S\n", i, gpui.viewinfo( v["view"]));
+			// 		return 0;
+			// 	}
+			// }else
+			// if( d>0 && i0==length( view.rows)-1){
+			// 	if( y1 < y0){
+			// 		return 0;
+			// 	}
+			// }
+		}
+		return c;
+	}
+
+	//	
+	function getLoopTargets( views, a){
+		foreach( v in views){
+			if( !v.enabled || !v.visible) continue;
+			local g = v.gpui;
+			if( !g){
+				if( v.children && !getLoopTargets( v)) return false;
+			}else
+			if( g.cursmovable){
+				a .. g;
+			}
+		}
+		return true;
+	}
+
+	function enableStateChanged( b){
+	}
+}
+
+//	GPUIListViewはスクロールバーは縦横のどちらかのスクロールバーのみ持つ。
+//	windowとcontentとbarとrows[]を持つ。
+//	rowsはcontentに配置される。
+//	contentはwindow内に配置されスクロールする。windowはバッファ化されるのでcontentはクリップされる。
+//	
+//	rowstretchはrowpathが設定されてる場合にのみ有効。
+//	rowstretch!=0 且つ rowpath!="" の場合はrow[H]はオリジナルのサイズに強制される。
+//	
+
+class GPUIListView extends SKNestableView
+{
+	static icontype = "list";
+	rowpath = null;
+	barpath = null;
+	envpath = null;
+	insx = 0; insy = 0;
+	rowstretch = 0;
+	bordercol = 0;
+
+	rowedata = null;			//	SKViewEntityData : rowpathのデータ
+
+	envelope = null;			//	contentを包む外包ui
+	window = null;
+	content = null;
+	bar = null;
+	rows = null;
+
+	valign = 0;					//	0,1,2 : contentが小さい場合に上に寄るか下に寄るか
+
+	//	横リスト対応
+	ori = 0;
+	X = "x";
+	Y = "y";
+	W = "w";
+	H = "h";
+	// rowstretch = 7;	//	7|11
+
+	_defer = false;				//	trueだとupdateLayout()を後回し
+
+	previewrownum = 4;			//	※エディター専用、プレビュー用の行数指定
+
+	static nostretchinner = 1;
+
+	constructor(){
+		rows = [];
+		window = Window();
+		window.setBuffer( 1);
+		window.name = "listwindow";
+		content = SKView();
+		content.name = "listcontent";
+		window.addChild( content);
+		addChild( window);
+		local g = GPUIScrollGroup();
+		g.setGPUIView( this);
+		g.dxscale = 0.0;
+	}
+
+	function loadFinished(){
+		// updateLayout();
+	}
+	
+	function setOrient( o){
+		o = o?1:0;
+		if( ori != o){
+			ori = o;
+			if( o){ X = "y"; Y = "x"; W = "h"; H = "w"; gpui.dxscale = 1.0; gpui.dyscale = 0.0; }
+			else{   X = "x"; Y = "y"; W = "w"; H = "h"; gpui.dxscale = 0.0; gpui.dyscale = 1.0; }
+			bar?.orientChanged( this);
+			gpui.ori = o;
+			//	要素を作り変える。前のレイアウトで大きさが変わっているので
+			local n = length( rows);
+			setRowCount( 0);
+			setRowCount( n);
+			updateLayout();
+		}
+	}
+	
+	function updateLayout(){
+		if( _defer) return;
+		local w = bnd.w-insx*2, h = bnd.h-insy*2, barw = 0, barh = 0;
+		local rh = getRowsHeight(), fixh = 0, wh = ori?w:h;
+		if( rowstretch && rowedata){
+			fixh = rowedata.getStatic( SIZE_STATIC)[ori^1];
+			local s = wh / rh;
+			if( (s<1.0 && (rowstretch&1)) || (s>1.0 && (rowstretch&2)) ){
+				fixh = (fixh*s)|0; rh = wh;
+			}
+		}
+		content.bnd[H] = Math.max( wh, rh);
+		if( bar){
+			bar.pos[X] = bnd[W]-bar.bnd[W];
+			bar.pos[Y] = 0.0;
+			if( ori) bar.stretchSize( w, bar.bnd.h); else bar.stretchSize( bar.bnd.w, h);		//	oriから取得しないと
+			bar.setScrollRange( content.bnd[H], bnd[H]);
+			bar.setScrollPos( -content.pos[Y]);
+			if( ori){
+				barh = bar.bnd.h; bar.pos.add( insx, -insy, 0.0);
+			}else{
+				barw = bar.bnd.w; bar.pos.add( -insx, insy, 0.0);
+			}
+		}
+		local bw = w-barw, bh = h-barh;
+		window.setRect( insx, insy, bw, bh);
+		content.bnd[W] = ori?bh:bw;	//	oriから取得しないと
+		local ry = !valign ? 0.0 : valign==1 ? (content.bnd[H]-rh)>>1 : content.bnd[H]-rh, ry0 = ry;
+		foreach( i,r in rows){
+			if( !(r.layerflags&1)) continue;	//	レイヤー非表示なら無視。位置等も変化しない。
+			r.pos[X] = 0.0; r.pos[Y] = ry;
+			local h0 = fixh || r.bnd[H];
+			if( ori) r.stretchSize( h0, bh); else r.stretchSize( bw, h0);	//	oriから取得しないと
+			r.matdirty = true;
+			ry += h0;
+		}
+		if( envelope){
+			local cw = w, ch = h;
+			if( ori) cw = rh; else ch = rh; 
+			local ew = Math.min( w, cw) + insx*2;
+			local eh = Math.min( h, ch) + insy*2;
+			envelope.pos[Y] = ry0;
+			envelope.stretchSize( ew, eh);
+		}
+		gpui.updateLayout();
+		updateRowVisibles();
+		window.repaint();
+	}
+	
+	//	
+	function computeSizeDeltaSelf( d){
+		local sa = stretchalign, hs = (sa&5)==5, vs = (sa&10)==10;
+		if( !(sa&16) && (hs|vs)){	//	&16の時は無視
+			local r = rows.last();
+			local dh = r.pos[Y]+r.bnd[Y]+r.bnd[H] - bnd[H];	//	最下部のrow座標
+			if( dh*dh > 0.01) d[Y] = Math.max( d[Y], dh);	//	マイナスでもたぶん大丈夫
+			return false;
+		}
+		return false;
+	}
+
+	//	スクロールのスナップサイズを計算する。
+	//	すべての要素が同じ高さの場合にスナップが有効になる。もしくは最大公約数？
+	//	また、スナップサイズがdivunitをこす場合はスナップが分割される。このとき分割数で割り切れる必要がある。
+	function calcScrollSnap( divunit){
+		if( !rows[0]) return 0;
+		local h = rows[0].bnd[H];
+		foreach( r in rows){
+			if( h != r.bnd[H]) return 0;	//	
+		}
+		h = (h+0.5)|0;	//	整数化
+		if( h > divunit){
+			for( local d = 2; d < 16; d++){	//	※割り切れないと延々と小さくしていっちゃうな、、、
+				local _h = h / d;
+				if( !(h%d) && _h<=divunit){ h = _h; break;}
+			}
+			if( h > divunit) h = divunit;
+		}else{
+			h = int(divunit/h) * h;
+		}
+		return h;
+	}
+	
+	function getRowsHeight(){
+		if( rowstretch && rowedata){
+			return length( rows) * rowedata.getStatic( SIZE_STATIC)[ori^1];
+		}
+		local h = 0.0;
+		foreach( r in rows){
+			if( (r.layerflags&1)) h += r.bnd[H];
+		}
+		return h;
+	}
+
+	function clearRows(){
+		local len = length( rows);
+		for( local l = len-1; l >= 0;l --){
+			rows[l].removeFromParent();
+		}
+		rows.clear();
+	}
+
+	//	プログラムで個別に行のSKViewを追加する。rowedataと同時に使うことはできない。
+	//	
+	function addRow( r){
+		local n = length( rows);
+		local y = 0;
+		if( n) y = rows[n-1].pos[Y] + rows[n-1].bnd[H];
+		r.name = "r" .. n;
+		r.pos[X] = 0.0;
+		r.pos[Y] = y;
+		content.addChild( r);
+		rows .. r;
+		// content.bnd.h = r.pos.y + r.bnd.h;	//	後で手動でupdateLayoutを呼び出す。
+		return r;
+	}
+
+	function insertRow( i, r){
+		content.insertChild( i, r);
+		rows[i] <- r;
+		r.name = "r" .. i;
+		return r;
+	}
+
+	function removeRow( r){
+		local i = rows.indexOf( r);
+		if( i < 0) return;
+		delete rows[i];
+		r.removeFromParent();
+		local y = r.pos[Y] + r.bnd[H];
+		local len = length( rows);
+		for( local l = i; l < len;l ++){
+			local r = rows[l];
+			r.name = "r" .. l;
+			r.pos[X] = 0.0;
+			r.pos[Y] = y;
+			y += r.bnd[H];
+		}
+	}
+
+	function moveRow( r, mi){
+		content.moveChild( r, mi);
+		local i = rows.indexOf( r);
+		if( i == mi) return;
+		if( i < mi){
+			rows[mi] <- r;
+			delete rows[i];
+		}else{
+			delete rows[i];
+			rows[mi] <- r;
+		}
+		// r.name = "r"..mi; rows[i].name = "r"..i;
+	}
+
+	function _pushrow(){
+		local n = length( rows);
+		// local r = rowedata.createSKView( SKLibView);
+		local r = rowedata.createSKView( !rowedata.cls ? ::SKLibView : null);
+		r.layerflags |= 1 | 8;
+		r.name = "r" .. n;
+		r.pos[X] = 0.0;
+		r.pos[Y] = n*r.bnd[H];
+		r.stretchalign = rowstretch;
+		content.addChild( r);
+		rows .. r;
+		return r;
+	}
+
+	function getPathViewEntity( p){
+		local vd = ::getResourceContent( p);
+		return vd?.rootdata;
+	}
+	
+	function setRowPath( p){
+		local n = length( rows);
+		rowpath = p;
+		rowedata = length( p) ? getPathViewEntity( p) : null;
+		if( !_defer){
+			if( !rowedata){
+				updateRowCount( 0, 0);
+			}else
+			if( ::["SKStudio"]){
+				updateRowCount( 0, previewrownum);
+			}else{
+				updateRowCount( 0, rowedata ? n : 0);
+			}
+			updateLayout();
+		}
+	}
+
+	function updateRowCount( n0, n1){
+		local n = length( rows);
+		while( n > n0){
+			rows.pop().removeFromParent(); --n;
+		}
+		while( n < n1){
+			_pushrow(); ++n;
+		}
+	}
+
+	function setBarPath( p){
+		if( bar){ bar.removeFromParent(); bar = null;}
+		if( length( barpath = p)){
+			try{
+				local bd = getPathViewEntity( p);
+				bar = bd.createSKView( ScrollBar);
+				bar.layerflags |= 1 | 8;
+				bar.g = gpui;
+				bar.orientChanged( this);
+				addChild( bar);
+			}catch( ex){
+				printexception( ex);
+				barpath = "";
+				bar?.removeFromParent();
+				bar = null;
+			}
+		}
+		updateLayout();
+	}
+
+	function setEnvelopePath( p){
+		if( envelope){ envelope.removeFromParent(); envelope = null;}
+		if( length( envpath = p)){
+			try{
+				envelope = ::loadSKView( p);
+				insertChild( 0, envelope);
+			}catch( ex){
+				printexception( ex);
+				envpath = "";
+			}
+		}
+		updateLayout();
+	}
+
+	function isOutOfEnvelope( gx, gy){
+		if( !envelope) return false;
+		local p = v_1( gx, gy, 0.0).transform( envelope.getInvMatrix());
+		local r = envelope.bnd;
+		return p.x<0.0 || p.x>r.w || p.y<0.0 || p.y>r.h;
+	}
+
+	function setRowCount( n){
+		if( _defer || !rowedata) return;
+		local n0 = length( rows);
+		if( n0 == n) return;
+		updateRowCount( n, n);
+		updateLayout();
+		// gpui._moveto( 0, 0, 0);
+	}
+
+	function scrolled( g){
+		bar?.setScrollPos( -g.content.pos[Y]);
+		updateRowVisibles();
+	}
+
+	function _contentrect(){
+		local cr = content.bnd, wr = window.bnd;
+		local r = r_1.set( 0, 0, cr.w, cr.h).transform( content.mat);
+		//	windowの領域でクリップ
+		local r1 = r_2.set( 0, 0, wr.w, wr.h).transform( window.mat);
+		r = r & r1;	//	newしちゃう
+		return r.transform( content.getInvMatrix());
+	}
+
+	function updateRowVisibles(){
+		if( !rows[0]) return;
+		content.updateMatrix();
+		local vr = _contentrect();	//	content自身での座標系での表示領域
+		vr.expand( 48.0);
+		foreach( i, r in rows){
+			// r.updateMatrix();	//	やらんでよし？
+			local rr = r_2.set( r.bnd).add( r.pos);
+			r.visible = !!(vr.contacts( rr));
+		}
+	}
+	
+	//	revalidateはこのリストで止まる。子の大きさ変更がリストで最終的に吸収されるため。
+	function revalidate(){
+		updateLayout();
+	}
+
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[ORIENT]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[POSITION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[ROWPATH]),
+		( SKVP[BARPATH]),
+		( SKVP[ENVPATH]),
+		( SKVP[INSET]),
+		( SKVP[LISTALIGN]),
+		( SKVP[ROWSTRETCH]),
+		( SKVP[LOOPCURS]),
+		( SKVP[ENABLED]),
+		( SKVP[BUFFER]),
+		( SKVP[BUFFERCOLOR]),
+		( SKVP[BORDERCOLOR]),
+		( SKVP[PREVIEROWWNUM]),
+		( SKVP[TIPS]),
+	];
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case ROWPATH : return rowpath;
+		case BARPATH : return barpath;
+		case ENVPATH : return envpath;
+		case INSET : return (insx,insy);
+		case LISTALIGN : return valign;
+		case ROWSTRETCH : return rowstretch;
+		case BUFFER : return window.buftype;
+		case BUFFERCOLOR : return window.bufcolor;
+		case ORIENT : return !!ori;
+		case BORDERCOLOR : return bordercol;
+		case PREVIEROWWNUM : return previewrownum;
+		case LOOPCURS: return (gpui.xloop?1:0)|(gpui.yloop?2:0);
+		default: return super.getParam( pid);
+		}
+	}
+
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case ROWPATH:
+			if( rowpath != p0) setRowPath( p0);
+			break;
+		case BARPATH:
+			if( barpath != p0) setBarPath( p0);
+			break;
+		case ENVPATH:
+			if( envpath != p0) setEnvelopePath( p0);
+			break;
+		case INSET:
+			insx = p0[0]||0; insy = p0[1]||0;
+			updateLayout();
+			break;
+		case LISTALIGN:
+			valign = p0;
+			updateLayout();
+			break;
+		case ROWSTRETCH:	//	※※※※　これはロード時以外ではツールでのみ変更可能。
+			rowstretch = p0||0;
+			local n = length( rows);
+			setRowCount( 0);
+			setRowCount( n);
+			break;
+		case BUFFER :
+			window.setBuffer( p0);
+			if( window.buf){
+				// window.buf.tex0.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_POINT, SK_POINT));	//	ボケ防止用。ただし純粋なスケールに向かない
+			}
+			break;
+		case BUFFERCOLOR :
+			local c = window.bufcolor = Math.lerpcolor( p0, p1, w);
+			if( window.buf){
+				window.buf.color = Math.lerpcolor( c&0xff, c, (c&0xff)/255.0);
+				window.repaint();
+			}
+			break;
+		case ORIENT :
+			setOrient( p0);
+			break;
+		case BORDERCOLOR :
+			local c = bordercol = Math.lerpcolor( p0, p1, w);
+			window.sp.color0 = Math.lerpcolor( c&0xff, c, (c&0xff)/255.0);
+			window.repaint();
+			break;
+		case PREVIEROWWNUM :
+			previewrownum = p0;
+			if( !_defer && ::["SKStudio"]){
+				updateRowCount( p0, p0);
+				updateLayout();
+			}
+			break;
+		case LOOPCURS: 
+			gpui.xloop = (p0&1)?1:0;
+			gpui.yloop = (p0&2)?1:0;
+			break;
+		default: return super.setParam( pid, p0, p1, w);
+		}
+	}
+
+	//	一時的に内部レイアウト計算をオフ
+	function setSKViewEntityData( d){
+		_defer = true;
+		super.setSKViewEntityData( d);
+		_defer = false;
+		if( ::["SKStudio"]){
+			setRowCount( previewrownum);
+			updateLayout();
+		}
+	}
+}
+
+class GPUIListView.Window extends SKView
+{
+	sp = null;
+	borderh = 0;		//	ボーダー幅を直指定
+
+	constructor(){
+		sp = Sprite();
+		sp.blend = SK_PMAMIX;
+		sp.color0 = 0;
+	}
+
+	function render(){
+		if( sp.color0){
+			local listview = parent;
+			local Y = listview.Y, H = listview.H;
+			if( borderh || parent.rowedata){
+				local r = r_1.set( 0, 0, bnd.w, bnd.h);
+				local i = listview.ori?0:1;
+				local bh = r[H] = borderh || listview.rowedata.getStatic( SIZE_STATIC)[i];
+				local wh = bnd[H];
+				sp.bnd.set( r);
+				for( local y = (listview.content.pos[Y])%(bh*2)-bh; y <= wh+bh; y += bh*2){
+					sp.bnd[Y] = y; skDrawSprite( sp);
+				}
+			}else{
+				local dy = listview.content.pos[Y];
+				foreach( i,r in listview.rows){
+					if( r.visible && (i&1)){
+						sp.bnd.set( r.bnd).add( r.pos);
+						sp.bnd[Y] += dy; 
+						skDrawSprite( sp);
+					}
+				}
+			}
+		}
+	}
+}
+
+/*
+const TARGET_DRAG_ENTER = 900
+const TARGET_DRAG_EXIT = 901
+const TARGET_DRAG_OVER = 902
+*/
+
+//	GPUIScrollGroupと完全協調して相互に影響しあう。
+//	縦方向が基準。横方向は90°回転する。
+//
+class GPUIListView.ScrollBar extends SKLibView
+{
+	g = null;			//	GPUIScrollGroup
+
+	knob = null;		//	knobはbar内に配置される。
+	knoblen = 0.0;	//	ノブの長さ
+	scrollrange = 0;	//	リストの幅
+	visiblerange = 0;	//
+	ptov = 1.0;			//	knob位置(Y)からスクロール位置への変換
+
+	//	conditions
+	knoboffs = 0.0;		//	ノブの先端とノブの押された位置との差
+
+	//	横リスト対応
+	ori = 0;
+	X = "x";
+	Y = "y";
+	W = "w";
+	H = "h";
+
+	mousein = false;
+	dragging = false;
+
+	function loadFinished(){
+		knob = findChild( "knob");
+	}
+
+	function added(){
+		super.added();
+		parent.addEventListener( MOUSE_EVENT, mouseevent);
+	}
+
+	function removed(){
+		super.removed();
+		parent.removeEventListener( MOUSE_EVENT, mouseevent);
+	}
+
+	function orientChanged( li){
+		ori = li.ori;
+		X = li.X;
+		Y = li.Y;
+		W = li.W;
+		H = li.H;
+	}
+
+	function setScrollRange( sr, vr){
+		scrollrange = sr;
+		visiblerange = vr;
+		knoblen = Math.max( (bnd[H]*vr/sr)|0, bnd[W]);
+		local e = enabled;
+		if( enabled = (bnd[H]-knoblen>0.0001)){
+			ptov = (sr-vr) / (bnd[H]-knoblen);
+		}
+		if( e && !enabled){
+			action( "disable");
+		}
+	}
+
+	function setScrollPos( v){
+		local p0 = v / ptov, p1 = p0 + knoblen;
+		p0 = Math.clamp( p0, 0.0, bnd[H]-bnd[W]);
+		p1 = Math.clamp( p1, bnd[W], bnd[H]);
+		knob.pos[Y] = p0;
+		// knob.bnd[H] = p1-p0;
+		if( ori) knob.stretchSize( p1-p0, knob.bnd.h); else knob.stretchSize( knob.bnd.w, p1-p0);
+		knob.matdirty = true;
+		knob.repaint();
+	}
+
+	function mouseevent( e){
+		if( this.contains( e.src)){
+			e.computeLocal( getInvMatrix());	//	バー基準の座標系
+			local ly = ori?e.lx:e.ly;	//	oriから取得しないと
+			switch( e.id){
+			case MOUSE_PRESSED:
+				knoboffs = ly-knob.pos[Y];
+				if( e.src == this){
+					e.consume();
+					local indiback = ly > knob.pos[Y], presspos = ly;
+					g.pageScroll( this, indiback? -1 : 1);
+					//	TODO : repeat
+				}
+				e.consume();
+				break;
+			case MOUSE_DRAGGED:
+				if( e.src == knob){
+					e.consume();
+					local pos = Math.clamp( (ly-knoboffs)|0, 0, bnd[H]-knoblen);
+					local v = (pos*ptov)|0;		//	vはスクロール位置を示す
+					knob.pos[Y] = pos;
+					knob.matdirty = true;
+					knob.repaint();
+					g.barDragTo( this, v);
+					dragging = true;
+				}
+				break;
+			case MOUSE_RELEASED:
+				if( e.src == knob){
+					g.barDragDone( this);
+					if( !mousein) action( "disable");
+					dragging = false;
+				}
+				e.consume();
+				break;
+			}
+		}
+		if( enabled && parent.contains( e.src)){
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_ENTERED:
+				if( !mousein){
+					mousein = true;
+					action( "enable");
+				}
+				break;
+			case MOUSE_EXITED:
+				if( mousein){
+					mousein = false;
+					if( !dragging) action( "disable");
+				}
+				break;
+			}
+		}
+	}
+}
+
+import TextEditFlags;
+
+//	テキスト入力をGPUIの標準機能にする。
+//	GPUIButtonと同じ見た目や演出()、プラットフォームごとの入力方法の対応、
+//	複数行、入力モード(数値、パスワード等)、未入力時のデフォルト文、
+//	
+//	PC : SKTextEditが常に有効。tabでの切り替えにも対応。他所でマウスプレスのイベントがconsumeされたときにフォーカスが外れる。
+//	スマホ、ゲーム機 : タップでskStartTextEditが開始する。フォーカスは移らない。
+//	
+//	↑つまりPCでのみSKTextEditでの文字入力となる。また、PCの場合はボタンとして振る舞う必要がない。
+//	
+//	中にあるSKLabelViewがそのままSKTextEditになる。
+//	
+//	※※※要検討※※※　ボタンとしての効果はほとんど不要なので、GPUIButtonでなく単純なアニメーションで状態を演出したほうが良いかもしれない。
+//	通常、マウスオーバー、フォーカス、くらいか。
+//	
+//	・アニメーションタイプ 0:固定フレーム, 1:メソッド。 gpui_enter, gpui_exit, gpui_focus
+//	・入力モード。通常、英数字、数字、など
+//	・入力文字数、もしくは枠に固定
+//	・選択、IME色。バリエーション3つぐらいあれば良い。
+//	
+//	※ゲームパッド+キーボードがある場合はGPUI_PRESSEDでVK_ENTERをとってフォーカスしてconsumeする。
+//	※ACTION_EVENTは一行テキストでのみ発火する。
+//	
+//	
+class GPUITextEdit extends SKNestableView
+{
+	static icontype = "edit";
+	isdir = true;
+
+	sizechangeable = false;
+	text = null;						//	
+	deftext = "";
+
+	editlabel = null;				//	
+	textedit = null;				//	TextEdit : PCのみ
+	deflabel = null;				//	
+
+	imview = null;					//	IMTextView : Switchのみ？インラインキーボードからIMStringを受け取ると出来る
+	
+	animetype = 0;
+	inputtype = 0;
+	maxlen = 80;
+	unveilpassword = false;			//	TEXTEDIT_PASSWORDのときでも生文字を表示する
+	revertmode = false;				//	ESC,TAB等で入力を中断した時に元のテキストに復帰する(PCキーボード)
+	areatrim = false;
+	textfilter = null;
+	imports = null;					//	LibView機能
+	
+	snd = "ui_move";
+	checkdefocus = true;
+	focustype = 0;					//	
+
+	exmenus = null;
+
+	//	
+	_entered = false;
+	_focused = false;
+
+	constructor(){
+		local t = GPUITarget();		//	普通のやつでOK
+		t.setGPUIView( this);
+	}
+
+	function loadFinished(){
+		if( viewdata["link"]){
+			isdir = false;
+			syncanime = false;
+		}
+	}
+	
+	function added(){
+		super.added();
+		for( local p = parent; p; p = p.parent){ if( p["locktextedit"]) return; } // TODO : ちょい今適当
+		setupEditUI();
+	}
+
+	function computeSizeDeltaSelf( d){
+		return (textedit||editlabel).computeSizeDeltaSelf( d);
+	}
+
+	function setTextFilter( tf){
+		textfilter = tf;
+		if( textedit) textedit.textfilter = tf;
+	}
+
+	function addContextMenu( a){
+		exmenus = a;
+		if( textedit) textedit.exmenus = a;
+	}
+
+	function setValue( a, b=undefined){
+		if( b==undefined){
+			if( a instanceof ::ptr){
+				setSKViewValue( a);
+			}else{
+				setText( a);
+			}
+		}else{
+			super.setValue( a, b);
+		}
+	}
+
+	function useedit(){
+		return ::uifeature&UIFeature.UI_KEYBOARD;
+	}
+
+	//	編集のためのUIをセットアップする。※中身が変化するのでこの状態を保存してはいけない。
+	function setupEditUI(){
+		syncanime = false;		//	フレームで表示管理するのでsyncanimeは必ず無効
+		editlabel = findChild( "editlabel");
+		deflabel = findChild( "deflabel");
+		deflabel?.setText( deftext)
+		if( useedit()){
+			if( editlabel){
+				textedit = TextEdit();
+				textedit.gpuiedit = this;
+				textedit.layerflags = 8|3;
+				textedit.exmenus = exmenus;
+				textedit.textfilter = textfilter;
+				//	SKLabelViewのデータをそのまま流し込む。
+				//	※ただしstretchSizeでeditlabelの大きさが変化している場合があるので後でbndを再更新。。。
+				r_1.set( editlabel.bnd);
+				// textedit.setSKViewEntityData( editlabel.viewdata);	viewdataそのままだと外部からのFONT等への変更が反映できない！！！
+				local d = editlabel.viewdata;
+				textedit.viewdata = d;
+				foreach( v in d.staticparams){
+					textedit.setParam( v[0], editlabel.getParam( v[0]));
+				}
+				textedit.motion = d.motion;
+				textedit.moveFrameSelf( null, 0.0);
+				//
+				textedit.bnd.set( r_1);
+				textedit.updateLayout();
+				//
+				local p = editlabel.parent;
+				p.insertChild( p.childIndexOf( editlabel), textedit);
+				editlabel.removeFromParent();
+				//
+				textedit.enabled = true;
+				textedit.addEventListener( ACTION_EVENT, texteditevent);
+				textedit.addEventListener( TEXT_EVENT, texteditevent);
+				textedit.addEventListener( MOUSE_EVENT, mouseevent);
+				updateMaxLength( maxlen);
+				textedit.setSecret( isSecret());
+			}
+		}else{
+			addEventListener( TEXT_EVENT, texteditevent);
+			addEventListener( TEXTINPUT_EVENT, texteditevent);
+			addEventListener( FOCUS_EVENT, texteditevent);
+			addEventListener( MOUSE_EVENT, mouseevent);
+			updateMaxLength( maxlen);
+		}
+		addEventListener( GPUI_EVENT, gpuievent);
+		setText( text);
+	}
+
+	function updateMaxLength( len){
+		if( textedit){
+			if( len > 0){
+				textedit.maxlen = len;
+				textedit.areatrim = false;
+			}else{
+				textedit.maxlen = 1024;
+				textedit.areatrim = true;
+			}
+		}else{
+			if( len > 0){
+				maxlen = len;
+				areatrim = false;
+			}else{
+				maxlen = 1024;
+				areatrim = true;
+			}
+		}
+	}
+
+	function isSecret(){
+		return (inputtype==TEXTEDIT_PASSWORD && !unveilpassword);
+	}
+
+	//	
+	function setText( txt){
+		text = txt;
+		if( useedit()){
+			textedit?.setText( txt);
+		}else
+		if( editlabel){
+			editlabel.setText( isSecret()? SKTextEditBase.toSecretText( txt) : txt);
+			_trimarea();
+		}
+		updateDefLabelVisible();
+	}
+	
+	function _trimarea(){
+		if( areatrim){
+			local wtext = editlabel.text;
+			if( !(wtext instanceof wstring)){
+				wtext = wstring( wtext);
+			}
+			wtext = Emoji.encodeEmojiString( wtext);
+			local textbox = editlabel.textbox;
+			local bnd = editlabel.bnd;
+			local b = textbox.bnd;
+			local bw = b.x+b.w+textbox.marginl+textbox.marginr;
+			local bh = b.h+textbox.margint+textbox.marginb;
+			while( length( wtext) &&  bw > bnd.w || bh > bnd.h){
+				wtext = wtext.slice( 0, length( wtext)-1);
+				textbox.x = textbox.y = 0;
+				editlabel.setText( Emoji.decodeEmojiString( wtext));
+				b = textbox.bnd;
+				bw = b.x+b.w+textbox.marginl+textbox.marginr;
+				bh = b.h+textbox.margint+textbox.marginb;
+			}
+			text = editlabel.text;
+		}
+	}
+
+	//	
+	function getText(){
+		return text || "";	//	setText( null)は良いがgetText()でnullを返すのはまずい
+	}
+
+	function updateDefLabelVisible(){
+		local b = !length( text) && !imview;
+		deflabel?.setVisible( b);
+	}
+
+	function setDefaultText( txt){
+		deflabel?.setText( txt);
+		deftext = txt;
+	}
+
+	function getDefaultText(){
+		return deftext;
+	}
+
+	function setUnveilPassword( b){
+		unveilpassword = b;
+		if( textedit){
+			textedit.setSecret( isSecret());
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////
+
+	function _finishinput(){
+		::rootview.pos( 0, 0, 0); ::rootview.matdirty = true; ::rootview.repaint();
+		if( imview){
+			imview.removeFromParent(); imview = null;
+			editlabel.layerflags = 3; editlabel.parent.repaint();
+		}
+	}
+
+	function texteditevent( e){
+		switch( e.id){
+		case ACTION_EVENT:
+			e.consume();
+			if( e.src == textedit && textedit){
+				text = textedit.getText();
+				postActionEvent( e.actioncmd);
+			}
+			break;
+		case TEXT_CHANGED:
+			if( e.src == textedit && textedit){
+				e.consume();
+				text = e.actioncmd;
+				posttext();
+				updateDefLabelVisible();
+			}
+			break;
+		case TEXTINPUT_DONE:
+			e.consume();
+			setText( e.actioncmd);
+			postActionEvent( null);
+			_finishinput();
+			break;
+		case TEXTINPUT_CANCELED:
+			e.consume();
+			_finishinput();
+			break;
+		case TEXTINPUT_CHANGED:		//	Androidでテキスト入力時にそのまま反映するため。その後キャンセルされたら元のテキストにするべきか？？？
+			setText( e.actioncmd);
+			posttext();
+			break;
+		case TEXTINPUT_VIEWPORT:
+		{
+			e.consume();
+			local x = e.x, y = e.y, w = e.modifiers, h = e.count;
+			local gr = Rect2D( 0, 0, bnd.w, bnd.h).transform( mat);
+			if( gr.y+gr.h > y+h){	//	下にはみ出したのだけチェック。
+				//	下にはみ出したらrootview.posを移動？これやったらその分SetMousePosしないとカーソルがずれるか
+				//	また、TEXTINPUT_DONE, TEXTINPUT_CANCELEDで必ずもとに戻さないとずれたままになる。チェックスレッドを入れて
+				//	監視するのもありだけど、チェックしようがないかも。
+				local dy = (y+h)-(gr.y+gr.h);
+				::rootview.pos.add( 0, dy|0, 0);
+				::rootview.matdirty = true;
+				::rootview.repaint();
+			}
+			break;
+		}
+		case TEXTINPUT_IMTEXT_CHANGED:
+			local imstr = e.actioncmd;
+			if( imstr?.len()){
+				if( !imview){
+					imview = IMTextView.start( editlabel, editlabel.textbox, editlabel.fontattr, null, false);
+					editlabel.layerflags &= ~1; editlabel.parent.repaint();
+				}
+				imview.setIMText( imstr);
+			}else{
+				imview?.removeFromParent(); imview = null;
+				editlabel.layerflags = 3; editlabel.parent.repaint();
+			}
+			updateDefLabelVisible();
+			break;
+		case FOCUS_LOST:
+			e.consume();
+			_finishinput(); //	強引すぎるなー
+			//	キャンセルの処理はいる？
+			break;
+		}
+	}
+
+	function posttext( id=TEXT_CHANGED){
+		local e = Event();
+		e.id = id;
+		e.src = this;
+		e.actioncmd = getText();
+		::rootview.postEvent(e);
+	}
+
+	function mouseevent( e){
+		switch( e.id){
+		case MOUSE_ENTERED:
+			_entered = true;
+			if( !(e.modifiers & VIRTUAL_MASK))::playSound( "ui_move");
+			if( !_focused) animefunc( MOUSE_ENTERED);
+			break;
+		case MOUSE_EXITED:
+			_entered = false;
+			if( !_focused) animefunc( MOUSE_EXITED);
+			break;
+		case MOUSE_PRESSED:
+			if( !textedit){
+				e.consume();
+				startTextEdit();
+			}
+			break;
+		}
+	}
+
+	//	GPUIイベントとは別にキーイベント取ったほうが良い？
+	// function keyevent( e){
+	// 	local eid = e.id, keycode = e.keycode;
+	// 	switch( keycode){
+	// 	case VK_ENTER:
+	// 		break;
+	// 	}
+	// }
+
+	//	
+	function gpuievent( e){
+		local eid = e.id, keycode = e.keycode;
+		switch( keycode){
+		case BTN_UP:
+		case BTN_DOWN:
+		case BTN_LEFT:
+		case BTN_RIGHT:
+			if( _focused){
+				e.consume();
+				if( eid == GPUI_PRESSED) cancelTextEdit();
+			}
+			break;
+		case BTN_B:
+		case BTN_X:
+		case BTN_Y:
+		case BTN_LB:
+		case BTN_RB:
+			if( _focused) e.consume();	//	テキスト入力中はGPUIのボタンは使えないように。ESCAPEは使えていいか？状況による。。。
+			break;
+		case BTN_START: 	//	こっちがenter
+			if( _focused) e.consume();	//	テキスト入力中はGPUIのボタンは使えないように。ESCAPEは使えていいか？状況による。。。
+			// else if( e.src == this && textedit){
+			// 	e.consume();
+			// 	if( textedit.requestFocus()){
+			// 		textedit.setCursorIndex( 10000);	//	カーソルを最後尾に
+			// 		playSound( gpuiedit.snd);
+			// 	}
+			// }
+			break;
+		case BTN_A:
+			e.consume();	//	enter操作はすべて吸収しちゃって大丈夫かな？
+			if( !_focused && eid == GPUI_PRESSED){
+				if( textedit){	//	PC＋ゲームパッドでカーソルを合わせてAボタンでここ。キーボードがある
+					if(::["PS4"]) {
+						PS4.setInputMethodInitialText(
+							textedit.getText(),
+							256+(editlabel.isMultiline()?TEXTEDIT_MULTILINE:inputtype) );	// 256: TextEditFlags を使用している意味
+					}else{
+						//	ここresuestFocusするとカラーポップアップなどで入力がループしちゃう。プロパティ作る？
+					}
+				}else{	//	ゲーム機やSteamDeckはここ。
+					startTextEdit();
+				}
+			}
+		}
+	}
+	
+	//	skStartTextEditで入力が終了したときに呼ばれる。TEXTINPUT_CANCELは何もしないで良い
+	//	
+	function textinputevent( e){
+		if( e.id == TEXTINPUT_DONE){
+			text = e.text;
+			postActionEvent( null);
+		}
+	}
+
+	//	
+	function startTextEdit(){
+		if( textedit){
+			textedit.setCursorIndex( 10000);	//	カーソルを最後尾に
+			if(::["PS4"]) {
+				PS4.setInputMethodInitialText(
+					textedit.getText(),
+					256+(editlabel.isMultiline()?TEXTEDIT_MULTILINE:inputtype) );	// 256: TextEditFlags を使用している意味
+			}
+			textedit.requestFocus();
+		}else
+		if( ::["SteamAPI"]?.IsSteamRunningOnSteamDeck()){
+			//	SteamDeckのテキスト入力。常にフルスクリーン
+			local flags = inputtype;
+			if( editlabel.isMultiline()) flags = TEXTEDIT_MULTILINE;
+			local desc = deflabel? deflabel.getText() : null;
+			local shown = ::SteamAPI.showGamepadTextInput({text=text,desc=desc,maxlen=maxlen?maxlen:16,type=flags});
+			if( !shown){
+				return;
+			}
+			//	ループ待ちをするのでメインスレッドから呼んではいけない
+			for( ;;){
+				suspend();
+				local ret = ::SteamAPI.getGamepadTextInputResult();
+				if( ret == null){
+					//	continue
+				}else{
+					if( typeof( ret) == SS_STRING){
+						setText( ret);
+						postActionEvent( null);
+					}
+					break;
+				}
+			}
+		}else{
+			requestFocus();
+			animefunc( FOCUS_GAINED);
+			sleep( 100);
+			animefunc( _entered ? MOUSE_ENTERED : MOUSE_EXITED);
+			local flags = inputtype;
+			if( editlabel.isMultiline()) flags = TEXTEDIT_MULTILINE;
+			flags |= TEXTEDIT_NOFULLSCREEN | TEXTEDIT_INLINE;	//	フルスクリーン無しでインライン入力を要求。ならないOSも多い
+			local desc = deflabel? deflabel.getText() : "";
+			skStartTextEdit({
+				text = text, flags = flags, maxlen = maxlen, desc = desc,
+			});
+		}
+	}
+
+	//	
+	function cancelTextEdit(){
+		if( textedit){
+			if( textedit.focused){
+				textedit.parent.requestFocus();
+				animefunc( _entered ? MOUSE_ENTERED : MOUSE_EXITED);
+				return true;
+			}
+		}else
+		if( ::["SteamAPI"]?.IsSteamRunningOnSteamDeck()){
+			//	何もできない
+		}else{
+			//	キーボードが引っ込んだか判定できるか？？
+			if( focused){
+				skEndTextEdit();
+				parent.requestFocus();
+				animefunc( _entered ? MOUSE_ENTERED : MOUSE_EXITED);
+			}
+		}
+		return false;
+	}
+
+	curani = -1;
+
+	function animefunc( eid){
+		if( eid == curani) return;
+		(animetype==0?animefunc0:animefunc1) ( eid);
+	}
+
+	//	animetype=0 : フレーム指定アニメーション
+	//	0 : 通常, 10 : マウスオーバー, 20 : フォーカス。フォーカスが優先度高い。
+	//	
+	function animefunc0( eid){
+		local _ex = null;
+		switch( eid){
+		case FOCUS_GAINED: inneranime( 20); break;
+		case MOUSE_ENTERED: inneranime( 10); break;
+		case MOUSE_EXITED: inneranime( 0); break;
+		}
+	}
+
+	//	
+	//	animetype=1 : メソッド実行型アニメーション
+	//	
+	static eidmethods = {
+		[MOUSE_ENTERED] = "gpui_enter",
+		[MOUSE_EXITED] = "gpui_exit",
+		[FOCUS_GAINED] = "gpui_focus",
+	}
+
+	function animefunc1( eid){
+		local m = eidmethods[eid];
+		if( m){
+			startMethod( m);
+			waitForMethod();	//	待っちゃう
+		}
+	}
+
+	function getProperties(){
+		local vp = #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[TEXTEDIT_ANIMETYPE]),
+		( SKVP[TEXTEDIT_INPUTTYPE]),
+		( SKVP[MAXCHARS]),
+		( SKVP[TEXTEDIT_REVERTTEXT]),
+		( SKVP[TEXTEDIT_FOCUSTYPE]),
+		( SKVP[CURSMOVABLE]),
+		( SKVP[ENABLED]),
+		( SKVP[TIPS]),
+	];
+		local cloned = false;
+		if( length( imports)){
+			if( !cloned) vp = clone vp;
+			cloned = true;
+			foreach( v in imports){
+				vp .. with( clone SKVP[v[2]]){ pid = v[0]; };
+			}
+		}
+		return vp;
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case TEXTEDIT_ANIMETYPE : return animetype;
+		case TEXTEDIT_INPUTTYPE : return inputtype;
+		case MAXCHARS : return maxlen;
+		case TEXTEDIT_REVERTTEXT: return revertmode;
+		case CURSMOVABLE : return gpui.cursmovable;
+		}
+		foreach( v in imports){
+			if( v[0] == pid) return v[1].getParam( v[2]);
+		}
+		return super.getParam( pid);
+	}
+
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case TEXTEDIT_ANIMETYPE : 
+			animetype = p0;
+			break;
+		case TEXTEDIT_INPUTTYPE:
+			inputtype = p0;
+			break;
+		case MAXCHARS :
+			maxlen = p0;
+			updateMaxLength( maxlen);
+			break;
+		case TEXTEDIT_REVERTTEXT:
+			revertmode = p0;
+			break;
+		case EXPORTS : imports = parseExports( p0); break;
+		case SIZE_CHANGEABLE : sizechangeable = p0; break;
+		case CURSMOVABLE : gpui.cursmovable = p0; break;
+	   }
+		foreach( v in imports){
+			if( v[0] == pid) return v[1].setParam( v[2], p0, p1, w);
+		}
+		return super.setParam( pid, p0, p1, w);
+	}
+}
+
+//	
+class GPUITextEdit.TextEdit extends SKTextEditBase
+{
+	gpuiedit = null;			//	GPUITextEdit :
+	
+	preedittext = null;			//	フォーカスが来た時に設定される。
+
+	function focusStateChanged( b){
+		if( lockfocus) return;
+		b = b?1:0;
+		gpuiedit._focused = b;
+		if( b){
+			gpuiedit.animefunc( FOCUS_GAINED);
+			if( gpuiedit.checkdefocus) setUpdateFunc( checkDefocus);
+			if( gpuiedit.revertmode){
+				preedittext = getText();		//	ESCやTABやマウスでフォーカスが移った時にこのテキストに戻る
+				gpuiedit.posttext( TEXT_RESTART);	//	戻ったことを通知するためにTEXT_CHANGEDイベント発行。。。いいかな
+			}
+		}else{
+			gpuiedit.animefunc( gpuiedit._entered ? MOUSE_ENTERED : MOUSE_EXITED);
+			if( preedittext){
+				gpuiedit.setText( preedittext);
+				preedittext = null;
+				gpuiedit.postIDEvent( ACTION_CANCELED, null);
+			}
+		}
+		super.focusStateChanged( b);
+	}
+
+	function mousepressed( e){
+		if( e.id == MOUSE_PRESSED && e.isMouseDown( BUTTON1_MASK)){
+			if( e.count == 2){
+				return selectWordAt( e.lx, e.ly);
+			}else
+			if( e.count == 3){
+				return selectLineAt( e.lx, e.ly);
+			}
+		}
+		return super.mousepressed( e);
+	}
+
+	function pressfocused(){
+		playSound( gpuiedit.snd);
+	}
+
+	function drawCursor( x, y){
+		sprite.bnd.set( x-1, y+fontmet.y, 2, fontmet.h);
+		local fc = fontattr.color;
+		local lm = (fc>>>24)+((fc>>>16)&255)+((fc>>>8)&255);
+		sprite.color0 = lm<240 ? 0x000000ff : 0xffffffff;
+		skDrawSprite( sprite);
+	}
+
+	function drawBack(){
+	}
+
+	function pressed( e){
+		if (!editable) return;
+		switch( e.keycode ){
+		case VK_TAB :
+			if( preedittext && preedittext != getText()){
+				gpuiedit.postActionEvent( null);
+				preedittext = null;
+			}
+			break;
+		}
+		return super.pressed( e);
+	}
+	
+	function enterPressed( e){
+		if( !isMultiline()){
+			gpuiedit.postActionEvent( null);
+			preedittext = null;
+			// gpuiedit.requestFocus();	//	テキストを決定。フォーカス外し
+		}
+		return true;
+	}
+
+	function escapePressed( e){
+		if( preedittext){
+			gpuiedit.setText( preedittext);
+			// preedittext = null;
+			gpuiedit.postIDEvent( ACTION_CANCELED, null);
+		}
+		// gpuiedit.requestFocus();
+		return false;
+	}
+
+	inidrag = true;
+
+	function checkDefocus( dt){
+		if( !focused){
+			setUpdateFunc( null);
+			return;
+		}
+		local m = ::rootview.mouses[0];
+		if( inidrag){	//	表示時にドラッグ状態だった場合はそれをスキップする。。。。
+			if( m.dragview) return;
+			inidrag = false;
+		}
+		if( m.dragview && !gpuiedit.contains( m.dragview)){
+			gpuiedit.parent.requestFocus();
+			setUpdateFunc( null);
+		}
+	}
+
+	function scrollCursorToVisible(){
+		local tb = textbox;
+		if( isMultiline()){
+			local asc = tb.ly;// -fontmet.y;
+			local dsc = fontmet.y+fontmet.h;
+			local by = cursy + dsc;
+			if( by > bnd.h-tb.marginb){		//	下にはみ出し
+				local dy = (bnd.h-tb.marginb)-by;
+				tb.y += dy;
+				cursy += dy;
+				repaint();
+				updateCandidateLocation();
+			}
+			local ty = cursy - asc;
+			if( ty < tb.margint){			//	上にはみ出し
+				local dy = tb.margint-ty;
+				tb.y += dy;
+				cursy += dy;
+				repaint();
+				updateCandidateLocation();
+			}
+		}else{
+			if( cursx > bnd.w-tb.marginr){	//	右にはみ出し
+				local dx = (bnd.w-tb.marginr)-cursx;
+				tb.x += dx;
+				cursx += dx;
+				repaint();
+				updateCandidateLocation();
+			}
+			if( cursx < tb.marginl){			//	左にはみ出し
+				local dx = tb.marginl-cursx;
+				tb.x += dx;
+				cursx += dx;
+				repaint();
+				updateCandidateLocation();
+			}
+		}
+	}
+}

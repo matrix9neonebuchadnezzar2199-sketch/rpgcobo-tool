@@ -1,0 +1,536 @@
+
+import SKViewPropertyID;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//	SKImageView
+//
+
+class SKImageView extends SKView
+{
+	static icontype = "png";
+	
+	sp = null;				//	Sprite
+	spcolor = 0xffffffff;	//	
+	imageref = null;		//	
+	imagealign = 9;			//	9:コンポーネントサイズに伸縮, 0-8:上下左右中に整列
+	+orgbnd = Rect2D();
+	
+	constructor( src = null){
+		if( src instanceof Sprite){
+			sp = clone src;
+		}else{
+			sp = Sprite( src);
+		}
+		bnd.set( sp.bnd);	//	初期状態ではSpriteの大きさをViewにいれる。。
+		orgbnd << sp.bnd;
+		enabled = false;
+	}
+	
+	function setSprite( s){
+		s.blend = sp.blend;
+		sp = s;
+		orgbnd << sp.bnd;
+		setColor( spcolor);
+		updateLayout();
+	}
+	
+	function setValue( a, b=undefined){
+		if( b==undefined){
+			if( b == null){
+				sp.visible = false;
+			}else
+			if( typeof( a)==SS_STRING){
+				setParam( IMAGE, a);
+				sp.visible = true;
+			}else
+			if( typeof( a)==SS_ARRAY){
+				setParam( IMAGE, a[0]);
+				setColor( a[1]);
+				sp.visible = true;
+			}else
+			if( a instanceof Sprite){
+				setSprite( a);
+				sp.visible = true;
+			}else
+			if( a instanceof RGBAImage){
+				local tex = Texture(); tex.load( a);
+				setSprite( Sprite( tex));
+				sp.visible = true;
+				sp.blend = SK_PMAMIX;
+			}else
+			if( a instanceof ::ptr){
+				setSKViewValue( a);
+			}
+		}else{
+			super.setValue( a, b);
+		}
+	}
+	
+	function updateLayout(){
+		local w = bnd.w, h = bnd.h;
+		local spbnd = sp.bnd;
+		switch( imagealign){
+		case -1: break;
+		case 0:	case 1:	case 2:
+		case 3:	case 4:	case 5:
+		case 6:	case 7:	case 8:
+			//	X
+			switch( imagealign){
+			case 1: case 4: case 7: spbnd.x = ((w-orgbnd.w)*0.5)|0; break;
+			case 2: case 5: case 8: spbnd.x = w-orgbnd.w; break;
+			default: spbnd.x = 0; break;
+			}
+			//	Y
+			switch( imagealign){
+			case 3: case 4: case 5: spbnd.y = ((h-orgbnd.h)*0.5)|0; break;
+			case 6: case 7: case 8: spbnd.y = h-orgbnd.h; break;
+			default: spbnd.y = 0; break;
+			}
+			spbnd.w = orgbnd.w;
+			spbnd.h = orgbnd.h;
+			break;
+		case 10:	//	contains
+			local s = Math.min( w/orgbnd.w, h/orgbnd.h);
+			local sw = orgbnd.w*s, sh = orgbnd.h*s;
+			spbnd.set( (w-sw)>>1, (h-sh)>>1, sw, sh);
+			break;
+		case 11:	//	cover
+			local s = Math.max( w/orgbnd.w, h/orgbnd.h);
+			local sw = orgbnd.w*s, sh = orgbnd.h*s;
+			spbnd.set( (w-sw)>>1, (h-sh)>>1, sw, sh);
+			if( sp["tex0"] && (spbnd.x < 0.0 || spbnd.y < 0.0) && !sp["stretch"] ){	//	はみ出す場合にsubbndでクリップ。stretch画像は変になるので無視
+				local c = ::getResource( imageref);
+				local subbnd = c["subbnd"] || Rect2D( 0, 0, sp.tex0.width, sp.tex0.height);
+				local sb = Rect2D( subbnd);
+				if( spbnd.x < 0.0){
+					local s = (spbnd.w-bnd.w) / spbnd.w, b = subbnd.w * s;
+					sb.x += b*0.5; sb.w -= b;
+					spbnd.x = 0.0; spbnd.w = w;
+				}
+				if( spbnd.y < 0.0){
+					local s = (spbnd.h-bnd.h) / spbnd.h, b = subbnd.h * s;
+					sb.y += b*0.5; sb.h -= b;
+					spbnd.y = 0.0; spbnd.h = h;
+				}
+				sp.setSubBounds( sb);
+			}
+			break;
+		case 12:	//	scale-down
+			local s = Math.min( 1.0, Math.min( w/orgbnd.w, h/orgbnd.h));
+			local sw = orgbnd.w*s, sh = orgbnd.h*s;
+			spbnd.set( (w-sw)>>1, (h-sh)>>1, sw, sh);
+			break;
+		default:	//	fit
+			spbnd.set( 0, 0, w, h);
+			break;
+		}
+		repaint();
+	}
+	
+	function render(){
+		skDrawSprite( sp);
+	}
+	
+	function getColor(){
+		return spcolor;
+	}
+	
+	function setColor( c){
+		spcolor = c;
+		sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+	}
+	
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[IMAGE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[IMAGECOLOR]),
+		( SKVP[IMAGEBLEND]),
+		( SKVP[IMAGEALIGN]),
+		// ( SKVP[IMAGESTRETCH]),
+		( SKVP[ENABLED]),
+		]
+	}
+	
+	function getParam( pid){
+		switch( pid){
+		case IMAGE : return imageref;
+		case IMAGECOLOR : return spcolor;
+		case IMAGEBLEND : return sp.blend;
+		case IMAGESTRETCH : 
+			local s = sp.streach;
+			return s?[s.x|0,s.y|0,s.w|0,s.h|0,sp.punch?1:0]:null;
+		case IMAGEALIGN: return imagealign;
+		}
+		return super.getParam( pid);
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case IMAGE :
+			imageref = p0;
+			local s;
+			if( p0 && (s=::getSprite( p0, false))){
+				sp = s;
+				sp.bnd = clone sp.bnd;
+				sp.bnd.x = sp.bnd.y = 0.0;	//	Spriteの中心点をSKViewの中心点とする。
+				orgbnd << sp.bnd;
+			}else{
+				sp.tex0 = null;
+			}
+			sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+			updateLayout();	//	umm
+			break;
+		case IMAGECOLOR :
+			spcolor = Math.lerpcolor( p0, p1, w);
+			sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+			repaint();
+			break;
+		case IMAGEBLEND :
+			sp.blend = p0;
+			sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+			repaint();
+			break;
+		case IMAGESTRETCH :
+			if( !p0){
+				sp.streach = null;
+				sp.punch = 0;
+			}else{
+				if( sp.streach){
+					sp.streach.set( p0[0], p0[1], p0[2], p0[3]);
+				}else{
+					sp.streach = Rect2D( p0[0], p0[1], p0[2], p0[3]);
+				}
+				sp.punch = p0[4];
+			}
+			repaint();
+			updateLayout();
+			break;
+		case IMAGEALIGN :
+			imagealign = p0;
+			updateLayout();
+			break;
+		default:
+			super.setParam( pid, p0, p1, w);
+		}
+	}
+}
+
+//	画像を.ui内に埋め込む。
+//	
+class SKEmbedImageView extends SKImageView
+{
+	static icontype = "epng";
+
+	imgbb = null;
+
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[IMAGECOLOR]),
+		( SKVP[IMAGEBLEND]),
+		( SKVP[IMAGEALIGN]),
+		( SKVP[IMAGESTRETCH]),
+		( SKVP[ENABLED]),
+		( SKVP[IMAGEDATA]),		//	ByteBuffer : プロパティエディタでは編集不能
+		]
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case IMAGEDATA : return imgbb;
+		}
+		return super.getParam( pid);
+	}
+
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case IMAGEDATA :
+			imgbb = p0;
+			local img = skLoadImage( p0);	//	uiのロードの度にこれ呼ぶのはあかん
+			p0.pos = 0;
+			img.premultAlpha();
+			local tex = Texture(); tex.load( img);
+			sp = Sprite( tex);
+			sp.bnd.x = sp.bnd.y = 0.0;	//	Spriteの中心点をSKViewの中心点とする。
+			sp.blend = SK_PMAMIX;
+			orgbnd << sp.bnd;
+			sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+			updateLayout();
+			break;
+		default:
+			super.setParam( pid, p0, p1, w);
+		}
+	}
+}
+
+//	複数の画像を束ねて切り替えながら描画する。
+//	
+class SKMultiImageView extends SKView
+{
+	static icontype = "png";
+
+	splist = null;				//	Sprite[] : 
+	drawsp = null;				//	Sprite[] : 
+	spcolor = 0xffffffff;	//	
+	spblend = SK_PMAMIX;
+	imageframe = 0.0;			//	
+	imagealign = 9;				//	9:コンポーネントサイズに伸縮, 0-8:上下左右中に整列
+
+	constructor(){
+		local sp = Sprite();
+		sp.blend = SK_PMAMIX;
+		sp.ref = ( "", clone sp.bnd);
+		splist = [ sp ];
+		drawsp = [ sp ];
+	}
+
+	function updateLayout(){
+		foreach( sp in splist){
+			local spbnd = sp.bnd, orgbnd = sp.ref[1];
+			if( imagealign < 0 || imagealign > 8){
+				spbnd.set( 0, 0, bnd.w, bnd.h);
+			}else{
+				//	X
+				switch( imagealign){
+				case 1: case 4: case 7: spbnd.x = ((bnd.w-orgbnd.w)*0.5)|0; break;
+				case 2: case 5: case 8: spbnd.x = bnd.w-orgbnd.w; break;
+				default: spbnd.x = 0; break;
+				}
+				//	Y
+				switch( imagealign){
+				case 3: case 4: case 5: spbnd.y = ((bnd.h-orgbnd.h)*0.5)|0; break;
+				case 6: case 7: case 8: spbnd.y = bnd.h-orgbnd.h; break;
+				default: spbnd.y = 0; break;
+				}
+				spbnd.w = orgbnd.w;
+				spbnd.h = orgbnd.h;
+			}
+		}
+		repaint();
+	}
+	
+	function render(){
+		skDrawSprites( drawsp);
+	}
+
+	function setImageFrame( f){
+		f = ((f*10.0)|0)/10.0;	//	なんか点滅するんでこんな対応
+		if( f != imageframe) _setImageFrame( f);
+	}
+	
+	function _setImageFrame( f){
+		imageframe = f;
+		local i = Math.clamp( f, 0.0, length( splist)-0.1) | 0;
+		local w = 1.0 - (f % 1.0);
+		drawsp.clear();
+		drawsp .. splist[i];
+		if( f > 0.0 && w > 0.01 && splist[i+1]) drawsp .. splist[i+1];
+		updateColor();
+	}
+
+	function updateColor(){
+		local w = 1.0 - (imageframe % 1.0);
+		foreach( sp in drawsp){
+			local c = Math.lerpcolor( spcolor&0xffffff00, spcolor, w);
+			sp.blend = spblend;
+			sp.color0 = (spblend==SK_PMAMIX) ? Math.lerpcolor( c&0xff, c, (c&0xff)/255.0) : c;
+			w = 1.0 - w;
+		}
+		repaint();
+	}
+
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[IMAGELIST]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[IMAGECOLOR]),
+		( SKVP[IMAGEBLEND]),
+		( SKVP[IMAGEALIGN]),
+		( SKVP[IMAGEFRAME]),
+		( SKVP[ENABLED]),
+		]
+	}
+	
+	function getParam( pid){
+		switch( pid){
+		case IMAGELIST : local a = []; foreach( sp in splist){ a .. sp.ref[0]; } return a;
+		case IMAGECOLOR : return spcolor;
+		case IMAGEBLEND : return spblend;
+		case IMAGEALIGN : return imagealign;
+		case IMAGEFRAME : return imageframe;
+		}
+		return super.getParam( pid);
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case IMAGELIST :
+			splist.clear();
+			foreach( p in p0){
+				local sp;
+				if( ::getResource( p)){
+					sp = ::getSprite( p);
+					sp.bnd = clone sp.bnd;
+					sp.bnd.x = sp.bnd.y = 0.0;
+					if( !sp.blend) sp.blend = SK_PMAMIX;
+				}else{
+					sp = Sprite();
+					sp.blend = SK_PMAMIX;
+					sp.tex0 = null;
+				}
+				sp.ref = ( p, clone sp.bnd);
+				splist .. sp;
+			}
+			updateLayout();
+			_setImageFrame( imageframe);
+			break;
+		case IMAGECOLOR :
+			spcolor = Math.lerpcolor( p0, p1, w);
+			updateColor();
+			break;
+		case IMAGEBLEND :
+			spblend = p0;
+			updateColor();
+			repaint();
+			break;
+		case IMAGEALIGN :
+			imagealign = p0;
+			updateLayout();
+			break;
+		case IMAGEFRAME :
+			setImageFrame( w? p0+(p1-p0)*w : p0);
+			break;
+		default:
+			super.setParam( pid, p0, p1, w);
+		}
+	}
+}
+
+class SKTileImageView extends SKView
+{
+	static icontype = "png";
+	static sam = SamplerState( SK_WRAP, SK_WRAP, SK_LINEAR, SK_LINEAR);
+	
+	sp = null;				//	Sprite
+	spcolor = 0xffffffff;	//	
+	imageref = null;		//	
+
+	static function gridtexgen(){
+		return #(@(){
+			local img = RGBAImage( 16, 16);
+			for( local l = 0;l < 256;l ++){
+				local b = ((l&15)>=8)^(l>=128);
+				img[l] = 0xff909090 + int( b) * 0xff6f6f6f;
+			}
+			local t = Texture(); t.load( img);
+			return t;
+		}());
+	}
+	
+	constructor( src = null){
+		if( src instanceof Sprite){
+			sp = clone src;
+		}else{
+			sp = Sprite( src || gridtexgen());
+		}
+		sp.tex0.setSamplerState( sam);
+		bnd.set( sp.bnd);	//	初期状態ではSpriteの大きさをViewにいれる。。
+		enabled = false;
+		updateLayout();
+	}
+	
+	function updateLayout(){
+		local w = bnd.w, h = bnd.h;
+		sp.bnd.set( 0, 0, w, h);
+		repaint();
+	}
+	
+	function render(){
+		local r = #Rect2D();
+		sp.setSubBounds( r.set( -pos.x, -pos.y, bnd.w, bnd.h));	//	ma-i-ka...
+		skDrawSprite( sp);
+	}
+	
+	function getColor(){
+		return spcolor;
+	}
+	
+	function setColor( c){
+		spcolor = c;
+		sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+	}
+	
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[IMAGE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[IMAGECOLOR]),
+		( SKVP[IMAGEBLEND]),
+		]
+	}
+	
+	function getParam( pid){
+		switch( pid){
+		case IMAGE : return imageref;
+		case IMAGECOLOR : return spcolor;
+		case IMAGEBLEND : return sp.blend;
+		}
+		return super.getParam( pid);
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case IMAGE :
+			imageref = p0;
+			local s;
+			if( p0 && (s=::getSprite( p0, false))){
+				sp = s;
+				s.tex0.setSamplerState( sam);
+			}else{
+				sp.tex0 = gridtexgen();
+			}
+			sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+			updateLayout();	//	umm
+			break;
+		case IMAGECOLOR :
+			spcolor = Math.lerpcolor( p0, p1, w);
+			sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+			repaint();
+			break;
+		case IMAGEBLEND :
+			sp.blend = p0;
+			sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+			repaint();
+			break;
+		default:
+			super.setParam( pid, p0, p1, w);
+		}
+	}
+}
+

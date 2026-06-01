@@ -1,0 +1,471 @@
+declare mod_pbrlighting;
+
+/////////////////////////////////////////////////////////////////////
+//	pbr lighting
+
+param pbrlighting
+{
+	uniform mediump sampler2D litprmtex <id=LIGHTPARAMTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;		//	4*1024のテクスチャ。
+	uniform highp usampler3D litidxtex <id=LIGHTINDEXTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, WRAP_R=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;		//	16*16*8のライトインデックスバッファ。
+	uniform mediump samplerCube ibltex <id=ENVTEX, MIN_FILTER=LINEAR_MIP, MAG_FILTER=LINEAR, WRAP_S=CLAMP, WRAP_T=CLAMP, WRAP_R=CLAMP>;
+	uniform mediump sampler2D dfgtex <id=DFGTEX, WRAP_S=CLAMP, WRAP_T=CLAMP>;
+	uniform lowp sampler2D aotex <id=AOTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	
+	uniform mediump mat4 dirlit <id=ENV1MAT>;
+	uniform mediump mat3 invvmat3 <id=ENV4MAT>;
+	uniform mediump vec3 iblsh[9] <id=IBLSH>;
+
+	uniform mediump usampler2D shadowtex <id=SHADOWTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp vec4 shadow[12] <id=SHADOWPARAM>;	// [3+3*3]	(1-depth,1.0/zfar,1.0/raylen,coeffecient/zfar), (pa,pb,pc,pd), (near0, near1, near2, near3), uvz[0], uvz[1], uvz[2]
+
+	uniform highp vec4 fogp[6]<ID=FOGPARAMVEC>; 
+	uniform lowp vec4 upvec <id=UPVEC>;
+	
+	struct Light {
+		mediump vec3 col;
+		mediump vec3 l;			//	wv vec to light
+		mediump vec3 dir;		//	light wv direction
+		mediump vec3 wvp;		//	light wv position
+		mediump float atten;	//	dir, dist, spot attenuation
+		mediump float NoL;		//	saturate( dot( shading_normal, l));
+		lowp int ch;			//	iru?
+	};
+}
+
+
+fs pbrlighting
+{
+	/////////////////////////////////////////////////////////////////////////////////
+	//	math common
+
+	float pow5( float x) {
+		float x2 = x * x; return x2 * x2 * x;
+	}
+
+	float pow2( float x) {
+		return x*x;
+	}
+
+	#define PI 3.14159265359
+	#define HPI 1.570796327
+
+	/////////////////////////////////////////////////////////////////////////////////
+	//	light common
+
+	float distatten( mediump float d, mediump float R){
+		if( d >= R) return 0.0;
+		float s = d / R;
+		float s2 = pow2( s);
+		const float A = 1.0, F = 4.0;
+		return A * pow2( 1.0-s2) / (1.0+F*s);
+	}
+
+	float spotatten( mediump vec3 ld, mediump vec3 ll, mediump float spotout, mediump float spotscale){
+		float cd = -dot( ld, ll);
+		float atten = clamp( (cd-spotout) * spotscale, 0.0, 1.0);
+		return atten;
+	}
+	
+	Light pointLight( const uint i, const G g, float mul) {
+		mediump vec4 a = texelFetch( litprmtex, ivec2( 0, i), 0);
+		mediump vec4 b = texelFetch( litprmtex, ivec2( 1, i), 0);
+		mediump vec4 c = texelFetch( litprmtex, ivec2( 2, i), 0);
+		Light li;
+		li.col = a.xyz * (mul/* * dirlit[2].x*/);	//	exposure premulted
+		li.wvp = b.xyz;
+		li.dir = c.xyz;
+		mediump vec3 d = li.wvp - g.wvp;
+		li.l = normalize( d);
+		li.NoL = clamp( dot( g.n, li.l), 0.0, 1.0);
+		li.atten = distatten( length( d), a.w) * spotatten( li.dir, li.l, b.w, c.w);
+		li.ch = 2;
+		return li;
+	}
+
+	Light dirLight( const G g, float mul) {
+		Light li;
+		li.col = dirlit[0].xyz * mul;
+		li.wvp = vec3( 0.0);
+		li.dir = dirlit[1].xyz;
+		li.l = li.dir;
+		li.NoL = clamp( dot( g.n, li.l), 0.0, 1.0);
+		li.atten = 1.0;
+		li.ch = 1;
+		return li;
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////
+	//	shadow common
+	
+	float calcshadow( in highp vec3 wvp, in mediump float blk, in mediump vec3 n){
+		$( SHADOWMAP){
+			#define ZOFFS 0.2
+			mediump float nl = dot( n, shadow[1].xyz)*0.5 + 0.5;
+			blk = pow( nl, 1.2) + blk;
+			//
+			highp vec4 pos = vec4( wvp, 1.0);
+			highp float viewz = -wvp.z, coff = shadow[0].w, lightz = -dot( pos, shadow[1]);
+			highp vec2 uv;
+			#define SHADOWUV( I) uv = vec2( dot( pos, shadow[3+I]), dot( pos, shadow[4+I])); highp vec4 zv = shadow[5+I]; highp float texz = float( texture( shadowtex, uv).x) * (1.0/65535.0) * zv.x + zv.y - ZOFFS;
+			$( SHADOWMAP == 1){
+				SHADOWUV( 0)
+			} : {
+				$( SHADOWMAP == 2){
+					mediump int i = 3*int( step( shadow[2].x, viewz)); SHADOWUV( i)
+				} : {
+					mediump int i = 3*int( step( shadow[2].x, viewz) + step( shadow[2].y, viewz)); SHADOWUV( i)
+				}
+			}
+			highp float rate = clamp( exp( -coff * -(lightz - texz)), 0.0, 1.0);
+			highp float dark = clamp( mix( shadow[0].x+blk, 1.0, pow( viewz*shadow[0].y, 4.0)), 0.0, 1.0);
+			return mix( dark, 1.0, rate);
+		} : {
+			return 1.0;
+		}
+	}
+	
+	float calcao( in highp vec2 uv, in highp float z){
+		return texture( aotex, uv).x;
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////
+	//	shading formulas
+
+	float D_GGX( mediump float rough2, highp float NoH) {
+		mediump float oneMinusNoHSquared = 1.0 - (NoH * NoH);
+		mediump float a = NoH * rough2;
+		mediump float k = rough2 / (oneMinusNoHSquared + a * a);
+		mediump float d = k * k * (1.0 / PI);
+		return min( d, 100.0);	//	x 65504.0 MEDIUMP_FLT_MAX
+	}
+
+	float V_SmithGGXCorrelated_Fast( mediump float rough2, mediump float NoV, mediump float NoL) {
+		mediump float v = 0.5 / mix(2.0 * NoL * NoV, NoL + NoV, rough2);	// Hammon 2017, "PBR Diffuse Lighting for GGX+Smith Microsurfaces"
+		return clamp( v, 0.0, 1.0);	//	x 65504.0 MEDIUMP_FLT_MAX
+	}
+
+	vec3 F_Schlick( const vec3 f0, float f90, float VoH) {
+		return f0 + (f90 - f0) * pow5(1.0 - VoH);	// Schlick 1994, "An Inexpensive BRDF Model for Physically-Based Rendering"
+	}
+
+	vec3 isotropicLobe( const G g, const vec3 h, float NoV, float NoL, float NoH, float LoH) {
+		float D = D_GGX( g.rough2, NoH);
+		float V = V_SmithGGXCorrelated_Fast( g.rough2, NoV, NoL);
+		float f90 = 1.0;//clamp( dot( g.f0, vec3(50.0 * 0.33)), 0.0, 1.0);	// f90 = 1.0 de ok
+		vec3 F = F_Schlick( g.f0, f90, LoH);
+		return (D * V) * F;
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////
+	//	indirect lighting
+
+	vec3 prefilteredDFG( float prough, float NoV) {	// IBL environment BRDF dispatch
+		float lod = prough;
+		return textureLod( dfgtex, vec2( NoV, 1.0-lod), 0.0).xyz;
+	}
+
+	vec3 standardSpecularDFG( const G g) {
+		// return g.f0 * g.dfg.x + g.dfg.y;
+		// return g.f0 * g.dfg.x + (1.0-g.f0)*g.dfg.y;
+		return mix( g.dfg.yyy, g.dfg.xxx, g.f0);
+	}
+	vec3 clothSpecularDFG( const G g) {
+		return g.f0 * g.dfg.z;
+	}
+
+	vec3 getStandardReflectedVector( const G g) {
+		return mix( g.reflected, g.n, g.rough2 * g.rough2);
+	}
+
+	vec3 Irradiance_SphericalHarmonics( in vec3 n) {
+		n = invvmat3 * n;	//	n = world normal
+		return max(
+			iblsh[0]
+			+ iblsh[1] * (n.y)
+			+ iblsh[2] * (n.z)
+			+ iblsh[3] * (n.x)
+			+ iblsh[4] * (n.y * n.x)
+			+ iblsh[5] * (n.y * n.z)
+			+ iblsh[6] * (3.0 * n.z * n.z - 1.0)
+			+ iblsh[7] * (n.z * n.x)
+			+ iblsh[8] * (n.x * n.x - n.y * n.y)
+		, 0.0);
+	}
+	
+	vec3 prefilteredRadiance( in vec3 r, float prough) {
+		r = invvmat3 * r;
+		float lod = 4.0 * prough * (2.0 - prough);	//	4.0=frameUniforms.iblRoughnessOneLevel
+		return textureLod( ibltex, r, lod).xyz;
+	}
+	
+	void evaluateStandardIBL( const G g, const vec3 E, const vec3 r, const vec3 difirr, out vec3 Fd, out vec3 Fr) {
+		// vec3 E = standardSpecularDFG( g);
+		// vec3 r = getStandardReflectedVector( g);
+		// vec3 difirr = Irradiance_SphericalHarmonics( g.n) * dirlit[2].z;
+		// dirlit[2] = (exponent,iblrate,shrate,__)
+		$( ENVTEX){
+			Fr = E * prefilteredRadiance( r, g.rough) * dirlit[2].y;	//	perceptualRoughness
+		} : {
+			Fr = E * Irradiance_SphericalHarmonics( r) * dirlit[2].y;
+		}
+		Fd = g.difcol * difirr * (1.0 - E) * dirlit[3].xyz;
+		Fr *= g.energyCompensation * dirlit[3].xyz;	//	koko?
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////
+	//	fog
+	
+	void fog( inout vec3 col, highp vec3 wvp) {
+		//	FOG = 1:simple fog, 2:atmosphere scattering, 3:pbr fog(koredake!)
+		$( FOG == 3){
+			// note: d can be +inf with the skybox
+			highp float d = length( wvp);
+			// .x = density .y = -fallof*(camy-height) .z = density * exp(-fallof*(camy-height))
+			highp vec3 density = fogp[0].xyz;
+			highp float falloff = fogp[0].w;   // height falloff [1/m]
+			highp float fogstart = fogp[1].w;
+			// Compute the fog's optical path (unitless) at a distance of 1m at a given height.
+			highp float fogOpticalPathAtOneMeter = density.z;
+			highp float fh = falloff * (density.y - dot( vec4( wvp, 1.0), upvec));
+			if( abs( fh) < -0.00125) { // The function below is continuous at fh=0, so to avoid a divide-by-zero, we just clamp fh
+				fogOpticalPathAtOneMeter = (density.z - density.x * exp( fh)) / fh;
+			}
+			// Compute the integral of the fog density at a given height from fogStart to the fragment
+			highp float fogOpticalPath = fogOpticalPathAtOneMeter * max( d - fogstart, 0.0);
+			// Compute the transmittance [0,1] using the Beer-Lambert Law
+			highp float fogOpacity = (1.0 - exp( -fogOpticalPath));// * fexscale;
+			// compute fog color
+			mediump vec3 fogcolor = fogp[1].xyz;
+			col = mix( col, fogcolor, fogOpacity);
+		}
+	}
+	
+	//	Fd/colのスケールを565にパックする。GI用で、OUTGIが定義されてるとこの値をaチャンネルに出力する。
+	//	Fd < col に基本的にはなる。ただしフォグでcolの輝度が落ちた場合は逆になる事もある。が、見た目上そんなに問題にはならない。
+	//	輝度は8以下にクリップされる。Fdはそんなに大きくならないはずなので精度を一定以上にする。
+	//	↑どうしても見た目がカクカクだったらディザを使う。
+	highp float packDiffuse( vec3 Fd, vec3 col){
+		highp uvec3 v = uvec3( clamp( Fd / min( col+0.0001, 32.0), 0.0, 1.0) * vec3( 31.5, 63.5, 31.5)) << uvec3( 11, 5, 0);
+		highp uvec3 iv = ((uvec3( (v.x|v.y|v.z)) & uvec3( 0x8000, 0x7c00, 0x3ff)) + uvec3( 0, 112<<10, 0)) << uvec3( 16, 13, 13);	// uint li = ((i&0x8000)<<16) | ((((i&0x7c00)>>10) - 15 + 127)<<23) | ((i&0x03ff)<<13);
+		return uintBitsToFloat( iv.x|iv.y|iv.z);
+		//	-1.234 bcef bf9df3b6
+		// return uintBitsToFloat( 0xbf9df3b6);
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////
+	//	shading macros
+
+	#define DIRLIT( SHADING_FUNC, mul) SHADING_FUNC( g, dirLight( g, mul), Fd, Fr);
+	#define PNTLIT1( I, SHAD, mul) { mediump uint i = I; if( i==0u){ break; } else { SHAD( g, pointLight( i, g, mul), Fd, Fr); } }
+	#define PNTLIT( SHAD, mul) \
+	highp uvec2 u2 = texture( litidxtex, vec3( g.uv, g.wvp.z*dirlit[2].w+dirlit[3].w)).xy; \
+	for(;;){ \
+		PNTLIT1( u2[0]&1023u, SHAD, mul); PNTLIT1((u2[0]>>10u)&1023u, SHAD, mul); PNTLIT1( u2[0]>>20u, SHAD, mul); \
+		PNTLIT1( u2[1]&1023u, SHAD, mul); PNTLIT1((u2[1]>>10u)&1023u, SHAD, mul); PNTLIT1( u2[1]>>20u, SHAD, mul); \
+		break; \
+	}
+	
+	vec4 lighting_error( const G g){
+		mediump vec3 col = vec3( 1.0, 0.0, 0.0);
+		return vec4( col, g.col.w);
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////////////
+	//	standard lighting main
+	//	setup_xxxx, shading_xxxx, lighting_xxxx
+	///////////////////////////////////////////////////////////////////////////////////////////////
+
+	void setup_standard( inout G g){
+		// g.wvp -= g.n * g.mparam.z * 1.0;
+		g.rough2 = g.rough * g.rough * 0.9975 + 0.0025;		//	Specular lobe clamp
+		g.vn = -normalize( g.wvp);
+		g.difcol = g.col.xyz * (1.0-g.metal);
+		g.f0 = mix( vec3( 0.04), g.col.xyz, g.metal);	// baseColor.rgb * metallic + (reflectance * (1.0 - metallic)); ... reflectance=0.04
+		g.NoV = max( dot( g.n, g.vn), 1e-4);			//	MIN_N_DOT_V
+		g.reflected = reflect( -g.vn, g.n);		//  ここanisotropicでは置き換える。
+		g.dfg = prefilteredDFG( g.rough, g.NoV);
+		g.energyCompensation = 1.0 + g.f0 * (1.0 / (1.0-g.dfg.y) - 1.0);
+	}
+	
+	void shading_standard( const G g, const Light li, inout vec3 ioFd, inout vec3 ioFr) {
+		mediump vec3 h = normalize( g.vn + li.l);    //  li.hに入れられる？いやいらんか。ライト1つに1回しか計算しないし。
+		mediump float NoV = g.NoV, NoL = clamp( li.NoL, 0.0, 1.0), NoH = clamp( dot( g.n, h), 0.0, 1.0), LoH = clamp( dot( li.l, h), 0.0, 1.0);
+		//	
+		vec3 lcol = li.col * (li.atten * NoL);
+		ioFr += lcol * isotropicLobe( g, h, NoV, NoL, NoH, LoH) * g.energyCompensation;
+		ioFd += lcol * g.difcol * (1.0/PI);    //  lambert
+	}
+
+	vec4 lighting_standard( const G g) {
+		mediump float sdw = calcshadow( g.wvp, 0.0, g.n);   //  シャドウは1つ。IBL,Dirのみ効かせる。。。
+		mediump float ao = g.mparam.x $(AOTEX){ * calcao( g.uv, g.wvp.z) };
+		mediump vec3 Fd, Fr;
+		// indirect lighting
+		{
+			evaluateStandardIBL( g, standardSpecularDFG( g), getStandardReflectedVector( g), Irradiance_SphericalHarmonics( g.n) * dirlit[2].z, Fd, Fr);
+			Fd = Fd*(sdw*ao) + g.col.xyz * (g.mparam.y*g.mparam.y * (8192.0 * dirlit[2].x));    //  emissive. standardのみ。8192は要調整
+			Fr = Fr*(sdw*ao);
+		}
+		// direct lighting
+		DIRLIT( shading_standard, sdw*ao);
+		PNTLIT( shading_standard, ao);
+		vec3 col = Fd + Fr;
+		// fog
+		fog( col, g.wvp);
+		
+		#ifdef OUTGI
+			return vec4( col, packDiffuse( Fd, col));
+		#else
+			return vec4( col, g.col.w);
+		#endif
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////////////
+	//	decal lighting main
+	///////////////////////////////////////////////////////////////////////////////////////////////
+	
+	vec4 lighting_decal( const G g){
+		#ifdef OUTGI
+			const highp uint i = ((0x8000)<<16) | ((((0x7c00)>>10) - 15 + 127)<<23) | ((0x03ff)<<13);
+			const highp float w = uintBitsToFloat( i);
+			return vec4( g.col.xyz, w);
+		#else
+			return g.col;		// return vec4( tonemap_inv( g.col.xyz), g.col.w);	//	tonemap ha basepass de yaru!!!!!!!!!!!!!!!!!!!!!!!
+		#endif
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////////////
+	//	subsurface lighting main
+	//	setup_xxxx, shading_xxxx, lighting_xxxx
+	///////////////////////////////////////////////////////////////////////////////////////////////
+
+	void setup_subsurf( inout G g){
+		setup_standard( g);
+	}
+
+	void shading_subsurf( const G g, const Light li, inout vec3 ioFd, inout vec3 ioFr) {
+		mediump vec3 h = normalize( g.vn + li.l);    //  li.hに入れられる？いやいらんか。ライト1つに1回しか計算しないし。
+		mediump float NoV = g.NoV, NoL = clamp( li.NoL, 0.0, 1.0), NoH = clamp( dot( g.n, h), 0.0, 1.0), LoH = clamp( dot( li.l, h), 0.0, 1.0);
+		// NoL does not apply to transmitted light
+		vec3 Fr = vec3( 0.0);
+		if( NoL > 0.0) {
+			Fr = isotropicLobe( g, h, NoV, NoL, NoH, LoH) * g.energyCompensation * NoL;	// specular BRDF
+		}
+		// diffuse BRDF
+		vec3 Fd = g.difcol * (1.0/PI * NoL);
+		// subsurface scattering
+		// Use a spherical gaussian approximation of pow() for forwardScattering
+		// We could include distortion by adding shading_normal * distortion to light.l
+		const float sspow = 12.0;
+		float ssthick = g.mparam.w;
+		//	
+		float scatterVoH = clamp( dot( g.vn, -li.l), 0.0, 1.0);	//	g.vn = shading_view
+		float forwardScatter = exp2( scatterVoH * sspow - sspow);
+		float backScatter = clamp( NoL * ssthick + (1.0 - ssthick), 0.0, 1.0) * 0.5;
+		float subsurface = mix( backScatter, 1.0, forwardScatter) * (1.0 - ssthick);
+		Fd += g.mparam.xyz * (subsurface * (1.0/PI));			//	Fr kana?
+		// TODO: apply occlusion to the transmitted light
+		ioFd += Fd * li.col * li.atten;
+		ioFr += Fr * li.col * li.atten;
+	}
+
+	vec4 lighting_subsurf( const G g) {
+		mediump float sdw = calcshadow( g.wvp, 0.0, g.n);   //  シャドウは1つ。IBL,Dirのみ効かせる。。。
+		mediump float ao = g.mparam.x $(AOTEX){ * calcao( g.uv, g.wvp.z) };
+		mediump vec3 Fd, Fr;
+		// indirect lighting
+		{
+			vec3 difirr = Irradiance_SphericalHarmonics( g.n) * dirlit[2].z;	//	diffuseIrradiance
+			evaluateStandardIBL( g, standardSpecularDFG( g), getStandardReflectedVector( g), difirr, Fd, Fr);
+			//	subsurf ibr
+			vec3 viewDependent = prefilteredRadiance( -g.vn, 1.0);	//	vn, rough + offset
+			float atten = (1.0 - g.mparam.w) / (2.0*PI);
+			Fd = (Fd + g.mparam.xyz * (difirr + viewDependent) * atten) * (sdw*ao);
+			Fr = Fr*(sdw*ao);
+		}
+		// direct lighting
+		DIRLIT( shading_subsurf, sdw*ao);
+		PNTLIT( shading_subsurf, ao);
+		// fog
+		vec3 col = Fd + Fr;
+		fog( col, g.wvp);
+		
+		#ifdef OUTGI
+			return vec4( col, packDiffuse( Fd, col));
+		#else
+			return vec4( col, g.col.w);
+		#endif
+	}
+}
+
+
+///////////////////////////////////////////////////////////////////////////
+//	pbrout
+
+
+//////////////// deferred
+
+param pbrout_deferred
+{
+	fragout lowp vec4 frag0;
+	fragout highp uint frag1;
+	fragout highp uint frag2;
+}
+
+define pbrout_deferred
+{
+	#define FRAGOUT mediump vec4 f0; highp uint u1, u2; packg_switch( g, f0, u1, u2); frag0 = f0; frag1 = u1; frag2 = u2;
+}
+
+//////////////// forward
+
+param pbrout_forward
+{
+	fragout mediump vec4 fragcolor;
+}
+
+fs pbrout_forward
+{
+	vec4 pbrlighting_switch( G g){	//	g ha unpack zumi
+		switch( g.mtype){
+		case 0u: setup_standard( g); return lighting_standard( g);
+		case 1u: return lighting_decal( g);
+		case 2u: setup_subsurf( g); return lighting_subsurf( g);
+		default: return lighting_error( g);
+		}
+	}
+}
+
+define pbrout_forward_linear
+{
+	#define FRAGOUT g.wvp = v_wvp; g.uv = v_wvpp.xy/v_wvpp.w*0.5+0.5; fragcolor = pbrlighting_switch( g);
+}
+
+//////////////// forward + tonemap
+
+define pbrout_forward_srgb
+{
+	#define FRAGOUT g.wvp = v_wvp; g.uv = v_wvpp.xy/v_wvpp.w*0.5+0.5; mediump vec4 q = pbrlighting_switch( g); fragcolor = vec4( toSRGB( clamp( tonemap( q.xyz), 0.0, 1.0)), q.w);
+}
+
+//////////////// legacy (=error)
+
+param pbrout_error
+{
+	fragout mediump vec4 fragcolor;
+}
+
+vs pbrout_error
+{
+	void main(){
+		highp mat4 transmat = getTransformedVectors();
+		gl_Position = pmat * transmat[0];
+	}
+}
+
+fs pbrout_error
+{
+	void main(){
+		fragcolor = mix( vec4( 1.0, 0.0, 0.0, 1.0), vec4( 0.0, 0.0, 1.0, 1.0), bayer4( gl_FragCoord.xy/4));
+	}
+}

@@ -1,0 +1,776 @@
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	HTTP実装。拡張性を考えてSakanaScript化
+//
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	HTTPClient
+
+class HTTPClient
+{
+	//Parameters
+	con = null;
+	constate = -1;
+	
+	basicauth_user = null;
+	basicauth_pw = null;
+	customheaders = null;	//	string[]
+	
+	maxredirections = 4;
+	location = null;
+	
+	//	result
+	statuscode = -1;
+	statusstr = "";
+	recvheaders = null;
+	contenttype = null;
+	contentlength = 0;
+	
+	//	buffer
+	recvbuf = null;			//	ByteBuffer
+	
+	//	listener function
+	listener = null;		//	function( http, id, arg)
+	
+	//	flag
+	throwonerror = true;	//	エラー発生時にスローするか
+	verbose = false;		//	
+	
+	//	keepalive
+	keepalive = false;		//	http keepalive time
+	keepalive_timeout = 0	//	
+	keepalive_cont = 0;		//	
+	lasturlreq = null;		//	
+	
+	try_connect = 5;
+	timeout_connect = 1500;
+	timeout_read = 20000;
+	throwhttperror = true;
+	
+	constructor(){
+		recvbuf = ByteBuffer();
+	}
+	
+	function basicAuth( user, password){
+		basicauth_user = user;
+		basicauth_pw = password;
+	}
+	
+	function addHeader( key, value){
+		if( !customheaders) customheaders = [];
+		customheaders .. key .. value;
+	}
+
+	function clearRequest(){
+		location = null;
+		basicauth_user = null;
+		basicauth_pw = null;
+		customheaders = [];
+		recvbuf.size = 0;
+		statuscode = -1;
+		statusstr = "";
+		recvheaders = null;
+		contenttype = null;
+		contentlength = 0;
+	}
+	
+	function head( url, receiver = null){
+		try{
+			local result = request( url, "HEAD", null, receiver);
+			return result;
+		}catch( ex){
+			if( con){ con.close(); con=null; }
+			if (receiver) { receiver.cancel(); }
+			throw ex;
+		}
+	}
+	
+	function get( url, receiver = null){
+		try{
+			local result = request( url, "GET", null, receiver);
+			return result;
+		}catch( ex){
+			if( con){ con.close(); con=null; }
+			if (receiver) { receiver.cancel(); }
+			throw ex;
+		}
+	}
+	
+	function post( url, sender, receiver = null){
+		try{
+			local result = request( url, "POST", sender, receiver);
+			return result;
+		}catch( ex){
+			if( con){ con.close(); con=null; }
+			if (receiver) { receiver.cancel(); }
+			throw ex;
+		}
+	}
+	
+	function put( url, sender, receiver = null){
+		try{
+			local result = request( url, "PUT", sender, receiver);
+			return result;
+		}catch( ex){
+			if( con){ con.close(); con=null; }
+			if (receiver) { receiver.cancel(); }
+			throw ex;
+		}
+	}
+	
+	function del( url, receiver){
+	}
+	
+	function isKeepAlive(){
+		if( keepalive && con && con.getState() == SOCKET_CONNECTED && lasturlreq && skGetTime( keepalive_timeout) < 0 && keepalive_cont){
+			return true;
+		}
+		return false;
+	}
+
+	function close(){
+		if( con && con.getState() == SOCKET_CONNECTED){ con.close(); con = null; }
+	}
+
+	////////////////////////////////////////////////////////////////////////////////////////////
+	//	private
+	
+	function isIpAddr( host){	// 日本語ドメインは ?
+		for( local i=length(host)-1; i>=0; i--) {
+			local c = host[i];
+			if (c == '.') continue;
+			if (c >= 'A') return false;
+		}
+		return true;
+	}
+	
+	function request( url, method, sender, receiver){
+		//	sender, receiver調整
+		if( typeof( sender) == SS_TABLE){
+			sender = HTTPMultiPartSender( sender);
+		}else
+		if( typeof( sender) == SS_STRING){
+			local bb = ByteBuffer();
+			bb.putText( sender);
+			bb.pos = 0;
+			sender = HTTPByteBufferSender( bb);
+		}else
+		if( sender instanceof ByteBuffer){
+			sender = HTTPByteBufferSender( sender);
+		}
+		if( !receiver) receiver = HTTPByteBufferReceiver();
+		//
+		statuscode = 0;
+		statusstr = "";
+		recvheaders = {};
+		//
+		local chunked = false;
+		local crlfpos = 0;
+		local bbuf = ByteBuffer();
+		local maxredirect = maxredirections;
+		local urlreq = parseURL( url);	//	throws Exception
+		local t0 = skGetTime();
+		//	
+		while( maxredirect--) {
+			receiver.httpStageChanged( 0, urlreq);
+			if( listener) listener( this, "seturl", urlreq);
+			//	make connection
+			recvbuf.resize(0);
+			if( keepalive && con && con.getState() == SOCKET_CONNECTED && lasturlreq && skGetTime( keepalive_timeout) < 0 && (keepalive_cont--)){
+				if( urlreq.host != lasturlreq.host || urlreq.port != lasturlreq.port){
+					con.close(); con = null;
+					if( verbose) printf( "keepalive failure. host=%S port=%S timeout=%S\n", urlreq.host, urlreq.port, keepalive_timeout-skGetTime());
+				}else{
+					if( verbose) printf( "keepalive connection. host=%S port=%S timeout=%S\n", urlreq.host, urlreq.port, keepalive_timeout-skGetTime());
+				}
+			}else{
+				if( con){ con.close(); con = null; }
+			}
+			lasturlreq = urlreq;
+			//	Androidでたまに（というには結構な頻度で）waitForConnectが進まない。timeoutを細かくして複数回の接続トライを行う。
+			for( local ti = 0; ti < try_connect; ti ++){
+				if( !con || con.getState() != SOCKET_CONNECTED){
+					if( urlreq.scheme == "https"){
+						local ctx = #SSLContext();		//	TODO ラストでコケる
+						con = SSLConnection( ctx);
+						local h = urlreq.host;
+//						if( h != "localhost" && h[0]<'0' && h[0]>'9'){	//	数字で始まるとip扱い。。
+						if( h != "localhost" && !isIpAddr( h)){	//	数字で始まるホスト名は存在するので
+							con.setHostName( h);	//	SSL SNI
+						}
+					}else{
+						con = TCPConnection();
+					}
+					con.setReader( tcpReceived, this);
+					con.setListener( tcpStateChanged, this);
+					local ipaddr = resolveIP( urlreq.host, urlreq.port);	//	ホストとポートでIPAddressを生成
+					if( !ipaddr){
+						con.close(); con = null;
+						throw Exception( sprintf( "hostname[%S] not found", urlreq.host));
+					}
+					receiver.httpStageChanged( 1, ipaddr);
+					if( listener) listener( this, "connect", ipaddr);
+					con.connect( ipaddr);
+					if( verbose) printf( "http connect %S(%S). url=%S, time=%d\n",urlreq.host, ipaddr, url, skGetTime( t0));
+					if( !waitForConnect( ti)){
+						con?.close(); con = null;
+						if( ti == try_connect-1) throw Exception( "HTTP Connection failure "..urlreq.host..":"..ipaddr);
+						::clearIPMap( urlreq.host);	//	DNSを再度取得するように。念のためだが
+						continue;
+					}
+					if( verbose) printf("connected. time=%d\n", skGetTime( t0));
+					receiver.httpStageChanged( 2, null);
+					if( listener) listener( this, "connected", null);
+					keepalive_timeout = 0;
+					keepalive_cont = 0;
+				}
+				break;	//	接続OK
+			}
+			
+			//
+			//	http request
+			local sbuf = StringBuffer();	//	StringBuffer
+			local requeststr = sprintf( "%S %S HTTP/1.1\r\nHost: %S\r\n", method, urlreq.path, urlreq.host); //Write request
+			sbuf .. requeststr;
+			
+			// send authorization
+			if( basicauth_user && basicauth_pw) {
+				sbuf .. "Authorization: Basic ";
+				sbuf .. encodeBASE64( basicauth_user .. ":" .. basicauth_pw);
+				sbuf .. "\r\n";
+			}
+			
+			if( keepalive){
+				sbuf .. "Connection: Keep-Alive\r\n";
+			}else{
+				sbuf .. "Connection: Close\r\n";
+			}
+			
+			//Send all headers
+			for( local l = 0; l < length( customheaders); l += 2) {
+				local headerstr = sprintf( "%S: %S\r\n", customheaders[l], customheaders[l+1]);
+				sbuf .. headerstr;
+			}
+			
+			//Send default headers
+			if( sender) {
+				if( sender.httpIsChunked() ) {
+					sbuf .. "Transfer-Encoding: chunked\r\n";
+				} else {
+					local lenstr =sprintf( "Content-Length: %d\r\n", sender.httpGetContentLength());
+					sbuf .. lenstr;
+				}
+				local type = sender.httpGetDataType();
+				if( type){
+					local typestr = sprintf( "Content-Type: %S\r\n", type);
+					sbuf .. typestr;
+				}
+			}
+			//Close headers
+			sbuf .. "\r\n";
+			con.write( string( sbuf));
+			if( verbose) printf( "%S\n", string( sbuf));
+			//con.flush();
+			
+			//Send data (if available)
+			if( sender){
+				local writtenlen = 0;
+				if( sender.httpIsChunked() ){
+					local w = sender.httpSend( bbuf, 32768);
+					local chunkheader = sprintf( "%X\r\n", w);
+					con.write( chunkheader);
+					con.write( bbuf);
+					con.write( "\r\n");
+				}else{
+					local senderlen = sender.httpGetContentLength();
+					for( ;;){
+						bbuf.size = 0;
+						local w = sender.httpSend( bbuf, 1024*1024*15);		//	15MBまで可能
+						bbuf.pos = 0;
+						if( listener){	//	listenerがある場合は送信状況も監視しないと
+							con.write( bbuf);
+							for( ;;){
+								local r = con.getWriteBufferRemaining();
+								listener( this, "send", { w=writtenlen+w-Math.max( r, 0), size=senderlen});
+								if( r<=0) break;
+								suspend();
+							}
+						}else{
+							con.write( bbuf);
+						}
+						writtenlen += w;
+						if( w == 0 || writtenlen >= senderlen) break;	//	owari!
+						suspend();	//	送信サイズが大きいと固まるのでsuspendする
+					}
+					bbuf.resize( 0);
+				}
+			}
+			receiver.httpStageChanged( 3, null);
+			if( listener) listener( this, "sent", null);
+			
+			//Receive response
+			local resstr = recvLine( bbuf).asText();
+			if( verbose){
+				printf( "Received time=%d\n", skGetTime( t0));
+				printf( "%S\n", resstr);
+			}
+			
+			//Parse HTTP response
+			statuscode = int( resstr.substring( 9, 12));		//	"HTTP/1.1 200 OK" を期待...
+			statusstr = resstr.substring(13);
+			if( verbose) printf( "statuscode=%d statusstr=%S\n",statuscode,statusstr);
+			
+			local redirect = false;
+			while( !redirect){	//	redirectフラグがたったらまあbreakしちゃおう
+				local str = recvLine( bbuf).asText();
+				if( str == ""){
+					break;					//	header done
+				}
+				if( verbose) printf("%S\n", str);
+				local spliti = str.indexOf(":");
+				local key, value;
+				if( spliti < 0) continue;	//	invalid key-value
+				key = str.substring( 0, spliti).trim();
+				value = str.substring( spliti+1).trim();
+				recvheaders[key] <- value;
+				switch( key.toLowerCase()){
+				case "content-length":
+					contentlength = int( value);
+					break;
+				case "transfer-encoding":
+					if( value.toLowerCase() == "chunked") {
+						chunked = true;
+					}
+					break;
+				case "content-type":
+					contenttype = value;
+					break;
+				case "keep-alive":
+					{
+						local t = compilestring( sprintf( "return { %S }", value))();
+						if( "timeout" in t){
+							keepalive_timeout = skGetTime() + t.timeout * 1000 - 1000;	//	念のため1秒ぐらい前にしとく
+						}
+						if( "max" in t){
+							keepalive_cont = t.max;
+						}
+					}
+					break;
+				case "connection":
+					if( value.toLowerCase() == "close"){	//	keepaliveで渡してcloseだ返された
+						keepalive = false;
+					}
+					break;
+				case "location":
+					location = value;
+					local si = value.indexOf("://");
+					if( si>=0 && si < 8){
+						urlreq = parseURL( value);	//	絶対URL
+					}else{
+						urlreq.path = value;
+					}
+					redirect = true;
+					break;
+				}
+			}
+			if( statuscode >= 400 && throwhttperror){
+				throw HTTPException( statusstr, statuscode, recvheaders);
+			}
+			
+			if( !redirect){
+				break;
+			}
+		}
+		//
+		receiver.httpStageChanged( 4, this);
+		if( listener) listener( this, "head", null);
+		if( method != "HEAD" && statuscode != 204){		//	HEADの場合はヘッダだけ取得して終わり。204もno content
+			//Receive data
+			local readlen = 0;
+			if( chunked ) {
+				for( ;;){
+					local chunkline = recvLine( bbuf).asText();
+					local r = int( chunkline, 16);		//	16進数
+					if( verbose) printf( "chunkline: %S (%d)\n", chunkline, r);
+					if( r == 0){
+						recv( bbuf, 2);
+						if( bbuf[0] != '\r' || bbuf[1] != '\n'){
+							throw Exception( "broken chunk data");
+						}
+						break;	//	owari!!!
+					}
+					local r = recv( bbuf, r);
+					readlen += r;
+					if( readlen > contentlength) contentlength = readlen;
+					receiver.httpReceive( bbuf);
+					if( listener) listener( this, "recv", r);
+					//	↓"\r\n"じゃないとダメ
+					recv( bbuf, 2);
+					if( bbuf[0] != '\r' || bbuf[1] != '\n'){
+						throw Exception( "broken chunk data");
+					}
+				}
+			} else {
+				readlen = 0;
+				local _t = skGetTime();
+				local _dl = 0;
+				for( ;;){
+					local r = recv( bbuf, 0);
+					if( r > 0){
+						receiver.httpReceive( bbuf);
+						_dl += r;
+						if( listener) listener( this, "recv", {w=_dl,size=contentlength});
+						if( skGetTime() > _t+10000){
+							if( verbose) printf("HTTPConnection received:%d in %d msec\n", _dl skGetTime()-_t);
+							_t += 10000;
+							_dl = 0;
+						}
+						if( (readlen+=r) >= contentlength){
+							contentlength = readlen;
+							break;	//	owari!
+						}
+					}
+					suspend();
+				}
+			}
+			if( verbose){
+				printf( "HTTPClient request done. total time=%d\n", skGetTime( t0));
+			}
+		}
+		receiver.httpStageChanged( 5, null);
+		if( listener) listener( this, "done", null);
+		if( con){
+			if( !keepalive){
+				con.close(); con = null;
+			}
+		}
+		//	キープアライブで通信が成功した。大きなファイルをダウンロードした場合はうまくキープアライブが続かないがオーバーヘッドも小さいか
+		//	タイムアウトも毎回リセットされるんだろか？今はよくわからんので安全に
+		if( keepalive && !keepalive_timeout) keepalive_timeout = skGetTime() + 4000;
+		if( keepalive && !keepalive_cont) keepalive_cont = 10;
+
+		return receiver.getResult();
+	}
+	
+	function waitForConnect( ti){
+		local t0 = skGetTime();
+		do{
+			switch( con.getState()){
+			case SOCKET_CONNECTING : suspend(); continue;
+			case SOCKET_CONNECTED : 
+				constate = SOCKET_CONNECTED;		//	一応入れておく。httpStageChangedの先に通る可能性があるため。
+				return true;
+			default :
+				//	SOCKET_CONNECTED以外はエラー
+				local st = con.getState();
+				printf( "HTTP connection failure:%d (%d/%d)\n", st, ti+1, try_connect);
+				return false;
+			}
+		}while( skGetTime( t0) < timeout_connect);
+		printf( "waitForConnect timeout:%d (%d/%d)\n", timeout_connect, ti+1, try_connect);
+		return false;
+	}
+	
+	//	CRLFで区切った文字列を返す。
+	function recvLine( bbuf){
+		local tot = skGetTime() + timeout_read;
+		local crlf = 0;
+		bbuf.resize( 0);
+	//	if( recvbuf.remain) printf("recvbuf %d\n",recvbuf[recvbuf.pos]);
+		for( ;;){
+			while( !recvbuf.remain){
+				if( constate != SOCKET_CONNECTED) throw Exception("HTTP connection was closed : " .. constate);
+				if( skGetTime() > tot) throw Exception("HTTP receive line timeout. received : " .. bbuf.size);
+				suspend();			//	バッファがたまるまで待つ
+			}
+			local c = recvbuf.getb() & 0xff;
+			if( c == '\r'){
+				crlf = 1;
+			}else
+			if( c == '\n'){
+				if( crlf == 1) break;	//	おしまい
+				break;		//	crlf janakutemo??
+			}else{
+				bbuf.putb( c);
+			}
+		}
+		recvbuf.trim();
+		bbuf.pos = 0;
+		return bbuf;
+	}
+	
+	function recv( bbuf, readlen){
+		local tot = skGetTime() + timeout_read;
+		while( !recvbuf.remain || recvbuf.remain < readlen){
+			if( constate != SOCKET_CONNECTED) throw Exception("HTTP connection was closed : " .. constate);
+			if( skGetTime() > tot) throw Exception("HTTP receive line timeout. received : " .. recvbuf.remain .. " / " .. readlen);
+			suspend();	//	バッファがたまるまで待つ
+		}
+		bbuf.resize( 0);
+		bbuf.putBuffer( recvbuf, readlen || recvbuf.remain);
+		bbuf.pos = 0;
+		recvbuf.trim();
+		return bbuf.size;
+	}
+	
+	
+	//	TCPConnection callback
+	function tcpReceived( con, buf){
+		local pos = recvbuf.pos;
+		recvbuf.extendBuffer( buf);
+		recvbuf.pos = pos;
+	}
+
+	function tcpStateChanged( id, c, src){
+		if( c == con){
+			if( verbose) printf("HTTPConnection tcpStateChanged from %d to %d\n", constate, c.getState());
+			constate = c.getState();
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	HTTPException
+
+class HTTPException extends Exception
+{
+	headers = null;
+	
+	constructor( str, code, h=null){
+		super( str, code);
+		headers = h;
+	}
+}
+
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	HTTPReceiver, HTTPSender interface & implementation
+
+//	HTTPのデータをダウンロードするレシーバークラス
+//	ByteBuffer, Fileに対応すればいいか
+class HTTPReceiver
+{
+	function httpStageChanged( st, arg){}
+
+	function httpReceive( bbuf){}
+	
+	function cancel(){}
+	
+	function getResult(){ return null; }
+	
+}
+
+//	ByteBufferとしてダウンロードする
+class HTTPByteBufferReceiver
+{
+	recvbuf = null;
+	
+	function httpStageChanged( st, arg){
+		switch( st){
+		case 4: recvbuf = ByteBuffer(); break;
+		case 5: recvbuf.pos = 0; break;
+		}
+	}
+	
+	function httpReceive( bbuf){
+		recvbuf.putBuffer( bbuf);
+	}
+	
+	function cancel(){
+		if( recvbuf) recvbuf.resize(0);		//	意味ないかも
+	}
+	
+	function getResult(){
+		return recvbuf;
+	}
+}
+
+//	Fileとしてダウンロードする
+class HTTPFileReceiver
+{
+	fileref = null;
+	stream = null;
+	readsize = 0;
+	
+	constructor( f=null){
+		if( typeof( f) == SS_STRING){
+			f = FileRef( f);
+		}
+		fileref = f;
+	}
+	
+	function httpStageChanged( st, arg){
+		switch( st){
+		case 4: stream = fileref.open( "wb"); break;
+		case 5: stream.close(); stream = null; break;
+		}
+	}
+	
+	function cancel(){
+		if( stream){
+			stream.close();
+			fileref.refresh();
+			fileref.deleteFile();	//	消した方がよい！多分。。。
+			fileref.refresh();
+		}
+	}
+	
+	function httpReceive( bbuf){
+		readsize += bbuf.remain;
+		stream.write( bbuf);
+	}
+	
+	function getResult(){
+		fileref.refresh();
+		return fileref;
+	}
+}
+
+//	HTTPにデータをアップロードするセンダークラス
+//	ByteBuffer, File, multi-partがあれば。。。
+class HTTPSender
+{
+	function httpIsChunked(){
+		return false;
+	}
+
+	function httpGetDataType(){
+		return null;
+	}
+
+	function httpGetContentLength(){
+		return 0;
+	}
+
+	function httpSend( bbuf, len){
+	}
+}
+
+class HTTPByteBufferSender
+{
+	sendbuf = null;
+	writesize = 0;	//	送信進捗確認用
+
+	constructor( bb){
+		sendbuf = bb;
+	}
+
+	function httpIsChunked(){
+		return false;
+	}
+
+	function httpGetDataType(){
+		return null;
+	}
+
+	function httpGetContentLength(){
+		return sendbuf.size;
+	}
+
+	function httpSend( bbuf, len){
+		if( len > sendbuf.size-sendbuf.pos){
+			len = sendbuf.size-sendbuf.pos;
+		}
+		if( len > 0){
+			bbuf.putBuffer( sendbuf, len);
+		}
+		writesize += len;
+		return len;
+	}
+}
+
+class HTTPMultiPartSender
+{
+	boundary = "sa42ka99na31";
+	sendbuf = null;
+	writesize = 0;	//	送信進捗確認用
+	
+	constructor( t){
+		sendbuf = ByteBuffer();
+		foreach( i,v in t){
+			sendbuf.putText( sprintf( "--%S\r\nContent-Disposition: form-data; name=\"%S\"\r\n\r\n", boundary, string(i)))
+			switch( typeof( v)){
+			case SS_STRING:
+				sendbuf.putText( v);
+				break;
+			default:
+				sendbuf.putText( encodeJSON( v));
+				break;
+			}
+			sendbuf.putText( "\r\n");
+		}
+		sendbuf.putText( "--");
+		sendbuf.putText( boundary);
+		sendbuf.putText( "--");
+		sendbuf.putb( 0);	//	\0
+		sendbuf.pos = 0;
+	}
+	
+	function httpIsChunked(){
+		return false;
+	}
+	
+	function httpGetDataType(){
+		return "multipart/form-data; boundary=" .. boundary ;
+	}
+	
+	function httpGetContentLength(){
+		return sendbuf.size;
+	}
+	
+	function httpSend( bbuf, len){
+		if( len > sendbuf.size-sendbuf.pos){
+			len = sendbuf.size-sendbuf.pos;
+		}
+		if( len > 0){
+//			printf("HTTPByteBufferSender httpSend %d\n", len);
+			bbuf.putBuffer( sendbuf, len);
+		}
+		writesize += len;
+		return len;
+	}
+}
+
+class HTTPFileSender
+{
+	file = null;
+	fs = null;
+	filesize = 0;
+	writesize = 0;	//	送信進捗確認用
+
+	constructor( f){
+		file = f;
+		fs = f.open( "rb");
+		filesize = f.size;
+	}
+
+	function httpIsChunked(){
+		return false;
+	}
+
+	function httpGetDataType(){
+		return null;
+	}
+
+	function httpGetContentLength(){
+		return filesize;
+	}
+
+	function httpSend( bbuf, len){
+		if( len > filesize-writesize){
+			len = filesize-writesize;
+		}
+		if( len > 0){
+			local bb = fs.readfor( len);
+			bbuf.putBuffer( bb);
+		}
+		writesize += len;
+		return len;
+	}
+}

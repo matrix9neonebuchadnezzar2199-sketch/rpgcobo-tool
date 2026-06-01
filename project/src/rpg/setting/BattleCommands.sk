@@ -1,0 +1,242 @@
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	BattleCommands.sk
+//	バトルのコマンド定義
+//	
+
+import PropertyType;
+import RPGPropertyType;
+
+local battlecmd = RPGSystem.battlecmd;
+
+//	バトルのUIで指定したアイテム（スキル）一覧から選択する。
+//	
+function showSkillList( pc, items){
+	local battleui = ::rpgstage.battle.battleui;
+	//
+	local savedidx = pc.etc[pc.name] || 0;
+	local list = battleui.findChild( "skilllist");		//	RPGListView
+	list.setValue( items);
+	battleui.action( "showlist").waitAction();	//	スキル選択UIはバトルUIを隠した状態で表示する
+	list.gpui.scrollNameToVisible( "i0", 0);
+	list.focusTo( "i0");	//	保存されたカーソルに合わせる。
+	//	
+	local selitem = RPGMain.uiLoop( {
+		"back" : @( e){ return "back"; },
+		"action" : @( e){
+			if( e.item && !fget( e.item, "disable")) return e.item;	//	MP足りなかったりしたらdisableになる
+		},
+		"alt" : @( e){	//	説明ウィンドウを表示切り替え
+			battleui.action( "showdesc");
+		},
+		"select" : @( e){	//	項目を選択したら説明等更新
+			local v = e.item["val"];
+			battleui.bindValue( "skilldesc", ::rtf( v["desc"]));
+			battleui.bindValue( "inforlbl", ::RPGSystem.getConsumeInfo( v["consume"]));
+		},
+		"idle" : @( e){ if( !pc.isCommandable()) return "back"; },	//	コマンド入力不能な場合は"back"を選択とする
+	});
+	battleui.action( "hidelist");
+	return selitem["val"] || null;	//	
+}
+
+////////////////// コマンド定義開始
+
+//	attack : 攻撃コマンド
+//	持っている武器のスキルで攻撃するコマンド。オプションは無い
+//	
+battlecmd .. {
+	key = "attack"
+	name = "$T.attack"
+	icon = "\ue9ba"
+
+	props = []
+	
+	function isDisabled( bcmd, pc){
+		return false;
+	}
+
+	function selectSkill( bcmd, pc){
+		return pc.getAttackSkill();
+	}
+}
+
+//	skill : 単スキルコマンド
+//	プロパティで指定したスキルを発動する。
+//	
+battlecmd .. {
+	key = "skill"
+	name = "単スキル…"
+	icon = "\ue9ba"
+
+	submenu = @() ::datalist( "skill"),
+	
+	//	
+	function isDisabled( bcmd, pc){
+		return !pc.isSkillUseable( bcmd.skillid);
+	}
+	
+	function selectSkill( bcmd, pc){
+		return ::conf.skill[bcmd.skillid];
+	}
+}
+
+//	skillg : スキルグループコマンド
+//	プロパティではスキルグループのビットマスクを指定
+//	
+battlecmd .. {
+	key = "skillg"
+	name = "スキルグループ…"
+	icon = "\ue9ba"
+
+	submenu = @() ::skillglist(),
+	
+	function isDisabled( bcmd, pc){
+		return false;
+	}
+
+	function getSkills( bcmd, pc){
+		local a = [];
+		foreach( sg in skillglist()){
+			local i = int( sg.dataid.substring( 1));
+			if( sg.data.type==1 && bitget( skillgbits, i)){
+				foreach( v in sg.items){
+					local s = ::conf.skill[v.skillid];		//	sが無い場合はエラー表示したい
+					//	使用可能チェック
+					local f = 4;			//	使用可能
+					varaccs.SELCHARA = pc;
+					if( (v.needown&&!pc.hasSkill( v.skillid)) || !reqchk( v.reqs)){
+						f = v.reqfail;
+						if( !f) continue;	//	詰め
+					}
+					a .. { skillid=v.skillid, skill=s, name=s.name, icon=s.icon, flag=f, };
+				}
+			}
+			//	
+		}
+		return a;
+	}
+
+	//	this=BattleStageRunner
+	function selectSkill( bcmd, pc){
+		playSound( "SE013");
+		local skillitems = getSkills( bcmd, pc).map( @( v, i){
+			//	※消費MP、封印チェックはリアルタイムに行う！
+			local cons = v.skill.consume;
+			local lbl = v.icon.." "..v.name, rlbl = cons[1]?string( cons[1]):"";
+			return @(){
+				local disable(){
+					return v.flag!=4 || !pc.isSkillUseable( v.skillid);
+				}
+				return {
+					idx = i, val = v.skill, disable = disable,
+					lbl = lbl, rlbl = rtf( RPGSystem.getSkillListInfo( pc, v)),
+					grayout = @() disable()?"on":"off";
+				};
+			}
+		});
+		// RPGMain.showTopInfo( "$T.skill");	//	上部メッセージ
+		local ret = showSkillList( pc, skillitems);
+		return ret;
+	}
+}
+
+//	ownskills : 所持スキルコマンド。スキルグループを設定しないでもこっちを使用可能。
+battlecmd .. {
+	key = "ownskills"
+	name = "$T.skill"
+	toolname = "$T.skills_all"
+	icon = "\ue9ba"
+	
+	function isDisabled( bcmd, pc){
+		return false;
+	}
+
+	//	this=BattleStageRunner
+	function selectSkill( bcmd, pc){
+		playSound( "SE013");
+		local skillitems = Table.map( ::conf.skill, @( v, i){
+			//	※消費MP、封印チェックはリアルタイムに行う！
+			if( !v["addlist"]) return undefined;
+			if( !pc.hasSkill( i)) return undefined;
+			local disable(){
+				return !pc.isSkillUseable( i);
+			}
+			return {
+				idx = i, val = v, disable = disable,
+				lbl = v.icon..v.name, rlbl = rtf( RPGSystem.getSkillListInfo( pc, v)),
+				grayout = @() disable()?"on":"off";
+			};
+		}).sort( @( v) v.idx);
+		if( !length( skillitems)){	//	スキルが一個もない場合リストが無表示にならないように
+			skillitems .. { idx=0, val = null, disable = true, lbl = "", rlbl = ""};
+		}
+		foreach( i, v in skillitems) v._name <- "i"..i;	//	sortしてから名前入れ。。。
+		// RPGMain.showTopInfo( "$T.skill");	//	上部メッセージ
+		local ret = showSkillList( pc, skillitems);
+		return ret;
+	}
+}
+
+//	itemlist : アイテム一覧コマンド
+//	アイテムを選択して使用するコマンド。プロパティは無し。
+//	
+battlecmd .. {
+	key = "itemlist"
+	name = "$T.item"
+	icon = "\ue9ba"
+	
+	function isDisabled( bcmd, pc){
+		return false;
+	}
+
+	//	this=BattleStageRunner
+	function selectSkill( bcmd, pc){
+		playSound( "SE013");
+		local itemitems = ::rpgstat.items.map( @( v, i){	//	v=RPGItem
+			local disable = !v || !((v.data["occasion"]||0)&1);
+			return v ? {
+				val = v.data, disable = disable, _name="i"..i,
+				//	以下viewバインド情報
+				lbl = v.iconname(), rlbl = string( v.num), grayout = disable?"on":"off";
+			} : { idx=i, val=null, lbl="", rlbl="", _name="i"..i, disable = true, };
+		});
+		//
+		// RPGMain.showTopInfo( "$T.item");	//	上部メッセージ
+		local ret = showSkillList( pc, itemitems);
+		return ret;
+	}
+}
+
+//	formation : 隊列変更
+//	前衛、後衛を入れ替える。後衛に行くと後衛オプションが付き、TGRが半分になる
+//	ターンバトルではコマンド選択画面で完結し、行動を消費しない。アクティブバトルでは行動消費する。
+//	
+battlecmd .. {
+	key = "formation"
+	name = "$T.formation"
+	icon = "\ue9ba"
+	
+	function isDisabled( bcmd, pc){
+		return false;
+	}
+	
+	//	この場ですぐに移動する。
+	function selectSkill( bcmd, pc){
+		playSound( "SE013");
+		local st = ::rpgstage;
+		if( ::conf.setting.battletype == 0){	//	ターンバトル時
+			local pc3d = st.battle.getChara3D( pc);
+			pc3d.manuaction.act( @(){
+				pc.formation = pc.formation?0:1;
+				pc.updateScoreMap();
+				local p = st.battle.getBasePosition( pc);
+				pc3d.basepos = p;
+				move( {target = Vector3D( p), aim=false, spd=10.0, });
+			}).wait();
+			return false;	//	falseを返すとアニメーションをスキップ
+		}else{
+		}
+		return false;
+	}
+}

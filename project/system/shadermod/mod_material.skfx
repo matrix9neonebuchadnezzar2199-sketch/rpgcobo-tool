@@ -1,0 +1,196 @@
+declare mod_material;
+
+param material
+{
+	uniform lowp vec4 mate[8]<ID=MATERIALVEC>;
+	uniform lowp float alpharef<ID=ALPHAREF>;
+	uniform lowp vec4 rimcolor<ID=RIMCOLOR>;
+}
+
+define material
+{
+	#define Kd mate[0]
+	#define Ks mate[1].xyz
+	#define Ka_offs mate[2].xyz
+	#define Ka_scale mate[3].xyz
+	#define Ke mate[4].xyz
+	#define shiness mate[5].x
+	#define shiness3 mate[5].xxx
+	#define reflection mate[5].y
+	#define refraction mate[5].z
+	#define fresnel mate[5].w
+	#define shadowblack mate[6].x
+}
+
+
+param fog
+{
+	uniform mediump vec4 fogp[6]<ID=FOGPARAMVEC>; 
+	varying lowp vec3 v_fogex;
+	varying lowp vec3 v_fogin;
+}
+
+vs fog
+{
+	void vsfog( in mediump vec4 wvn, in lowp float fexscale){
+		$( FOG == 1) {
+			mediump float z = wvn.w + fogp[0].x;
+			lowp float w = clamp( fogp[0].y*z + (exp( fogp[0].z*z)), 0.0, 1.0);
+			v_fogex = vec3( w) * fexscale;
+			v_fogin = fogp[1].xyz * (1.0-w);
+		}
+		$( FOG == 2) {
+			mediump float sunth = dot( wvn.xyz, fogp[0].xyz);
+			v_fogex = exp( wvn.w * fogp[1].xyz ) * fexscale;
+			v_fogin = (fogp[2].xyz*( 1.0+sunth*sunth) + fogp[3].xyz*pow( fogp[2].w+fogp[3].w*sunth,-1.5)) * (1.0-v_fogex);
+		}
+	}
+}
+
+fs fog
+{
+	void fsfog( inout lowp vec4 pix){
+		$( FOG) pix.xyz = v_fogin.xyz + pix.xyz * v_fogex.xyz;
+	}
+}
+
+vsfs fog
+{
+	void applyfog( inout lowp vec4 pix, in mediump vec4 wvn, in mediump float fexscale){
+		$( FOG == 1) {
+			mediump float z = wvn.w + fogp[0].x;
+			lowp float w = clamp( fogp[0].y*z + (exp( fogp[0].z*z)), 0.0, 1.0);
+			pix.xyz = mix( fogp[1], pix.xyz, (1.0-w)*fexscale);
+		}
+		$( FOG == 2) {
+			mediump float sunth = dot( wvn.xyz, fogp[0].xyz);
+			mediump vec3 ex = exp( wvn.w * fogp[1].xyz ) * fexscale;
+			mediump vec3 fin = (fogp[2].xyz*( 1.0+sunth*sunth) + fogp[3].xyz*pow( fogp[2].w+fogp[3].w*sunth,-1.5)) * (1.0-ex);
+			pix.xyz = pix.xyz*ex + fin;
+		}
+	}
+}
+
+vsfs fogcolor
+{
+	lowp vec3 fogcolor( in mediump vec4 wvn){
+		$( FOG == 1) {
+			return fogp[1].xyz;
+		}
+		$( FOG == 2) {
+			mediump float costh = dot( wvn.xyz, fogp[0].xyz );
+			return fogp[2].xyz*( 1.0+costh*costh) + fogp[3].xyz*pow( fogp[2].w+fogp[3].w*costh,-1.5);
+		}
+		return vec3( 1.0, 1.0, 1.0);
+	}
+}
+
+param lighting
+{
+	uniform mediump vec4 light[LITNUM1*8]<ID=LIGHTS>;
+	uniform sampler2D ibltex <id=IBLTEX>;
+}
+
+define lighting
+{
+	#define LITPOS( I) light[I].xyz
+	#define LITVEC( I) light[I+1].xyz
+	#define LITDIFF( I) light[I+2].xyz
+	#define LITSPEC( I) light[I+3].xyz
+	#define LITK1( I) light[I].w
+	#define LITK2( I) light[I+1].w
+	#define LITCH( I) int( light[I+3].w)
+	#define SPOTOUT( I) light[I+2].w
+	#define SPOTSCALE( I) light[I+4].x
+}
+
+vsfs lighting
+{
+	highp vec4 towvn( in highp vec3 wvp){ highp float r = length( wvp.xyz); return vec4( wvp.xyz / r, r); }
+	
+	void lit_full  ( in lowp vec4 m[8], in mediump vec4 wvn, in mediump vec3 pn, inout lowp vec3 diff, inout lowp vec3 spec){
+		diff = m[0].xyz;
+	}
+	
+	void lit_dir   ( in lowp int i, in lowp vec4 m[8], in mediump vec4 wvn, in mediump vec3 pn, inout lowp vec3 diff, inout lowp vec3 spec){
+		lowp vec3 lvec = LITVEC( i);
+		lowp float dif = dot( lvec, pn);
+		mediump float spow = m[5].x*100.0;
+		lowp float atten = m[7][LITCH( i)];
+		#ifdef CUSTOMSHADE
+			CUSTOMSHADE
+		#else
+			diff += atten * clamp( dif, 0.0, 1.0) * LITDIFF( i) * m[0].xyz;
+			spec += atten * step( 0.0, dif) * pow( clamp( dot( reflect( wvn.xyz, pn), lvec), 0.0, 1.0), spow) * LITSPEC( i) * m[1].xyz;
+		#endif
+	}
+	
+	void lit_point  ( in lowp int i, in lowp vec4 m[8], in mediump vec4 wvn, in mediump vec3 pn, inout lowp vec3 diff, inout lowp vec3 spec){
+		mediump vec3 _lvec = LITPOS( i) - (wvn.xyz*wvn.w);
+		lowp vec3 lvec = normalize( _lvec);
+		mediump float d = length( _lvec);
+		//	spot code
+//		lowp float spotdif = dot( LITVEC( i), lvec);	lowp float spotatten = clamp( (spotdif - spotout)/(spotin - spotout), 0.0, 1.0);
+		lowp float spotatten = clamp( (dot( LITVEC( i), lvec)-SPOTOUT( i)) * SPOTSCALE( i), 0.0, 1.0);
+		lowp float atten = 1.0 / (1.0+(LITK1( i)+LITK2( i)*d)*d) * (spotatten*spotatten);
+		lowp float dif = dot( lvec, pn);
+		mediump float spow = m[5].x*100.0;
+		atten *= m[7][LITCH( i)];
+		#ifdef CUSTOMSHADE
+			CUSTOMSHADE
+		#else
+			diff += atten * clamp( dif, 0.0, 1.0) * LITDIFF( i) * m[0].xyz;
+			spec += atten * step( 0.0, dif) * pow( clamp( dot( reflect( wvn.xyz, pn), lvec), 0.0, 1.0), spow) * LITSPEC( i) * m[1].xyz;
+		#endif
+	}
+	
+	void lit_custom  ( in lowp int i, in lowp vec4 m[8], in mediump vec4 wvn, in mediump vec3 pn, inout lowp vec3 diff, inout lowp vec3 spec){
+		#ifdef CUSTOMLIGHT
+			CUSTOMLIGHT
+		#endif
+	}
+}
+
+param shadow
+{
+	uniform highp sampler2D shadowtex <id=SHADOWTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform highp vec4 shadow[12] <id=SHADOWPARAM>;	// [3+3*3]	(1-depth,1.0/zfar,1.0/raylen,coeffecient/zfar), (pa,pb,pc,pd), (near0, near1, near2, near3), uvz[0], uvz[1], uvz[2]
+}
+
+fs shadow
+{
+	lowp float fsshadow( in highp vec3 wvp, in lowp float blk){
+		$( SHADOWMAP){
+			highp vec4 pos = vec4( wvp, 1.0);
+			highp float viewz = -wvp.z, coff = shadow[0].w, lightz = -dot( pos, shadow[1]);
+			highp vec2 uv;
+			#define SHADOWUV( I) uv = vec2( dot( pos, shadow[3+3*I]), dot( pos, shadow[4+3*I])); highp float texz = texture2D( shadowtex, uv).x;
+			$( SHADOWMAP == 1){
+				SHADOWUV( 0)
+			} : {
+				$( SHADOWMAP == 2){
+					lowp int i = int( step( shadow[2].x, viewz));
+					SHADOWUV( i)
+				} : {
+					lowp int i = int( step( shadow[2].x, viewz) + step( shadow[2].y, viewz));
+					SHADOWUV( i)
+				}
+			}
+			lowp float rate = clamp( exp2( -coff * -(lightz - texz)), 0.0, 1.0);
+			lowp float dark = clamp( mix( shadow[0].x+blk, 1.0, pow( viewz*shadow[0].y, 4.0)), 0.0, 1.0);
+			return mix( dark, 1.0, rate);
+		} : {
+			return 1.0;
+		}
+	}
+	
+	lowp float fsshadown( in highp vec3 wvp, in lowp vec3 n, in lowp float blk){
+		lowp float nl = dot( n, shadow[1].xyz)*0.5 + 0.5;
+		return fsshadow( wvp, pow( nl, 1.2) + blk);
+	}
+}
+
+vsfs noshadow
+{
+	lowp float fsshadow( in highp vec3 wvp, in lowp float blk){ return 1.0;}
+}

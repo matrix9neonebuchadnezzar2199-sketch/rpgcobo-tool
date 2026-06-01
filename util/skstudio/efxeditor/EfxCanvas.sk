@@ -1,0 +1,101 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+//	
+//	
+class EfxCanvas extends CanvasBehavior
+{
+	editor = null;		//	EfxEditor
+	//	view
+	physchk = null;		//	GPUIButton :
+	boxchk = null;		//	GPUIButton :
+	gridchk = null;		//	GPUIButton :
+	skychk = null;		//	GPUIButton :
+	
+	//	sk3d
+	sk3d = null;		//	SK3DObject : 
+	emitpos = null;		//	Vector3D : 
+	boxsk = null;		//	SK3DObject
+
+	constructor( e){
+		super( e.findChild( "3D"), e.findChild( "head"));
+		editor = e;
+		emitpos = Vector3D( 0, 1, 0);
+		view.renderer.setEnvironment( RenderSettings.getDefaultEnvironment( true));
+		//	3Dサウンド設定
+		local sndmanager = SK3DSoundManager( scn);
+		scn.setSK3DSoundManager( sndmanager);
+		
+		//	boxモデル。
+		local boxpm = PrimitiveMeshes.createWireBox( 0.5, 0.5, 0.5, 0.01);
+		boxsk = SK3DObject( boxpm);
+		boxsk.pos( 0, 0.5, 0);
+		boxsk.name = "boxsk";
+		scn.addObject( boxsk);
+		
+		gridchk = e.findChild( "gridchk");
+		boxchk = e.findChild( "boxchk");
+		gridchk.setSelected( true);
+		updateChecks();
+		
+		view.addEventListener( KEY_EVENT, keyevent);
+	}
+
+	function setParticle( p){
+		if( sk3d) scn.removeObject( sk3d);
+
+		sk3d = SK3DObject( p);
+		sk3d.pos << emitpos;
+		scn.addObject( sk3d);
+		
+		sk3d.startParticle( false);
+	}
+
+	function startSingleGroup( pd){
+		local pga = [];
+		local p = ParticleEffect();
+		p.groups = [pd.createParticleGroup()];
+		p.ptdata = null;
+		p.actions = #[{ acttype="emitall", time=0}];
+		local sk = SK3DObject( p);
+		sk.pos << emitpos;
+		scn.addObject( sk);
+		
+		sk.startParticle( true);
+	}
+	
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "gridchk":
+		case "boxchk":
+			updateChecks();
+			break;
+		}
+		if( !e.consumed) super.actionevent( e);
+	}
+
+	function updateChecks(){
+		gridsk.setVisible( gridchk.isSelected());
+		boxsk.setVisible( boxchk.isSelected());
+	}
+
+	function keyevent( e){
+		switch( e.id){
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_SPACE:
+				if( e.isShiftDown()){
+					startSingleGroup( editor.efxright.selgd);
+				}else{
+					sk3d.startParticle( false);
+				}
+				break;
+			}
+			break;
+		}
+	}
+
+	function showCanvasContextMenu( e){
+		return editor.showCanvasContextMenu( e);
+	}
+}

@@ -1,0 +1,512 @@
+//***LicenseHere
+
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	プレイヤー、エネミーのプロパティ定義。
+//	
+//	プロパティには以下のタイプがあり、
+//	"static"  : スタティックプロパティ。データとしてのみ存在し、ゲーム内で変更不能。(default)
+//	"score"   : スコアプロパティ。戦闘の能力値になり、レベルで変化するプロパティは必ずこれ。
+//				ゲーム内で直接変更したり保存したりはできなく、変更にはオプションを通す必要あり。
+//	"status"  : 動的プロパティ。自由に値を変更、保存できるプロパティ。設定した値は初期値としてキャラ生成時に設定される。
+//	
+//	ステータスの変数名
+//	LV, EXP, JXP, 
+//	HP, MP, TP, MAXHP, MAXMP, MAXTP, 	//	MP,TPはエネミーには無い。カーブパラメータ
+//	PATK, PDEF, MATK, MDEF, AGI, 		//	カーブパラメータ
+//	EDR, CDR, 							//	±100の耐性力。
+//	PHIT, PEVA, MHIT, MEVA, CRI, CEVA, TGR	//	これらは1.0基準のレート値。TGR=Target Rate
+//	
+//	Attack/Defence
+//	M.Attack/M.Defence
+
+local playerprops = RPGSystem.playerprops;
+local enemyprops = RPGSystem.enemyprops;
+
+//	INILV : 初期LV (スタティックプロパティ)
+//	
+playerprops .. {
+	proptype = "static"
+	pid = "INILV"
+	lbl = "$T.INILV"			//	ツール上での表示名。$T使っちゃってるけどゲームでは使用不能。良いか。
+	
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = SCALAR
+	range = (1,999)				//	setting.maxlv
+	defval = 1
+};
+
+//	MAXLV : 最大LV (スタティックプロパティ)
+//	※※※※※　レベルキャップにするためにscoreか、、でもオプションとかで変えるものでもないからstatusかなー？？
+playerprops .. {
+	proptype = "static"
+	pid = "MAXLV"
+	lbl = "$T.MAXLV"			//	ツール上での表示名
+
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = SCALAR
+	range = (1,999)				//	setting.maxlv
+	defval = 99
+};
+
+//	expcurv : 経験値カーブ (スタティックプロパティ)
+//	
+playerprops .. {
+	proptype = "static"
+	pid = "expcurv"
+	lbl = "$T.expcurv"		//	ツール上での表示名
+
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = EXPCURVE
+	defval = (50,40)
+};
+
+//	jobs : ジョブ（ステータスプロパティ）
+//	
+playerprops .. {
+	proptype = "status"
+	pid = "jobs"
+	lbl = "$T.job",
+
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = DATAIDS		//	dataidの配列タイプ。それぞれフィルタをかけれる
+	datalist = @() ::conf.type.jobslot.map( 	//	datalistの要素数分配列になる
+		@( jobslot, i){
+			return {
+				head = jobslot.name,
+				datatype = ["job"],
+				nullable = i!=0,
+			}
+		}
+	)
+	defval = ["J000"]		//	※注意！datalistの返す要素数とは異なる
+};
+
+//	eqtypebits : 装備可能タイプ (スタティックプロパティ) タイプで装備可能フラグを作ったのでstaticで良い！！！
+playerprops .. {
+	proptype = "static"
+	pid = "eqtypebits"
+	lbl = "$T.lbl_eqtypebits",
+
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = CHECKBITS
+	list = @() ::conf.type.eqtype
+	defval = @() (1<<length( ::conf.type.eqtype))-1
+};
+
+//	equips : 初期装備 (ステータスプロパティ)
+//	
+playerprops .. {
+	proptype = "status"
+	pid = "equips"
+	lbl = "$T.lbl_iniequips",			//	ツール上での表示名
+
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = DATAIDS		//	dataidの配列タイプ。それぞれフィルタをかけれる
+	datalist = @() ::conf.type.eqslot.map( 	//	datalistの要素数分配列になる
+		@( eqslot, i){
+			//	weapon,armorのデータからeqtypeが含まれるデータを選択可能 ※装備不能も選べちゃう
+			local bits = eqslot["eqtypebits"]||0;
+			return {
+				head = eqslot["name"],
+				icon = eqslot["icon"],
+				datatype = ["weapon","armor"],
+				filter = @( v, i){ return (1<<v.eqtype) & bits; },
+				nullable = true,
+			}
+		}
+	)
+	defval = [null]		//	※注意！datalistの返す要素数とは異なる
+};
+
+//	eqlockbits : 装備ロックビット (ステータスプロパティ) オプションではなくコマンド等で変化させるためにステータス
+//	
+playerprops .. {
+	proptype = "status"
+	pid = "eqlockbits"
+	lbl = "$T.lbl_eqlockbits",			//	ツール上での表示名
+
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = CHECKBITS
+	list = @() ::conf.type.eqslot.map( @( v,i) {return { icon=v["icon"], lbl=v["name"], val=0}})
+	defval = 0
+};
+
+//	formation : 隊列 (ステータスプロパティ) オプションではなくコマンド等で変化させるためにステータス
+//	
+playerprops .. {
+	proptype = "status"
+	pid = "formation"
+	lbl = "$T.formation"
+	
+	type = LIST
+	list = [{lbl="$T.formation_front",val=0}, {lbl="$T.formation_back",val=1},];
+	defval = 0
+};
+
+
+//	MAXHP : 最大HP (スコアプロパティ)
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "MAXHP"
+	lbl = "${T.MAXHP}"			//	ツール上での表示名
+	lvcurve = true
+
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = SCALAR
+	range = (1,9999)
+	defval = 100
+};
+
+//	MAXMP : 最大MP (スコアプロパティ)
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "MAXMP"
+	lbl = "${T.MAXMP}"			//	ツール上での表示名
+	lvcurve = true
+
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = SCALAR
+	range = (0,9999)
+	defval = 20
+};
+
+//	PATK : 物理攻撃力 (スコアプロパティ)
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "PATK"
+	lbl = "${T.PATK}"			//	ツール上での表示名
+	lvcurve = true
+
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = SCALAR
+	range = (0,9999)
+	defval = 100
+};
+
+//	PDEF : 物理防御力 (スコアプロパティ)
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "PDEF"
+	lbl = "${T.PDEF}"			//	ツール上での表示名
+	lvcurve = true
+	
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = SCALAR
+	range = (0,9999)
+	defval = 100
+};
+
+//	MATK : 魔法攻撃力 (スコアプロパティ)
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "MATK"
+	lbl = "${T.MATK}"			//	ツール上での表示名
+	lvcurve = true
+	
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = SCALAR
+	range = (0,9999)
+	defval = 100
+};
+
+//	MDEF : 魔法防御力 (スコアプロパティ)
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "MDEF"
+	lbl = "${T.MDEF}"			//	ツール上での表示名
+	lvcurve = true
+	
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = SCALAR
+	range = (0,9999)
+	defval = 100
+};
+
+//	AGI : 素早さ (スコアプロパティ)
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "AGI"
+	lbl = "${T.AGI}"			//	ツール上での表示名
+	lvcurve = true
+	
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = SCALAR
+	range = (0,9999)
+	defval = 100
+};
+
+//	EDR[16] : 属性防御率 (スコアプロパティ)。0が基準で+-999まで。
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "EDR"
+	lbl = "${T.EDR}"			//	ツール上での表示名
+
+	//	プロパティ定義。編集可能なプロパティではない。オプションで変更。
+	type = NOEDITOR
+	skipdefset = true	//	setDefaultPropertiesで値をセットしない
+	defval = array( 16, 0)		//	設定時にcloneすること！
+};
+
+//	CDR[16] : 状態防御率 (スコアプロパティ)。0が基準で+-999まで。
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "CDR"
+	lbl = "${T.MAXHP}"
+
+	type = NOEDITOR
+	skipdefset = true
+	defval = array( 16, 0)		//	設定時にcloneすること！
+};
+
+//	PHIT : 命中率 (スコアプロパティ)。0.0~100.0
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "PHIT"
+	lbl = "${T.PHIT}"
+
+	type = NOEDITOR
+	skipdefset = true
+	defval = 100.0
+};
+
+//	PEVA : 回避率 (スコアプロパティ)。0.0~100.0
+//	※実際は回避側命中率。回避率は1.0-PEVA
+//
+playerprops .. {
+	proptype = "score"
+	pid = "PEVA"
+	lbl = "${T.PEVA}"
+
+	type = NOEDITOR
+	skipdefset = true
+	defval = 0.0
+};
+
+//	MHIT : 魔法命中率 (スコアプロパティ)。0.0~100.0+
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "MHIT"
+	lbl = "${T.MHIT}"
+
+	type = NOEDITOR
+	skipdefset = true
+	defval = 100.0
+};
+
+//	MEVA : 魔法回避率 (スコアプロパティ)。0.0~100.0+
+//	※実際は回避側命中率。回避率は1.0-MEVA
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "MEVA"
+	lbl = "${T.MEVA}"
+
+	type = NOEDITOR
+	skipdefset = true
+	defval = 0.0
+};
+
+//	CRI : クリティカル率 (スコアプロパティ)。0.0~100.0+
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "CRI"
+	lbl = "${T.CRI}"
+
+	type = NOEDITOR
+	skipdefset = true
+	defval = 6.0
+};
+
+//	CEVA : クリティカル回避率 (スコアプロパティ)。0.0~100.0+
+//	※実際は回避側命中率。回避率は1.0-PEVA
+//
+playerprops .. {
+	proptype = "score"
+	pid = "CEVA"
+	lbl = "${T.CEVA}"
+
+	type = NOEDITOR
+	skipdefset = true
+	defval = 0.0
+};
+
+//	TGR : ターゲット選択率 (スコアプロパティ)。0.0~100.0+
+//
+playerprops .. {
+	proptype = "score"
+	pid = "TGR"
+	lbl = "${T.TGR}"
+
+	type = NOEDITOR
+	skipdefset = true
+	defval = 100.0
+};
+
+//	tribebits : 種族ビット。
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "tribebits"
+	lbl = "${T.tribebits}"
+	
+	type = NOEDITOR
+	skipdefset = true
+	defval = 0
+}
+
+//	STL : 盗み力。盗み確率を上げられるような感じ
+//	
+playerprops .. {
+	proptype = "score"
+	pid = "STL"
+	lbl = "盗み力"
+	
+	type = NOEDITOR
+	skipdefset = true
+	defval = 0
+}
+
+
+//	defskillid : デフォルトスキル(スコアプロパティ)。プレイヤーの場合はエディタ入力無し。
+//	
+playerprops .. {
+	proptype = "static"
+	pid = "defskillid"
+	lbl = "$T.lbl_defskill"
+
+	type = NOEDITOR
+	defval = "S003"
+}
+
+//	memo : メモ情報
+//	
+playerprops .. {
+	proptype = "static"
+	pid = "memo"
+	lbl = "$T.lbl_memo"			//	ツール上での表示名。$T使っちゃってるけどゲームでは使用不能。良いか。
+	
+	//	プロパティ定義。lvcurveの編集でも参照
+	type = STRING
+	multiline = 8
+};
+
+local findprop( props, pid){
+	foreach( p in props) if( p.pid == pid) return p;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////
+//	エネミー
+
+//	LV : エネミーのLVは特に使われない (スタティックプロパティ)
+//	
+enemyprops .. {
+	proptype = "static"
+	pid = "LV"
+	lbl = "$T.LV"
+	type = SCALAR
+	range = (1,999)
+	defval = 1
+};
+
+//	プレイヤーの戦闘系のプロパティをエネミーにも追加
+enemyprops .. { ...findprop( playerprops, "MAXHP"), range=(1,999999), };
+
+// enemyprops .. findprop( playerprops, "MAXMP");	//	MP,TPはエネミーにはいらない
+enemyprops .. findprop( playerprops, "PATK");
+enemyprops .. findprop( playerprops, "PDEF");
+enemyprops .. findprop( playerprops, "MATK");
+enemyprops .. findprop( playerprops, "MDEF");
+enemyprops .. findprop( playerprops, "AGI");
+enemyprops .. findprop( playerprops, "EDR");
+enemyprops .. findprop( playerprops, "CDR");
+enemyprops .. findprop( playerprops, "PHIT");
+enemyprops .. findprop( playerprops, "PEVA");
+enemyprops .. findprop( playerprops, "MHIT");
+enemyprops .. findprop( playerprops, "MEVA");
+enemyprops .. { ...findprop( playerprops, "CRI"), defval=0.0};	//	エネミーは基本クリティカルなし
+enemyprops .. findprop( playerprops, "CEVA");
+enemyprops .. findprop( playerprops, "TGR");
+enemyprops .. findprop( playerprops, "tribebits");
+
+enemyprops .. {
+	proptype = "score"
+	pid = "defskillid"
+	lbl = "$T.lbl_defskill"
+
+	type = DATAID
+	datatype = ["skill"]
+	defval = "S003"
+}
+
+//
+enemyprops .. {
+	proptype = "static"
+	pid = "exp"
+	lbl = "$T.EXP"
+	type = SCALAR
+	range = (0, 1000000)
+	defval = 10
+};
+
+enemyprops .. {
+	proptype = "static"
+	pid = "jxp"
+	lbl = "$T.JXP"
+	type = SCALAR
+	range = (0, 1000000)
+	defval = 1
+};
+
+enemyprops .. {
+	proptype = "static"
+	pid = "money"
+	lbl = "$T.money"
+	type = SCALAR
+	range = (0, 1000000)
+	defval = 10
+};
+
+local dropprop = {
+	proptype = "static"
+	pid = "item"
+	lbl = "$T.lbl_dropitem"
+	type = PROPERTYLIST
+	propdef={
+		name="$T.lbl_dropitem", 
+		props = [
+			{ pid="itemid", lbl="$T.lbl_item", type=DATAID, datatype=["item","weapon","armor","store","point"], nullable=true},
+			{ pid="rate", lbl="$T.lbl_item", type=SCALAR, range=[0.0,100.0], q=100},
+			{ pid="issteal", lbl="$T.lbl_issteal", type=BOOL, },
+		],
+		tostring = @( v){
+			if( !v.itemid) return "$T.lbl_notset";
+			return sprintf( "%S %S:%S    %.1f％", v.issteal?"\uf321":"\uf255", v.itemid, ::rpgdata[v.itemid]["name"]||"???", v.rate);
+		}
+	},
+	defval={ itemid=null, rate=50.0, issteal=false},
+}
+
+for( local l = 0;l < 4;l ++){
+	enemyprops .. { ...dropprop, pid="item"..l, lbl="${T.lbl_dropitem}"..l };
+}
+
+
+
+
+enemyprops .. findprop( playerprops, "memo");

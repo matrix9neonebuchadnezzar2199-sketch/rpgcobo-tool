@@ -1,0 +1,438 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorStore : ストア編集
+//	
+//	ストアタイプによって色んなリストを作れる。
+//	0:アイテムショップ			アイテム、武器、防具ショップのストア。
+//	1:スキルグループ			白魔法、黒魔法、忍術などなど
+//	2:ランダム宝箱				色々な条件を入れてランダムに宝をゲット。
+//	---------- 以下後回し
+//	3:ジョブ、スキルショップ	購入時にキャラを指定可能。値段じゃなくてジョブポイントを消費して売るとかも可能。※キャラ指定して購入。
+//	4:クラフトショップ			素材を組み合わせ。アイテム取得フラグが欲しい。
+//	5:クエストセンター			クエストのUIがまだ見えてない。。。
+//	
+//	データは
+//	{ items=[], type=0, name="", icon="", desc="", point="N000" }
+//	
+//	
+local reqfaillist = [
+	{ lbl="$T.reqfail0", val=0, },
+	{ lbl="$T.reqfail1", val=1, },
+	{ lbl="$T.reqfail2", val=2, },
+	{ lbl="$T.reqfail3", val=3, },
+];
+
+local reqsprop = {
+	pid="reqs", lbl="$T.lbl_appearreqs", type=REQUIREMENTS, cnt="cnt6.ui", varbits=4|8|16,
+}
+local reqfailprop = { pid="reqfail", lbl="$T.reqfail", type=LIST, list=reqfaillist,
+	hide=@( pl) (!length( pl.getParam( "reqs")) && !pl.getParam( "needown"))
+}
+
+class DBEditorStore extends EditorViewBase
+{
+	//	ストアの基本パラメータ。基本拡張はできない。が、プラグインでここ拡張することは可能。
+	static baseprops1 = [
+		RPGProperties.nameiconprop,
+		RPGProperties.descprop,
+	];
+	
+	static baseprops2 = [
+		{ pid="type", lbl="$T.storetype", type=LIST, list=@()[
+			{ lbl="$T.storetype0", val=0, }
+			{ lbl="$T.storetype1", val=1, }
+			{ lbl="$T.storetype2", val=2, }
+			{ lbl="$T.storetype3", val=3, }
+		], defval=0 }
+		// { pid="jobflag", lbl="$T.type_jobflag", type=LIST, list=@() [{ lbl="$T.lbl_none", val=-1, }, ...typelist( "jobflag")], defval=-1 }
+	];
+
+	//	タイプごとのプロパティ
+	static typepropdefmap = {
+		[0] = {	//	アイテムショップ。
+			datatype = ["item","weapon","armor"],		//	リストに追加可能なアイテムの種類
+			defval = { dataid="I000", price=null, reqs=null, reqfail=0 }
+			props = [
+				{ pid="dataid", lbl="$T.lbl_item", type=DATAID, datatype=["item","weapon","armor"], refresh=true,
+					set = @( prop, data, val){
+						data.dataid = val;
+						data.price = null;
+					}
+				},
+				{ pid="price", lbl="$T.lbl_price", type=SCALAR, range=(1,99000000), defval=null,
+					get = @( prop, data){
+						if( typeof( data["price"]) == SS_INTEGER) return data.price;
+						return rpgdata[data.dataid]["price"] || 0;
+					},
+					set = @( prop, data, val){
+						data.price <- (rpgdata[data.dataid]["price"]==val) ? null : val;
+					}
+				},
+				reqsprop,
+				reqfailprop,
+			],
+			setview = @( la, v, i, idata){
+				local ds = "\uf25f" .. commanum( i["price"]!=null ? i.price : idata["price"]);
+				if( i["reqs"]) ds = ds .. ("    $T.lbl_require x%d" % length( i.reqs));
+				v.setValue( "desc", ds);
+			},
+		},
+		[1] = {	//	スキルグループ
+			datatype = ["skill"],		//	リストに追加可能なアイテムの種類
+			defval = { dataid="S000", needown=true, reqs=null, reqfail=1 }
+			props = [
+				{ pid="dataid", lbl="$T.lbl_skill", type=DATAID, datatype=["skill"], refresh=true,
+					set = @( prop, data, val){
+						data.dataid = val;
+					}
+				},
+				{ pid="needown", lbl="$T.lbl_needown", type=BOOL, }
+				reqsprop,
+				reqfailprop,
+			],
+			setview = @( la, v, i, idata){
+				local ds = "";
+				if( i["reqs"]) ds = ds .. ("$T.lbl_require x%d" % length( i.reqs));
+				v.setValue( "desc", ds);
+			},
+		},
+		[2] = {	//	ランダム宝箱
+			datatype = ["item","weapon","armor","point"],		//	リストに追加可能なアイテムの種類
+			defval = { dataid="I000", num=1, rate=100, reqs=null }
+			props = [
+				{ pid="dataid", lbl="$T.lbl_item", type=DATAID, datatype=["item","weapon","armor","point"], refresh=true, },
+				{
+					pid = "num"
+					lbl = "$T.lbl_amount"
+					type = SCALAR
+					hide = @( pl){
+						local dataid = pl.getParam( "dataid"), item = RPGData.getData( dataid);
+						return (item["stacknum"]||0)<=1;
+					}
+					range = @( pl){
+						local dataid = pl.getParam( "dataid"), item = RPGData.getData( dataid);
+						return (1,item["stacknum"]||1);
+					}
+				}
+				{ pid="rate", lbl="$T.lbl_rate", type=SCALAR, range=(0,100), q=1, ui="bar"},
+				reqsprop,
+			],
+			setview = @( la, v, i, idata){
+				local sb = (#StringBuffer()).clear();
+				if( (idata["stacknum"]||0)>1) sb .. ("x%S    " % commanum( i.num));
+				sb .. ("%d" % i.rate);
+				if( i["reqs"]) sb .. ("    $T.lbl_require x%d" % length( i.reqs));
+				v.setValue( "desc", string( sb));
+			},
+		},
+		[3] = {	//	選択肢
+			defval = { text="Choice", needown=true, reqs=null, reqfail=1 }
+			props = [
+				{ pid="text", lbl="$T.lbl_text", type=STRING, },
+				reqsprop,
+				reqfailprop,
+			],
+			setview = @( la, v, i, idata){
+				local ds = "";
+				if( i["reqs"]) ds = ds .. ("\t$T.lbl_require x%d" % length( i.reqs));
+				v.setValue( "desc", ds);
+			},
+		},
+	};
+
+	//////////////////////////////////////////////////////////////////////////////////////
+	
+	res = null;				//	Resource : 
+	data = null;			//	R000等のデータのコピー。
+	selitem = null;			//	
+
+	//	view
+	baseproplist1 = null;
+	baseproplist2 = null;
+	itemlist = null;
+	itemproplist = null;	//	ストアタイプで変わる。
+	
+	function init( path){
+		op = OperationStack();
+		baseproplist1 = PropertyListBehavior( findChild( "baseproplist1"), null, "cnt3.ui");
+		baseproplist1.bindProperties( baseprops1);
+		baseproplist1.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist1.ref = this;
+
+		baseproplist2 = PropertyListBehavior( findChild( "baseproplist2"), null, "cnt3.ui");
+		baseproplist2.bindProperties( baseprops2);
+		baseproplist2.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist2.ref = this;
+
+		itemproplist = PropertyListBehavior( findChild( "proplist"));
+		itemproplist.listview.addEventListener( ACTION_EVENT, itempropevent);
+		
+		addEventListener( ACTION_EVENT, actionevent);
+
+		res = ::getResource( path);
+		data = deepclone( res.getContent()) || {};
+		if( !data["items"]) data.items <- [];
+		//	データ補間。存在しないプロパティにデフォルト値を挿入
+		setDefaultProperties( baseprops1, data);
+		setDefaultProperties( baseprops2, data);
+
+		itemlist = ListBehavior( findChild( "itemlist"), data.items);
+		itemlist.multisel = true;
+		itemlist.dndfunc = 3;
+		itemlist.listview.addEventListener( ACTION_EVENT, itemevent);
+		itemlist.listview.addEventListener( ITEM_EVENT, itemevent);
+		itemlist.listview.addEventListener( KEY_EVENT, itemevent);
+		local self = this;
+		itemlist.setviewfunc = @( la, v, i){
+			local propdef = ::DBEditorStore.typepropdefmap[self.data.type];
+			v.setValue( "idx", la.items.indexOf( i));
+			if( i["dataid"]){
+				local idata = ::rpgdata[i.dataid];
+				v.setValue( "dataid", i.dataid);
+				v.setValue( "lbl", (idata["icon"]||"")..(idata["name"]||"???"));
+				propdef.setview( la, v, i, idata);
+			}else{
+				v.setValue( "dataid", "");
+				v.setValue( "lbl", i.text);
+				propdef.setview( la, v, i, null);
+			}
+			v.pickable = false;
+		}
+		//	
+		bindTypeProperties();
+		refresh();
+	}
+
+	function bindTypeProperties(){
+		itemproplist.bindProperties( typepropdefmap[data.type].props);
+	}
+
+	function refresh(){
+		baseproplist1.setParameters( data);
+		baseproplist2.setParameters( data);
+		if( selitem){
+			itemproplist.setParameters( selitem);
+		}
+		itemproplist.listview.setVisible( !!selitem);
+		itemlist.refreshItems();
+	}
+
+	//	
+	function selectItem( v){
+		selitem = v;
+		refresh();
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	//	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			if( prop.pid == "type"){
+				return changeStoreTypeOp( cmd.val);
+			}
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){
+				::setProperty( prop, data, val);
+			}];
+			local undo = [@(){
+				::setProperty( prop, data, oldval);
+			}];
+			submitOp( redo, undo, trk);
+			refresh();
+		}
+	}
+
+	//	ストアタイプの変更を行う。リストのアイテムは全削除。
+	function changeStoreTypeOp( type){
+		local olddata = clone data, oldsel = selitem;
+		local newdata = clone data;
+		newdata.type = type;
+		newdata.items = [];
+		local self = this;
+		local redo = [@(){
+			Table.clear( self.data) ... newdata;
+			self.bindTypeProperties();
+			self.itemlist.setListItems( self.data.items);
+			self.selitem = null;
+		}];
+		local undo = [@(){
+			Table.clear( self.data) ... olddata;
+			self.bindTypeProperties();
+			self.itemlist.setListItems( self.data.items);
+			self.selitem = oldsel;
+		}];
+		submitOp( redo, undo, null);
+		refresh();
+	}
+
+	//	
+	function itempropevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local item = this.selitem;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, item);
+			//	
+			local self = this;
+			local redo = [@(){
+				::setProperty( prop, item, val); if( prop["refresh"]) self.bindTypeProperties();
+			}];
+			local undo = [@(){
+				::setProperty( prop, item, oldval); if( prop["refresh"]) self.bindTypeProperties();
+			}];
+			submitOp( redo, undo, trk);
+			refresh();
+		}
+	}
+
+	function itemevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ITEM_SELECTED:
+			selectItem( cmd);
+			break;
+		case ITEM_REMOVE:
+			deleteSelectedItems();
+			break;
+		case ITEM_SORT:
+		{
+			local li = data.items;
+			local oldli = clone li, newli = ::applyItemSort( clone li, e);
+			local redo = [@(){ li.clear() ... newli; }];
+			local undo = [@(){ li.clear() ... oldli; }];
+			submitOp( redo, undo);
+			itemlist.refreshItems();
+			break;
+		}
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showItemContextMenu( e);
+			}
+			break;
+		}
+	}
+	
+	//	
+	function showItemContextMenu( e){
+		local sels = itemlist.getSelectedItems( true);
+		local cbdata = getClipboard( "storeitem");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="add", lbl="$T.lbl_add", icon="\ue146" },
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d", disable=!sels },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=!sels },
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "add":
+			e.src = null;
+			showAddItem( e);
+			break;
+		case "copy":
+			putClipboard( "storeitem", sels);
+			break;
+		case "paste":
+			local data = this.data;
+			local vals = cbdata;
+			local oldsel = selitem;
+			local self = this;
+			local redo = [@(){ data.items ... vals; self.selectItem( vals[0]); self.itemlist.setSelectedItems( vals); }];
+			local undo = [@(){
+				foreach( v in vals) data.items.removeValue( v);
+				self.selectItem( oldsel);
+				self.itemlist.setSelectedItem( oldsel);
+			}];
+			submitOp( redo, undo);
+			refresh();
+			break;
+		case "delete":
+			deleteSelectedItems();
+			break;
+		}
+	}
+
+	function deleteSelectedItems(){
+		local delli = itemlist.getSelectedItems();
+		local li = data.items;
+		local oldli = clone li, newli = li.filter( @( v) !delli.contains( v));
+		local redo = [@(){ li.clear() ... newli; }];
+		local undo = [@(){ li.clear() ... oldli; }];
+		submitOp( redo, undo);
+		itemlist.refreshItems();
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "additembtn":
+			showAddItem( e);
+			break;
+		}
+	}
+
+	function showAddItem( e){
+		local propdef = typepropdefmap[data.type];
+		local data = this.data;
+		local oldsel = selitem;
+		local self = this;
+		local val;
+		//
+		if( !propdef["datatype"]){
+			val = deepclone( propdef.defval);
+		}else{
+			local ret = DataSelectPopup.run( e, propdef, null);
+			if( ret){
+				val = deepclone( propdef.defval);
+				val.dataid = ret;
+			}
+		}
+		if( val){
+			local redo = [@(){ data.items .. val; self.selectItem( val); self.itemlist.setSelectedItem( val); }];
+			local undo = [@(){ data.items.removeValue( val); self.selectItem( oldsel); self.itemlist.setSelectedItem( oldsel); }];
+			submitOp( redo, undo);
+			refresh();
+		}
+	}
+}

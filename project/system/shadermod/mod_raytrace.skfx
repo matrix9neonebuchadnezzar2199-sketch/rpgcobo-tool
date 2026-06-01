@@ -1,0 +1,73 @@
+/**********************************************************************************
+ *	module : mod_raytrace
+ *	
+ *	
+ **********************************************************************************/
+declare mod_raytrace;
+
+vsfs raytrace
+{
+	//	q : wv ray position
+	//	w : wv ray vector
+	//	@ret : (hit wvp position, tex z value)
+	mediump vec4 raytrace( in mediump vec3 q, in mediump vec3 w, const highp mat4 pmat, const highp isampler2D hiztex, const mediump vec2 hizscale){
+		const int MAX_LEVEL = 6;
+		const mediump float znear = 0.01;
+		const mediump float hit_bias = 1.0005;
+		const mediump float step_bias = 1.01;
+		//	ray setup
+		mediump vec2 texsize = round( 1.0 / hizscale);
+		//	compute wvp start and end point (p0 - p1)
+		if( q.z + w.z < znear){ w *= (znear-q.z) / w.z; } // znear ray clip
+		mediump vec4 p0 = pmat * q, p1 = pmat * (q+w);
+		mediump vec2 ray = (p1.xy/p1.w) - (p0.xy/p0.w), rlen = abs( ray) * texsize;	//	x, y screen ray length
+		mediump float step = 1.0 / max( rlen.x, rlen.y);	//	1step == 1pixel
+		rlen /= min( rlen.x, rlen.y);	//	1.0:shorter, >1.0:longer axis
+		mediump float t = step;
+		int miplv = 0;
+		//
+		while( t < 1.0) {
+			//	calculate wvp screen pos
+			highp vec4 p = mix( p0, p1, t); p /= p.w;
+			//	return if out of screen. *** z doesn't check !!!!
+			if( any( abs( p.xy) > vec2( 1.0))){
+				return vec4( 0.0);
+			}
+			// Fetch the current minimum cell plane height
+			highp vec2 txp = (p.xy*0.5+0.5)*texsize;
+			highp float cell_z = float( texelFetch( hiztex, ivec2( txp), miplv).x) / 16777216.0;	//	+-16777216 => -1.0~1.0
+			// Check if we intersected the cell
+			if( cell_z <= p.z*hit_bias){
+				if( miplv == 0) {
+					return vec4( p, cell_z);	//	hit!!!!
+				}else{
+					// If we hit anything at a higher mipmap, step up to a higher detailed mipmap:
+					--miplv;
+					texsize *= 2.0;
+					step *= 0.5;
+				}
+			} else {
+				// If we hit nothing, move to the "NEXT CELL"
+				mediump vec2 frc = fract( txp);
+				frc = (ray>0.0 ? frc : 1.0-frc) * rlen;
+				mediump s = min( frc.x, frc.y) * step;	//	minimal step to "NEXT CELL"
+				t += s*step_bias;
+				if( miplv < MAX_LEVEL){
+					++miplv;
+					texsize *= 0.5;
+					step *= 2.0;
+				}
+			}
+		}
+		//	step is over
+		return vec4( 0.0);
+	}
+}
+
+vsfs getdepth
+{
+	mediump float getdepth( in mediump vec3 p, const highp isampler2D hiztex, const mediump vec2 texsize){
+		mediump vec2 txp = (p.xy*0.5+0.5)*texsize;
+		return float( texelFetch( hiztex, ivec2( txp), 0).x) / 16777216.0;	//	+-16777216 => -1.0~1.0
+	}
+}

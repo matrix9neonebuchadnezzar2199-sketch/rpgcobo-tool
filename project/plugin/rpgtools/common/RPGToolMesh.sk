@@ -1,0 +1,521 @@
+
+///////////////////////////////////////////////////////////////////
+//	
+//	ブロックのプレビュー表示用ユーティリティ
+//	・フリーブロック
+//	・BlockWorld
+//	・ブロック単位のボリューム
+//	・ペン形状(↑)
+//	・整地用
+//	
+//	
+//	※アセットプレビューのためのBlockWorldメッシュ化はSK3DBlockWorldをそのまま使う！！！！
+//	
+//	
+//	
+
+local srcdir = dirname( callee().getSourceName());
+
+enum PenMode
+{
+	PEN_ERACE,
+	PEN_ATTACH,
+	PEN_PAINT,
+	PEN_BOX,
+	PEN_FILL,
+	PEN_X1,
+	PEN_X2,
+	PEN_X3,
+	PEN_SPOIT,
+	PEN_SELECT,
+	PEN_GIZMO,
+};
+
+import PenMode;
+import BlockFlagID;
+
+::penmodecol <- [
+	0x02ff0000,
+	0x020066bb,
+	0x020000ff,
+	0x020066bb,
+	0x0200ff00,
+	0x02550000,
+	0x02550000,
+	0x02550000,
+	0x0200ee00,
+	0x02ffd900,
+	0x02ffd900,
+];
+
+class RPGToolMesh
+{
+	static function getVoxelMesh( vd, pal=null, center=true){
+		local vmd = VoxelMeshBuilder.createVoxelMeshData( vd, null, 0, 63, center?(vd.w/2,vd.h/2,vd.d/2):null);
+		local pm = vmd.createPolygonMesh( pal || vd["pal"]);
+		return pm;
+	}
+
+	//	フリーブロックをPolygonMeshに変換する。
+	//	※rotが入ってはいけない
+	static function createFreeBlockMesh( fb){
+		//	ボクセルレンダリング。VoxelDataは使いまわした方がメモリにやさしい？
+		local br = fb.br;
+		local vd = VoxelData( br.w*8, br.h*8, br.d*8, true, true);	//	istmp, clr
+		local cv = VoxelCanvas( vd);	//	フルカラー
+		local p = (br.w/2*8, br.h/2*8, br.d/2*8);
+		cv.vm.translate( p[0], p[1], p[2]);
+		if( fb.cls() == "crack") vd.clear( 0x01ff0000);	//	crackタイプは見るために
+		fb.renderVoxels( cv);
+		local vmd = VoxelMeshBuilder.createVoxelMeshData( vd, null, 0, 63, p);
+		vd.dispose();
+		local pm = vmd.createPolygonMesh();
+		pm.pivot = Vector3D( 0.5).scale( -VOX_SCALE*8.0);
+		return pm;
+	}
+	
+	//	主にペン形状をメッシュ化するために使用する。1vox=1blkのサイズ。デカールレンダーパスで描画
+	//	pen : VoxelData8
+	//	mode = 0:イレース, 1:アタッチ, 2:ペイント, 3:ボックス, 4:ドロップ
+	static function createPenMesh( pen, mode=0){
+		local col = ::penmodecol[mode] || 0x02ffffff;
+		if( col != pen.pal[1]){
+			pen.pal[1] = col;
+			pen.pal.updateTexture();
+		}
+		local vmd = VoxelMeshBuilder.createVoxelMeshData( pen, null, 8, 63);	//	flags=8 : 8倍
+		local pm = vmd.createPolygonMesh( pen.pal);
+		local c = pen.pivot;
+		pm.pivot = Vector3D( -c[0]*0.5, -c[1]*0.5+VOX_SCALE, -c[2]*0.5).sub( 0.25);
+		foreach( f in pm.face){
+			local m = f.m;
+			m.alphatest = 1;
+			m.alpharef = 0.5;
+			m.polygonoffset1 = -100;
+			// m.visiblemask = SK_VISIBLE_TRANSPARENT;
+			m.visiblemask = SK_VISIBLE_DECAL;
+			switch( mode){
+			case 0: case 2:
+				// m.depthtest = SK_GREATER; m.cullface = SK_CW;
+				break;
+			case 1: case 3:
+				pm.pivot.y += 0.5;	//	createPenMeshは常にface=0で作られるのでy+0.5固定でOK
+				break;
+			default:
+				// m.polygonoffset1 = -100;
+				break;
+			}
+		}
+		return pm;
+	}
+
+	//	1ブロックの場所を示すメッシュを返す
+	static function createBlockMesh( vs, mode=0){
+		local vd8 = #VoxelData8( 1, 1, 1){ this[0] = 2; };
+		local col = ::penmodecol[mode] || 0x02ffffff;
+		{
+			vd8.pal[2] = col;
+			vd8.pal.updateTexture();
+		}
+		local vmd = VoxelMeshBuilder.createVoxelMeshData( vd8, null, 8, vs);	//	flags=8 : 8倍
+		local pm = vmd.createPolygonMesh( vd8.pal);
+		foreach( f in pm.face){
+			local m = f.m;
+			// m.cullface = 0;
+			// m.alphatest = 1;
+			m.depthtest = SK_ALWAYS;
+			m.visiblemask = SK_VISIBLE_DECAL;
+			// m.polygonoffset1 = -1500;
+		}
+		pm.pivot = Vector3D( -0.25);
+		return pm;
+	}
+
+	//	ボリュームメッシュ。範囲選択とかで使う
+	//	
+	static function createVolumeMesh( bw, bh, bd, mode=PEN_SELECT, vs=63){
+		local prim = ::PrimitiveMeshes;
+		local mb = prim.getMeshBuilder();
+		mb.setMatrix( Matrix.fromTranslate( bw*0.25, bh*0.25, bd*0.25));
+		prim._createBox( bw*0.25, bh*0.25, bd*0.25);
+		prim._createWireBox( bw*0.25, bh*0.25, bd*0.25, 0.01, vs);
+		local pm = mb.toPolygonMesh();
+		mb.clear();
+		local m0 = pm.face[0].m = clone pm.face[0].m, m1 = pm.face[1].m = clone pm.face[1].m;
+		local c = penmodecol[mode]||-1; c = (c<<24)|((c&0xff00)<<8)|((c&0xff0000)>>8);
+		//	m0 : 半透明デカール
+		m0.visiblemask = SK_VISIBLE_DECAL;
+		m0.polygonoffset1 = -90.0;
+		m0.Kd = c|0x40;
+		// m0.alphatest = 1; m0.alpharef = 0.4;
+		m0.blend = SK_MIX;
+		m0.depthmask = 0;
+		//	m1 : 枠線
+		m1.visiblemask = SK_VISIBLE_DECAL;
+		m1.polygonoffset1 = -1300.0;
+		m1.Kd = c|0xff;
+		return pm;
+	}
+
+	//	
+	static function createFaceMesh( bw, bh, bd, mode=PEN_SELECT, vs=63){
+		local prim = ::PrimitiveMeshes;
+		local mb = prim.getMeshBuilder();
+		mb.setMatrix( Matrix.fromTranslate( bw*0.25, bh*0.25, bd*0.25));
+		prim._createWireBox( bw*0.25, bh*0.25, bd*0.25, 0.01, vs);
+		local pm = mb.toPolygonMesh();
+		mb.clear();
+		local c = penmodecol[mode]; c = (c<<24)|((c&0xff00)<<8)|((c&0xff0000)>>8);
+		foreach( f in pm.face){
+			local m = f.m = clone f.m;
+			m.depthtest = SK_ALWAYS;
+			m.visiblemask = SK_VISIBLE_DECAL;
+			m.Kd = c;
+		}
+		return pm;
+	}
+
+	//	プッシュするメッシュを生成
+	//	
+	static function createPushMesh( bw, bh, bd, vs, mode=PEN_ATTACH){
+		local um = #::getPolygonMesh( "/plugin/rpgtools/pm/uparrow.pm");	//	上向き矢印メッシュ
+		local prim = ::PrimitiveMeshes;
+		local mb = prim.getMeshBuilder();
+		mb.setMatrix( Matrix.fromTranslate( bw*0.25, bh*0.25, bd*0.25));
+		prim._createWireBox( bw*0.25, bh*0.25, bd*0.25, 0.01, vs);
+		for( local l = 0;l < 6;l ++){
+			if( vs&(1<<l)){
+				local m = Matrix.fromTranslate( bw*0.25, bh*0.25, bd*0.25).mult34( MapTool.penmat[l]);
+				mb.setMatrix( m);
+				mb.appendPolygonMesh( um);
+			}
+		}
+		local pm = mb.toPolygonMesh();
+		mb.clear();
+		local c = penmodecol[mode]; c = (c<<24)|((c&0xff00)<<8)|((c&0xff0000)>>8);
+		foreach( f in pm.face){
+			local m = f.m;
+			m.depthtest = SK_ALWAYS;
+			m.visiblemask = SK_VISIBLE_DECAL;
+			m.Kd = c;
+		}
+		return pm;
+	}
+
+	//	イベントギズモ用の2Dの枠付きボックス
+	//	
+	static function create2DBorderBoxMesh( bw, bd, mode=PEN_SELECT){
+		local prim = ::PrimitiveMeshes;
+		local mb = prim.getMeshBuilder();
+		mb.setMatrix( Matrix.fromTranslate( 0.02, 0.0, 0.02));
+		prim._createBox( bw*0.25-0.02, 0.0, bd*0.25-0.02);
+		mb.setMatrix( Matrix.fromTranslate( 0.0, 0.0, 0.0));
+		prim._createWireBox( bw*0.25, 0.0, bd*0.25, 0.02, 32);
+		local pm = mb.toPolygonMesh();
+		mb.clear();
+		local m0 = pm.face[0].m = clone pm.face[0].m, m1 = pm.face[1].m = clone m0;
+		local c = penmodecol[mode]; c = (c<<24)|((c&0xff00)<<8)|((c&0xff0000)>>8);
+		//	m0 : 半透明デカール
+		m0.visiblemask = SK_VISIBLE_TRANSPARENT;
+		m0.polygonoffset1 = -90.0;
+		m0.Kd = c|0x7f;
+		m0.blend = SK_MIX;
+		m0.depthmask = 0;
+		m0.cullface = 0;
+		//	m1 : 枠線
+		m1.visiblemask = SK_VISIBLE_TRANSPARENT;
+		m1.polygonoffset1 = -1300.0;
+		m1.Kd = c|0xff;
+		m1.blend = SK_MIX;
+		m1.depthmask = 0;
+		m1.cullface = 0;
+		return pm;
+	}
+
+	//	
+	static function createIconMesh( ic, col, r, path, xz){
+		local v = ::loadSKView( srcdir.."/ui/"..path);
+		v.setValue( "icon", ic);
+		local sp = v.capture(), tex = sp.tex0;
+		local pm = clone PrimitiveMeshes.createPlane( r, -r, xz);
+		local m = pm.face[0].m;
+		m.blend = SK_PMAMIX;
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.Kd = col;
+		m.depthmask = 0;
+		m.cullface = 0;
+		m.tex0 = tex;
+		m.polygonoffset1 = -90.0;
+		return pm;
+	}
+
+	//	conf登録外のブロック／フリーブロックを無理やりメッシュ化する！map_voxエディタ以外では使わないが
+
+	//	テストブロックのメッシュ、コリジョンのメッシュを生成する
+	//	blkconf : ブロックのconf。variations[0]のみがレンダリング。
+	function createTestBlockObject( blkconf){
+		local blkid = 29;
+		local whd = #(4,4,4), fil = null, put = null;
+		switch( blkconf.variations[0].type){
+		case "floor0": case "floor1": case "floor2": case "floor3":
+			whd = #(4,1,4);
+			break;
+		case "carpet":
+			whd = #(6,1,6); fil = #(1,0,1,4,1,4);
+			break;
+		case "fence":
+			whd = #(4,2,4);
+			break;
+		case "water":
+			whd = #(6,4,6); fil = #(1,0,1,4,4,4);
+			break;
+		case "plant":
+			whd = #(3,3,3); fil = #(1,1,1,1,1,1);
+			break;
+		}
+		//	テストブロック登録
+		::Block.registerBlock( blkid, blkconf);
+		//	
+		local bw = BlockWorld( whd[0], whd[1], whd[2]);
+		if( fil){
+			bw.fillBlock( IRect3D( fil), blkid);
+		}else{
+			bw.fillBlock( IRect3D( 0, 0, 0, whd[0], whd[1], whd[2]), blkid);
+		}
+		return createBlockWorldMesh( bw, (whd[0]*4,whd[1]*4,whd[2]*4));
+	}
+
+	//	テストフリーブロックのメッシュ、コリジョンのメッシュを生成する
+	function createTestFreeBlockObject( fblkconf){
+		local fbtype = 1021;
+		local vari = fblkconf.variations[0];
+		local p = 0;
+		local vp = ::VoxelContainer.getGlobal( vari.vp0[0]).findParts( vari.vp0[1]);
+		local whd, fill;
+		switch( vari.type){
+			case "slope":
+			{
+				whd = (6,6,7); p = (6<<20)|(6<<26); break;
+			}
+			case "roof":
+			{
+				whd = (8,6,8); p = (6<<14)|(4<<20)|(6<<26); break;
+			}
+			case "column":
+			{
+				local mid = vp.findChild( "mid")["vd8"];
+				if( vari.ctype==2){
+					local ty = ((mid.h&7)&&(mid.h&7)<=2)?1:0;
+					local tz = ((mid.d&7)&&(mid.d&7)<=2)?1:0;
+					whd = (6, (mid.h+7)/8+ty,(mid.d+7)/8+tz);
+				}else{
+					local tx = ((mid.w&7)&&(mid.w&7)<=2)?1:0;
+					local tz = ((mid.d&7)&&(mid.d&7)<=2)?1:0;
+					whd = ((mid.w+7)/8+tx,6,(mid.d+7)/8+tz);
+				}
+				p = 6<<26;
+				break;
+			}
+			case "crack":
+			{
+				local vr = vp.wholebnd();
+				whd = ((vr.w+7)/8, (vr.h+7)/8, (vr.d+7)/8);
+				fill = 1 ;	//	default blk
+				break;
+			}
+			default:
+			{
+				if( vari["cols"]){
+					whd = (vari.cols.w,vari.cols.h,vari.cols.d);
+				}else{
+					local vr = vp.wholebnd();
+					whd = ((vr.w+7)/8, (vr.h+7)/8, (vr.d+7)/8);
+				}
+				break;
+			}
+		}
+		//	テストブロック登録
+		::FreeBlock.registerFreeBlock( fbtype, fblkconf);
+		//	
+		local bw = BlockWorld( whd[0], whd[1], whd[2]);
+		if( fill){
+			bw.fillBlock( IRect3D( 0, 0, 0, whd[0], whd[1], whd[2]), fill);
+		}
+		bw.placeFreeBlock( fbtype, p, (whd[0]/2,whd[1]/2,whd[2]/2,0), 0);
+		return createBlockWorldMesh( bw, (whd[0]*4,whd[1]*4,whd[2]*4));
+	}
+
+	//	どちらか
+	function createTestXBlockObject( xblkconf){
+		if( "catg" in xblkconf.variations[0]){
+			return createTestFreeBlockObject( xblkconf);
+		}else{
+			return createTestBlockObject( xblkconf);
+		}
+	}
+
+	//	表示メッシュとコリジョンメッシュを生成してSK3DObject化
+	function createBlockWorldMesh( bw, orgpos){
+		local br = IRect3D( 0, 0, 0, bw.w, bw.h+1, bw.d);	//	草とかは上に飛び出す
+		// local vd = #VoxelData( br.w*8, br.h*8, br.d*8);
+		local req = { bw:bw, br:br, id:1, vs:63, orgpos:orgpos };
+		local vmd = BlockRenderer.createVoxelMeshDatas( [req])[1];
+		local pm = vmd.createPolygonMesh();		//	ボクセルは32bitで作られる
+		local sk = SK3DObject();
+		sk.setSource( pm);
+		local b = pm.bnd;
+		// printf( "===================== %S %S %S %S %S %S\n", b.x,b.y,b.z,b.r,b.s,b.t);
+		// sk.setPivot( Transform( -b.x, -b.y, -b.z));
+		//	コリジョンメッシュ
+		local mb = PolygonMeshBuilder();
+		local m = Material();
+		m.tec = skFXFindTechnique( "decal.cols");
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.depthtest = SK_ALWAYS;
+		m.depthmask = false;
+		m.blend = SK_MIX;
+		m.Kd = 0xffffffcc;
+		//
+		local scollist = #[(128, 0xff0033ff),(16, 0xffff9966),(0, 0xffffffff),];
+		local bci = BlockColiderInterface( bw);
+		bci.setFlagMask( BLK_SOLID|BLK_PLANT|BLK_BARRIOR|BLK_SOLIDFB|BLK_DIGCLOSE);
+		local cr = br.toRect3D() * 0.5;
+		mb.setMatrix( Matrix.fromTranslate( -orgpos[0]*VOX_SCALE, -orgpos[1]*VOX_SCALE, -orgpos[2]*VOX_SCALE))
+		mb.setMaterial( m);
+		mb.appendConcaveInterface( bci, cr, SK_LINES, scollist);
+		local colpm = mb.toPolygonMesh();
+		local colsk = SK3DObject( colpm);
+		colsk.name = "col";
+		sk.addChild( colsk);
+		colsk.visible = false;		//	基本は非表示で。。。。
+		return sk;
+	}
+
+	function _makegridtex( w){
+		local img = RGBAImage( w, w, 0x00ffffff);
+		for( local l = 0; l < w; l ++){
+			img[l] = 0xffffffff;
+			img[l*w] = 0xffffffff;
+			img[w*(w-1)+l] = 0xffffffff;
+			img[w-1+l*w] = 0xffffffff;
+		}
+		local tex = Texture(); tex.load( img, 128);	//	128=mipmap on!
+		tex.generateMipmap();
+		tex.setSamplerState( #SamplerState( SK_WRAP, SK_WRAP, SK_LINEAR_MIP_LINEAR, SK_LINEAR_MIP_LINEAR));
+		return tex;
+	}
+	
+	function createBoundsGridMesh( bw, bh, bd){
+		local tex = #_makegridtex( 128);
+		//
+		local prim = ::PrimitiveMeshes;
+		local mb = prim.getMeshBuilder();
+		mb.setMatrix( Matrix.fromTranslate( bw*0.25, bh*0.25, bd*0.25));
+		prim._createBox( bw*0.25+0.001, bh*0.25+0.001, bd*0.25+0.001);
+		local pm = mb.toPolygonMesh();
+		mb.clear();
+		local m = Material();
+		m.tex0 = tex;
+		m.tec = skFXFindTechnique( "decal.grid3d");
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.cullface = SK_CW;
+		m.depthmask = false;
+		m.uvmat = Matrix().scale( bw, bh, bd);
+		m.Kd = 0x000055ff;
+		m.blend = SK_MIX;
+		pm.face[0].m = m;
+		return pm;
+	}
+}
+
+
+//	指定したサイズの画像プレビューを作成。何回も使いまわす。
+//	
+class BlockImagePreview
+{
+	scn = null;
+	renderer = null;
+	
+	//	プレビュー作成
+	w = 64;
+	h = 64;
+	+hpb = Vector3D( 30*Math.DTOR, 30*Math.DTOR);
+	fovy = 30.0;
+	znear = 0.1;
+	zfar = 100.0;
+
+	constructor( _w, _h, _hpb=null){
+		w = _w; h = _h;
+		if( _hpb) hpb << _hpb;
+		scn = SK3DScene();
+		renderer = SK3DRenderer( scn);
+		renderer.setEnvironment( ::RenderSettings.getEnvironment( "pbr_fw"));
+		renderer.bgpass.setColor( 0);
+		local cam = renderer.camera;
+		cam.viewmat.identity().rotate( hpb)
+	}
+
+	function fitCamera( gbnd){
+		local cam = renderer.camera;
+		local dz = 0.0, asp = 1.0*w/h;
+		local tr = Rect3D( gbnd).transform( cam.viewmat);
+		local s = Math.max( tr.s, tr.r/asp);
+		local ts = 1.0 + tr.t / s * Math.tan( fovy*0.5*Math.DTOR);
+		local zoom = s * 2.0 * ts;
+		if( fovy > 0.0){
+			dz = -(zoom*0.5) / Math.tan( fovy*0.5*Math.DTOR);	//	fovy=0の時dzは無限
+			cam.perspective( fovy, asp, znear, zfar);
+		}else{
+			local sy = zoom*0.5, sx = sy * asp;
+			cam.ortho( -sx, sx, -sy, sy, -zfar, zfar);
+		}
+		cam.viewmat.identity().translate( gbnd.x, gbnd.y, gbnd.z).rotate( hpb).translate( 0.0, 0.0, dz).invert34u( cam.viewmat);	//	toは常に原点
+		cam.viewmat.lscale( 1.0, 1.0, -1.0);
+		cam.updatePlanes();
+	}
+
+	//	フリーブロック用のプレビュー画像を生成する
+	function getFreeBlockImage( fb){
+		//	メッシュ生成して原点に配置
+		local pm = RPGToolMesh.createFreeBlockMesh( fb);
+		local sk = SK3DObject();
+		sk.setSource( pm);
+		return createImage( sk);
+	}
+
+	function getVoxelDataImage( vd, pal=null){
+		local vmd = VoxelMeshBuilder.createVoxelMeshData( vd, null, 0, 63);
+		local pm = vmd.createPolygonMesh( pal || vd["pal"]);
+		local sk = SK3DObject();
+		sk.setSource( pm);
+		sk.setPivot( Transform( -pm.bnd.r, -pm.bnd.s, -pm.bnd.t));
+		return createImage( sk);
+	}
+
+	function getBlockWorldImage( bw){
+		local bw3d = SK3DBlockWorld( bw);
+		bw3d.setPivot( Vector3D( -bw.w*0.25, 0, -bw.d*0.25));
+		bw3d.matdirty = true;
+		bw3d.updateMatrix( true);
+		bw3d.generateAllMesh();
+		//
+		return createImage( bw3d);
+	}
+	
+	function createImage( sk){
+		scn.addObject( sk);
+		sk.runMatrix( true);
+		scn.updateScene( 16);
+		//	 カメラ位置調整
+		fitCamera( sk.gbnd);
+		//	レンダリング実行
+		local dst = Texture(); dst.create( w, h, SK_RGBA8, 0);
+		local old = skSetRenderTarget( dst);
+		local a = (0, 0, w, h);
+		renderer.render( a);
+		skSetRenderTarget( old);
+		//	終了処理
+		scn.removeObject( sk);
+		return dst;
+	}
+}

@@ -1,0 +1,6 @@
+
+runsk( "UIOP.sk")
+runsk( "UICanvasTool.sk");
+runsk( "UICanvas.sk");
+runsk( "UIRightPanel.sk");
+runsk( "UIEditor.sk");

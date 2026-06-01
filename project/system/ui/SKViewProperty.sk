@@ -1,0 +1,302 @@
+
+enum PropertyType
+{
+	HEADER				= -1
+	NOEDITOR			= 0
+	//	common property type
+	SCALAR				= 1
+	VEC2				= 2
+	VEC3				= 3
+	STRING				= 4
+	BOOL				= 5
+	LIST				= 6
+	RGB					= 7
+	RGBA				= 8
+	PATH				= 9
+	VALUELIST			= 10		//	LISTと同じくリストだが{ lbl="X", val="abccc"}のようにvalを指定するリスト
+	LANGSTRING			= 11		//	マルチ言語string
+	SCALARBAR			= 12		//	SCALARと同じ数値だがバーで調整できる
+	CHECKBITS			= 13		
+	PROPERTYLIST		= 14		//	プロパティ一覧を内包する
+	SCRIPT				= 15		
+	CUSTOMBUTTON		= 16		//	
+	BOOL1				= 17		//	省スペースBOOL
+
+	//	special property type
+	TEXTSTYLE			= 100
+	STRETCH				= 101
+	ROT1				= 102
+	ALIGN_STRETCH		= 103
+	VEC2_PIVOT			= 104
+	PATHLIST			= 105
+	CAMERA				= 106
+	SOUNDID				= 107
+
+	//	not for SKView
+	SCALAR_RND			= 200
+	VEC3_RND			= 201
+	BIT8				= 202
+	FILEPATH			= 203
+}
+
+enum SKViewPropertyID
+{
+//
+//	COMPONENT BASE ID RANGE = 1000-1099
+	POSITION			= 1001
+	SCALE				= 1002
+	ROTATION			= 1003
+	VISIBLE				= 1004
+	ENABLED				= 1005
+	SIZE				= 1006		//	 bnd.w  bnd.h
+	PIVOT				= 1007		//	-bnd.x -bnd.y
+	BUFFER				= 1009
+	BUFFERCOLOR			= 1010
+	METADATA			= 1011
+	STRETCHALIGN		= 1012
+	TIPS				= 1013
+	ENABLED_STATIC		= 1014
+	ACTIONMAP			= 1015		//	NO EDITOR
+	
+//
+//	IMAGE FIGURE ID RANGE = 1100-1199
+	IMAGE				= 1100
+	IMAGECOLOR			= 1101
+	IMAGEBLEND			= 1102
+	IMAGEALIGN			= 1103
+	IMAGESTRETCH		= 1104
+	IMAGEDATA			= 1105
+	//	multi image view
+	IMAGELIST			= 1110
+	IMAGEFRAME			= 1111
+	//	border
+	BORDERWIDTH			= 1120
+
+//
+//	LABEL/TEXTFIELD ID RANGE = 1200-1299
+	LABEL				= 1200
+	FONT				= 1201
+	TEXTCOLOR			= 1202
+	TEXTALIGN			= 1203
+	WRAPTEXT			= 1204
+	MAXCHARS			= 1205
+	EDITABLE			= 1206
+	SPRITESHEET			= 1207
+	TEXTADVANCE			= 1208
+	PATHFORMAT			= 1209
+	AUTOFITWEIGHT		= 1211
+	TEXTCLIP			= 1212
+	USETEMPLATE			= 1213
+	
+//
+//	GROUP 1400-1499
+	SYNC_ANIMATION		= 1400;
+
+//	SCALESTRETCH 1410-1419
+	SCALEWEIGHT			= 1410;
+
+//
+//	SK3DVIEW 1500-1599
+	SDPATH				= 1500;
+	CAMERANAME			= 1501;
+	CAMERADATA			= 1503;
+	BGCOLOR				= 1504;
+	CLEARBG				= 1505;
+	DUMMYMODEL			= 1506;
+	
+//
+//	GPUIBUTTON 1600-1649
+	BUTTONTYPE			= 1600;
+	BUTTONANIMETYPE		= 1601;
+	PUSHSOUND			= 1602;
+	CURSMOVABLE			= 1603;
+	TOGGLABLE			= 1604;
+	
+//
+//	GPUILISTVIEW 1650-1679
+	ROWPATH				= 1650;
+	BARPATH				= 1651;
+	ORIENT				= 1652;
+	BORDERCOLOR			= 1653;
+	ENVPATH				= 1654;
+	INSET				= 1655;
+	LISTALIGN			= 1656;
+	ROWSTRETCH			= 1657;
+	PREVIEROWWNUM		= 1658;
+	LOOPCURS			= 1659;
+
+//	
+//	GPUITEXTEDIT
+	TEXTEDIT_ANIMETYPE	= 1670;
+	TEXTEDIT_INPUTTYPE	= 1671;
+	TEXTEDIT_REVERTTEXT	= 1672;
+	TEXTEDIT_FOCUSTYPE	= 1673;
+
+//
+//
+	SIZE_STATIC			= 2000;		//	 bnd.w  bnd.h
+	PIVOT_STATIC		= 2001;		//	-bnd.x -bnd.y
+	SIZE_CHANGEABLE		= 2002;
+	EXPORTS				= 2003;		//	string
+
+//	editor use
+	EDITOR_BGCOLOR		= 3000;
+	EDITOR_GRID			= 3001;
+}
+
+import PropertyType;
+import SKViewPropertyID;
+
+//
+//	LIST/
+
+class SKProperties
+{
+	props = null;
+
+	constructor(){
+		props = {};
+	}
+
+	function _get( pid){
+		if( !(pid in props)){
+			foreach( p in props){
+				printf("%S ",p.pid);
+			}
+			printf("\n");
+			throw Exception("prop id " .. pid .. " not found");
+		}
+		return props[pid];
+	}
+
+	function _concat( p){
+		if( p.pid in props){
+			throw Exception("duplicate PARAMETER ID : "+p.pid);
+		}
+		props[p.pid] <- p;
+	}
+};
+
+local blendlist = ["0:OFF","1:MIX","2:PMAMIX","3:ADD","4:MULT","5:MIXADD", "6:MASKMIX", "7:MASKALPHA"];
+local wraplist = ["0:OFF","1:ON","2:ON(-)","3:OFF(FIT)","4:MANUAL ON"];
+local alignlist = ["0:←↑・","1:・↑・","2:・↑→","3:←・・","4:・〇・","5:・・→","6:←↓・","7:・↓・","8:・↓→","9:・↑・(LINE)","10:・〇・(LINE)","11:・↓・(LINE)"];
+local alignlist2 = ["0:←↑・","1:・↑・","2:・↑→","3:←・・","4:・〇・","5:・・→","6:←↓・","7:・↓・","8:・↓→","9:伸縮","10:内包","11:覆う","12:スケールダウン","13:タイリング"];
+local alignlist3 = ["0:↑","1:〇","2:↓"];
+local buflist = ["0:OFF","1:ON","2:ON(+Z)"];
+local inputtypelist = ["0:通常","1:パスワード","2:メール","3:数値","4:電話番号","5:検索","6:チャット"];
+local resizetype = ["0:OFF","1:ON","2:ON+Anime"]
+
+::SKVP <- SKProperties();
+::SKVP .. { pid=POSITION,		lbl="$T.lbl_position",		type=VEC2,		range=(-4096,4096), anime=2 };
+::SKVP .. { pid=SCALE,			lbl="$T.lbl_scale",			type=VEC2,		range=(-1000,1000), q=1, anime=2 };
+::SKVP .. { pid=ROTATION,		lbl="$T.lbl_rotation",		type=SCALAR,	range=(-720,720), q=1, anime=2 };
+::SKVP .. { pid=VISIBLE,			lbl="$T.lbl_visible",			type=BOOL,		anime=1 };
+::SKVP .. { pid=ENABLED,			lbl="$T.lbl_enable",			type=LIST,		anime=1, list=["$T.lbl_disabled","$T.lbl_enabled","$T.lbl_notap"]};
+::SKVP .. { pid=ENABLED_STATIC,		lbl="$T.lbl_enable",			type=LIST,		list=["$T.lbl_disabled","$T.lbl_enabled","$T.lbl_notap"]};
+::SKVP .. { pid=SIZE,			lbl="$T.lbl_size",			type=VEC2,		range=(1,2048), anime=2};
+::SKVP .. { pid=PIVOT,			lbl="$T.lbl_pivot",			type=VEC2_PIVOT,	range=(-2048,2048), anime=2};
+::SKVP .. { pid=BUFFER,			lbl="$T.lbl_buffer",			type=LIST,		list=buflist};
+::SKVP .. { pid=BUFFERCOLOR,		lbl="$T.lbl_bufcolor",		type=RGBA,		anime=2, hide=@( pl) !pl.getParam( BUFFER)};
+
+::SKVP .. { pid=IMAGE,			lbl="$T.lbl_imgpath",			type=PATH,		};
+::SKVP .. { pid=IMAGECOLOR,		lbl="$T.lbl_imgcolor",		type=RGBA,		anime=2};
+::SKVP .. { pid=IMAGEBLEND,		lbl="$T.lbl_blend",			type=LIST,		list=blendlist};
+::SKVP .. { pid=IMAGEALIGN,		lbl="$T.lbl_imglayout",		type=LIST,		list=alignlist2};
+::SKVP .. { pid=IMAGESTRETCH,	lbl="$T.lbl_stretch",			type=STRETCH,};
+::SKVP .. { pid=IMAGEDATA,			lbl="Image Data",			type=NOEDITOR,		};		//	
+
+::SKVP .. { pid=IMAGELIST,		lbl="$T.lbl_imgpath",			type=PATHLIST,	};
+::SKVP .. { pid=IMAGEFRAME,		lbl="$T.lbl_imgframe",		type=SCALAR,	range=(0,16), anime=2, defval=0.0, q=10};
+
+::SKVP .. { pid=BORDERWIDTH,		lbl="ボーダー幅",		type=SCALAR,	range=(1,16), anime=2};
+
+::SKVP .. { pid=LABEL,			lbl="$T.lbl_text",			type=STRING,	};
+::SKVP .. { pid=FONT,			lbl="$T.lbl_font",			type=TEXTSTYLE,		};
+::SKVP .. { pid=TEXTCOLOR,		lbl="$T.lbl_fontcolor",		type=RGBA,		anime=2};
+::SKVP .. { pid=TEXTALIGN,		lbl="$T.lbl_textalign",		type=LIST,		list=alignlist};
+::SKVP .. { pid=WRAPTEXT,		lbl="$T.lbl_textwrap",		type=LIST,		list=wraplist};
+::SKVP .. { pid=MAXCHARS,		lbl="$T.lbl_maxchars",		type=SCALAR,		range=(0,1024) };
+::SKVP .. { pid=EDITABLE,		lbl="編集可能",		type=BOOL,		};
+::SKVP .. { pid=SPRITESHEET,		lbl="シートパス",		type=PATH,		};
+::SKVP .. { pid=TEXTADVANCE,		lbl="文字間の幅",		type=SCALAR,		range=(-16,16)};
+::SKVP .. { pid=PATHFORMAT,		lbl="パス形式",		type=STRING,	};
+::SKVP .. { pid=AUTOFITWEIGHT,	lbl="$T.lbl_fitgap",			type=SCALAR,	range=(0,1), defval=0.3, q=10};
+::SKVP .. { pid=TEXTCLIP,		lbl="$T.lbl_textclip",		type=BOOL,		};
+::SKVP .. { pid=USETEMPLATE,		lbl="$T.lbl_usetemplate",		type=BOOL,		};
+
+::SKVP .. { pid=SYNC_ANIMATION,	lbl="$T.lbl_syncanime",		type=BOOL,		};
+::SKVP .. { pid=SCALEWEIGHT,		lbl="$T.lbl_scalerate",		type=SCALAR,	range=(0,1), defval=0.5, q=10};
+
+::SKVP .. { pid=METADATA,		lbl="$T.lbl_meatdata",			type=STRING, multiline=true };
+::SKVP .. { pid=STRETCHALIGN,	lbl="$T.lbl_align",			type=ALIGN_STRETCH};
+::SKVP .. { pid=TIPS,			lbl="$T.lbl_tips",			type=STRING, };
+
+::SKVP .. { pid=SDPATH	,		lbl="sdパス",			type=PATH,	};
+::SKVP .. { pid=CAMERANAME,		lbl="カメラ名",			type=STRING,	};
+::SKVP .. { pid=CAMERADATA,		lbl="$T.lbl_camera",		type=CAMERA, cnt="cnt7.ui", anime=2};
+::SKVP .. { pid=CLEARBG,			lbl="BGをクリア",			type=BOOL,	};
+::SKVP .. { pid=BGCOLOR,			lbl="$T.lbl_bgcolor",			type=RGBA};
+
+::SKVP .. { pid=BUTTONTYPE,		lbl="$T.lbl_btntype",			type=LIST,	list=["0:TAP","1:PUSH","2:PRESS","3:REPEAT","4:ITEM"] };
+::SKVP .. { pid=BUTTONANIMETYPE,	lbl="$T.lbl_animetype",		type=LIST,	list=[{lbl="3:ACTION",val=3},{lbl="4:ANIME",val=4}] };
+::SKVP .. { pid=PUSHSOUND,		lbl="$T.lbl_btnsnd",			type=STRING, };
+::SKVP .. { pid=CURSMOVABLE,		lbl="$T.lbl_cursmovable",		type=BOOL,	};
+::SKVP .. { pid=TOGGLABLE,		lbl="$T.lbl_togglable",		type=BOOL,	};
+
+::SKVP .. { pid=ROWPATH,			lbl="$T.lbl_rowui",			type=PATH,	};
+::SKVP .. { pid=BARPATH,			lbl="$T.lbl_barui",			type=PATH,	};
+::SKVP .. { pid=ENVPATH,			lbl="$T.lbl_envui",			type=PATH,	};
+::SKVP .. { pid=ORIENT,			lbl="$T.lbl_horizonal",		type=BOOL,	};
+::SKVP .. { pid=BORDERCOLOR,		lbl="$T.lbl_bordercol",		type=RGBA,	};
+::SKVP .. { pid=INSET,			lbl="$T.lbl_inset",		type=VEC2,	range=(0,64)  };
+::SKVP .. { pid=LISTALIGN,		lbl="$T.lbl_listalign",		type=LIST,		list=alignlist3};
+::SKVP .. { pid=ROWSTRETCH,		lbl="$T.lbl_rowstretch",	type=LIST,		list=["0:NONE","1:MINIMIZE","2:MAXIMIZE","3:MIN+MAX"]};
+::SKVP .. { pid=LOOPCURS,			lbl="カーソルのループ",			type=LIST,	list=["0:NONE","1:X","2:Y","3:XY"]};
+::SKVP .. { pid=PREVIEROWWNUM,		lbl="プレビュー行数",		type=SCALAR,	range=(1,16) };
+
+::SKVP .. { pid=TEXTEDIT_ANIMETYPE,	lbl="$T.lbl_animetype",		type=LIST,	list=["0:ANIME","1:ACTION"] };
+::SKVP .. { pid=TEXTEDIT_INPUTTYPE,	lbl="$T.lbl_inputtype",		type=LIST,	list=inputtypelist };
+::SKVP .. { pid=TEXTEDIT_REVERTTEXT,	lbl="$T.lbl_reverttext",		type=BOOL,	};
+::SKVP .. { pid=TEXTEDIT_FOCUSTYPE,	lbl="$T.lbl_focustype",		type=LIST,	list=["0:PRESS","1:CLICK","2:DOUBLE CLICK"] };
+
+//	special properties
+
+::SKVP .. { pid=SIZE_STATIC,		lbl="$T.lbl_size",			type=VEC2,		range=(1,4096)};
+::SKVP .. { pid=PIVOT_STATIC,	lbl="$T.lbl_pivot",			type=VEC2,		range=(-4096,4096)};
+::SKVP .. { pid=SIZE_CHANGEABLE,		lbl="$T.lbl_sizing",		type=BOOL,		};
+::SKVP .. { pid=EXPORTS,			lbl="$T.lbl_export",			type=STRING,	};
+
+::SKVP .. { pid=EDITOR_BGCOLOR,	lbl="$T.lbl_bgcolor",			type=RGB};
+::SKVP .. { pid=EDITOR_GRID,		lbl="$T.lbl_gridsize",		type=SCALAR,		range=(1,16)};
+
+
+function getProperty( prop, data, ctx=null){
+	local get = prop["get"];
+	return get ? get( prop, data, ctx) : data[prop.pid];
+}
+
+function setProperty( prop, data, val, ctx=null){
+	local set = prop["set"];
+	return set ? set( prop, data, val, ctx) : data[prop.pid]<-val;
+}
+
+local _setdefprops( props, data, t, ctx){
+	foreach( prop in props){
+		if( typeof( prop) == SS_ARRAY){
+			_setdefprops (prop, data, t, ctx);
+		}else{
+			if( prop["skipdefset"]) continue;
+			local defval = fget( prop, "defval", prop, ctx);
+			if( defval != undefined) setProperty( prop, t, deepclone( defval), ctx);
+		}
+	}
+}
+
+function setDefaultProperties( props, data, ctx=null){
+	local t = {};	//	テンポラリのテーブルにデフォルト値を溜めていってdataに含まれていない値を入れていく
+	_setdefprops( props, data, t, ctx);
+	foreach( i, v in t){
+		if( !(i in data)) data[i] <- v;
+	}
+	return data;
+}

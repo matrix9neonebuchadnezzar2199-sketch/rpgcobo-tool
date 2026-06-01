@@ -1,0 +1,302 @@
+
+import PropertyType;
+
+//	
+//	SK3DRendererに渡す。レンダーパスの一種。pbrのみで有効。というかdeferredのみ対応でも良し。
+//	pbr transパスの後、又は最後のdrawpass前に描画が入る。
+//	weatherはフェードすることができる。targetに対してウェイトを掛けつつ描画。
+/*
+	weather:{
+		type:"rain",
+		spd:2.0,
+		raincol:0xffffffff,
+		angle:0.5,
+	}
+*/
+
+local v_1 = Vector3D(), c_1 = (0,0,0,0), m_1 = Matrix();
+
+local ctov( c, v) v( c>>>24, (c>>16)&255, (c>>8)&255).scale( 1.0/255.0)
+local ctoa( c, a) a.set( (c>>>24)/255.0, ((c>>16)&255)/255.0, ((c>>8)&255)/255.0, (c&255)/255.0)
+
+::SK3DWeathers <- {};
+
+class SK3DWeather
+{
+	static props = null;
+
+	m = null;						//	Material
+	vtx = null;						//	VertexBuffer ... 共通
+	fidx = null;					//	IndexBuffer ... 共通
+	ridx = null;					//	IndexBuffer ... 共通
+
+	duv = null;
+	lastvmat = null;
+
+	+litscale = Vector3D( 1.0);		//	pbrmix時に乗算される。
+
+	static inilit = Vector3D( 1.0);
+
+	constructor(){
+		local _pm = SK3DRenderer.PassRegistory.ImagePassBase._getImageMesh();
+		vtx = _pm.vtx;
+		fidx = _pm.face[0].idx;
+		ridx = _pm.face[1].idx;
+	}
+
+	function setPassSetting( d){
+	}
+
+	//// 以下、実装する場合に定義する
+	
+	//	transパス前の描画。雲、
+	// function performPassA( r, w){
+	// }
+	
+	//	decalパス後の描画。霧、雨、雪、虹、、、ほとんどここ
+	// function performPassB( r, w){
+	// }
+	
+	//	最終描画前に行う。置換変形等をする場合にはこちら。ヒートヘイズ、
+	// function performPassC( r, w, src, dst){
+	// }
+
+	//	jsonデータからSK3DWeatherを生成する。
+	//	
+	function create( ps){
+		local cls = SK3DWeathers[ps.type];
+		local w = cls();
+		w.setPassSetting( ps);
+		return w;
+	}
+
+	function calcUVDelta( cam, sc){
+		if( duv){
+			local dm = lastvmat.invert34( m_1);
+			cam.viewmat.mult34( dm, dm);
+			local dp = v_1( 0.0, 0.0, -cam.focus).transform( dm);
+			lastvmat.set( cam.viewmat);
+			dp.scale( sc);
+			duv[0] += dp.x / cam.aspect;
+			duv[1] -= dp.y;
+		}else{
+			duv = (0,0); 
+			lastvmat = Matrix();
+		}
+		lastvmat.set( cam.viewmat);
+	}
+}
+
+//	雨
+//	time, drop h, drop w, drop angle
+//	ripple num, ripple falloff, ripple dens
+//	raincolor (pbr)
+//	multcolor
+//	darken ... dirlit*0.33, ibldiff*0.5, iblspec*1.5で雨っぽい雰囲気
+//	
+class SK3DWeathers.rain extends SK3DWeather
+{
+	static props = [
+		{ pid="spd", lbl="$T.lbl_speed", type=SCALAR, range=(0.1,8.0), q=10, defval=2.0, ui="bar"},
+		{ pid="raincol", lbl="$T.lbl_color", type=RGBA, defval=0xcce7ffff},
+		{ pid="dropw", lbl="$T.lbl_width", type=SCALAR, range=(0.01,0.1), q=100, defval=0.02, ui="bar"},
+		{ pid="droph", lbl="$T.lbl_height", type=SCALAR, range=(0.01,0.5), q=100, defval=0.08, ui="bar"},
+		{ pid="dropangle", lbl="$T.lbl_angle", type=SCALAR, range=(-0.7,0.7), q=100, defval=0.0, ui="bar"},
+		{ pid="dropdens", lbl="$T.lbl_density", type=SCALAR, range=(1,100), q=1, defval=10, ui="bar"},
+		{ pid="darken", lbl="ライトの調整", type=SCALAR, range=(0,100), q=1, defval=50, ui="bar"},
+		// { pid="mulcol", lbl="$T.lbl_mulcol", type=RGBA, defval=-1},
+	];
+
+	spd = 1.3;
+	dropw = 0.02;
+	droph = 0.08;
+	dropangle = 0.0;
+	dropdens = 10.0;
+	darken = 0.0;
+	raincol = 0xaaccffff;
+
+	static darklit = Vector3D( 0.25, 0.35, 0.8);
+
+	function setPassSetting( d){
+		m = ::SK3DRenderPass.createMaterial( "weather.rain");
+		m.blend = SK_PMAMIX;
+		foreach( i, v in d){
+			if( i in this) this[i] = v;
+		}
+		SK3DWeather.inilit.lerp( darklit, darken*0.01, litscale);
+	}
+	
+	function performPassB( r, w){
+		local lip = r.mainpass.litprepass;	//	プレパスのライト情報が必要
+		calcUVDelta( r.camera, 0.8);
+		local c = ctov( raincol, v_1);
+		m.miscmat0.set(
+			r.env.timer0 * spd, dropw*dropdens*0.05, droph*0.5, dropangle,
+			dropdens, 0.0, 0.0, 0.0,
+			c.x, c.y, c.z, 1.0,
+			duv[0], 0.0, 0.0, 0.0
+		);
+		local idx = r.currenttarget?ridx:fidx;
+		skBindVertexBuffer( vtx);
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+
+//	霧、砂嵐とかも
+//	
+//	砂嵐: { spd:[0.85,0.1], dens:48, scale:60, modif:96, mistcol:#CBC78Fff
+//	
+class SK3DWeathers.mist extends SK3DWeather
+{
+	static props = [
+		{ pid="spd", lbl="$T.lbl_speed", type=VEC2, range=(-2.0,2.0), q=100, defval=[0.22,0.1], ui="bar"},
+		{ pid="dens", lbl="$T.lbl_density", type=SCALAR, range=(1,100), q=1, defval=50, ui="bar"},
+		{ pid="scale", lbl="$T.lbl_scale", type=SCALAR, range=(1,100), q=1, defval=50, ui="bar"},
+		{ pid="xscale", lbl="X $T.lbl_scale", type=SCALAR, range=(0.1,10.0), q=100, defval=3.0, ui="bar"},
+		{ pid="modspd", lbl="$T.lbl_modspd", type=SCALAR, range=(0.0,1.0), q=100, defval=0.1, ui="bar"},
+		{ pid="mistcol", lbl="$T.lbl_color", type=RGBA, defval=0xcce7ffff},
+	];
+
+	spd = [0.3,0.1];
+	mistcol = 0xaaccffff;
+	dens = 30;
+	scale = 50;
+	xscale = 3.0;
+	modspd = 0.1;
+	duv = null;
+	lastvmat = null;
+
+	//	
+	function _createnoise3d( w){
+		local rnd = Random( 146187253);
+		local h=16, ww = w*w*h;
+		local bb = ByteBuffer( ww); bb.size = ww;
+		for( local l = 0;l < ww;l ++){
+			bb[l] = rnd.nexti( 0, 256);
+		}
+		// return bb;
+		local tex = Texture();
+		tex.create3D( w, h, w, SK_R8, 0, bb);
+		return tex;
+	}
+
+	function setPassSetting( d){
+		m = ::SK3DRenderPass.createMaterial( "weather.mist");
+		// m.tex0 = ::getTexture( "/system/asset/cloud.ktx");
+		m.tex1 = _createnoise3d( 128);
+		m.blend = SK_PMAMIX;
+		foreach( i, v in d){
+			if( i in this) this[i] = v;
+		}
+		duv = (0,0);
+		lastvmat = Matrix();
+	}
+	
+	function performPassB( r, w){
+		local lip = r.mainpass.litprepass;	//	プレパスのライト情報が必要
+		local c = ctoa( mistcol, c_1);
+		calcUVDelta( r.camera, 0.006);
+		m.miscmat0.set(
+			r.env.timer0 * spd[0], r.env.timer0 * spd[1], r.env.timer0 * modspd * 5.0, 0.0,
+			dens, scale, xscale, 0.0,
+			c[0], c[1], c[2], c[3],
+			duv[0], duv[1], 0.0, 0.0
+		);
+		local idx = r.currenttarget?ridx:fidx;
+		skBindVertexBuffer( vtx);
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+//	雲影
+//	time, height, windvec.xz			=> time*windvec.xzしておけばいいが
+//	scale, amount, step0, step1
+//	cloudcol.rgb, 1.0
+//	lightDir.xyz, 
+//	
+//	サイズ => 1.0/size=scale
+//	形？
+//	色
+//	濃度
+//	ソフト
+//	移動速度
+//	
+class SK3DWeathers.cloud extends SK3DWeather
+{
+	static props = [
+		{ pid="spd", lbl="$T.lbl_speed", type=VEC2, range=(0.0,1.0), q=100, defval=[0.05,0.05], ui="bar"},
+		{ pid="cloudcol", lbl="$T.lbl_color", type=RGB, defval=0x999999ff},
+		{ pid="scale", lbl="$T.lbl_scale", type=SCALAR, range=(1,1000), q=1, defval=150, ui="bar"},
+		{ pid="dens", lbl="$T.lbl_density", type=SCALAR, range=(0.01,0.99), q=100, defval=0.36, ui="bar"},
+		{ pid="smooth", lbl="$T.lbl_smooth", type=SCALAR, range=(0.00,0.99), q=100, defval=0.09, ui="bar"},
+	];
+
+	spd = [0.3,0.1];
+	cloudcol = 0xccccccff;
+	dens = 0.25;
+	smooth = 0.05;
+	scale = 150;
+
+	function setPassSetting( d){
+		m = ::SK3DRenderPass.createMaterial( "weather.cloud");
+		m.tex0 = ::getTexture( "/system/asset/cloud.ktx");
+		m.blend = SK_MULT;
+		foreach( i, v in d){
+			if( i in this) this[i] = v;
+		}
+	}
+	
+	function performPassA( r, w){
+		local lip = r.mainpass.litprepass;	//	プレパスのライト情報が必要
+		local c = ctov( cloudcol, v_1);
+		local dop = r.mainpass.pbrpostpass["dofblurpass"];
+		local dofsc = dop["enabled"] ? 1.0/dop.ps.dofrange : 0.0;
+		local dofz = r.camera.focus;
+		m.miscmat0.set(
+			r.env.timer0, 100.0, spd[0], spd[1],
+			1.0/scale, 0.0, Math.saturate( dens-smooth), Math.saturate( dens+smooth),
+			c.x, c.y, c.z, 1.0,
+			dofz, dofsc, 0.0, 0.0
+		);
+		local idx = r.currenttarget?ridx:fidx;
+		skBindVertexBuffer( vtx);
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+class SK3DWeathers.snow extends SK3DWeather
+{
+	static props = [
+		{ pid="spd", lbl="$T.lbl_speed", type=SCALAR, range=(0.1,8.0), q=10, defval=2.0, ui="bar"},
+		{ pid="snowcol", lbl="$T.lbl_color", type=RGB, defval=0xffffffff},
+		{ pid="scale", lbl="$T.lbl_scale", type=SCALAR, range=(1,1000), q=1, defval=150, ui="bar"},
+		{ pid="dens", lbl="$T.lbl_density", type=SCALAR, range=(0.01,0.99), q=100, defval=0.36, ui="bar"},
+	];
+
+	spd = 0.5;
+	snowcol = 0xffffffff;
+	dens = 0.25;
+	scale = 150;
+	
+	function setPassSetting( d){
+		m = ::SK3DRenderPass.createMaterial( "weather.snow");
+		m.blend = SK_MIX;
+		foreach( i, v in d){
+			if( i in this) this[i] = v;
+		}
+	}
+	
+	function performPassB( r, w){
+		m.miscmat0.set(
+			r.env.timer0, 0, 0, 0,
+			0,0,0,0,
+			0,0,0,0,
+			0,0,0,0
+		);
+		local idx = r.currenttarget?ridx:fidx;
+		skBindVertexBuffer( vtx);
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+}
+

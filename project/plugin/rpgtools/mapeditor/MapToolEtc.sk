@@ -1,0 +1,618 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import CollisionGroupID;
+import BlockFlagID;
+import BlockPlacementID;
+import FreeBlockCategoryID;
+import PenMode;
+
+////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////
+//	
+//	進入禁止ツール
+//	
+
+class MapTools.tool_barrior extends MapTool
+{
+	penmap = null;
+
+	penid = null;			//	string
+	blkflag = BLK_SOLID | BLK_LIQUID;	//	rayTestで使う
+	x2chk = null;
+
+	mode = 1;
+
+	bmp3d = null;			//	SK3DBarriorMap : バリア表示
+	bmphash = 0;			//	hashが変わるとテクスチャを更新
+	
+	constructor( e){
+		super( e);
+		penmap = getPenmap();
+		penid = "p01";
+		//
+		optionview = ::loadSKView( "/plugin/rpgtools/mapeditor/ui/tool_barrior.ui");
+		optionview.addEventListener( ACTION_EVENT, optionevent);
+		x2chk = optionview.findChild( "x2chk");
+		// x2chk.setSelected( true);
+		//	
+		optionview.findChild( penid).setSelected( true);
+		setMode( 1);
+		bmp3d = SK3DBarriorMap();
+	}
+
+	function setMode( m){
+		optionview.findChild( "mode"..mode)?.setSelected( false);
+		optionview.findChild( "mode"..m).setSelected( true);
+		mode = m;
+		local mm = ["$T.penmode_erace","$T.penmode_paint"];
+		optionview.findChild( "modelbl").setText( mm[m]);
+	}
+
+	function changeActiveTool( t){
+		super.changeActiveTool( t);
+		if( t == this){
+			if( !bmp3d.scn) scn.addObject( bmp3d);
+		}else{
+			scn.removeObject( bmp3d);
+		}
+		refresh();
+	}
+
+	function refresh(){
+		local bmp = editor.bw.bmp;
+		local h = (bmp&&!bmp.empty()) ? bmp.hashcode() : 0;
+		if( h != bmphash){
+			bmp3d.setBitmap( bmp);
+			bmphash = h;
+		}
+	}
+
+	function optionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "mode0": case "mode1": case "mode2": case "mode3": case "mode4":
+			local m = e.src.name[4]-'0';
+			if( m != mode){
+				setMode( m);
+			}
+			break;
+		default:
+			if( e.src["name"] in penmap){
+				local pid = e.src["name"];
+				if( pid != penid){
+					optionview.findChild( penid).setSelected( false);
+					optionview.findChild( pid).setSelected( true);
+					penid = pid;
+				}
+			}
+			break;
+		}
+	}
+
+	function getpens(){
+		return penmap[penid];
+	}
+
+	function rayTestX( e, blkflag){
+		local hb = rayTest( e, blkflag);
+		if( hb["f"] != 0) hb = null;
+		if( hb && x2chk.isSelected()){ hb.bx = (hb.bx)|1; hb.bz = (hb.bz)|1; }
+		return hb;
+	}
+	
+	//	
+	function canvasevent( e){
+		switch( e.id){
+		case MOUSE_MOVED:
+		{
+			local hb = rayTestX( e, blkflag);
+			placePen( hb, getpens()[0], mode ? PEN_PAINT : PEN_ERACE);
+			e.consume();
+			break;
+		}
+		case MOUSE_PRESSED:
+		{
+			local hb = rayTestX( e, blkflag);
+			if( e.isMouseDown( BUTTON1_MASK)){
+				if( hb){
+					e.consume();
+					return barriorStart( e, hb);
+				}
+			}
+			break;
+		}
+		case MOUSE_EXITED:
+		{
+			removeGuide( "pen");
+			e.consume();
+			break;
+		}
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_1: case VK_2: 
+				setMode( e.keycode-VK_1);
+				break;
+			}
+			break;
+		}
+		if( !e.consumed){
+			return super.canvasevent( e);
+		}
+	}
+
+	function barriorStart( e0, hb0){
+		local self = this;
+		local pens = getpens(), pen = pens[hb0.f];
+		local bop = BlockOperation( editor.bw);
+		local x2 = x2chk.isSelected();
+		local mode = mode;
+		//	最初の描画
+		bop.barriorSet({ pen:pen, hb:hb0, mode:mode });
+		bop.submit( editor);
+		refresh();
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				local hb, ny = 0;
+				hb = self.planeTest( e, hb0);
+				if( hb && (e.modifiers&SHIFT_MASK)){
+					self.adjustPlane( hb0, hb);
+				}
+				if( hb){
+					if( hb && x2){ hb.bx = (hb.bx)|1; hb.bz = (hb.bz)|1; }
+					bop.barriorSet({ pen:pen, hb:hb, mode:mode});
+					if( bop.len()){
+						bop.merge( editor);
+						self.refresh();
+					}
+				}
+				self.placePen( hb, pen, PEN_PAINT);
+				break;
+			case MOUSE_MOVED:	//	普通はこれ来ない
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				return null;
+			case KEY_PRESSED:
+				break;
+			}
+			return fn;
+		};
+		return fn;
+	}
+}
+
+class MapTools.tool_barrior.SK3DBarriorMap extends SK3DScreenObject
+{
+	tex0 = null;
+
+	constructor(){
+		m.tec = skFXFindTechnique( "rpgtool.barrior");
+		m.blend = SK_MIX;
+		visible = false;		//	bmpがセットされたらtrueに
+		visible = true;
+		local img = RGBAImage( 4, 4, 0);
+		tex0 = Texture();
+		tex0.load( img);
+		m.tex0 = tex0;
+		m.tex1 = ::getTexture( "/plugin/rpgtools/pm/barrior.png");
+	}
+	
+	function setBitmap( bmp){
+		if( visible=!!bmp){
+			local img = bmp.toRGBAImage( RGBAImage( bmp.w, bmp.h));
+			local tex = Texture();
+			tex.load( img);
+			m.tex0 = tex;
+		}else{
+			m.tex0 = tex0;
+		}
+		visible = true;
+	}
+
+	function render( cam, visiblemask){
+		super.render( cam, visiblemask);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////
+//	
+//	アセット配置ツール
+//	
+
+class MapTools.tool_asset extends MapTool
+{
+	static OPTIONUIPATH = "/plugin/rpgtools/mapeditor/ui/tool_asset.ui";
+
+	blkflag = BLK_SOLID;	//	rayTestで使う
+	drot = 0;				//	カメラの回転に追加される
+	selasset = null;		//	SelectAsset
+
+	aid = null;				//	MA000~
+	abw = null;				//	BlockWorld
+
+	constructor( e){
+		super( e);
+		optionview = ::loadSKView( OPTIONUIPATH);
+		optionview.addEventListener( ACTION_EVENT, optionevent);
+		optionview.findChild( "rot0")?.setSelected( true);
+
+		selasset = SelectAsset( optionview.findChild( "selasset"));
+		selasset.view.addEventListener( ACTION_EVENT, selevent);
+
+		selasset.dnd = 1;
+	}
+
+	function changeActiveTool( t){
+		selasset.setActive( t==this);
+	}
+	
+	//	
+	function refresh(){
+	}
+
+	function optionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "rot0": case "rot1": case "rot2": case "rot3":
+			optionview.findChild( "rot"..drot)?.setSelected( false);
+			drot = e.src.name[3]-'0';
+			e.src.setSelected( true);
+			break;
+		default:
+			break;
+		}
+	}
+	
+	function selevent( e){
+		e.consume();
+		if( e.actioncmd["aid"]){
+			aid = e.actioncmd["aid"];
+			local bb = uncompressZSTD( decodeBASE64( e.actioncmd.bw64, ByteBuffer()));
+			abw = ObjectInput.decode( bb);
+		}
+	}
+
+	//	
+	function dndevent( e){
+		local rot = getCameraRot() + drot;
+		switch( e.id){
+		//	ソート用にドロップイベントを取得。リストスクロールもしっかり対応！
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			e.consume();
+			local hb;
+			hb = rayTest( e, blkflag);
+			if( hb["f"] != 0) hb = null;
+			placeAssetPlace( aid, hb, rot);
+			break;
+		case TARGET_DRAG_EXIT:
+			e.consume();
+			removeGuide( "fb");
+			break;
+		case TARGET_DROP:
+			e.consume();
+			local hb;
+			hb = rayTest( e, blkflag);
+			if( hb){
+				removeGuide( "fb");
+				local fn = MapTools.tool_sel.paste3DStart;
+				editor.canvas.toolfunc = fn( hb, abw, rot);
+			}
+			break;
+		}
+	}
+
+	//	
+	function canvasevent( e){
+		local rot = getCameraRot() + drot;
+		switch( e.id){
+		case MOUSE_MOVED:
+			break;
+		case MOUSE_PRESSED:
+			break;
+		case MOUSE_CLICKED:
+		{
+			if( e.isMouseDown( BUTTON2_MASK)){
+			}
+			break;
+		}
+		case MOUSE_EXITED:
+			break;
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_1: case VK_2: case VK_3: case VK_4: case VK_5: 
+				break;
+			case VK_ESCAPE:
+				if( aid){
+					e.consume();
+					removeGuide( "fb"); selasset.deselect(); aid = null;
+				}
+				break;
+			}
+		}
+		if( !e.consumed){
+			return super.canvasevent( e);
+		}
+	}
+
+	//	MapAssetの配置用のガイドを配置する。
+	//	MapAssetの実体のボクセルと、配置位置のブロック
+	function placeAssetPlace( aid, hb, rot){
+		setHitInfo( hb);
+		if( !aid || !hb) return removeGuide( "fb");
+		local sk3d = guides["fb"];
+		local key = aid;
+		if( !sk3d || sk3d.ref<>key){
+			sk3d?.kill();
+			sk3d = createAssetPlace( aid, hb, rot);
+			addGuide( "fb", sk3d);
+			sk3d.ref = key;
+		}
+		local p = (hb.bx,hb.by+1,hb.bz);
+		sk3d.pos( p).scale( 0.5);//.add( 0.25);
+		sk3d.rot.set( rotquat[rot&3]);
+		sk3d.matdirty = 1;
+	}
+
+	function createAssetPlace( aid, hb, rot){
+		//	
+		local bw3d = SK3DBlockWorld( abw);
+		bw3d.setPivot( Vector3D( -abw.w*0.25, 0, -abw.d*0.25));
+		bw3d.matdirty = true;
+		bw3d.updateMatrix( true);
+		bw3d.generateAllMesh();
+		//	
+		foreach( ch in bw3d.vchunklist){
+			foreach( f in ch.mesh.face){
+				local m = f.m;
+				m.alphatest = 1; m.alpharef = 0.5;
+				m.polygonoffset1 = -30;
+			}
+		}
+		//
+		if( 1){
+			local vm = RPGToolMesh.createFaceMesh( abw.w, abw.h, abw.d, PEN_ATTACH, 32);
+			local vm3d = SK3DObject( vm);
+			vm3d.pos( 0, 0, 0).scale( 0.5);
+			bw3d.addChild( vm3d);
+		}
+		return bw3d;
+	}
+}
+
+
+class MapTools.tool_asset.SelectAsset
+{
+	colcnt = 0;
+	view = null;
+	listview = null;
+	tablist = null;
+	
+	pages = null;		//	[[{blk,name,}],...]
+	selitem = null;		//	pages[selpage][x]
+
+	rev = -1;
+	dnd = 0;
+
+	static function getPreviewTex( bw64, fn){
+		local cache = #{};
+		if( cache[bw64]) return fn( cache[bw64]);
+		//
+		local queue = #[];
+		local qi = queue.indexOf( bw64);
+		if( qi >= 0) queue[qi].list .. fn; else queue .. { bw64:bw64, list:[fn] };
+		//
+		local th = #(null,);
+		local imgpreview = #BlockImagePreview( 128, 128, Vector3D( -30*Math.DTOR, 30*Math.DTOR));
+		if( !th[0]){
+			th[0] = newthread( "AssetImagePreview");
+			local ththread(){
+				while( length( queue)){
+					suspend();
+					local q = delete queue[0];
+					local ret;
+					local bb = uncompressZSTD( decodeBASE64( q.bw64, ByteBuffer()));
+					local bw = ObjectInput.decode( bb);
+					ret = cache[q.bw64] <- imgpreview.getBlockWorldImage( bw);
+					foreach( fn in q.list) fn( ret);
+				}
+				th[0] = null;	//	threadおわり
+			}
+			th[0].start( ththread);
+		}
+	}
+
+	constructor( v){
+		view = v;
+		listview = v.findChild( "LIST");
+		tablist = ListBehavior( v.findChild( "tablist"));
+		tablist.multisel = true;
+		tablist.listview.addEventListener( ITEM_EVENT, tabevent);
+		listview.addEventListener( ACTION_EVENT, actionevent);
+		v.findChild( "selallbtn").addEventListener( ACTION_EVENT, actionevent);
+
+		colcnt = 2;
+		local rowpath = `/plugin/rpgtools/mapeditor/ui/block${colcnt}.ui`;
+		listview.setRowPath( rowpath);
+		listview.setRowCount( 0);
+
+		v.addEventListener( DRAGSOURCE_EVENT, dragevent);
+	}
+
+	function setActive( b){
+		if( b){
+			::skstudio.fileview.refreshDir( "/.x/map_asset");
+			local r = ::getResource( "/.x/map_asset");
+			if( r.rev != rev){
+				rev = r.rev;
+				setupPages();
+			}
+		}
+	}
+
+	//	現在のアセットリストをページに振り分ける。ページはgroups。4つまでが良いところ、、
+	function setupPages(){
+		pages = [];
+		local map_asset = ::conf._resource.map_asset;
+		foreach( pi,g in map_asset._meta.groups){
+			local a = [];
+			foreach( i,v in map_asset){
+				if( i[0]=='_') continue;	//	_meta
+				if( v.group != g.id) continue;
+				a .. {
+					aid = i,
+					name = v["name"]||"noname",
+					bw64 = v.bw64,
+				};
+			}
+			pages .. {
+				idx : pi,
+				id : g.id,
+				lbl : g["name"]||"nani?"..b,
+				list : a,
+			};
+		}
+		tablist.setListItems( pages);
+		tablist.selectAll();
+		setPageBits( (1<<length( pages))-1);
+		selitem = null;
+	}
+
+	function deselect(){
+		if( selitem){
+			findView( selitem)?.setSelected( false);
+			selitem = null;
+		}
+	}
+
+	function findView( i){
+		if( !i) return null;
+		foreach( r in listview.rows){
+			foreach( v in r.children){
+				if( v.ref == i) return v;
+			}
+		}
+	}
+	
+	function setPageBits( pb){
+		findView( selitem)?.setSelected( false);
+		//	
+		local list = [];
+		for( local l = 0;l < 8;l ++){
+			if( pb&(1<<l)){
+				list ... pages[l].list;
+				while( length( list)%colcnt) list .. null;
+			}
+		}
+		local rowcnt = (length( list)+colcnt-1) / colcnt;
+		local n = colcnt * rowcnt;
+		listview.setRowCount( rowcnt);
+		local va = [], prevv;
+		for( local l = 0;l < n;l ++){
+			local r = listview.rows[l/colcnt].findChild( "i"..(l%colcnt));
+			local v = list[l];
+			r.setVisible( !!v);
+			r.dragsource = this;
+			if( v){
+				r.ref = v;
+				va .. r;
+			}
+		}
+		//	プレビューロード
+		foreach( v in va){
+			getPreviewTex( v.ref.bw64, @( tex){ v.findChild( "icon").setSprite( Sprite( tex)); });
+		}
+		findView( selitem)?.setSelected( true);
+	}
+
+	function tabevent( e){
+		if( e.id == ITEM_SELECTIONS){
+			local a = e.actioncmd;
+			local pb = a.reduce( @( v, x) x|(1<<v.idx), 0);
+			setPageBits( pb);
+		}
+	}
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "selallbtn":
+			tablist.selectAll();
+			setPageBits( (1<<length( pages))-1);
+			break;
+		default:
+			local cmd = e.src["ref"];
+			if( cmd["aid"]){
+				if( selitem != cmd){
+					findView( selitem)?.setSelected( false);
+					selitem = cmd;
+					e.src.setSelected( true);
+					view.postActionEvent( cmd);
+				}
+				if( e.isMouseDown( BUTTON2_MASK)){
+					showContextMenu( e, cmd)
+				}
+			}
+			break;
+		}
+		e.consume();
+	}
+
+	function showContextMenu( e, v){
+		local ctxmenu = [
+			{ id="edit", lbl="$T.lbl_edit", icon="\ue745" },
+		];
+		switch( MenuPopup.run( ctxmenu)["id"]){
+		case "edit":
+			::skstudio.openEditor( "/.x/map_asset/" .. v.aid);
+			break;
+		}
+	}
+
+	function dragevent( e){
+		switch( e.id){
+		case SOURCE_DRAG_ENTER:
+		case SOURCE_DRAG_EXIT:
+		case SOURCE_DRAG_OVER:
+			if( dragsp){
+				local tool = ::skstudio.editor.tool;
+				dragsp.visible = !length( tool.guides);	//	なんらかガイドが表示されてたら表示オフ
+			}
+			break;
+		case SOURCE_DROP:
+			break;
+		}
+	}
+
+	//	DragSource
+
+	dragsp = null;
+	
+	//	ドラッグ中描画処理
+	function dndrender( m){
+		skDrawSprite( dragsp, m.mousex, m.mousey);
+	}
+	
+	//	ドラッグ有効チェック
+	//	複数選択のドラッグ表示。。。ウィンドウのバッファをうまく使うとか
+	function acceptDrag( e){
+		if( !(dnd&1)) return false;
+		if( e.modifiers & (SHIFT_MASK|ALT_MASK|CTRL_MASK|BUTTON2_MASK|BUTTON3_MASK)) return false;
+		local src = e.src;
+		e.computeLocal( src.getInvMatrix());
+		//
+		dragsp = src.capture();
+		dragsp.color = 0x99999999;
+		local p0 = Vector3D( 0).transform( src.mat).sub( e.x, e.y, 0.0);
+		dragsp.bnd.x = p0.x;
+		dragsp.bnd.y = p0.y;
+		return true;
+	}
+	
+	//	DropTarget ... nasi
+	
+	function acceptDrop( ds, x, y){
+		return false;
+	}
+}

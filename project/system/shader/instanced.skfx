@@ -1,0 +1,132 @@
+declare instanced;
+
+module mod_transform;
+module mod_material;
+
+param mainpass
+{
+	// attribute highp vec4 in_pos <ID=POSITION>;
+	// attribute mediump vec3 in_n <ID=NORMAL>;
+	attribute lowp vec4 in_col <id=COLOR1>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	//	instance data
+	attribute highp vec4 in_imat1 <id=UV2>;
+	attribute highp vec4 in_imat2 <id=UV3>;
+	attribute highp vec4 in_imat3 <id=UV4>;
+	attribute mediump vec4 in_iuv <id=UV5>;
+	attribute lowp vec4 in_icol <id=COLOR2>;
+	
+	//
+	uniform sampler2D coltex1 <id=COLORTEX1>;
+	uniform sampler2D coltex2 <id=COLORTEX2>;
+	
+	uniform highp mat4 vmat <id=VMAT>;
+	// uniform highp mat4 pmat <id=PMAT>;
+	
+	varying mediump vec4 v_uv;
+	varying lowp vec4 v_col;
+	varying lowp vec4 v_wvn;
+//	varying lowp vec4 v_lit;
+	
+	//	fragment param
+	fragout lowp vec4 fragcolor;
+}
+
+/////// instanced particle decal shader
+
+vs decal
+{
+	void main(){
+		highp mat4 imat = transpose( mat4( in_imat1, in_imat2, in_imat3, vec4( 0.0, 0.0, 0.0, 1.0)) );
+//		highp mat4 imat = mat4( vec4( in_imat1.x, in_imat2.x, in_imat3.x, 0.0), vec4( in_imat1.y, in_imat2.y, in_imat3.y, 0.0), vec4( in_imat1.z, in_imat2.z, in_imat3.z, 0.0), vec4( in_imat1.w, in_imat2.w, in_imat3.w, 1.0));
+		gl_Position = pmat * (vmat * (imat * vec4( in_pos.xyz, 1.0)));
+		$(COLORTEX1 || COLORTEX2){
+			v_uv = in_uv + in_iuv;
+		}
+		v_col = in_icol;
+		$(COLOR1) v_col *= in_col;
+	}
+}
+
+fs decal
+{
+	void main(){
+		lowp vec4 pix;
+		pix = v_col * Kd;
+		$(COLORTEX1) pix *= texture2D( coltex1 , v_uv.xy);
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.zw);
+		$(ALPHATEST) if( pix.w*alpharef < bayer4( gl_FragCoord.xy)) discard;
+		$(COLORMAT) pix = colormat * pix;
+		pix.xyz += Ke;
+		gl_FragColor = pix;
+	}
+}
+
+technique decal
+{
+	apilevel = 30;
+	tag = "3d shading instanced particle";
+	
+	pass {
+		using transform, material, bayer;
+		
+		param = mainpass;
+		vs = decal;
+		fs = decal;
+	}
+}
+
+/////// instanced particle shading shader
+
+vs shading
+{
+	void main(){
+		highp mat4 imat = transpose( mat4( in_imat1, in_imat2, in_imat3, vec4( 0.0, 0.0, 0.0, 1.0)));
+		highp vec4 wvp = vmat * (imat * vec4( in_pos.xyz, 1.0));
+		mediump vec3 n = normalize( mat3( vmat) * (mat3( imat) * in_n));
+		mediump vec4 wvn = v_wvn = towvn( wvp.xyz);
+		gl_Position = pmat * wvp;
+		$(COLORTEX1 || COLORTEX2){ v_uv = in_uv + in_iuv; }
+		
+		lowp vec3 diff = (Ka_offs) * mate[7].x, spec = vec3( 0.0);
+		vslight( mate, wvn, n, diff, spec);
+		fslight( mate, wvn, n, diff, spec);
+	//	v_lit = vec4( diff+spec*0.5, 1.0);
+		
+		v_col = in_icol;
+		$(COLOR1) v_col *= in_col;
+		v_col *= vec4( diff+spec, Kd.w);
+		
+		vsfog( wvn, 1.0);
+	}
+}
+
+
+fs shading
+{
+	void main(){
+		lowp vec4 pix = v_col;
+		$(COLORTEX1) pix *= texture2D( coltex1 , v_uv.xy);
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.zw);
+		$(ALPHATEST) if( pix.w*alpharef < bayer4( gl_FragCoord.xy)) discard;
+		
+		pix.xyz = Ke + pix.xyz;//*v_lit.xyz;
+		fsfog( pix);
+		fragcolor = pix;
+	}
+}
+
+technique shading
+{
+	apilevel = 30;
+	tag = "3d shading instanced particle";
+	
+	pass {
+		using transform, material, fog, bayer;
+		using lighting;
+		
+		param = mainpass;
+		vs = shading;
+		fs = shading;
+	}
+}

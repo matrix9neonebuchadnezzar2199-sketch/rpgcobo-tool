@@ -1,0 +1,803 @@
+import SKViewPropertyID;
+import ModifiersMask;
+import VirtualKeyCode;
+import PropertyType;
+import RPGPropertyType;
+
+local v_1 = Vector3D(), r_1 = Rect3D();
+
+//////////////////////////////////////////////////////////////////////////
+//	
+//	OverlayEffect
+//	RPG3DObjectに付くオーバーレイエフェクト。光系のエフェクトをキャラ本体に被せるように表示する。あまり複雑な表現はできない。
+//	ビュー座標系でUVスクロールする。発動時にカメラに対して右向の場合Uのスクロール方向が反転する。
+//	
+class OverlayEffect
+{
+	static ovfxpropdef = {
+		name = "$T.lbl_ovfx"
+		props = [
+			{ pid="enabled", lbl="$T.lbl_enabled", type=BOOL, defval=false }
+			{ pid="time", lbl="$T.lbl_time", type=SCALAR, range=(1,10000), defval=1000 }
+			{ pid="delay", lbl="$T.lbl_delaytime", type=SCALAR, range=(0,10000), defval=0 }
+			{ pid="tex",  lbl="$T.lbl_texture", type=GRAPHIC, dir="/resource/efx/tex", restype="texture", defval=null }
+			{ pid="scale", lbl="$T.lbl_scale", type=SCALAR, range=(0.1,10.0), q=100, defval=1.0 },	//	rp3d.gbndに対するスケール。1.0だと全身を1週
+			{ pid="uvaxis", lbl="$T.lbl_uvaxis", type=LIST, list=["X","Y"] defval=1 },	//	
+			{ pid="color", lbl="$T.lbl_color", type=3312, defval={color=[0xffffffff, 0x00000080]} },
+			{ pid="uvscr", lbl="$T.lbl_uvscroll", type=3318, defval={ uv = 2, scale=1.0, scroll=[0.0,1.0], }},
+		],
+		tostring = @( v){
+			return v["enabled"] ? "$T.lbl_enabled" : "$T.lbl_disabled";
+		}
+	};
+
+	rp3d = null;				//	RPG3DObject
+	orgpos = null;			//	このエフェクトの発生基準位置。rp3dローカル座標系。
+	data = null;
+
+	+efxmat = Matrix();		//	
+	
+	time = 0.0;				//	
+
+	constructor( r, d){
+		rp3d = r;
+		data = d;
+		orgpos = Vector3D( r.bnd.x, r.bnd.y, r.bnd.z);
+		time = -(d["delay"]||0);
+	}
+
+	function update( dt){
+		time += dt;
+		if( time < 0) return true;
+		local w = time / data.time;
+		if( w >= 1.0) return false;
+		//	color
+		local cols = data.color.color;
+		local ci = w * (length( cols)-1);
+		local c = Math.lerpcolor( cols[ci|0], cols[(ci|0)+1], ci%1.0);
+		//	uv
+		local uvs = data.uvscr, scrs = uvs.scroll;
+		local si = w * (length( scrs)-1);
+		local scr = Math.lerp( scrs[si|0], scrs[(si|0)+1], si%1.0);
+		//	scale, pos
+		local vbnd = r_1.set( rp3d.gbnd).transform( rp3d.scn.maincamera.viewmat);
+		local scale = data.scale * (data.uvaxis ? 0.5/vbnd.s : 0.5/vbnd.r);	//	カメラ変換後のgbndのサイズをスケールに todo:左右反転
+		local wvpos = v_1( orgpos).transform( rp3d.gmat).transform( rp3d.scn.maincamera.viewmat);	//	※これvbnd基準にしたほうが良い
+		//	パラメータ行列に値を設定
+		efxmat.set( 
+			(c>>>24)/255.0, ((c>>>16)&255)/255.0, ((c>>>8)&255)/255.0, (c&255)/255.0, 
+			data.uvaxis, scale, (uvs.uv&1)*scr, (uvs.uv>>1)*scr,
+			wvpos.x, wvpos.y, wvpos.z, 1.0,
+			1,1,1,1
+		);
+		return true;
+	}
+
+	function _whitetex(){
+		local img = RGBAImage( 4, 4); img.clear( 0xffffffff);
+		local tex = Texture(); tex.load( img);
+		return tex;
+	}
+
+	//	このエフェクトをマテリアルに設定する
+	function setToMaterial( m){
+		m.visiblemask |= 8196;
+		m.miscmat3 = efxmat;
+		m.tex3 = ::getTexture( data["tex"]) || #_whitetex();	//	nullの場合は白テクスチャに
+		efxmat.set( 
+			0.0, 0.0, 0.0, 0.0,
+			0, 1.0, 1.0, 1.0,
+			0.0, 0.0, 0.0, 1.0,
+			1,1,1,1
+		);
+	}
+	
+	//	エフェクトをマテリアルから削除する。
+	static function resetToMaterial( m){
+		m.visiblemask &= ~8196;
+		m.miscmat3 = null;
+		m.tex3 = null;
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ScreenEffect
+//	
+//	全画面エフェクト。RPGStageに付く。いくつかのエフェクトは同時につくことが可能。
+//	・揺れ ... カメラのviewmatに影響
+//	・フラッシュ ... decalpassにオブジェクト追加？
+//	・カラー ... drawpassのcolormatに影響。変化速度あり
+//	・ラスター ... drawpass自体を入れ替える。
+//	✕ワイプ ... drawpassのtec又はステージの上に一枚の画像。変化速度あり
+//	　↑ワイプはUIとして配置される。ブラックアウト、ホワイトアウト、サークルワイプ、バトルワイプぐらいかな
+/*
+	エフェクトの追加
+	エフェクトの解除
+	エフェクトの全解除
+
+	"cmd_screen_flash0" = "フラッシュx1"
+	"cmd_screen_flash2" = "フラッシュx2"
+	"cmd_screen_flash2" = "フラッシュx3"
+	
+	"cmd_screen_color0" = "カラー:暗く"
+	"cmd_screen_color1" = "カラー:明るく"
+	"cmd_screen_color2" = "カラー:セピア"
+	"cmd_screen_color3" = "カラー:グレー"
+
+	"cmd_screen_raster0" = "ラスター:ブラー"
+	"cmd_screen_raster1" = "ラスター:ズームブラー"
+	"cmd_screen_raster2" = "ラスター:ワープ"
+	
+	"cmd_screen_quake0" = "画面揺れ:小"
+	"cmd_screen_quake1" = "画面揺れ:大"
+	"cmd_screen_quake1" = "画面揺れ:縦"
+	"cmd_screen_quake2" = "画面揺れ:連続"
+
+	"cmd_screen_quake0" = "画面揺れ:単発"
+	"cmd_screen_quake1" = "画面揺れ:連続"
+*/
+class ScreenEffect
+{
+	static sfxlist = [];
+	static sfxmap = {};
+
+	stage = null;
+
+	//	各サブエフェクト
+	quake = null;
+	flash = null;
+	color = null;
+	raster = null;
+
+	constructor( st){
+		stage = st;
+	}
+
+	function update( dt){
+		if( quake) quake = quake.update( stage, dt);
+		if( color) color = color.update( stage, dt);
+		if( flash) flash = flash.update( stage, dt);
+		if( raster) raster = raster.update( stage, dt);
+	}
+
+	//	コマンドを指定して全画面エフェクトを表示又は削除する
+	function screenEffectOn( cmd){
+		local sfx = sfxmap[cmd.sfxid];
+		if( sfx){
+			local subfx = this[sfx.fid];	//	既にある場合、上書きしていく
+			if( subfx && !(subfx instanceof sfx.cls)){
+				subfx.finish( stage);
+				subfx = null;
+			}
+			if( !subfx){
+				subfx = this[sfx.fid] = sfx.cls();
+			}
+			subfx.start( stage, sfx, cmd);
+		}
+	}
+
+	function screenEffectOff( cmd){
+		//	削除は1:カラー, 2:ラスター, 4:揺れのビッドマスク
+		if( cmd.sfxbits & 1) color?.end( stage, cmd.time);
+		if( cmd.sfxbits & 2) raster?.end( stage, cmd.time);
+		if( cmd.sfxbits & 4) quake?.end( stage, cmd.time);
+	}
+}
+
+//	画面揺れエフェクト。
+//	
+class ScreenEffect.Quake
+{
+	quake = null;		//	CameraQuake
+
+	function start( stage, sfx, cmd){
+		local q = quake = CameraQuake();
+		q.pow = cmd.pow * 0.1;
+		q.freq = float( cmd.freq);
+		q.vert = cmd.vert;
+		local t = cmd.time;
+		if( sfx["oneshot"]){	//	連続以外の画面揺れはこっち
+			q.timeatten = 1.0 / Math.max( t, 1);
+			w = 1.0;
+		}else{
+			if( t > 0){
+				q.timeatten = -1.0 / t;
+				w = 0.0001;
+			}else{
+				q.timeatten = 0.0;
+				w = 1.0;
+			}
+		}
+	}
+
+	function end( stage, time){
+		quake.timeatten = Math.max( quake.timeatten, 1.0 / Math.max( time, 1));
+	}
+
+	function update( stage, dt){
+		if( quake && !stage.scn.getQuake( quake.id)){
+			return finish( stage);
+		}
+		return this;
+	}
+	
+	function finish( stage){
+		quake.w = 1.0;
+		quake.spd = 0.0;
+		quake = null;
+	}
+}
+
+local cfademat = Matrix();		//	カラーフェードのMatrix。フラッシュからも参照される
+
+//	カラーフェードエフェクト。
+//	
+class ScreenEffect.Colorfade
+{
+	//	パラメータ
+	+cmat0 = Matrix();
+	+cmat = Matrix();
+	spd = 1.0;
+
+	//	ステート
+	w = 0.0;
+	del = false;
+
+	function ctoa( c){
+		return ((c>>>24)/255.0, ((c>>>16)&255)/255.0, ((c>>>8)&255)/255.0, (c&255)/255.0, );
+	}
+
+	function start( stage, sfx, cmd){
+		cmat0.set( cmat);	//	現在のcmatを初期に
+		switch( sfx["mode"]){
+		case 0: local c = ctoa( cmd.color); cmat.identity().scale( c[0], c[1], c[2]); break;
+		case 1: break;
+		case 2: cmat.set( sfx.cmat); break;
+		case 3: break;
+		}
+		del = false;
+		local dpass = stage.view3d.renderer.mainpass.drawpass;	//	pbr_dfならある
+		dpass.setColorMatrix( cfademat);
+		if( cmd.time > 0){
+			spd = 1.0 / cmd.time; w = 0.0;
+		}else{
+			spd = 1.0; w = 1.0;	//	time=0の場合はフェードスキップ
+		}
+	}
+	
+	function end( stage, time){
+		cmat0.set( cmat);
+		cmat.identity();
+		del = true;
+		w = 0.0;
+		spd = 1.0 / Math.max( time, 1);
+	}
+
+	function update( stage, dt){
+		w = Math.saturate( w + spd * dt);
+		if( w>=1.0 && del) return finish( stage);
+		//	カラーフェードを適用
+		local dpass = stage.view3d.renderer.mainpass.drawpass;	//	pbr_dfならある
+		cmat0.lerp( cmat, w, cfademat);
+		dpass.setColorMatrix( cfademat);
+		return this;
+	}
+	
+	function finish( stage){
+		local dpass = stage.view3d.renderer.mainpass.drawpass;	//	pbr_dfならある
+		dpass.setColorMatrix( null);
+		cfademat.identity();
+	}
+}
+
+//	明度調整エフェクト。※こっちはHDR色空間での明度スケール。デカール描画のエフェクト等の色は変化しない。
+//	
+class ScreenEffect.Brightness
+{
+	expscale0 = 1.0;
+	expscale = 1.0;
+	spd = 1.0;
+	//	ステート
+	w = 0.0;
+	del = false;
+
+	function start( stage, sfx, cmd){
+		local ppass = stage.view3d.renderer.mainpass.litprepass;	//	pbr_dfならある
+		expscale0 = ppass.expscale;
+		expscale = cmd.expscale;
+		del = false;
+		if( cmd.time > 0){
+			spd = 1.0 / cmd.time; w = 0.0;
+		}else{
+			spd = 1.0; w = 1.0;	//	time=0の場合はフェードスキップ
+		}
+	}
+	
+	function end( stage, time){
+		expscale0 = expscale;
+		expscale = 1.0;
+		w = 0.0;
+		spd = 1.0 / Math.max( time, 1);
+		del = true;
+	}
+
+	function update( stage, dt){
+		w = Math.saturate( w + spd * dt);
+		if( w>=1.0 && del) return finish( stage);
+		//	カラーフェードを適用
+		local ppass = stage.view3d.renderer.mainpass.litprepass;	//	pbr_dfならある
+		ppass.expscale = Math.lerp( expscale0, expscale, w);
+		return this;
+	}
+	
+	function finish( stage){
+		local ppass = stage.view3d.renderer.mainpass.litprepass;	//	pbr_dfならある
+		ppass.expscale = 1.0;
+	}
+}
+
+//	フラッシュエフェクト。
+//	カラーフェードと同じくcolormatをいじくるが、先にカラーフェードが実行されていることを前提にできる。
+//	単発(短)、単発(長)、2連発、3連発
+//	
+class ScreenEffect.Flash
+{
+	//	パラメータ
+	+cmat = Matrix();
+	color = 0xffffffff;		//	加算カラー。cmdから指定可能
+	spd = 1.0;
+	num = 1;
+
+	//	ステート
+	w = 0.0;
+
+	function start( stage, sfx, cmd){
+		w = 0.0;
+		local c = cmd.color;
+		cmat[12] = (c>>>24)/255.0 * 1.5;	//	最初は白飛びしたいから*1.5
+		cmat[13] = ((c>>>16)&255)/255.0 * 1.5;
+		cmat[14] = ((c>>>8)&255)/255.0 * 1.5;
+		spd = 1000.0 / cmd.time;
+		num = sfx.num;
+	}
+	
+	//	※呼ばれない
+	function end( stage, time){
+		w = 1.0;
+	}
+
+	function update( stage, dt){
+		w = Math.saturate( w + spd * dt * 0.001);
+		if( w>=1.0) return finish( stage);
+		local _w = (w*num) % 1.0;
+		_w = Math.sqrt( _w);
+		//	フラッシュを適用
+		local dpass = stage.view3d.renderer.mainpass.drawpass;	//	pbr_dfならある
+		local cmat0 = cfademat;
+		dpass.m.colormat = cmat0.lerp( cmat, 1.0-_w, #Matrix());
+		return this;
+	}
+
+	function finish( stage){
+		local dpass = stage.view3d.renderer.mainpass.drawpass;	//	pbr_dfならある
+		dpass.m.colormat = null;	//	この一瞬はカラーフェードも一緒にはがれちゃう
+	}
+}
+
+//	ブラーエフェクト。あと少しだけ暗くする。主にメニューを開いたときに使用する。
+//	※ブラー時には描画を簡易化する。ブルーム、DOF、SSAOは一時的にオフにする。
+//	1/2解像度のブラー。
+//	
+class ScreenEffect.Blur
+{
+	//	
+	oldpass = null;		//	指し戻すためにdrawpassを保存
+	blurpass = null;	//	ブラーをかけて描画。
+	pow = 2.3;
+
+	spd = 1.0;
+	w = 0.0;
+	color = -1;
+	colmat = null;
+
+	//	
+	function start( stage, sfx, cmd){
+		local r = stage.view3d.renderer;
+		if( !oldpass) oldpass = r.mainpass.drawpass;
+		//	ブラーパス作成
+		pow = cmd.pow * 2.6 / 4.0;
+		blurpass = SK3DRenderer.PassRegistory.BlurImageDrawPass( {src:"sdcolortex", target:oldpass.target, kern:(2.5,24), blur:pow});
+		colmat = Matrix();
+		color = cmd["color"] || -1;
+		//	描画パスを入れ替え
+		r.mainpass.drawpass = blurpass;
+		blurpass.setupPass( r);
+		blurpass.setColorMatrix( colmat);
+		if( cmd.time > 0){
+			spd = 1.0 / cmd.time; w = 0.0;
+		}else{
+			spd = 1.0; w = 1.0;	//	time=0の場合はフェードスキップ
+		}
+	}
+	
+	//	
+	function end( stage, time){
+		spd = -1.0 / Math.max( time, 1);
+	}
+
+	//	
+	function update( stage, dt){
+		w = Math.saturate( w + spd * dt);
+		if( spd<0.0 && w<=0.0) return finish( stage);
+		local r = stage.view3d.renderer;
+		blurpass.setBlur( 2.5, 24, pow * w);
+		local c = Math.lerpcolor( -1, color, w);
+		colmat.identity().scale( (c>>>24)/255.0, ((c>>>16)&255)/255.0, ((c>>>8)&255)/255.0);
+		return this;
+	}
+
+	function finish( stage){
+		local r = stage.view3d.renderer;
+		r.mainpass.drawpass = oldpass;
+	}
+}
+
+
+//	ズームブラーエフェクト。エンカウント演出でも使う。
+//	
+class ScreenEffect.ZoomBlur
+{
+	//	
+	oldpass = null;		//	指し戻すためにdrawpassを保存
+	blurpass = null;	//	ブラーをかけて描画。
+	pow = 2.3;
+
+	uv = null;
+	spd = 1.0;
+	w = 0.0;
+
+	//	
+	function start( stage, sfx, cmd){
+		local r = stage.view3d.renderer;
+		if( !oldpass) oldpass = r.mainpass.drawpass;
+		//	ブラーパス作成
+		pow = cmd.pow * 100.0;
+		uv = cmd["uv"] || #(0.5,0.5);
+		blurpass = SK3DRenderer.PassRegistory.DrawImagePass( {tec:"spritefx.zoomblur",src:"sdcolortex", target:oldpass.target});
+		//	描画パスを入れ替え
+		r.mainpass.drawpass = blurpass;
+		blurpass.setupPass( r);
+		blurpass.m.miscmat0 = Matrix();
+		if( cmd.time > 0){
+			spd = 1.0 / cmd.time; w = 0.0;
+		}else{
+			spd = 1.0; w = 1.0;	//	time=0の場合はフェードスキップ
+		}
+	}
+	
+	//	
+	function end( stage, time){
+		spd = -1.0 / Math.max( time, 1);
+	}
+
+	//	
+	function update( stage, dt){
+		w = Math.saturate( w + spd * dt);
+		if( spd<0.0 && w<=0.0) return finish( stage);
+		local r = stage.view3d.renderer;
+		local blursize = w * pow;
+		
+		local vp = r.finalvp;
+		local br = blursize;//*viewreso;
+		local m = blurpass.m.miscmat0;
+		m[0] = uv[0];
+		m[1] = uv[1];
+		m[2] = br / vp[2];
+		m[3] = br / vp[3];
+		//
+		return this;
+	}
+
+	function finish( stage){
+		local r = stage.view3d.renderer;
+		r.mainpass.drawpass = oldpass;
+	}
+}
+
+
+//	ラスタースクロール。ワープ演出的な
+//	
+class ScreenEffect.RasterScroll
+{
+	//	
+	oldpass = null;		//	指し戻すためにdrawpassを保存
+	wslicepass = null;	//	
+	
+	time = 0.0;
+	spd = 1.0;
+	w = 0.0;
+
+	freq1 = 10;
+	freq2 = 10;
+	amp1 = 10;
+	amp2 = 10;
+	phase1 = 0;
+	phase2 = 0;
+	tscale = 1.0;
+
+	//	
+	function start( stage, sfx, cmd){
+		local r = stage.view3d.renderer;
+		if( !oldpass) oldpass = r.mainpass.drawpass;
+		//	ラスタースクロールパス作成
+		wslicepass = SK3DRenderer.PassRegistory.DrawImagePass( {tec:"spritefx.wslice",src:"sdcolortex", target:oldpass.target});
+		//	描画パスを入れ替え
+		r.mainpass.drawpass = wslicepass;
+		wslicepass.setupPass( r);
+		wslicepass.m.miscmat0 = Matrix();
+		if( cmd.time > 0){
+			spd = 1.0 / cmd.time; w = 0.0;
+		}else{
+			spd = 1.0; w = 1.0;	//	time=0の場合はフェードスキップ
+		}
+		freq1 = cmd.freq1;
+		freq2 = cmd.freq1;
+		amp1 = cmd.amp1;
+		amp2 = cmd.amp2;
+		tscale = cmd.tscale;
+	}
+	
+	//	
+	function end( stage, time){
+		spd = -1.0 / Math.max( time, 1);
+	}
+
+	//	
+	function update( stage, dt){
+		w = Math.saturate( w + spd * dt);
+		if( spd<0.0 && w<=0.0) return finish( stage);
+		local r = stage.view3d.renderer;
+		
+		local vp = r.finalvp;
+		local m = wslicepass.m.miscmat0;
+		
+		local ew = Easing.easeSineInOut( w);	//	もっときれいにフェードできんかな
+		time += dt;
+		m[0] = time * 0.001 * 2.0;
+		m[1] = 0.002;
+		m[2] = 1.0;// m[2] = w;
+		m[4] = freq1;
+		m[5] = freq2;
+		m[6] = amp1 * 0.01 * ew;
+		m[7] = amp2 * 0.01 * ew;
+		m[8] = phase1 / 100.0 * Math.PI2;
+		m[9] = phase2 / 100.0 * Math.PI2;
+		//
+		return this;
+	}
+
+	function finish( stage){
+		local r = stage.view3d.renderer;
+		r.mainpass.drawpass = oldpass;
+	}
+}
+
+
+//	TVノイズ。ホラー系演出	https://www.shadertoy.com/view/WsBGRW
+//	timeh, timel, ybug, dirty
+//	color, ghost, vnoise, hnoise
+//	xgrain, ygrain, scan, blink/vig
+//	n1, n2, n3
+//	
+class ScreenEffect.TVNoise
+{
+	//	
+	oldpass = null;		//	指し戻すためにdrawpassを保存
+	tvpass = null;	//	
+	
+	time = 0.0;
+	spd = 1.0;
+	w = 0.0;
+
+	dirty = 10;
+	color = 95;
+	ghost = 10;
+	ybug = 10;
+	strip = 10;
+	grain = 10;
+	scan = 25;
+	blink = 10;
+	// vig = 10;
+
+	//	
+	function start( stage, sfx, cmd){
+		local r = stage.view3d.renderer;
+		if( !oldpass) oldpass = r.mainpass.drawpass;
+		//	ラスタースクロールパス作成
+		tvpass = SK3DRenderer.PassRegistory.DrawImagePass( {tec:"spritefx.tvnoise",src:"sdcolortex", target:oldpass.target});
+		//	描画パスを入れ替え
+		r.mainpass.drawpass = tvpass;
+		tvpass.setupPass( r);
+		tvpass.m.miscmat0 = Matrix();
+		if( cmd.time > 0){
+			spd = 1.0 / cmd.time; w = 0.0;
+		}else{
+			spd = 1.0; w = 1.0;	//	time=0の場合はフェードスキップ
+		}
+		dirty ??= cmd["dirty"];
+		color ??= cmd["color"];
+		ghost ??= cmd["ghost"];
+		ybug ??= cmd["ybug"];
+		strip ??= cmd["strip"];
+		grain ??= cmd["grain"];
+		scan ??= cmd["scan"];
+		blink ??= cmd["blink"];
+	}
+	
+	//	
+	function end( stage, time){
+		spd = -1.0 / Math.max( time, 1);
+	}
+
+	//	
+	function update( stage, dt){
+		w = Math.saturate( w + spd * dt);
+		if( spd<0.0 && w<=0.0) return finish( stage);
+		local r = stage.view3d.renderer;
+		local vp = r.finalvp;
+		local m = tvpass.m.miscmat0;
+		time += dt;
+		local sec = time * 0.001;// * 11.0;
+		m[0] = (time/1000)|0;
+		m[1] = time % 1000.0;
+		//	ybug
+		local yh = Math.lerp( 15.0, 3.0, ybug*0.01 * w);
+		m[2] = Math.clamp( noise( 200.0+sec*12.0)*yh,0.0,2.0);	//	
+		//	dirty
+		m[3] = dirty*0.01 * w;
+		//	color
+		m[4] = color*0.01 * w;
+		//	ghost
+		m[5] = 1.0;
+		//	strip
+		local sw = strip * 0.003 * w;
+		m[6] = snoise( sec*6.0);
+		m[7] = threshold( snoise( sec*10.0), 0.5) * sw;
+		//	grains
+		local gw = grain * 0.005 * w, gt = Math.lerp( 0.8, 0.1, grain*0.01 * w);
+		m[8] = threshold( snoise(sec*10.0), gt) * gw;
+		m[9] = threshold( snoise((500.0+sec)*10.0), gt) * gw;
+		//	scan
+		m[10] = scan*0.01 * w;
+		//	blink/vig
+		local bw = blink * 0.01 * 0.4 * w;
+		m[11] = (1.0-bw) + bw*(Math.sin(sec*100.0)+1.0)/2.0;
+		//	ghost noize
+		local os = ghost*0.005 * w;// 0.05;
+		m[12] = threshold( snoise( sec*10.), 0.85) * os;
+		m[13] = threshold( snoise( 2000.0+sec*10.0), 0.85) * os;
+		m[14] = threshold( snoise( 3000.0+sec*10.0), 0.85) * os;
+		//
+		return this;
+	}
+
+	function finish( stage){
+		local r = stage.view3d.renderer;
+		r.mainpass.drawpass = oldpass;
+	}
+
+	//	math
+
+	function rand( n) {
+		return ((Math.sin( n)+1.0) * 43758.5453123) % 1.0;
+	}
+
+	function noise( p) {
+		local fl = Math.floor( p), fc = p % 1.0;
+		return Math.lerp( rand( fl), rand( fl + 1.0), fc);
+	}
+
+	function snoise( p){
+		return noise(p) * 2.0 - 1.0;
+	}
+	
+	function threshold( val, cut){
+		local v = Math.saturate( Math.abs( val)-cut);
+		v = Math.sign( val) * v;
+		local scale = 1.0 / (1.0 - cut);
+		return v * scale;
+	}
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+//	リスト登録
+
+local sepiamat = Matrix( 0.393, 0.349, 0.272, 0.0,  0.769, 0.686, 0.534, 0.0,  0.189, 0.168, 0.131, 0.0,  0.0, 0.0, 0.0, 1.0);
+
+local colorprop = { pid="color", lbl="$T.lbl_color", type=RGB, defval=0xffffffff };
+local numprop = { pid="num", lbl="$T.lbl_count", type=SCALAR, range=(1,9), defval=1 };
+local timeprop = { pid="time", lbl="$T.lbl_time", type=SCALAR, range=(0,3000), ui="bar", barrange=(0,3000,100), defval=400};
+local powprop = { pid="pow", lbl="$T.lbl_power", type=SCALAR, range=(1,20), ui="bar", defval=3};
+local freqrop = { pid="freq", lbl="$T.lbl_freq", type=SCALAR, range=(1,100), ui="bar", defval=40};
+local vertprop = { pid="vert", lbl="$T.lbl_vertquake", type=BOOL, defval=false};
+local time1000prop = { ...timeprop, defval=1000};
+local expprop = { pid="expscale", lbl="$T.lbl_expscale", type=SCALAR, range=(0.0,4.0), q=10, ui="bar", defval=0.5 };
+
+local freq1 = { pid="freq1", lbl="$T.lbl_freq 1", type=SCALAR, range=(1,100), ui="bar", defval=10};
+local amp1 = { pid="amp1", lbl="$T.lbl_amp 1", type=SCALAR, range=(-100,100), ui="bar", defval=30};
+local phase1 = { pid="phase1", lbl="$T.lbl_phase 1", type=SCALAR, range=(1,100), ui="bar", defval=0};
+
+local freq2 = { ...freq1, pid="freq2", lbl="$T.lbl_freq 2"};
+local amp2 = { ...amp1, pid="amp2", lbl="$T.lbl_amp 2", defval=-5};
+local phase2 = { ...phase1, pid="phase2", lbl="$T.lbl_phase 2", defval=20};
+
+local tscale = { pid="tscale", lbl="$T.lbl_speed", type=SCALAR, range=(0.1,9.9), q=10, ui="bar", defval=1.0, };
+
+
+ScreenEffect.sfxlist <- [
+	{ id="flash0", fid="flash", icon="\ue3e7", name="$T.sfx_flash", cls=ScreenEffect.Flash, 
+		props=[ colorprop, numprop, timeprop]
+	}
+	{ id="color0", fid="color", icon="\ue40a", name="$T.sfx_color0", cls=ScreenEffect.Colorfade, mode=0,
+		props=[ { ...colorprop, defval=0x7f7f7fff }, timeprop]
+	}
+	{ id="color1", fid="color", icon="\ue40a", name="$T.sfx_color1", cls=ScreenEffect.Colorfade, mode=1,
+		props=[ { ...colorprop, defval=0x7f7f7fff }, timeprop]
+	}
+	{ id="color2", fid="color", icon="\ue40a", name="$T.sfx_color2", cls=ScreenEffect.Colorfade, cmat=sepiamat, mode=2,
+		props=[ timeprop]
+	}
+	{ id="color3", fid="color", icon="\ue40a", name="$T.sfx_color3", cls=ScreenEffect.Colorfade, mode=3,
+		props=[ { ...colorprop, defval=0x7f7f7fff }, timeprop]
+	}
+	{ id="expscale", fid="color", icon="\ue40a", name="$T.sfx_expscale", cls=ScreenEffect.Brightness, mode=3,
+		props=[ expprop, timeprop]
+	}
+	{ id="quake0", fid="quake", icon="\ue62d", name="$T.sfx_quake0", cls=ScreenEffect.Quake, oneshot=true,
+		props=[ powprop, freqrop, vertprop, time1000prop]
+	}
+	{ id="quake1", fid="quake", icon="\ue62d", name="$T.sfx_quake1", cls=ScreenEffect.Quake,
+		props=[ powprop, freqrop, vertprop, time1000prop]
+	}
+	{ id="raster0", fid="raster", icon="\ue3a3", name="$T.sfx_raster0", cls=ScreenEffect.Blur, 
+		props=[ powprop, colorprop, timeprop]
+	}
+	{ id="raster1", fid="raster", icon="\ue3a3", name="$T.sfx_raster1", cls=ScreenEffect.ZoomBlur, 
+		props=[ powprop, timeprop]
+	}
+	{ id="raster2", fid="raster", icon="\ue3a3", name="$T.sfx_raster2", cls=ScreenEffect.RasterScroll,
+		props=[ freq1, amp1, phase1, freq2, amp2, phase2, tscale, timeprop]
+	}
+	/*
+	dirty = 10;
+	color = 95;
+	ghost = 10;
+	ybug = 10;
+	strip = 10;
+	grain = 10;
+	scan = 25;
+	blink = 10;
+	vig = 10;	*/
+	{ id="raster3", fid="raster", icon="\ue3a3", name="$T.sfx_raster3", cls=ScreenEffect.TVNoise,
+		props=[
+			{ pid="dirty", lbl="Dirty", type=SCALAR, range=(0,100), ui="bar", defval=10}
+			{ pid="color", lbl="Color", type=SCALAR, range=(0,100), ui="bar", defval=95}
+			{ pid="ghost", lbl="Ghost", type=SCALAR, range=(0,100), ui="bar", defval=10}
+			{ pid="ybug", lbl="Y Bug", type=SCALAR, range=(0,100), ui="bar", defval=10}
+			{ pid="strip", lbl="Strip", type=SCALAR, range=(0,100), ui="bar", defval=10}
+			{ pid="grain", lbl="Grain", type=SCALAR, range=(0,100), ui="bar", defval=10}
+			{ pid="scan", lbl="Scan", type=SCALAR, range=(0,100), ui="bar", defval=25}
+			{ pid="blink", lbl="Blink", type=SCALAR, range=(0,100), ui="bar", defval=10}
+			timeprop
+		]
+	}
+];
+
+foreach( i, v in ScreenEffect.sfxlist){
+	ScreenEffect.sfxmap[v.id] <- v;
+}

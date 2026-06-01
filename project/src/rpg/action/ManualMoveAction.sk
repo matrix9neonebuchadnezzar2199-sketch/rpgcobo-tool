@@ -1,0 +1,389 @@
+import ControlID;
+import GamepadButtonCode;
+import VirtualKeyCode;
+import ModifiersMask;
+import CollisionGroupID;
+import DamageResultType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ManualMoveAction
+//	移動、アニメ、エフェクト、サウンドを並列、直列にスケジュールして実行する。
+//	イベントでの演出の他、バトルでのスキル演出で使用される。
+//	
+
+class ManualMoveAction
+{
+	rp3d = null;			//	rpgstage.player3d
+	stats = null;			//	ActionState[] : LIFOキュー
+	curstat = null;			//	ActionState : 現在実行中のActionState
+	moves = null;			//	function[] : 現在実行中の移動処理。
+	efxwait = 0;			//	エフェクトの待ち時間
+	anilyr = null;			//	AnimationLayer : ウェイト対象のアニメーションを再生中か
+	thread = null;			//	thread : アクションの実行スレッド
+	ispic = false;			//	bool : rp3dがRPG3DPictureかどうか
+
+	static EFX = 0x80000002;
+	
+	constructor( p){
+		rp3d = p;
+		stats = [];
+		moves = [];
+		ispic = rp3d instanceof RPG3DPicture;
+	}
+
+	function _get( key){
+		return curstat["ctx"][key];
+	}
+
+	function clear(){
+		stats.clear();
+		moves.clear();
+		efxwait = 0;
+		anilyr = null;
+		thread = null;
+	}
+	
+	function updateAction( dt){
+		efxwait = Math.max( 0, efxwait-dt);
+		if( moves[0]){
+			local fn = moves[0];
+			if( !(moves[0] = fn( dt))) delete moves[0];
+		}
+		if( thread){
+			thread.wakeup( dt);
+		}else{
+			if( length( stats)){
+				thread = newthread( "%S thread" % getclassname());
+				thread.call( runActions, this);
+			}
+		}
+	}
+
+	function runActions(){
+		while( curstat = delete stats[0]){
+			local func = curstat.func;
+			func();
+			curstat.phase = 0x7fffffff;	//	animeもmoveも実行は非同期。待つのはfunc内の責任。
+		}
+		curstat = null;
+		thread = null;
+	}
+	
+	//	メインイベントが終了して通常のアクションに戻るときに最初に呼ぶ。
+	//	移動は実行中のものも中断。でもcontfuncは最後までやらせたほうが良いかも？
+	function resetAction(){
+		thread = null;
+	}
+
+	//	メインイベントが開始してキャラの自動移動が入った際に、まずmanuactionがニュートラル状態になるまで待つ。
+	//	resetActionで全部方が付いているかな？それならtrue返せば良し
+	function isNewtral(){
+		return !isActionRunning();
+	}
+
+	//	いずれかのアクションが実行中、実行前の場合にtrueを返す。
+	function isActionRunning(){
+		return curstat || length( stats) || needwait( -1);
+	}
+
+	//	全ての追加されたアクションが終了するまで待つ。
+	function waitActions(){
+		while( curstat || length( stats)){
+			suspend();
+		}
+	}
+	
+	//////////////////////////////////////////////////////////////////////
+
+	//	アクションを追加する。
+	function act( func, ctx=null){
+		local s = ActionState();
+		s.func = func;
+		s.ctx = ctx;
+		stats .. s;
+		return s;
+	}
+
+	static frontpos = [[0,2],[2,0],[0,-2],[-2,0]];
+	
+	//	アクションデータを再生する。再生完了まで待つ
+	//	ev3dはあるイベントのコマンドでプレイヤーが動くときに基準点
+	//	※セーブ時の状態保存のために実行アクションの位置だけ取得できる必要がある。curstat.phaseに入れれば良し。
+	function playData( d, st, ev3d){
+		//	moveの基準位置。ブロック座標
+		local event = ev3d.event, curstat = curstat;
+		local p0 = event.data.pos;
+		local bp = d["basepos"] || 0;
+		if( typeof( bp) == SS_ARRAY){
+			p0 = bp;
+		}else
+		if( bp == 1){
+			p0 = [Math.round( rp3d.pos.x*2), Math.round( rp3d.pos.y*2), Math.round( rp3d.pos.z*2)];
+		}else
+		if( bp == 2){
+			local dp = frontpos[p0[3]];
+			p0 = [p0[0]+dp[0],p0[1],p0[2]+dp[1]];
+		}
+		//	
+		local a = d.actions, n = length( a);
+		for( local l = st;l < n;l ++){
+			curstat.phase = l;
+			local v = a[l];
+			switch( v.act){
+			case "move":
+				move( {target = Vector3D( v.pos).add( p0).scale( 0.5), aim = true, spd = v.movespd, movetype=v.movetype, playani=v["playani"] });
+				wait( 0x80000004);	//	移動は待たないとかなー
+				break;
+			case "wait":
+			{
+				if( v["stand"]) anime( #{ id="stand"});
+				local time = ::getvar( v.time, event);
+				wait( time);
+				break;
+			}
+			case "waitreq":
+			{
+				if( v["stand"]) anime( #{ id="stand"});
+				while( !::reqchk( v.reqs, event)){
+					suspend();
+				}
+				break;
+			}
+			case "turn":
+			{
+				rp3d.dir = v.dir * 45 * Math.DTOR;
+				break;
+			}
+			case "ani":
+			{
+				anime( v.ani);
+				if( v["wait"]) wait( 0x80000001);
+				break;
+			}
+			case "efx":
+			{
+				efx( v);
+				if( v["wait"]) wait( 0x80000002);
+				break;
+			}
+			case "snd":
+			{
+				snd( v);
+				if( v["wait"]) wait( 0x80000004);
+				break;
+			}
+			case "scp":
+			{
+				local fn = ::compilestring_c( v.code);	//	キャッシュされる
+				fn();
+				break;
+			}
+			}
+		}
+	}
+	
+	//////////////////////////////////////////////////////////////////////
+	//	個別アクションの追加
+
+	//	
+	function needwait( x){
+		if( x & 1){	//	アニメを再生した場合にそれが終了しているか。ループ再生はウェイト無し
+			if( anilyr && !anilyr.animating) anilyr = null;
+			if( anilyr) return 1;
+		}
+		if( x & 2){	//	エフェクトを再生したときにそれが終了アンカーまで達しているか
+			if( efxwait > 0) return 2;
+		}
+		if( x & 4){			//	移動が終了したか
+			if( moves[0]) return 4;
+		}
+		// if( x & 8){	//	サウンド再生が終了したか。これは再生時に待つのを指定したもののみ待つ。あんま使わない
+		// }
+		return false;
+	}
+	
+	//	時間指定もしくはアニメや移動、エフェクトのウェイト。
+	function wait( x=-1){
+		if( x & 0x80000000){
+			local c = 0, r;
+			while( r = needwait( x)){
+				suspend();
+			}
+		}else{
+			sleep( x);
+		}
+	}
+
+	//	向きを変える。
+	function turn( x){
+	}
+
+	//	
+	function move( x){
+		local mt = x["movetype"];
+		switch( mt){
+		case "jump":
+			if( x["playani"]) rp3d.anime2( {id="jump"});
+			moves .. rp3d.jumpTo( x);
+			break;
+		case "warp":
+			moves .. rp3d.warpTo( x);
+			break;
+		default:
+			if( x["playani"] && mt) rp3d.anime2( {id=mt});
+			moves .. rp3d.walkTo( x);
+			break;
+		}
+	}
+
+	//	指定した位置に歩行。相対位置指定。
+	function walk( x){
+		moves .. rp3d.walkTo( x);
+	}
+
+	//	ジャンプしながら指定位置に移動。
+	function jumpto( x){
+	}
+
+	//	指定した位置にワープ。ターゲットからの相対座標に出来る。また、地面と判定もできる。
+	function warp( x){
+	}
+
+	//	アニメーション再生。ループアニメは1ループまでウェイト対象。
+	function anime( x){
+		if( x){
+			local al = rp3d.anime2( x);
+			if( al){
+				anilyr = al["loop"] ? null : al;
+			}
+		}
+	}
+
+	//	死亡アニメーションを表示。敵はシェーダーでの演出になる
+	function deathAnime(){
+		if( rp3d instanceof RPG3DPicture){
+			rp3d.picfx( "die");
+			// wait( 800);	//	kore...
+		}else{
+			anime( #{id="die"});
+			// wait( 0x80000001);
+		}
+	}
+
+	//	エフェクト再生。ID直指定とテーブル渡しが可能
+	function efx( x){
+		if( x){
+			local efx = rp3d.effect( x);
+			if( efx["efx"]["waittime"]){
+				efxwait = Math.max( efxwait, efx.efx.waittime);
+			}
+		}
+	}
+
+	//	エフェクトを発射
+	function shoot( x){
+		if( x){
+			local efx = rp3d.effect( x);
+			if( efx["efx"]["waittime"]){
+				efxwait = Math.max( efxwait, efx.efx.waittime);
+			}
+			local ammo = efx["sk"];
+			local dst = x["dst"];
+			if( ammo && dst){
+				local sp = clone ammo.pos, ep = Vector3D( dst.gbnd.x, dst.gbnd.y, dst.gbnd.z);
+				ammo.rot << Quaternion.from2Axis( #Vector3D(0,0,1), (ep-sp).normalize());
+				newthread().start( @(){
+					local time = x["time"]+0.0;
+					local t0 = skGetTime();
+					for( ;;){
+						suspend();
+						local t1 = skGetTime(), w = Math.saturate( (t1-t0) / time);
+						sp.lerp( ep, w, ammo.pos);
+						ammo.matdirty = true;
+						if( w >= 1.0) return;
+					}
+				}, this);
+			}
+		}
+	}
+
+	//	サウンド再生。
+	function snd( x){
+		if( x){
+			rp3d.playSound( x);
+		}
+	}
+
+	//	フェーズを変更する。複数のアクション（攻撃、ヒットなど）の同期に使われる。
+	function phase( x){
+		curstat.phase = x;
+	}
+	
+	function popcond( condid, action="put"){
+		rp3d.popupCondition( condid, action);
+	}
+
+	//	ダメージのポップアップ表示を行う。コンディションの付与・解除のポップアップ表示も同時に行う。
+	//	dmg.missの場合は"miss"表示。skip時やシールド時にダメージ0ならポップアップ無し。
+	//	※このメソッドでは表示だけで、実際にはまだダメージなどは反映されてない。
+	//	引数で、ダメージ倍率やミス等の表記を指定できる。表示位置の調整もできる。
+	function popdamage( x, col=undefined, type=undefined){
+		if( "result" in x){
+			local res = x["result"], val = x["val"]|0;
+			switch( res){
+			case DMG_NONE: case DMG_SKIP: return;	//	表示しないで良し
+			case DMG_HEAL:
+				if( !val) return;	//	回復量0は表示なし
+				col = val < 0 ? 0x77ffffff : 0xffffffff;
+				x = Math.abs( val);
+				break;
+			case DMG_CRITICAL: type=1;
+			case DMG_HIT:
+			case DMG_SHIELD:
+				col = val < 0 ? 0x77ffffff : 0xffffffff;
+				x = Math.abs( val);
+				break;
+			case DMG_MISS:
+				x = "MISS";
+				col = 0xffffffff;
+				break;
+			}
+		}
+		if( col == undefined) col = 0xffffffff;
+		rp3d.popupDamage( string( x), col, type);
+		efxwait = Math.max( efxwait, 300);
+	}
+
+	//	hitscpから呼ばれる。クリティカル時の追加演出
+	function criticalHit(){
+		snd( "SE215");
+		local cam = ::rpgstage.cam;
+		local pp = Vector3D( rp3d.gbnd.x, rp3d.gbnd.y, rp3d.gbnd.z);
+		local w = pp.transform( cam.viewmat).transformw( cam.prjmat);
+		local s = 1.0/w * 0.5;
+		pp.scale( s, -s, s).add( 0.5);
+		//	
+		::rpgstage.screenfx.screenEffectOn( {"color":-1,"num":1,"pow":3,"sfxid":"raster1","time":0, uv=(pp.x,pp.y)});
+		::rpgstage.screenfx.screenEffectOff( {"sfxbits":2,"time":300});
+	}
+}
+
+class ManualMoveAction.ActionState
+{
+	func = null;
+	ctx = null;			//	funcの関数内で直接中身を参照可能なコンテキストオブジェクト
+	phase = 0;
+
+	//	指定したフェーズになるまでウェイト
+	function waitPhase( p){
+		while( phase < p){
+			suspend();
+		}
+	}
+
+	//	終わるまでウェイト
+	function wait(){
+		return waitPhase( 0x7fffffff);
+	}
+}

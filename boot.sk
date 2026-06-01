@@ -1,0 +1,599 @@
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	FileRef Extension
+//
+
+function FileRef::deleteAll(){
+	if( exists()){
+		if( isDirectory()){
+			foreach( f in getList()) f.deleteAll();
+		}
+		if( deleteFile()) return;
+		for( local l = 0;l < 3;l ++){
+			sleep( 50);
+			if( deleteFile()) return;
+		}
+		throw Exception( "file could not delete : " .. path);
+	}
+}
+
+//	js+BlockingI/O対応予定
+//	timersuspendはOS毎に動作が変化する。jsの場合は毎回suspend()。suspendtimer=0に設定されたスレッドはblocking thread化(blocksuspend())。autorunじゃなくてもblocking thread化される。
+//	他はスレッド毎に設定されたタイマーでsuspend()。
+//	
+function FileRef::load( bbuf = null, mode = "rb"){
+	bbuf = (bbuf?.clear()) || TempBuffer( size);
+	local is = open( "rb");
+	if( !is) throw Exception( sprintf( "file could not open : %S - %S", path, mode));
+	for( ;;){ 
+		if( !is.read( bbuf) && is.eof()){ break; }
+		timersuspend();
+	}
+	is.close();
+	bbuf.pos = 0;
+	if( bbuf.size > 100000) bbuf.shrink();
+	return bbuf;
+}
+
+function FileRef::save( bbuf, mode = "wb"){
+	local is = open( mode);
+	if( !is) throw Exception( sprintf( "file could not open : %S - %S", path, mode));
+	local w;
+	do{ w = is.write( bbuf); }while( w);
+	is.close();
+}
+
+function FileStream::readfor( size, bbuf = null){
+	bbuf = (bbuf?.clear()) || ByteBuffer();
+	for( ;;){
+		local r = read( bbuf, size-bbuf.pos);	//	throws eof
+		if( bbuf.pos >= size) break;
+		if( !r && eof()) throw Exception( "eof");
+		timersuspend();
+	}
+	bbuf.pos = 0;
+	return bbuf;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	SKPackage
+//
+
+SKPackage.appname <- null;
+SKPackage.storages <- null;
+SKPackage.datadir <- null;			//	
+SKPackage.cachedir <- null;			//	
+
+function SKPackage::setupStorage( file, datadir, cachedir){
+	this.datadir = datadir;
+	this.cachedir = cachedir;
+	local a = [], p = (0,0,0,0,0);	//	name, size16, md5, version, flags, (time)
+	for( local l = 0; getStorageInfo( l, p); l ++){
+		local name = p[0], ver = p[3], flags = p[4];
+		local st = SKPackageStorage();
+		st.autorelease = (flags & 4) ? -1 : 0;	//	4=SX_STORAGE_KEEP_OPEN
+		//	ver=0は特殊で、バージョン名をファイルにつけない
+		if( !ver){
+			st.filepath = FileRef( datadir, "%S-%S.sxstorage"%(appname, name)).path;
+		}else{
+			//	キャッシュにあるか、どちらにもない場合はcachedir。verlessモードではappname-name.sxstorate。
+			local fn = "%S-%03d-%S.sxstorage" % (appname, ver, name), f0, f1;
+			st.filepath = ((f0=FileRef( cachedir, fn)).exists() || !(f1=FileRef( datadir, fn)).exists()) ? f0.path : f1.path;
+		}
+		a .. st;
+	}
+	storages = a;
+}
+	
+function SKPackage::loadData( di){
+	local p = #(0,0,0,0);	//	storage, offs16, size, flags
+	getIndexInfo( di, p);
+	local st = storages[p[0]], offs16 = p[1], size = p[2];
+	//	file読み込み
+	st.open();
+	st.seek( offs16<<4, 0);	//SEEK_SET?
+	local bb = st.readfor( size);
+	return decodeData( di, bb);	//	データデコード＆整合性チェック(native)
+}
+
+function SKPackage::startAutoRelease(){
+	local self = this, func = @(){ foreach( st in self.storages) st.releasecheck(); }
+	setInterval( func, 1000);
+}
+
+class SKPackage.SKPackageStorage
+{
+	filepath = null;		//	file path
+	fs = null;				//	FileStream | reader : readerはseek,readFor,closeを実装
+	
+	autorelease = -1;
+	
+	function open(){
+		if( !fs){ fs = FileRef( filepath).open( "rb"); }
+		if( autorelease >= 0) autorelease = 10;
+		return fs;
+	}
+	
+	function setReader( r){
+		close();
+		fs = r;
+		autorelease = -1;
+	}
+	
+	function seek( offs, origin){
+		return fs.seek( offs, origin);
+	}
+	
+	function readfor( size){
+		return fs.readfor( size, TempBuffer( size));
+	}
+	
+	function close(){
+		if( fs){ fs.close(); fs = null; }
+	}
+	
+	function releasecheck(){
+		if( fs && autorelease>0 && !(--autorelease)) close();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	Resource
+//
+
+class Resource
+{
+	name = "";
+	
+	pres = null;
+	list = null;
+	
+	isdir = false;
+	flags = 0;				//	0x1000:System Resource, 0x2000:Alias
+	cache = null;
+	
+	userdata = null;
+
+	rev = 0;				//	refresh()呼び出し時にリソースが変化していたらインクリメント
+	
+	function _get( id){
+		switch( id){
+		case "path":
+			if( pres){
+				local p = name, r = pres;
+				while( r.pres){ p = r.name.."/"..p; r = r.pres; }
+				return "/"..p;
+			}else{
+				return "/";
+			}
+		}
+		return undefined;
+	}
+	
+	function _cloned( org){
+		pres = null;
+		list = null;
+		cache = null;
+		userdata = null;
+	}
+	
+	function isDirectory(){
+		return isdir;
+	}
+	
+	function flush() {
+		cache = null;
+		userdata = null;
+		if( isdir && list){
+			foreach( r in list) r.flush();
+			list.clear();
+			list = null;
+		}
+	}
+	
+	function getContent() {
+		if( !cache) load( 1);
+		return cache;
+	}
+	
+	function load( i = 1){
+		if( isdir){
+			if( i--) foreach( v in getList()) v.load( i);
+		}else
+		if( cache == null){
+			local tmpbuf = loadData();
+			cache = loadContent( name, tmpbuf, this);
+			if( cache == tmpbuf){
+				if( tmpbuf instanceof TempBuffer){
+					cache = ByteBuffer( tmpbuf);
+					tmpbuf.dispose();
+				}else{
+					cache = tmpbuf;
+				}
+			}else{
+				tmpbuf.dispose();
+				if( "loaded" in cache) cache.loaded( this);
+			}
+		}
+	}
+	
+	static function loadContent( name, bbuf, res){
+		local c, exp = name.substring( name.lastIndexOf( ".") + 1).toLowerCase();
+		foreach( loader in ::contentloaders){
+			if( c = loader( name, exp, bbuf, res)) return c;
+		}
+		return bbuf;
+	}
+	
+	function getResource( p){
+		local i = 0, len = length( p);
+		if( !p || !len) return null;
+		local r = isdir?this:pres;
+		if( p[0] == '/'){ r = ::resroot; i++; }
+		local si = i, prev = 0, pprev = 0;
+		for(;i < len;i ++){
+			local c = p[i];
+			if( c == '/' || i==len-1){
+				if( prev=='.' && (pprev=='.' || !r.isdir)) r = r.pres;
+				else
+				if( prev!='.' || c!='/'){
+					if( !(r = r.findList( p, si, (i==len-1?len:i)-si))) return null;
+				}
+				si = i+1;
+			}
+			pprev = prev; prev = c;
+		}
+		return r;
+	}
+
+	function findList( n, s, len){
+		foreach( r in getList()){
+			if( length( r.name)==len && n.startsWith( r.name, s)){ return r; }
+		}
+		return null;
+	}
+	
+	function getList(){
+		if( !list && isdir) loadList();		//	!listの時に複数スレッドから呼ばれると多重に読み込んでしまう
+		return list;
+	}
+	
+	function del(){
+		return pres["list"]?.removeValue( this);
+	}
+	
+	function install( res){
+		local a = res.getList();
+		if( !a) return;
+		if( !getList()) return;		//	throw?
+		foreach( i in a){
+			list .. i;
+			i.pres = this;
+		}
+	}
+	
+	//	alias
+	
+	static function checkAlias( r0){
+		local r;
+		foreach( loader in ::aliasloaders){
+			if( r = loader( r0)) return r;
+		}
+		return r0;	//	aliasではないんでそのまま
+	}
+	
+	//	abstract method
+	//	loadList()
+	//	loadData()
+
+	//	指定したリソース以下をリフレッシュ操作する。変化したらtrueを返す。
+	function refresh(){
+		local b = false;
+		foreach( r in list) b |= r.refresh();
+		return b;
+	}
+};
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//	File Resource
+
+class FileResource extends Resource
+{
+	file = null;		//	FileRef
+
+	constructor( f, p = null){
+		file = f;
+		isdir = f.isDirectory();
+		pres = p;
+		name = f.name;
+	}
+
+	function flush() {
+		super.flush();
+		file.refresh();
+	}
+	
+	function loadList(){
+		if( isdir){
+			list = file.getList().map( @( f) checkAlias( ::FileResource( f, this)));
+		}
+	}
+
+	function loadData(){
+		return file.load();
+	}
+
+	function mkdir( name){
+		if( !isdir) throw Exception( "unable to mkdir : " .. path);
+		local dir = FileRef( file, name);
+		dir.mkdirs();
+		dir = FileRef( file, name);
+		local r = FileResource( dir, this);
+		getList();
+		list .. r;
+		return r;
+	}
+
+	function create( name, data){
+		if( !isdir) throw Exception( "unable to create file : " .. path);
+		local f = FileRef( file, name);
+		f.save( data);
+		f = FileRef( file, name);
+		local r = getResource( name);
+		if( !r){
+			r = FileResource( f, this);
+		}else{
+			r.file = f;
+		}
+		getList();
+		list .. r;
+		return r;
+	}
+
+	function del(){
+		super.del();
+		file.deleteFile();
+		pres.flush();
+	}
+
+	//	
+	function refresh(){
+		local b = false;
+		local f0 = file; file = FileRef( f0.path);
+		if( f0.lastmodified <> file.lastmodified){	//	ファイルに変更が入った
+			++rev;
+			cache = null;
+			userdata = null;
+			//	isdirの場合はloadListされているリストをチェック
+			if( isdir && list){
+				local newlist = file.getList().map( @( f) checkAlias( ::FileResource( f, this)));
+				foreach( r in list){
+					local newr = newlist.find( @( a) a.name==r.name);
+					if( !newr || newr.isdir != r.isdir){
+						++r.rev; removei;	//	ファイル消えた、もしくはisdirが切り替わった。。。
+					}else{
+						newlist.removeValue( newr);
+						r.refresh();
+					}
+				}
+				list ... newlist;	//	新規ファイル。load前なのでrefreshは不要。
+			}
+			return true;
+		}
+		return super.refresh();
+	}
+};
+
+class DeferredLinkResource extends Resource
+{
+	linkfunc = null;
+	
+	constructor( r0, func){
+		pres = r0.pres;
+		name = r0.name;
+		linkfunc = func;
+		isdir = true;	//	TODO : 現状常にisdir=true、生成時にdirかどうかわからん
+	}
+	
+	function loadList(){
+		local dir = linkfunc();
+		if( !dir) list = [];
+		else{
+			list = dir.getList();
+			foreach( r in list) r.pres = this;
+			dir.list = null;
+		}
+	}
+	
+	function loadData(){
+		return null;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//	SKPackage Resource
+
+class SKPackageResource extends Resource
+{
+	sx = null;
+	node = null;
+	
+	constructor( n, s, p){
+		node = n;
+		sx = s;
+		pres = p;
+		name = s.getNodeName( n);
+		isdir = n.isDirectory();
+	}
+	
+	function loadList(){
+		if( isdir){
+			local a = list = []; foreach( n in node.getList([])) a .. checkAlias( SKPackageResource( n, sx, this));
+		}
+	}
+	
+	function loadData(){
+		return !isdir && sx.loadData( node.di);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//	global functions
+
+local _findlatestsx( dir, appname){
+	return dir.getList( appname .. "*.sx").sort( @( v) v.name).last();
+}
+
+function createResource( src){
+	if( src instanceof SS_STRING){
+		src = FileRef( src);
+	}
+	if( src.isDirectory()){
+		return FileResource( src);
+	}else{
+		//	ファイルから作る場合はSKPackageのみを想定。appnameは指定されたファイル名から取る
+		local appname = src.name;
+		if( appname.indexOf( "-") >= 0) appname = appname.substring( 0, appname.indexOf( "-"));
+		else if( appname.endsWith( ".sx")) appname = appname.substring( 0, length( appname)-3);
+		//	ファイルが存在しない場合はappnameのsxで最新のものを親dirから検索。
+		local datadir = FileRef( src, "..");	//	datadir : sxの存在するdir。romの可能性もある。
+		local cachedir = datadir;				//	cachedir : 書き込み可能でパッケージが存在しうるdir。datadirが書き込み可能ならdatadir==cachedir
+		local bb = null;
+		if( !src.exists()){	//	sxファイルを直指定していないため検索が必要
+			src = _findlatestsx( datadir, appname);
+			if( !src){
+				throw Exception( "sx package not found. appname="..appname.." datadir="..datadir.path);	//	sxパッケージがdatadirに存在しない
+			}
+			//	※rom領域からsxを読む場合に、キャッシュ領域から最新のsxを探してそれに置き換える。
+			cachedir = FileRef( `${skGetCacheDir()}/$appname`);	//	sxキャッシュ領域の場所は固定
+			if( !cachedir.isDirectory()) cachedir.mkdirs();
+			local f = _findlatestsx( cachedir, appname);
+			if( f && f.name > src.name){	//	キャッシュ領域に新しいsxがあったらそれを読む
+				src = f;
+				bb = f.load();
+			}
+		}
+		if( !bb){
+			bb = src.load();
+		}
+		local sx = SKPackage();
+		sx.appname = appname;
+		sx.load( bb);
+		sx.setupStorage( src, datadir, cachedir);
+		sx.startAutoRelease();
+		//
+		printf( "sx package file: %S, datadir: %S, cachedir: %S\n", src.path, datadir.path, cachedir.path);
+		//
+		return SKPackageResource( sx.getRoot(), sx, null);
+	}
+}
+
+function getResource( path){
+	return ::resroot.getResource( path);
+}
+
+function getResourceContent( path){
+	return ::resroot.getResource( path)?.getContent() || null;
+}
+
+::loadimageoption <- null;
+
+::contentloaders <- [	//	minimum content loader
+	@( name, exp, bbuf, res){
+		switch( exp){
+		case "sk":
+			return bbuf.compile( res["path"]||name, true);
+		case "conf":
+			return bbuf.compile( res["path"]||name);
+		case "png":
+		case "jpg":
+		case "jpeg":
+		case "dds":
+		case "pvr":
+		case "ktx":
+		case "webp":
+			return skLoadImage( bbuf, ::loadimageoption);
+		case "wav":
+			return WaveBuffer.load( bbuf);
+		}
+		return null;
+	}
+];
+
+::aliasloaders <- [
+	@( res){
+		if( res.name.endsWith( ".alias")){
+			local func = res.loadData().compile( res.path, true)();
+			local r = func( res);
+			r.name = res.name.substring( 0, res.name.lastIndexOf( "."));
+			r.flags |= 0x2000;
+			return r;
+		}
+		return null;
+	}
+]
+
+function dirname( s){
+	if( !s) return "";
+	local i = s.lastIndexOf( "/");
+	return i>=0 ? s.substring( 0, i) : "";
+}
+
+function getsk( path, d=1){
+	return ::resroot.getResource( path[0]=='/' ? path : dirname( callee( d).getSourceName()).."/"..path);
+}
+
+::skfuncmap <- {};
+
+function runsk( path){
+	local r = ( path instanceof Resource) ? path : getsk( path, 2);
+	if( !r) throw Exception( ".sk not found : " .. path);
+	local func = r.getContent(), ret = func();
+	r.flush();			//	cleanup source code
+	if( path.endsWith( ".sk")){ ::skfuncmap[func.getSourceName()] <- func; } //	ソースからの検索を可能にするためのテーブル
+	return ret;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//	Boot process
+
+//	コードベースをリソースのルートに設定する。
+
+::resroot <- createResource( skGetCodebase() );
+
+{	//	sakana.proj, permission
+	local r = ::getResource( "/sakana.proj");
+	::sakana <- r? decodeJSON( r.loadData()) : { appname = "sakana", };
+	skSetPermissionMap( sakana[sakana["permission"]] || sakana["permission"], { cdir=skGetCurrentDir(), bindir=skGetBinBaseDir(), datadir=skGetDataDir(), cachedir=skGetCacheDir(), docdir=skGetDocumentDir(), host=skGetHostName(), user=skGetUserName(), });
+}
+
+{	//	load system
+	try{
+		local sys = getsk( "/system/load.sk");
+		if( !sys){
+			local binsys = createResource( skGetBinBaseDir() .. "/system"); // デフォルトのシステム
+			binsys.flags |= 0x5000;
+			resroot.getList() .. binsys;	//	ルートにくっつけちゃう。。。
+			binsys.pres = resroot;
+			sys = binsys.getResource( "load.sk");
+		}
+		sys.getContent()();
+		sys.flush();
+	}catch( ex){
+		printexception( ex);
+		printf("WARN : system not loaded.....\n");
+	}
+}
+
+if( skGetWorkerID()){
+	//	worker main!
+	return WorkerDriver.startWorker();
+}
+//	main!
+printf( "mainsk : %S %S \n", skGetCodebase(),skGetMainSK());
+return getResourceContent( skGetMainSK())();

@@ -1,0 +1,201 @@
+﻿
+function preloaShaders( glob=null){
+	local osname = skGetOSName();
+	local r = getResource( "/resource/skfxload.json");
+	if( !r){
+		printf( "skfxload.json not found!!! Preloading Shaders skipped.\n");
+		return;
+	}
+	printf( "preloaShaders glob=%S start.\n", glob);
+	//
+	local cdir = FileRef( skGetCacheDir().."/shaderbin");
+	cdir.mkdirs();
+	local skfxload = decodeJSON( r.loadData());
+	local t0 = skGetTime(), t1 = t0;
+	local tmpbb = TempBuffer( 256*1024);
+	foreach( tecname, passes in skfxload){
+		if( glob && !globMatch( glob, tecname)) continue;
+		local tec = skFXFindTechnique( tecname);
+		if( !tec) continue;
+		foreach( i, bitslist in passes){
+			local ss = tec.getShaderSource( i);
+			if( !ss) continue;
+			local sshash = ss.hash64();
+			foreach( bits in bitslist){
+				if( skGetTime( t1) >= 100){
+					printf( "preload_shaders suspend...\n");
+					suspend(); suspend(); t1 = skGetTime();
+				}
+				if( ss.isProgramLoaded( bits)){	//	すでに読まれてるシェーダーはスキップ
+					continue;
+				}
+				local st0 = skGetTime();
+				//	キャッシュヒットチェック。1つずつ別ファイルなのは非効率か
+				local fn = sprintf( "%S-%S-%S.bin", tecname, i, bits);
+				local cf = FileRef( cdir, fn);
+				if( cf.exists()){
+					local cbuf = cf.load( tmpbb);
+					local hash = long( cbuf.geti(), cbuf.geti());
+					if( !(sshash <> hash)){
+						if( ss.loadProgramBinary( bits, cbuf)){
+							printf( "Shader Cache HIT! %S time=%S\n", fn, skGetTime( st0));
+							continue;
+						}
+					}else{
+						printf( "ShaderSource hash incompatible %S!=%S  cf=%S\n", sshash, hash, fn);
+						cf.deleteFile();
+					}
+				}else{
+					printf( "Shader Cache not found.... %S\n", fn);
+				}
+				//	キャッシュヒットしなかったのでglslコンパイル。
+				ss.precompile( bits);
+				if( skGetTime( st0) < 10){	
+					//	PCなんかではロードするよりコンパイルするほうが早かったりする。10ms未満ならコンパイルで良い
+					//	この場合はキャッシュを保存しない
+					printf( "Shader Cache skipped by short compile time.... %S\n", skGetTime( st0));
+				}else{
+					//	キャッシュとして保存。※WebGL2ではバイナリは取れないため保存不能。。。
+					local bb = ss.getProgramBinary( bits, tmpbb);
+					if( bb){
+						local cmpbb = ByteBuffer();
+						cmpbb.puti( sshash[0]);
+						cmpbb.puti( sshash[1]);
+						cmpbb.putBuffer( bb);
+						cmpbb.pos = 0;
+						try{
+							cf.save( cmpbb);
+							printf( "Shader Cache saved %S. filesize=%S time=%S\n", fn, cmpbb.size, skGetTime( st0));
+						}catch( ex){
+							printexception( ex);
+							cf.deleteFile();
+						}
+					}
+				}
+			}
+		}
+	}
+	printf( "preloaShaders done. total time=%d\n", skGetTime( t0));
+}
+
+
+/////////////////////////////////////////////////////////////////////////////
+//	ゲームプレイ
+{
+	local osname = skGetOSName(), showsplash = true, webgl = (osname=="WebGL");
+	
+	//	セーブフォルダを指定
+	if( osname=="Windows"){
+		local d = FileRef( skGetCurrentDir().."/savedata");	//	カレントdirが書き込み可能ならカレント/savedataをセーブフォルダに。
+		if( d.mkdirs()) ::savedir <- d;
+	}
+	if( !::["savedir"]){ ::savedir <- FileRef( skGetDataDir()); }
+	
+	//	ここでclient.confを読んでスクリーンサイズ、言語などを読む。
+	runsk( "/ClientConfig.sk");	//	$savedata/client.json
+	if( osname=="Windows"){
+		if( !clientconf.screen.fullscreen){
+			local wh = clientconf.screen.reso_window.split( "x");	//	"1920x1080"のような文字列
+			skCreateScreen( "GAME TITLE", int( wh[0]), int( wh[1]), 5|16);
+		}else{
+			local wh = clientconf.screen.reso_screen.split( "x");
+			if( !skSupportsDisplaySize( int( wh[0]), int( wh[1]))) wh = ["1280","720"];
+			skCreateScreen( "GAME TITLE", int( wh[0]), int( wh[1]), 0);
+		}
+	}else{	//	Windows以外は画面いっぱい
+		local wh = skGetDisplaySize( []);
+		skCreateScreen( "GAME TITLE", int( wh[0]), int( wh[1]), 1);
+	}
+
+	//	言語選択。ClientConf
+	local sysset = loadconf( "/data/setting.json");
+	local lt = chooseLanguage( clientconf["game"]["lang"] || sysset.projlang);
+	::lang = Language( lt);
+	//	翻訳適用。conf読み込み後にフック
+	module.hookAction( "conf_postload", @(){
+		if( lang.code != sysset.projlang){
+			local tres = getResource( `/data/trans/${lang.code}.trns`);
+			if( tres){
+				local trans = decodeJSON( tres.loadData());
+				override( conf._map, trans.transdict, false);
+			}
+		}
+		::rootview.setValue( "apptitle", conf.setting.title);
+	}, -9999);
+
+	skBeginRender();
+	skClearParam( #ClearParam( 0.0, 0.0, 0.0, 1.0));
+
+	local root = ::rootview = ::loadSKView( "/resource/ui/rpgroot.ui", SKRootView);		//	作った時点のスクリーンサイズで作られる
+	root.resizemode = 2;
+	local sc = skGetScreenSize( [0,0]);
+	root.screenResized( sc[0], sc[1]);
+	
+	//	起動プロセスは別スレッドで実行。
+	newthread( "RPG Launch Thread").start( @(){
+		if( showsplash){
+			//	スプラッシュスクリーン表示。WebGLの場合は必須でタップを待つ。
+			//	※ここではdictがまだ読み込まれていない。タップ文章もsakana.projにある感じ？
+			local splashview = ::loadSKView( "/resource/ui/splash.ui");
+			splashview.stretchSize( rootview.bnd.w, rootview.bnd.h);
+			splashview.action( "show");
+			// rootview.findChild( "menu").addChild( splashview);
+			rootview.addChild( splashview);	//	mmm
+			splashview.waitAction();
+			local t0 = skGetTime();
+			//	ここで全てのロード。これまでには/systemしか読まれてない
+			runsk( "/load.sk");
+			preloaShaders();
+			RPGMain.setupUI();
+			RPGMain.loadSetting();		//	適度にsuspendを挟むように。
+			suspend(); suspend();
+			if( webgl){
+				//	TODO ブラウザで掛かってるローディングを外す
+				splashview.action( "showtap");
+				RPGMain.uiLoop( {
+					"click" : @( e){	//	todo マウスクリックじゃないとダメ！
+						//	音鳴らす？
+						return 1;
+					}
+				});
+			}else{
+				RPGMain.uiLoop( {
+					"click" : @( e){ return 1; }
+					"back" : @( e){ return 1; }
+					"idle" : @( e){ if( skGetTime( t0) >= 5000) return 1; }	//	ロード開始から5秒立ったら自動で終了
+				});
+			}
+			splashview.actionAndDie( "hide");
+			splashview.waitAction();
+			splashview = null;
+		}else{
+			//	PC等はスプラッシュスクリーン表示なしの設定が可能。その場合は真っ暗な状態でロード。
+			runsk( "/load.sk");
+			preloaShaders();
+			RPGMain.setupUI();
+			RPGMain.loadSetting();
+		}
+		//	準備が完了したのでタイトルにゴー！
+		skCollectGarbage();
+		suspend(); suspend();
+		RPGMain.goTitle();
+	});
+	
+	local t0 = skGetTime();
+	while( !::["RPGMain"]){	//	RPGMainが出来るまではイベントループは自力でやる。。。
+		local dt = skGetTime( t0); t0 += dt;
+		root.updateEvents( dt);
+		root.updateViews( dt);
+		local doflip = root.renderViews();
+		if( doflip){
+			skFlipScreen();
+		}else{
+			skSkipFlipScreen();
+		}
+		suspend();
+	}
+}
+
+RPGMain.mainloop();
+
+skEndRender();

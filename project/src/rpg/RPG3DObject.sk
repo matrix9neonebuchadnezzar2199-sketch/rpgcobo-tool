@@ -1,0 +1,1460 @@
+import VirtualKeyCode;
+import AnimationPart;
+import CollisionGroupID;
+import BlockFlagID;
+
+local v_0 = Vector3D(), v_1 = Vector3D(), v_2 = Vector3D(), v_3 = Vector3D(), m_1 = Matrix(), r_1 = Rect3D(), q_1 = Quaternion(), q_2 = Quaternion();
+
+AnimationLayer.id <- null;
+AnimationLayer.part <- null;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	アニメーションは全ての体形で共通の名前：フレームのテーブルを用意する。
+//	武器動作は、前、中1、中2、後(st, m1, m2, en)で、前のみ再生や中から再生、後を止めるなどの操作が可能。
+//	m1,m2は省略可で、省略した場合はm1=st, m2=enとなる。
+//	また、トリッキーな動きとして逆再生も可能。st-enが逆になる。
+//	anime( id, ST_EN)のように再生する。ST_EN, ST, MD, MD_EN, EN, EN_ST, MD_ST, EN_MD, 
+//	
+
+function unitdir( d){
+	if( d < 0.0){ d += Math.PI2 * Math.floor( -d / Math.PI2 + 1.0); }
+	return d % Math.PI2;
+}
+
+//	d1 - d2
+function deltadir( d1, d2){
+	return Math.mod2( d2-d1, -Math.PI, Math.PI);
+}
+
+//	ベクトルp0からp1に向かうdirを計算
+function aimdir( p0, p1){
+	local v = v_0( p1).sub( p0).scale( 1, 0, 1).normalize();
+	return Math.acos( v.z)*((v.x>=0.0)?1.0:-1.0);
+}
+
+function aimrot( vec){
+	local v = v_0( vec).normalize(), vy = -v.y;
+	v.scale( 1, 0, 1).normalize();
+	return Quaternion.fromHPB( Math.acos( v.z)*((v.x>=0.0)?1.0:-1.0), Math.asin( vy), 0.0);
+}
+
+
+//////////////////////////////////////////////////////////////////////////
+//	アニメーション定義一覧
+
+local AI = {icon="\ue566"}
+local EI = {icon="\uea22"}
+local BI = {icon="\ue031"}
+local SI = {icon="\ue561"}
+local PI = {icon="\ueae9"}
+
+//	2足歩行アニメーション。一番バリエーションが多い。
+local animelist_leg2 = [
+	//	基本動作
+	{ ...AI, id:"stand", st:5, en:9, spd:4, loop:true, replay=false }	//	立ち *
+	{ ...AI, id:"walk", st:10, en:18, spd:12, loop:true, replay=false }	//	歩き *
+	{ ...AI, id:"dash", st:20, en:28, spd:12, loop:true, replay=false }	//	走り *
+	{ ...AI, id:"crimb", st:30, en:38, spd:12, loop:true, replay=false }	//	登り *
+	{ ...AI, id:"sleep", st:40, en:48, spd:10, loop:true, replay=false }	//	眠り *
+	{ ...AI, id:"aim", st:50, en:54, spd:4, loop:true, replay=false }		//	構え *
+	{ ...AI, id:"sick", st:55, en:59, spd:4, loop:true, replay=false }		//	弱り *
+	{ ...AI, id:"sit", st:60, en:64, spd:10, replay=false }		//	座り *
+	{ ...AI, id:"jump", st:65, en:69, spd:10, replay=false }		//	ジャンプ *
+	{ ...AI, id:"land", st:70, en:74, spd:10, replay=false }		//	着地 *
+	//	エモーション
+	{ ...EI, id:"greet", st:100, en:108, spd:10 }		//	挨拶 *
+	{ ...EI, id:"yes", st:110, en:118, spd:10 }		//	はい *
+	{ ...EI, id:"no", st:120, en:128, spd:10 }			//	いいえ *
+	{ ...EI, id:"happy", st:130, en:138, spd:10 }		//	喜ぶ *
+	{ ...EI, id:"anger", st:140, en:148, spd:10 }		//	怒る *
+	{ ...EI, id:"sad", st:150, en:158, spd:10 }		//	悲しむ *
+	{ ...EI, id:"doubt", st:160, en:168, spd:10 }		//	疑う
+	//	バトル
+	{ ...BI, id:"fight", st:200, en:209, spd:12 }		//	戦闘開始
+	{ ...BI, id:"victory", st:210, en:219, spd:10 }	//	勝利
+	{ ...BI, id:"damage", st:220, en:224, spd:20 }		//	ダメージ *
+	{ ...BI, id:"shield", st:225, en:229, spd:12 }		//	防御(盾) *
+	{ ...BI, id:"avoid", st:230, en:234, spd:12 }		//	避け *
+	{ ...BI, id:"die", st:235, en:239, spd:10 }		//	死亡 *
+	//	構え
+	{ ...BI, id:"aimp", st:250, en:254, spd:4, loop=true }		//	素手構え *
+	{ ...BI, id:"aimw", st:255, en:259, spd:4, loop=true }		//	武器構え *
+	{ ...BI, id:"aimb", st:260, en:264, spd:4, loop=true }		//	弓構え 
+	{ ...BI, id:"spell", st:265, en:269, spd:4, loop=true }	//	唱え 
+	{ ...BI, id:"dashw", st:270, en:274, spd:10 }		//	斬りかかり、突進
+	//	武器攻撃
+	{ ...SI, id:"slash1", st:300, en:304, spd:10 }		//	斬る(袈裟) *
+	{ ...SI, id:"slash2", st:305, en:309, spd:10 }		//	斬る(横払い) *
+	{ ...SI, id:"slash3", st:310, en:314, spd:10 }		//	斬る(叩き付け) *
+	{ ...SI, id:"slash4", st:315, en:319, spd:10 }		//	斬る(切り上げ) *
+	{ ...SI, id:"stick1", st:320, en:324, spd:10 }		//	突く(前) *
+	{ ...SI, id:"stick2", st:325, en:329, spd:10 }		//	下突き *
+	{ ...SI, id:"bow1", st:330, en:334, spd:10 }		//	弓(前) 
+	{ ...SI, id:"bow2", st:335, en:339, spd:10 }		//	弓(斜め) 
+	{ ...SI, id:"shoot1", st:340, en:344, spd:10 }		//	銃撃 
+	{ ...SI, id:"sweep1", st:345, en:347, spd:10, loop=true }		//	振り回し(上) *
+	{ ...SI, id:"raise1", st:350, en:354, spd:10 }		//	掲げる(上) *
+	{ ...SI, id:"raise2", st:355, en:359, spd:10 }		//	掲げる(前) *
+	//	素手
+	{ ...PI, id:"punch1", st:400, en:404, spd:10 }		//	パンチ(横) *
+	{ ...PI, id:"punch2", st:405, en:409, spd:10 }		//	パンチ(アッパー)
+	{ ...PI, id:"punch3", st:410, en:414, spd:10 }		//	パンチ(肘鉄)
+	{ ...PI, id:"kick1", st:415, en:419, spd:10 }		//	キック(横) *
+	{ ...PI, id:"kick2", st:420, en:424, spd:10 }		//	キック(ソバット) *
+	{ ...PI, id:"blast1", st:425, en:429, spd:10 }		//	波動 *
+	{ ...PI, id:"magic1", st:430, en:434, spd:10 }		//	魔法 *
+];
+
+//	4足歩行アニメーション。基本的にステージ中のモブとして出る想定のモーション数。
+//	スキルを限定すれば戦闘にも参加させていい。
+local animelist_leg4 = [
+];
+
+//	宝箱用のモーション。ヒンジ型、フタ型、スライド型などあり。
+local animelist_box = [
+	//	基本動作
+	{ id:"stand", st:0, en:0, spd:1, replay=false }
+	{ id:"close", st:10, en:15, spd:10, replay=false }
+	{ id:"locked", st:15, en:15, spd:10 }
+	{ id:"open", st:0, en:5, spd:10, replay=false }
+];
+
+//	その他のモーション。可動部分は無いが、本体が割と色んな動きをして良い。
+local animelist_obj = [
+	{ id:"stand", st:5, en:9, spd:2, loop=true, replay=false }
+	{ id:"vibe", st:10, en:14, spd:10 }
+	{ id:"pop", st:15, en:19, spd:10 }
+]
+
+//	animelistをidをキーとしたマップに変換。キャッシュする。
+local mapanimelist( a){
+	local cache = {};
+	if( cache[a]) return cache[a];
+	return cache[a] <- a.reduce( @( v, t){
+		t[v.id] <- v; return t;
+	}, {});
+}
+
+//////////////////////////////////////////////////////////////////////////
+//	エモーション定義。RPGSystemに持ってっても良い
+
+//	
+class RPG3DObject extends SK3DObject
+{
+	//	motのフォルダ名のパターンからどのアニメーションリストを使うかが決まる。
+	//	たとえば、leg2_man/test.motの場合はleg2が選ばれる。
+	static animelistmap = {
+		"leg2" = animelist_leg2,
+		"leg4" = animelist_leg4,
+		"box" = animelist_box,
+		"obj" = animelist_obj,
+	};
+	
+	static diroffs = Math.PI;	//	ボクセルキャラ等はモデリング時に-Z方向を向いているので無理やり回転
+	
+	rpgobj = null;				//	RPGPlayer | RPGEnemy | null : キャラから生成された場合に設定される
+	event = null;				//	EventRunner : イベントから生成された場合に設定される
+	
+	//	位置、スムーズ移動
+	basepos = null;				//	(x,y,z,dir) : 基準位置。バトルなどで隊列指定されたときに入る
+	+prevpos = Vector3D();		//	前フレームでの位置。スムーズ移動用。
+	dir = 0.0;					//	
+	prevdir = 0.0;				//	前フレームでの向き。スムーズ移動用。
+	
+	//	移動アクション
+	mainaction = null;			//	PlayerMoveAction | EventMoveAction : 操作の入力処理とオブジェクトの移動を兼ねる。
+	manuaction = null;			//	ManualAction : 外部から設定されるアクションを再生。これが設定されてたらmainactionは動作しない。
+	+vec = Vector3D();			//	ummmm
+	landed = true;
+	floorobj = null;			//	RPG3DMapAsset | null : 動くアセットに乗ってる場合そのオブジェクト。
+
+	//	状態
+	ovfx = null;				//	自分に発生しているオーバーレイエフェクト。
+	selbits = 0;				//	選択状態ビット。1が主選択、2が副選択。どっちかが立ってれば選択状態。
+	light = null;				//	設定されたライト。1つのみ
+	
+	//	アニメ
+	animelist = null;			//	
+	animemap = null;			//	
+
+	//	2d view
+	tgtview = null;				//	ターゲット選択SKView
+
+
+	//	イベント設定やその他初期化用データ(プレイヤー配置、バトル配置など)からステージオブジェクトを生成する。
+	//	※ドアもそのまま生成できる。シーンに配置された時点でFreeBlockを取得でき、bnd等を確定できる。
+	//	※キャラのコンディションでモデルを入れ替えてる場合はここでmdlidが変わるのかな？
+	static function create3DObject( v){
+		local sk = null;
+		local mdl = v["mdl"];
+		if( !mdl && v["mdlid"]){
+			mdl = ::rpgres[v.mdlid];
+		}
+		if( mdl["vox"]){	//	ボクセルモデル
+			sk = RPG3DVoxChara();
+			sk.setCharaVox( mdl);
+		}else
+		if( mdl["pic3d"]){	//	ピクチャモデル
+			sk = RPG3DPicture();
+			sk.setPicture( mdl);
+		}else
+		if( mdl["fbuid"]){	//	フリーブロックのなりすまし※mdl内にfbtype,fbparamも入れるべし
+			sk = RPG3DDoor();
+			sk.setDoor( mdl);
+		}else
+		if( mdl["efx"]){	//	エフェクト
+			sk = RPG3DEffect();
+			sk.setEffect( mdl);
+		}else
+		if( mdl["bw64"]){	//	マップアセット！
+			sk = RPG3DMapAsset();
+			sk.setMapAsset( mdl);
+		}else{	//表示が無い！ゴーストモデル。
+			sk = RPG3DGhost();
+			sk.setGhost( mdl);
+		}
+		if( !sk){	//	mdlが取得できない場合はエラー用のモデルにする。
+			
+		}
+		return sk;
+	}
+
+	constructor(){
+		rot.setHPB( Math.PI, 0.0, 0.0);
+	}
+
+	function addedToScene( scn){
+		super.addedToScene( scn);
+		if( light) scn.addLight( light);
+	}
+	
+	function removedFromScene( scn){
+		super.removedFromScene( scn);
+		if( light) scn.removeLight( light);
+	}
+	
+	//	p:(x,y,z,dir)
+	function setPosition( p){
+		basepos = clone p;
+		// prevpos << pos << p;	error????????
+		prevpos( pos( p));
+		if( 3 in p) setDir( p[3]);
+		matdirty = true;
+	}
+
+	function resetPosition(){
+		prevpos( pos( basepos));
+		if( 3 in basepos) setDir( basepos[3]);
+		matdirty = true;
+	}
+
+	function setDir( d){
+		prevdir = dir = d;
+		rot.setHPB( prevdir+diroffs, 0.0, 0.0);
+		matdirty = true;
+	}
+
+	function createShape( shp, size){
+		switch( shp){
+		case SK_SHAPE_BOX:
+			return b3Shape.createBox( size[0], size[1], size[2]);
+		case SK_SHAPE_SPHERE:
+			return b3Shape.createSphere( size[0]);
+		case SK_SHAPE_CYLINDER:
+			return b3Shape.createCylinder( size[0], size[1], size[2]);
+		case SK_SHAPE_CAPSULE:
+			return b3Shape.createCapsule( size[0], (size[1]-size[0])*2.0);
+		}
+		throw Exception("createShape error %S\n", shp);
+	}
+
+	//	調べるボタンで「調べる」「話す」どっちか
+	function getSearchButtonLabel(){
+		return "$T.btn_search";
+	}
+	
+	/////////////////////////////////////////////////////////////////////////
+	//	アップデート処理、移動処理
+
+	function update( dt, pmatdirty=true){
+		if( dt > 0.001){
+			if( manuaction){
+				manuaction.updateAction( dt);
+				if( mainaction) mainaction.standbyAction( dt);
+				matdirty = true;
+			}else{
+				if( mainaction) mainaction.updateAction( dt);
+				matdirty = true;
+			}
+			if( ovfx){
+				if( !ovfx.update( dt)) overlay( null);
+			}
+			updatepos( dt);
+		}
+		local b = super.update( dt, pmatdirty);
+		if( light){
+			gmat.mult34( light.ref.mat, m_1);
+			light.setMatrix( m_1);
+		}
+		return b;
+	}
+
+	function updatepos( dt){
+		//	pos
+		local vec = v_0( pos).sub( prevpos), vlen = vec.length();
+		if( vlen >= 0.000001){
+			local K1 = 1.5, K2 = 6.0;
+			local spd = (K1 + vlen * K2) * dt;
+			if( spd >= vlen){
+				prevpos << pos;
+			}else{
+				prevpos.add( vec.scale( spd/vlen));
+			}
+			matdirty = true;
+		}
+		//	dir
+		if( Math.abs( prevdir-dir) > 0.000001){
+			local K1 = 1.5, K2 = 12.0; // local K1 = 1.5, K2 = 6.0;
+			local d0 = unitdir( prevdir), d1 = unitdir( dir);
+			local vec = deltadir( d0, d1), vlen = Math.abs( vec);
+			local spd = (K1 + vlen * K2) * dt * 0.001;
+			prevdir = (spd >= vlen) ? d1 : d0 + spd * Math.sign( vec);
+			rot.setHPB( prevdir+diroffs, 0.0, 0.0);
+			matdirty = true;
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////
+	//	演出指示
+	//	
+	
+	//	アニメID, 再生パートを指定してアニメーション再生。
+	//	マニュアル的な再生も可能ではある。
+	function anime( st, en=null, spd=null, lp=false, ft=0.0){
+		throw Exception( "yondara dame");
+	}
+
+	//	
+	function anime2( t){	//	anime( { id, spd, part, })	//	パラメータ引数
+		local aid = t.id, at = animemap[aid];
+		if( !at) return;	//	アニメIDが存在しない！
+		//	ループアニメ中の場合は同じIDが来たら再生をしない。速度は変化可能
+		local st = at.st, m1 = at["m1"]??st, en = at["en"]??st, m2 = at["m2"]??en, loop = at["loop"];
+		local part = t["part"]||0, spd = (t["spd"]||1.0) * at.spd;
+		local layers = animlayers.layers, al = layers[0];
+		if( aid==al["id"] && part==al["part"] && at["replay"]==false){	//	リピート不可アニメ
+			al.setSpeed( spd);
+			return al;
+		}
+		if( part){
+			switch( part){
+			case ST_MD: en = m2; loop = false; break;
+			case MD_EN: st = m2; loop = false; break;
+			case EN_ST: local tmp = st; st = en; en = tmp; break;	//	こいつだけloop変化なし。。？
+			case ST: en = m1; loop = false; break;
+			case MD: st = m1; en = m2; loop = false; break;
+			case EN: st = en; loop = false; break;
+			}
+		}
+		//	アニメーションをセット
+		if( al) al.animating = false;
+		al = AnimationLayer();
+		local mot = getMotion( t["mot"]);
+		if( mot) al.partsmap = mot.partsmap;
+		al.setAnime( st, en, spd, loop);
+		al.id = aid; al.part = part;
+		layers[0] = al;
+		layers[1] = null;
+		return al;
+	}
+
+	function setAnimeLayer( al){
+		al.animating = true;
+		animlayers.layers[0] = al;
+	}
+	
+	//	エフェクトを発生させる。エフェクトIDを指定。エフェクトの指定でOverlayEffectも同時発動。
+	//	table,stringを指定可能
+	function effect( efx){
+		if( !efx) return;	//	nullが渡されることも多々あり
+		local noov = efx["noov"];
+		if( typeof( efx)==SS_STRING) efx = ::conf._resource.efx[efx];
+		if( !efx["efx"] && efx["id"]){
+			efx = { ...::conf._resource.efx[efx.id], ...efx};
+		}
+		local sk;
+		if( efx["efx"]){
+			sk = SK3DEffect( efx.efx);
+			sk.efx = efx;
+			if( efx["hsv"]) sk.setHSV( efx.hsv);
+			if( efx["scale"]) sk.scale( efx.scale);
+			if( efx["speed"]) sk.timescale = efx.speed;
+			local lpos = getEffectPosition( efx["place"]);
+			sk.pos( lpos);
+			if( efx["pos"]) sk.pos.add( efx.pos);
+			if( efx["hpb"]) sk.rot.synthesize( q_1.setHPB( efx.hpb[0]*Math.DTOR, efx.hpb[1]*Math.DTOR, efx.hpb[2]*Math.DTOR));
+			if( efx["dis"]){
+				sk.pos.transform( gmat);
+				scn.addObject( sk);
+			}else{
+				addChild( sk, lpos[3]);		//	常に自分の子として追加？
+			}
+			sk.startParticle();
+		}
+		if( efx["ovfx"]["enabled"] && !noov){
+			overlay( efx.ovfx);
+		}
+		return {sk=sk,efx=efx};
+	}
+
+	function getEffectPosition( plc){
+		switch( plc){
+		case 1: //	top
+			return (0,bnd.y+bnd.s,0, null);
+		case 2: //	bottom
+			return (0,bnd.y-bnd.s,0, null);
+		}
+		//	center
+		return (0, 0, 0, null);
+	}
+	
+	//	自分自身にオーバーレイエフェクトを発生させる。同時に一つのOverlayEffectのみ有効。
+	//	vox.skfx, enemy.skfxのみで実装できれば良し。中のマテリアルを破壊せずに上から描画出来れば良い
+	//	※コラプスだけが特殊で、RPG3DPictureで個別実装の必要がある。ベースパスでアルファテストのピクセル破棄が必要なため。
+	//	
+	function overlay( data){
+		local ma = getMaterials();
+		if( data){
+			ovfx = OverlayEffect( this, data);
+			foreach( m in ma) ovfx.setToMaterial( m);
+			visiblemask |= 8196;
+		}else{
+			if( ovfx){
+				foreach( m in ma) ovfx.resetToMaterial( m);
+			}
+			ovfx = null;
+			visiblemask &= ~8196;
+		}
+	}
+
+	//	フェードも可能。
+	function setLight( ld){
+		local lit0, lit1;
+		if( light) scn.removeLight( light);
+		if( ld["op"]){	//	ややこしいけどop==1で消す
+			if( !ld["fadetime"] || !light) return light=null;
+			lit0 = light;
+			lit1 = clone light;	//	消灯のためのlight
+			lit1.power = 0.0;
+		}else{
+			lit1 = Light();
+			lit1.ch = 1;
+			lit1.type = 2;
+			lit1.k1 = ld.lr;		//	lr=有効半径
+			lit1.color = ld.lcol | 0xff;
+			lit1.power = ld.lcol & 255;	//	1-255?
+			lit1.spotout = Math.cos( ld.lspot[0] * Math.DTOR);
+			lit1.spotsharp = ld.lspot[1]+1;
+			local lp = ld["lpos"], lr = ld["lhpb"];
+			local m = Matrix().translate( lp[0], lp[1], lp[2]).rotate( lr[0]*Math.DTOR, lr[1]*Math.DTOR, 0);
+			lit1.ref = {mat = m};
+			if( !ld["fadetime"]) return scn.addLight( light=lit1);
+			if( light){
+				lit0 = light
+			}else{
+				lit0 = clone lit1;
+				lit0.power = 0.0;
+			}
+		}
+		//	フェード処理。lit0 -> lit1に
+		local self = this;
+		light = clone lit0;
+		light.setMatrix( gmat.mult34( lit0.ref.mat, m_1));
+		scn.addLight( light);
+		newthread().start( @(){
+			local w = 0.0, dw = 1.0 / ld.fadetime * 16.0;
+			for( ;;){
+				sleep( 16);
+				if( (w+=dw) >= 1.0) break;
+				self.light.lerpset( lit0, lit1, w);
+			}
+			if( ld["op"]) light = null;
+		}, this);
+	}
+	
+	//	選択状態をセット。キャラの周りに2ピクセルのアウトライン描画をする。オーバーレイエフェクトと同時に使用可能。
+	//	deferredレンダラーでないと表示されない。また、どの解像度でも2ピクセル。1080p以上なら3ピクセルとかに出来るが。
+	//	※選択エフェクトは、カラーの設定は個別にしないで
+	//	
+	function setSelected( b){
+		if( !selbits != !b){
+			local ma = getMaterials();
+			if( b){	//	選択の描画パスを有効化／無効化
+				foreach( m in ma) m.visiblemask |= 4096;
+				visiblemask |= 4096;
+			}else{
+				foreach( m in ma) m.visiblemask &= ~4096;
+				visiblemask &= ~4096;
+			}
+		}
+		selbits = b;
+	}
+	
+	//	死亡アニメーションを表示。敵はシェーダーでの演出になる
+	function deathAnime(){
+		anime2( {id="die"});
+	}
+
+	//	ピッキング用の画像を取得。RPG3DPictureのみ返す。
+	function getPickingImage(){
+		return null;
+	}
+	
+	/////////////////////////////////////////////////////////////////////////
+	//	アクション関連
+	//	ここのメソッドは基本的にカプセル形状のコリジョンで機能する。
+
+	//	指定した位置からvecの長さのに進むときのコリジョンを判定する。
+	//	押し戻しがあった場合にそのベクトルを返す。
+	function moveTest( pos, vec){
+		local shp = b3body.getShape(), b3world = scn.b3world;
+		local pos1 = v_1( pos).add( 0, 0.8, 0).add( vec);	//	todo : offsmatにしないと！
+		local b3res = b3world.contactTest( 0, shp, pos1, G_CHARA, G_STAGE|G_CHARA|G_OBJECT);
+		if( b3res.len()){
+			local pv = v_2( 0.0), mv = v_3( 0.0);
+			foreach( i,br in b3res){
+				if( br.bodyb == b3body) continue;	//	自分自身にも当たるけど無視
+				local n = br.normal, nlen = n.length();
+				if( nlen < 0.001) continue;
+				if( br.dotSurfaceNormal() < 0.707) continue;	//	衝突面との角度差が45°以上ある場合は押し戻しの必要なし。ポリゴン面が連続していることが前提。
+				local sn = br.surfnormal;//, ny = n.y/nlen;
+				if( sn&&sn.y>FLOORANGLE){	//	フロアに対するコリジョンはxz成分の押し戻しは無しにする。
+					n.x = n.z = 0.0;
+				}
+				pv.max( n); mv.min( n);	//	押し戻しベクトルで+-に一番大きな値を保存。
+			}
+			return pv.add( mv);	//	+と-の押し戻しベクトルを合成して返す
+		}
+	}
+
+	//	指定した位置で設置しているか判定する。dyまで下の床が有効。
+	function groundTest( pos, dy){
+		local shp = b3body.getShape(), b3world = scn.b3world, halfh = 0.8;//shp.getBounds( null, r_1).s;
+		local vvy = dy;//-0.1;
+		local pos0 = v_1( pos ).add( 0.0, halfh+0.1, 0.0);
+		local vec = v_2( 0.0, vvy, 0.0);
+		local b3res = b3world.convexSweepTest( 0, shp, pos0, vec, G_CHARA, G_STAGE|G_CHARA|G_OBJECT);
+		foreach( br in b3res){
+			local ny = br.normal.y, sn = br.surfnormal;	//	sweeptestの場合はnormalは正規ベクトル
+			if( ny > FLOORANGLE && (!sn || sn.y>FLOORANGLE)){// || (ny > 0.03 && sn && sn.y > FLOORANGLE/* && br.pointb.y < pos.y+width*/)){	//	カプセルの下半球が触れてる床のみ採用
+				local f = br.fraction;	//	b3resはfractionで昇順ソートされている
+				local gy = Math.clamp( pos0.y + vec.y*f -halfh, -128.0, 128.0);
+				return gy;
+			}
+		}
+		return null;
+	}
+
+	//	指定した位置に歩いて行けるかチェック。
+	//	穴に落ちない、
+	function walkTest( pos0, pos1){
+		local rest = pos0.hypot( pos1)*1.2+2.0;	//	歩ける残り距離
+		local p = Vector3D( pos0);
+		for( ;;){
+			local v = v_0( pos1).sub( p).scale( 1, 0, 1);	//	x,zのみ
+			local d = v.length();
+			if( d < 0.1) return true;	//	十分近づけた
+			if( d > 0.41){ 
+				v.scale( 0.4/d); d = 0.4;
+			}
+			if( (rest-=d)<=0.0) return false;	//	距離オーバー、、、
+			local ref = moveTest( p, v);
+			p.add( v).add( ref);
+			//	穴落ちチェック。。。
+			local gy = groundTest( pos, -0.5);
+			if( gy == null) return false;
+			p.y = gy;
+		}
+	}
+
+	//	moveTest, groundTestを組み合わせて当たり判定、接地チェックをしつつ自分を移動する。
+	function move( vec, dt, gdy=0.0){
+		local vdt = vec * (dt*0.001);
+		local ref = moveTest( pos, vdt);
+		pos.add( vdt).add( ref);
+		local gy = groundTest( pos, vdt.y+gdy);
+		if( gy != null) pos.y = gy;
+		return { ref=ref, gy=gy };
+	}
+	
+	/////////////////////////////////////////////////////////////////////////
+	//	プリセットアクション
+	//	
+
+	//	一定時間立ち止まる。posの変化、当たり判定、接地チェックは行わない。
+	function standBy( t){
+		local self = this, time = (0.0,);
+		return @( dt){
+			self.dir ??= t["dir"];
+			return (time[0]+=dt)<t.time;
+		};
+	}
+	
+	//	指定した座標まで直線的に移動する。当たり判定、接地チェックは行わない。
+	function moveTo( t){
+		local self = this, time = (0.0,), ease = Easing.easeLinear;
+		local p1 = t.pos;
+		return @( dt){
+			self.matdirty = true;
+			local p0 = #self.pos, p1 = #t.pos, dur = #float( t["time"] || p0.hypot( p1)/t.spd*1000);
+			local w = (time[0]+=dt) / dur;
+			self.dir ??= t["dir"];
+			if( w >= 1.0){
+				self.pos( p1);
+				return null;
+			}else{
+				p0.lerp( p1, ease( w), self.pos);
+				return callee();
+			}
+		};
+	}
+
+	//	指定したX,Z位置まで歩行する。当たり判定、接地チェックあり。落下動作も行う。空中時でも呼べる。
+	//	基本的に、呼び出す前に目的地まで行けるかチェックして行けるようなら実行する。
+	//	障害物に引っかかり一定時間抜けなかったら、途中で終了。
+	function walkTo( t){
+		local self = this;
+		local tgtpos = Vector3D( t.target), first = ptr( true);
+		return @( dt){
+			self.matdirty = true;
+			local vyptr = #ptr( self.vec.y);	//	vec.yは実行開始時にキャプチャ
+			local vec = self.vec( tgtpos).sub( self.pos).scale( 1, 0, 1);	//	x,zの差分ベクトル
+			local vlen = vec.length();
+			if( vlen <= 0.1 && self.landed){	//	距離判定はわりと緩めに。落下中は終わらせない
+				vec( 0); return t["next"];	//	到達！
+			}else{
+				local spd = Math.min( t.spd, vlen/(dt*0.001));
+				vec.normalize();
+				if( ~first){
+					first << false;
+					if( t["aim"]) self.dir = Math.acos( vec.z)*((vec.x>=0.0)?1.0:-1.0);
+					// if( t["movetype"]) self.anime2( {id=t.movetype});
+				}
+				vec.scale( spd);
+				vec.y = ~vyptr;
+				local p = self.pos, v = vec*(dt*0.001), ref = self.moveTest( p, v);
+				p.add( v).add( ref);
+				if( ref && ref.length() / v.length() >= 0.999){	//	一定時間、完全に引っかかってたら終了
+					return t["next"];
+				}
+				if( !self.landed){	//	ジャンプ又は落下中
+					vyptr << Math.max( ~vyptr-0.015*dt, -10.0);
+					local gy = self.groundTest( p, -spd*dt*0.001);
+					if( gy != null){	//	地面があった
+						vyptr << 0.0; 
+						p.y = gy;
+						self.landed = true;
+					}
+				}else{	//	歩行中
+					local gy = self.groundTest( p, -Math.max( 0.25, spd*dt*0.001+0.1));
+					if( gy != null){
+						p.y = gy;
+					}else{	//	地面が無くなった=落下開始
+						vyptr << 0.4;		//	落下開始時には少しだけ上方向のベクトルを与える
+						self.landed = false;
+					}
+				}
+				return callee();	//	自分自身を返すことで継続
+			}
+		}
+	}
+
+	function _calcv0( y0, y1, a, t){
+		return (y1-y0-a*0.5*t*t) / t;
+	}
+
+	//	ジャンプ
+	//	
+	function jumpTo( t){
+		local self = this;
+		local pos = this.pos;
+		local pos0 = Vector3D( pos), pos1 = Vector3D( t.target), first = ptr( true);
+		local xzvec = (pos1 - pos0).scale( 1, 0, 1);
+		local xzlen = xzvec.length();
+		local time = xzlen / t.spd * 1000.0, tptr = ptr( 0.0);
+		local y0 = pos0.y, y1 = pos1.y, a = -0.00001, v0 = _calcv0( y0, y1, a, time);
+		xzvec.scale( 1.0 / xzlen);
+		return @( dt){
+			if( ~first){
+				first << false;
+				if( t["aim"]) self.dir = Math.acos( xzvec.z)*((xzvec.x>=0.0)?1.0:-1.0);
+			}
+			self.matdirty = true;
+			tptr << (~tptr + dt);
+			local w = ~tptr / time;
+			if( w >= 1.0){
+				pos( pos1);
+				self.vec( 0);
+				self.landed=true;
+				return t["next"];
+			}else{
+				pos0.lerp( pos1, w, pos);
+				local t = ~tptr;
+				pos.y = y0+v0*t+a*0.5*t*t;
+				return callee();	//	自分自身を返すことで継続
+			}
+		}
+	}
+	
+	//////////////////////////////////////////////////////////////////////////////////////////////
+	//	各種ポップアップ
+
+	//	bndはビルボードの場合ごく薄い
+	function projectBounds(){
+		local parent = scn.ref, cam = parent.renderer.camera;	//	scn.ref -> SK3DView
+		local b = bnd, vmat = cam.viewmat, pmat = cam.prjmat;
+		local sa = #(
+			Vector3D(-1,-1,-1), Vector3D( 1,-1,-1), Vector3D(-1, 1,-1), Vector3D( 1, 1,-1), 
+			Vector3D(-1,-1, 1), Vector3D( 1,-1, 1), Vector3D(-1, 1, 1), Vector3D( 1, 1, 1), 
+		);
+		local r = #Rect2D(), v = #Vector3D(), r2 = #Rect2D();
+		r.set( 10000, 10000, -20000, -20000);
+		foreach( s in sa){
+			v.set( b.r, b.s, b.t).scale( s).add( b.x, b.y, b.z);
+			local w = v.transform( mat).transform( vmat).transformw( pmat);
+			if( w <= 0.0) continue;		//	カメラ手前。。。
+			local s = 1.0 / w * 0.5;
+			v.scale( s, -s, s).add( 0.5);
+			r.expand( r2.set( v.x,v.y,0,0));
+		}
+		r.scale( parent.bnd.w, parent.bnd.h);
+		return r;
+	}
+
+	//	ダメージポップアップ。回復、ミスも表示。表示位置からは移動しない
+	function popupDamage( str, col=0xffffffff, type=0){
+		str = string( str);
+		local v = ::loadSKView( type==1 ? "/resource/ui/parts/popstr2.ui": "/resource/ui/parts/popstr.ui");
+		local list = v.findChild( "chrlist");
+		list.setRowCount( length( str));
+		foreach( i, c in str){
+			local r = list.rows[i];
+			r.setValue( "c0", "");
+			setTimeout( @(){
+				r.setValue( "c0", char( c));
+				r.action( "pop");
+			}, i*60);
+		}
+		local r = projectBounds();
+		local gy = r.h;
+		if( this["pic"]){
+			gy *= 1.0-pic.gndpos[1];
+		}
+		local parent = scn.ref;		//	SK3DView
+		v.findChild( "g").buf.color0 = col;
+		v.pos( r.x+(r.w>>1), r.y+gy, 0);
+		parent.addChild( v);
+		setTimeout( @() v.removeFromParent(), 900);
+	}
+
+	//	コンディションポップアップ。put, rem
+	function popupCondition( condid, action="put"){
+		local data = ::conf.cond[condid];
+		local v = ::loadSKView( "/resource/ui/pop_cond.ui");
+		v.setValue( "icon", data.icon);
+		local r = projectBounds();
+		local parent = scn.ref;	//	SK3DView
+		v.pos( r.x+(r.w>>1), r.y+(r.h>>1), 0);
+		parent.addChild( v);
+		v.actionAndDie( action);
+	}
+	
+	//	expゲージポップアップ。表示後にexpは増えていき、レベルアップしたらゲージは巻き戻りフラッシュ
+	//	この表示は自動では消えずに、バトル終了のマップ切り替えで初めて消える。
+	function popupExpGauge(){
+		local v = ::loadSKView( "/resource/ui/parts/expgauge.ui", RPG3DPopupView);
+		local pc = rpgobj, lv0 = pc.LV;
+		v.bindValues({
+			bar = @(){
+				local e0 = RPGSystem.getExpByLV( pc.LV, pc.data.expcurv), e1 = RPGSystem.getExpByLV( pc.LV+1, pc.data.expcurv);
+				local f = (pc.exp-e0) * 10.0 / (e1-e0) + (pc.LV>lv0)*10.0;
+				return f;
+			},
+			lvup = @() pc.LV>lv0 ? "lvup" : null,
+		});
+		v.setTarget( this);
+		local parent = scn.ref;	//	SK3DView
+		parent.addChild( v);
+	}
+}
+
+//	
+class SK3DEffect extends SK3DObject
+{
+	efx = null;
+
+	function update( dt, pmatdirty=true){
+		matdirty = true;	//	毎回updateSRTする
+		return super.update( dt, pmatdirty);
+	}
+
+	//	カメラに対して常に右か左を向く。左の場合はrotが180度回転になる。
+	//	※現状エネミーにswish系のエフェクト出すと方向が変になる
+	function updateSRT(){
+		if( efx["billboard"]){
+			local cam = scn.maincamera;
+			local pmat = m_1.identity();
+			if( parent){
+				if( parentbone){ if( parent.motion["zinvert"]){ pmat.lscale( 1,1,-1); }; parentbone.mat.mult34( pmat, pmat); }
+				parent.gmat.mult34( pmat, pmat);
+			}
+			local q = cam.viewmat.mult34( pmat, m_1).lscale( 1,1,-1).getRotation( q_1);	//	44だと変になる？上下の回転が逆になるような感じ
+			q = q_2( rot).synthesize( q);
+			local s = v_2( scale);
+			local v = v_1( 0, 0, 1).transform0( m_1);
+			q.w *= -1;	//mmm?
+			if( v.x >= 0.000001){
+				// s.x *= -1.0;
+				q.synthesize( q_1.setHPB( Math.PI, 0, 0));
+				// q.set( q_1.setHPB( Math.PI, 0, 0).synthesize( q));
+			}
+			srttf.setSRT( pos, s, q);
+		}else{
+			super.updateSRT();
+		}
+	}
+}
+
+//	透明オブジェクト。ポータル、透明イベント用。デバッグ時には表示がある。
+//	ポータル等はH=1m、W,D=任意のボックス。ボックス内に完全に体(X,Z)が入るとトリガー。
+//	透明イベントはリソースIDに透明オブジェクト用がある。1m,2m,4mぐらいあれば良いか。
+//	
+class RPG3DGhost extends RPG3DObject
+{
+	go = null;
+	
+	function setGhost( go){
+		this.go = go;
+		local s = go["r"] || #(0,1.0,0,0.5,1.0,0.5);	//	ブロックサイズで2x4x2が基準
+		bnd.set( s[0], s[1], s[2], s[3], s[4], s[5]);
+		//	b3body
+		local shp = b3Shape.createBox( bnd.r, bnd.s, bnd.t);
+		local offsmat = Matrix.fromTranslate( 0, bnd.y, 0);
+		b3body = b3Body( 0.0, shp, mat, G_EVENT, G_STAGE);		//	G_STAGEとしかコリジョンは当たらない
+		b3body.ref = this;
+		b3body.setOffsetTransform( offsmat);
+	}
+}
+
+//	ドアはフリーブロックと同一のボックス。ポータルになってるものもある。
+//	見た目は無く、設定されたFreeBlockのコリジョンのconvexhullだけを持つ。
+//	
+class RPG3DDoor extends RPG3DObject
+{
+	static doorshpcache = {};
+
+	dr = null;
+	fb = null;
+
+	//	BlockWorldに配置されたフリーブロックと同じ座標が入ってくる
+	//	※コリジョンの回転のみに適用。ブロックの回転はpivotが(0.25,0.25,0.25)
+	function setPosition( p){
+		basepos = clone p;
+		prevpos( pos( p));
+		prevdir = dir = p[3];
+		rot.setHPB( dir, 0.0, 0.0);
+		matdirty = true;
+	}
+
+	//	{ fbuid, fbtype, fbparam}全て正しい値が入っている必要あり。
+	function setDoor( dr){
+		this.dr = dr;
+		local fb = FreeBlock.create({ fbtype:dr.fbtype, fbparam:dr.fbparam });
+		bnd.set( fb.br.toRect3D() * 0.5); bnd.y = bnd.s;
+		//
+		local shp = getDoorShape( dr.fbtype, dr.fbparam);
+		local offsmat = null;
+		b3body = b3Body( 0.0, shp, mat, G_EVENT, G_CHARA|G_OBJECT|G_EVENT);
+		b3body.ref = this;
+		b3body.setOffsetTransform( offsmat);
+	}
+	
+	//	
+	static function getDoorShape( fbtype, fbparam){
+		fbparam &= ~0x80000000;	//	閉じたドアで形状を作る
+		local k = sprintf( "%d.%d", fbtype, fbparam);
+		local shp = doorshpcache[k];	//	キャッシュ
+		if( shp) return shp;
+		//	コリジョン生成
+		//	ドア部分のコリジョン形状のみ取得
+		local cr = #Rect3D( 2, 2, 2, 2, 2, 2);
+		local bw = #BlockWorld( 8, 8, 8);	//	8x8x8サイズまで対応。。
+		local bci = #BlockColiderInterface( bw);
+		local fb = FreeBlock.create({ fbtype:fbtype, fbparam:fbparam });
+		bw.placeFreeBlock( fbtype, fbparam, #(4,4,4,0), 111);	//	4,4,4のオフセット, fbuid=111で配置。前のやつは消える
+		bci.setFlagMask( BLK_SOLIDFB);	//	ドア開閉部分のみの形状を取得
+		//	BlockColiderInterfaceから直接頂点配列を取れる。頂点はダブってるのでconvexcloudを作る際に最適化が必要
+		local pts = bci.collectPoints( cr, #[], Matrix.fromTranslate( -2, -2+fb.br.h/2*0.5, -2));
+		return doorshpcache[k] <- b3Shape.createConvexCloud( pts, true);
+	}
+
+
+	//	※ドア部分のコリジョンバウンディングをboxにする
+	//	シェイプIDがx0,x1。
+	static function getDoorShape2( fbtype, fbparam){
+		local r = bci.collectPointsBounds( cr, #[], Matrix.fromTranslate( -2, -2+fb.br.h/2*0.5, -2));
+		return b3Shape.createBox( r.r, r.s, r.t);	//	r.x,r.y,r.zのオフセットも必要。。。
+	}
+	
+	function anime2( t){
+		local aid = t.id, at = animemap[aid];
+		//	open, closeにのみ反応。
+		local stage = rpgstage, fb = stage.bw.getFreeBlock( dr.fbuid);
+		if( fb && ::fblks[fb.fbtype].cls=="door"){
+			local fbparam = ( aid == "open") ? (fb.fbparam | 0x80000000) : (fb.fbparam & ~0x80000000);
+			stage.bw.placeFreeBlock( fb.fbtype, fbparam, (fb.x,fb.y,fb.z,fb.rot), dr.fbuid);
+		}
+	}
+}
+
+//	バトルシーンのエネミー用。一枚絵をビルボード描画。透明パスでPMAブレンド。
+//	また、向いている方向が左向きなら画像を左右反転する。
+//	選択時、死亡時にはシェーダーで演出。さらにスキルを受けたときの特殊エフェクトも対応する？縦／横に切れる、ラスター振動、
+//	
+//	※エネミー用シェーダは特別にOPAQUEパスとTRANSPARENTパスと同時に描画される。これはαブレンドをちゃんとやりつつAO等のスクリーンエフェクトをかけるため。
+//	描画の負荷が倍になるけどそんなに問題になるほどではないような。マップ描画の方が重いし。
+//	
+//	タイプとウェイトの2パラメータ。
+//	1 : 死亡。とりあえず1パターン。
+//	2 : 逃走。逆再生で復活や仲間呼び
+//	3 : 
+//	
+class RPG3DPicture extends RPG3DObject
+{
+	static BASERESO = 28.0;
+	
+	pic = null;
+	img = null;			//	RGBAImage 
+	fxtype = 0;
+	fxw = 0.0;
+	fxspd = 0.01;
+
+	//	アニメーションフレーム
+	udiv = 1; vdiv = 1;
+	
+	//	このRPG3DPictureにピクチャ情報等を与える
+	//	pc : { "pic3d":"/resorce/enemy_pic/abc.webp", scale:1.0, "centerpos":[0.1,0.1], "firepos":[0.1,0.1] } }
+	//	
+	function setPicture( pc){
+		pic = pc;
+		if( pc["aniuv"]){
+			udiv = Math.max( 1, pc.aniuv[0]);
+			vdiv = Math.max( 1, pc.aniuv[1]);
+		}
+		local r = ::getResource( pc.pic3d), tex = r.userdata;
+		img = r.getContent();
+		if( !tex){
+			img.premultAlpha();
+			tex = r.userdata = Texture();
+			tex.load( img, 0);		//	4=sRGB 16=PMA
+			tex.ref = weakref( r);
+		}
+		if( udiv > 1 || vdiv > 1){	//	ピック用の画像を作る。キャッシュしないと
+			local pimg = RGBAImage( img.width/udiv, img.height/vdiv);
+			pimg.draw( img, 0, 0);	//	最初のフレームの画像
+			img = pimg;
+		}
+		local w = tex.width / udiv / BASERESO * pc.scale;
+		local h = tex.height / vdiv / BASERESO * pc.scale;		//	16pxで1m。ボクセルと同じ解像度
+		local pm = PrimitiveMeshes.createPlane( w*0.5*(pc["flipx"]?-1:1), -h*0.5, false);
+		local m = pm.face[0].m = clone pm.face[0].m;
+		m.tec = skFXFindTechnique( "enemy.def");	//	エネミー用のシェーダー
+		m.blend = SK_MIX;
+		m.visiblemask = SK_VISIBLE_OPAQUE | SK_VISIBLE_TRANSPARENT | SK_VISIBLE_SHADOW_CASTER;
+		m.depthmask = true;
+		m.alphatest = true; m.alpharef = 1.0;
+		m.tex0 = tex;
+		m.cullface = 0;
+		m.mtype = 0;
+		m.rough = 0.98;
+		m.metal = 0.5;
+		m.mparam = 0xFF050000;
+		m.uvmat = Matrix();
+		m.miscmat0 = Matrix();
+		mesh = pm;
+		bnd.set( pm.bnd);
+		local gndpos = pc.gndpos, piv = Vector3D( gndpos[0], 0.5-gndpos[1], 0).add( -0.5, 0.0, 0.0).scale( h);
+		setPivot( piv);
+		setLayer( 2);
+		visiblemask = SK_VISIBLE_OPAQUE | SK_VISIBLE_TRANSPARENT;
+		if( pc["hsv"]) setHSV( pc.hsv);
+		animelist = pc.animap;
+		animemap = animelist[0] ? mapanimelist( animelist) : null;
+		if( !animlayers) animlayers = AnimationLayers();
+		//	b3body ... バトル中の範囲選択を調べるのみ
+		local shp = b3Shape.createSphere( Math.min( w, h)*0.25);
+		local offsmat = null;
+		b3body = b3Body( 0.0, shp, mat, G_CHARA, G_EVENT);
+		b3body.ref = this;
+		b3body.setOffsetTransform( offsmat);
+	}
+
+	//	ピッキング用の画像を取得。RPG3DPictureのみ返す。
+	function getPickingImage(){
+		return img;
+	}
+	
+	function update( dt, pmatdirty=true){
+		matdirty = true;	//	毎回updateSRTする
+		local m = mesh.face[0].m;
+		//	アニメ
+		local fi = int( animlayers["layers"][0]["frametime"]), us = 1.0 / udiv, vs = 1.0 / vdiv;
+		m.uvmat.set( us,0,0,0, 0,vs,0,0, 0,0,1,0, (fi%udiv)*us,(fi/udiv)*vs,0,1);
+		//	エフェクト(+ピクセルスケール)
+		local tex = m.tex0;
+		fxw = Math.saturate( fxw + fxspd*dt);
+		m.miscmat0.set(
+			!!selbits, 0, udiv, vdiv, 
+			fxtype, fxw, 0, 0,
+			1.0/tex.width, 1.0/tex.height, tex.width, tex.height,
+			// udiv*1.0/tex.width, vdiv*1.0/tex.height, tex.width/udiv, tex.height/vdiv,
+			1.0/tex.width,1.0/tex.height,0,0
+		);
+		return super.update( dt, pmatdirty);
+	}
+	
+	//	カメラに対して常に右か左を向く。左の場合はrotが180度回転になる。
+	//	※カメラは前フレームの回転になっちゃう。気になるようなら要対応。
+	function updateSRT(){
+		local cam = scn.maincamera;
+		local q = m_1.set( cam.viewmat).lscale( 1,1,-1).getRotation( q_1);
+		// q = q_2( rot).synthesize( q);
+		local s = v_2( scale);
+		local v = v_1( 0, 0, 1).transform0( m_1);
+		if( v.x >= 0.000001){
+			// s.x *= -1.0;
+			q = q_2.setHPB( Math.PI, 0, 0).synthesize( q);
+		}
+		q.w *= -1;
+		srttf.setSRT( pos, s, q);
+	}
+
+	function updateSortOffset(){
+		sortoffset = layer*1000.0 + 1999.0;
+		sortscale = -1.0;	//	常に奥から前に描画する
+	}
+
+	function anime2( t){
+		super.anime2( t);
+	}
+	
+	//	ピクチャレベルのエフェクトを再生する。
+	//	die : 死亡エフェクト。
+	//	raise : 復活や仲間呼びなどで増えた場合のエフェクト。
+	//	runaway : 逃走エフェクト。他にも死亡以外での戦闘離脱エフェクト。
+	//	
+	function picfx( id){
+		if( id=="die"){
+			fxtype = 1; fxspd = 0.0006; fxw = 0.0;
+			playSound( "SE111");
+		}
+	}
+	
+	//	死亡アニメーションを表示。敵はシェーダーでの演出になる
+	function deathAnime(){
+		picfx( "die");
+	}
+}
+
+//	
+//	ボクセル＋ボーンアニメーションの構造（人型、４足等共通）
+//	・vox内の各モデルはpmに変換済み。
+//	・mot内の各ボーンは名前が対応するpmの親ボーンになる。
+//	・
+//	・updateMotion内でボーン毎に表示モデルの選択を行う。
+//	
+//	
+class RPG3DVoxChara extends RPG3DObject
+{
+	cv = null;				//	定義。
+	pmmap = null;			//	{name:PolygonMesh} : voxのパーツ名とモデルのマップ。
+	drawpmmap = null;		//	{boneid:PolygonMesh} : ボーン毎に選択されたモデル。renderで参照。
+	pidxmap = null;			//	{bonename:int} : ボーン名と現在モーションで指定されているパーツ番号のマップ。
+
+	headbone = null;		//	Bone : 顔を向けるためのボーン。nullの場合あり
+	headtf = null;			//	Transform : headboneについた変形。これで回転させる。首の付け根が原点なのでpitchはあんま回転させない
+	focusobj = null;		//	RPG3DObject : 視線を向ける相手。headboneが有れば回転を調整する
+
+	bonetype = null;		//	leg2, box, ...
+	standani = null;		//	AnimationLayer : "stand"アニメで再生したアニメ
+
+	static function getBoneType( motpath){
+		local s = motpath.substring( motpath.lastIndexOf( "/")+1);
+		local boi = s.lastIndexOf( "_");
+		if( boi >= 0) s = s.substring( 0, boi);
+		return s;
+	}
+
+	
+
+	function getSearchButtonLabel(){
+		return (bonetype=="leg2"||bonetype=="leg4") ? "$T.btn_talk" : "$T.btn_search";
+	}
+	
+	/////////////////////////////////////////////////////////////////////////
+	//	描画
+
+	function render( cam, visiblemask){
+		//	ボーン毎にpm描画
+		foreach( b in bones){
+			local pm = drawpmmap[b.parts.id];
+			if( !pm) continue;
+			//	pivot -> invbindpose -> bonepose -> gmat の順
+			local m = m_1.integrate( gmat, b.mat, b.invbindpose, pm.pivot);
+			skSetMatrix( SK_WORLD, m);
+			pm.render( visiblemask);
+		}
+	}
+
+	//	このRPG3DVoxCharaにボクセルキャラを設定する。
+	//	cv : { "vox":"/resorce/chara_vox/man.vox", "mot":"/resource/mot/leg2_xxx/man.mot", pal:{[idx]:0xffffffff} }
+	//	・マテリアルは一つに共通化される。
+	function setCharaVox( cv){
+		this.cv = cv;
+		pmmap = {};
+		drawpmmap = {};
+		pidxmap = {};
+		//	motを読む
+		local motr = ::getResource( cv.mot);
+		motion = ::getMotionData( motr);
+		createBones();
+		bonetype = motr.pres.name;
+		local boi = bonetype.lastIndexOf( "_");
+		if( boi >= 0) bonetype = bonetype.substring( 0, boi);
+		animelist = animelistmap[bonetype] || animelistmap["obj"];	//	ないならobj...
+		animemap = mapanimelist( animelist);
+		//	※pmmapはキャッシュするべき。パレットのみ置き換え
+		local vc = ::getResourceContent( cv.vox), vcpal = vc.pal;
+		if( cv["pal"]) vcpal = vcpal.getModPalette( cv.pal);
+		local vmdmap = VoxelMeshBuilder.createVoxelMeshDatas( vc.getPartsList().map( @( p, i){ return { id = i; vd = p.vd8; vs = 63; }; }));
+		local headmtl = null;
+		foreach( i, pm in _makepms( vmdmap, vcpal)){
+			local n = vc.partsAt( i).name, n0 = n.substring( 0, length( n)-1).."0";
+			pmmap[ n] <- pm;
+			//	calc pivot
+			local vp0 = vc.findParts( n0);
+			if( !vp0) continue;	//	パーツない場合あり
+			local m = vp0.gmat();
+			pm.pivot = Vector3D( m.u, m.v, m.r).scale( VOX_SCALE);
+			if( n == "head0"){	//	headはボクセルが被ってるので手前にオフセット。head以外でもありそう
+				if( !headmtl){
+					headmtl = clone pm.face[0].m;
+					headmtl.polygonoffset1 = -20;
+				}
+				pm.face[0].m = headmtl;
+			}
+		}
+		headbone = findBone( "head");
+		if( !animlayers) animlayers = AnimationLayers();
+		tanime( #{ st=0.0 });
+		updateMotion( 0);
+		bnd.set( 0, 1.0, 0, 0.8, 1.0, 0.8);		//	ちゃんと計算。。。
+		gbnd.set( bnd);
+		//	b3body
+		local colsize = cv["colsize"]||#(0.4,0.8,0.4);
+		local shp = createShape( cv["colshp"]||SK_SHAPE_CAPSULE, colsize);
+		local offsmat = Matrix.fromTranslate( 0, colsize[1], 0);
+		b3body = b3Body( 0.0, shp, mat, G_CHARA, G_CHARA|G_OBJECT|G_STAGE);	//	G_EVENTはいらんかな
+		b3body.ref = this;
+		b3body.setOffsetTransform( offsmat);
+		updateVisibleMask();
+
+		setGSelectorID( 200);
+		// if( !animlayers[0]) anime2( #{ id="stand"});
+		updatePartsVisibles();
+	}
+
+	function updateVisibleMask(){
+		visiblemask = SK_VISIBLE_OPAQUE | SK_VISIBLE_SHADOW_CASTER | SK_VISIBLE_SHADOW_RECEIVER;
+		return false;
+	}
+
+	function getMaterials( cache=true){
+		local ma = materials;
+		if( !materials){
+			local mt = {};
+			foreach( pm in pmmap){	//	ダブってるマテリアルをまとめる
+				foreach( f in pm.face) mt[f.m] <- 1;
+			}
+			ma = Table.keys( mt);
+			if( cache) materials = ma;
+		}
+		return ma;
+	}
+
+	function _makepms( vmdmap, pal){
+		local mtl = null;	//	同じpalなのでマテリアルは統一できる
+		local t = {};
+		foreach( i, vmd in vmdmap){
+			local pm = t[i] <- vmd.createPolygonMesh( pal);	//	TODO : パレット調整！
+			vmd.dispose();
+			if( !mtl){
+				mtl = pm.face[0]["m"];
+			}else{
+				pm.face[0].m = mtl;
+			}
+		}
+		return t;
+	}
+
+	//	wv : { "vox":"/resorce/vox/chara/man.vox", "parts":0, "pivot":[4,5,6], pal:{[idx]:0xffffffff} }
+	//	place : "item_R"|"item_L"
+	//	weapon, shieldはキャラの各パーツと同様の描画方法。だが、アニメ0は非表示となる。
+	//	アニメ1以降は装備のボクセルが付くが、弓や鞭、モーニングスター的な一部の武器は2,3にもモデルが付いている。
+	//	※盾モデルはオプションの効果で発動し、頻繁に入れ替わる。
+	//	
+	function setEquipVox( wv, place="item_R"){
+		for( local l = 0;l < 4;l ++) delete pmmap[place..l];
+		if( !wv) return;
+		local vc = ::getResourceContent( wv.vox[0]);
+		local vp = vc?.findParts( wv.vox[1]), vd8 = vp["vd8"];
+		if( !vp) return;
+		local vcpal = vc.pal;
+		if( wv["pal"]) vcpal = vcpal.getModPalette( wv.pal);
+		//	ピボット位置取得
+		local bone = findBone( place);
+		if( !bone) return;
+		local pivot = Vector3D( wv.pivot).scale( -VOX_SCALE).add( Vector3D().transform( bone.parts.bindpose) );//.transform( bone.parts.invbindpose);
+		//
+		if( vd8){	//	直接ボクセルがついてるパーツ
+			local vmd = VoxelMeshBuilder.createVoxelMeshData( vd8, null, 0, 63);
+			local pm = vmd.createPolygonMesh( vcpal);	//	TODO : パレット調整！
+			pm.pivot = pivot;
+			pmmap[ place..1] <- pmmap[ place..2] <- pmmap[ place..3] <- pm;	//	1,2,3を同じpmで埋める！
+		}else{	//	下にボクセルがぶら下がってるパーツ
+			local ca = [];
+			for( local l = 1;l < 4;l ++){
+				local cp = vp.findChild( ""..l);
+				if( cp) ca .. { id = l; vd = cp.vd8; vs = 63; };
+			}
+			local vmdmap = VoxelMeshBuilder.createVoxelMeshDatas( ca);
+			foreach( i, pm in _makepms( vmdmap, vcpal)){
+				pm.pivot = pivot;
+				pmmap[ place..i] <- pm;	//	名前は"1","2","3"のいずれか
+			}
+			//	TODO ※1,2,3が埋まってなかったら1で埋める！
+		}
+		materials = null;	//	マテリアルキャッシュをクリア
+		//	
+		setGSelectorID( 200);
+		updatePartsVisibles();
+	}
+
+	//	フォーカス対象を設定する。
+	function setFocusTo( obj){
+		focusobj = obj;
+	}
+
+	function update( dt, pmatdirty=true){
+		local r = super.update( dt, pmatdirty);
+		//	必要なマテリアルパラメータをコピー。毎フレームやらんでもいいけど
+		foreach( m in getMaterials()){
+			m.misccol0 = (200<<24) | ((m.visiblemask&4096)*(255<<4));
+		}
+		return r;
+	}
+
+	//	モーション更新時に現在pidxmapに割り当てられているパーツ番号で描画するモデルを選択する。
+	function updateMotion( dt, matchanged=false){
+		local al = animlayers.layers[0];
+		local ft0 = Math.ifloor( al["frametime"]);
+		if( standani){
+			local ani = getStandAnime( null);
+			if( ani.id != standani.id || int( ani["part"]) != int( standani["part"])){
+				al = anime2( ani);
+				standani = ani;
+			}
+		}
+		super.updateMotion( dt, matchanged);
+		local ft1 = Math.ifloor( al["frametime"]);
+		if( ft0 != ft1) updatePartsVisibles();	//	フレームの整数が変化したらパーツ表示が変化
+	}
+	
+	function updatePartsVisibles(){
+		local ft = Math.ifloor( animlayers.layers[0]["frametime"]);	//	常にレイヤー0を参照。
+		foreach( b in bones){
+			local p = b.parts;
+			local pidx = Math.ifloor( motion.getCustomValue( p.name, ft));
+			drawpmmap[b.parts.id] <- pmmap[p.name..pidx] || pmmap[p.name.."0"];	//	どっちもない場合あり
+		}
+	}
+	
+	//	アニメーション変化時にはパーツ表示が変化
+	function anime2( t){
+		local aid = t.id;
+		if( aid == "stand"){ t = getStandAnime( t); standani = t; } else standani = null;
+		local al = super.anime2( t);
+		updatePartsVisibles();
+		return al;
+	}
+
+	//	現在のrpgobjの状況によってアイドル時のアニメを取得。
+	function getStandAnime( t0){
+		if( event){
+			//	イベントで設定されたアイドルアニメ。最優先。
+			if( event["page"]["standani"]) return event["page"]["standani"];
+			if( event["data"]["standani"]) return event["data"]["standani"];
+		}
+		if( rpgobj){
+			//	バトル時のみ。スキルやコンディションでのアニメ変更。
+			if( rpgobj["skill"]["aimani"]) return rpgobj.skill.aimani;	//	スキルセット済み
+			foreach( c in rpgobj["conds"]){
+				if( c.data["ani"]) return c.data.ani;
+			}
+			if( rpgobj.isPinch()) return #{id="sick"};
+		}
+		return t0 || #{id="stand"};	//	そのまま
+	}
+	
+	//	
+	function getEffectPosition( plc){
+		switch( plc){
+		case 0:	//	"center"
+			local b = findBone( "body");
+			local pm = drawpmmap[b["parts"]["id"]];
+			if( pm){
+				// local r = pm.bnd, v = Vector3D( r.x, r.y, r.z).add( pm["pivot"]);//.transform( b.invbindpose);
+				local r = pm.bnd, v = Vector3D( r.x, r.y, r.z).add( pm["pivot"]).transform( b.mat);
+				return (v.x, v.y, v.z, null);
+			}
+			break;
+		case 1: //	"top"
+			local b = (findBone( "head")||findBone( "face")), p = b["parts"];
+			local pm = drawpmmap[p["id"]];
+			if( pm){
+				// local r = pm.bnd, v = Vector3D( r.x, r.y, r.z).add( pm["pivot"]);
+				// return (0,r.s,0, "head");
+				local r = pm.bnd, v = Vector3D( r.x, r.y, r.z).add( pm["pivot"]).transform( b.mat);
+				return (v.x, v.y, v.z, null);
+			}
+			break;
+		case 2: //	"bottom"
+			return (0, 0, 0, null);
+			break;
+		}
+		return (0, 0, 0, null);
+	}
+}
+
+//	ボクセルのパラパラアニメ的なオブジェクト。パーツ名がフレーム番号に対応する
+//	
+class RPG3DVoxObject extends RPG3DObject
+{
+	pmframe = null;		//	PolygonMesh[] : 
+
+	//	cv : { "vox":"/resorce/vox/obj/man.vox", "parts":"desk1" pal:{[idx]:0xffffffff} }
+	//	
+	function setCharaVox( cv){
+		//	※pmmapはキャッシュするべき。パレットのみ置き換え
+		local vc = ::getResourceContent( cv.vox);
+		local vp = vc.findParts( cv.parts);
+		local pal = vc.pal;
+		if( vp.vd8){
+			local vmd = VoxelMeshBuilder.createVoxelMeshData( vp.vd8, null, 0, 63);
+			local pm = vmd.createPolygonMesh( pal);
+			bnd.set( vmd.getBounds().toRect3D() * VOX_SCALE);	//	pm.bndで良いかも
+			mesh = pm;
+			pmframe = [pm];
+			pivot = Vector3D( 0, -(bnd.y-bnd.s), 0);	//	下面をpivotに
+		}else{
+			local vmdmap = VoxelMeshBuilder.createVoxelMeshDatas( vc.getPartsList().map( @( p, i){ return { id = p.name; vd = p.vd8; vs = 63; }; }));
+			local pmmap = {};
+			foreach( i, vmd in vmdmap){
+			}
+		}
+		visiblemask = SK_VISIBLE_OPAQUE | SK_VISIBLE_SHADOW_CASTER | SK_VISIBLE_SHADOW_RECEIVER;
+		if( !animlayers) animlayers = AnimationLayers();
+	}
+	
+	//	モーション更新時にpmframe更新
+	function updateMotion( dt, matchanged=false){
+		super.updateMotion( dt, matchanged)
+		local ft = animlayers.layers[0].frametime | 0;	//	常にレイヤー0を参照。
+		mesh = pmframe[Math.clamp( ft, 0, length( pmframe)-1)];
+		//	bnd, pivotも更新する？
+	}
+}
+
+
+//	エフェクトをマップ上に配置する
+//	
+class RPG3DEffect extends RPG3DObject
+{
+	efx = null;
+
+	function setEffect( x){
+		this.efx = x;
+		setSource( efx.efx);
+		if( efx["hsv"]) setHSV( efx.hsv);
+		if( efx["scale"]) scale( efx.scale);
+		if( efx["speed"]) timescale = efx.speed;
+		// local lpos = getEffectPosition( efx["place"]);
+		// sk.pos( lpos);
+		if( efx["pos"]) pos.add( efx.pos);
+		// addChild( sk, lpos[3]);		//	常に自分の子として追加？
+		startParticle();
+		//	b3body ... 1m四方に収まるように。。。どんなにでかいエフェクトでも！
+		local colsize = efx["colsize"]||#(0.38,0.45,0.38);
+		local shp = createShape( efx["colshp"]||SK_SHAPE_CAPSULE, colsize);
+		local offsmat = Matrix.fromTranslate( 0, colsize[1], 0);
+		b3body = b3Body( 0.0, shp, mat, G_EVENT, G_STAGE);		//	G_STAGEとしかコリジョンは当たらない
+		b3body.ref = this;
+		b3body.setOffsetTransform( offsmat);
+	}
+
+	//	openだと非表示にしておくか。。。要対応
+	function anime2( t){
+		local aid = t.id;
+		switch( aid){
+		case "close": visible = true; break;
+		case "open": visible = false; break;
+		}
+	}
+}
+
+//	マップアセットをマップ上に配置する。配置されたマップアセットは当たり判定もマップそのもの。
+//	※mapcolのRPG3DMapAssetは地面となれる。この時、RPG3DMapAssetの移動に合わせてキャラも移動する必要がある。
+//	RPG3DMapAssetのイベントを最後に処理。設置しているイベント、プレイヤーを全て取得して移動後にそれらを強制的に移動。
+//	
+class RPG3DMapAsset extends RPG3DObject
+{
+	bw3d = null;			//	SK3DBlockWorld : childとしてadd
+	bwcol = null;			//	b3Body<BlockColiderInterface> : 
+	
+	function setMapAsset( x){
+		local bb = uncompressZSTD( decodeBASE64( x.bw64, ByteBuffer()));
+		local bw = ObjectInput.decode( bb);
+		bw3d = SK3DBlockWorld( bw);
+		bw3d.rembottom = false;
+		local cpos = x["cntpos"] || #(0.5,0.0,0.5);
+		bw3d.setPivot( Vector3D( -bw.w*0.5*cpos[0], -bw.h*0.5*cpos[1], -bw.d*0.5*cpos[2]));
+		bw3d.updateMatrix( true);
+		bw3d.generateAllMesh();
+		addChild( bw3d);
+		if( x["mapcol"]){	//	マップのコリジョン有効
+		}
+		//	b3body ... 1m四方に収まるように。。。どんなにでかいマップアセットでも！
+		//	
+		local colsize = x["colsize"]||#(0.38,0.45,0.38);
+		local shp = createShape( x["colshp"]||SK_SHAPE_CAPSULE, colsize);
+		local offsmat = Matrix.fromTranslate( 0, colsize[1], 0);
+		b3body = b3Body( 0.0, shp, mat, G_EVENT, G_STAGE);		//	G_STAGEとしかコリジョンは当たらない。キャラと当てたかったらmapcolで。
+		b3body.ref = this;
+		b3body.setOffsetTransform( offsmat);
+	}
+	
+	function getMaterials(){
+		return bw3d?.getMaterials();
+	}
+}

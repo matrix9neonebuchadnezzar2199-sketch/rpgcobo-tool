@@ -1,0 +1,256 @@
+import VirtualKeyCode;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	TurnBattle
+//	ランダムエンカウント、イベントコマンドから実行される。
+//	勝利時、敗北時、中止時それぞれの処理をcallbackで処理する。
+//	・ランダムエンカウントの場合
+//		- 勝利、中止時はそのまま前のステージに戻る。
+//		- 敗北時には決められたマクロを実行する。このマクロ内でゲームオーバーを表示するか、復活マップに移動するか処理。
+//		  デフォルトではゲームオーバーだが、ドラクエみたいな復活も可能に。
+//	・イベントコマンドの場合
+//		- 勝利、中止、敗北で処理を分岐。
+//	
+//	
+//	バトルのデータは以下のように定義されている。マップのエンカウントグループ、イベントコマンドのバトル（詳細設定）で定義。
+/*
+	"encount":[
+		{
+			"area":"GgAIAAj/AAAA/wAAAP8AAAD/AAAA/wAAAP8AAAD/AAAA/wAAAA==",	//	バトルでは未使用
+			"bgm":"MU001",	//	nullの場合はBGM変更なし
+			"enemies":[
+				{"id":"E000","x":0.0,"z":0.0}
+			],
+			"escape":true,
+			"filterbits":127,
+			"gid":1,
+			"mapid":"M000",
+			"name":"グループ01",
+			"rate":50
+		}
+	],
+*/
+
+//	
+//	
+class TurnBattleRunner extends BattleRunnerBase
+{
+	//	stage.launch内で自動イベント実行前に呼び出される
+	function start( st){
+		super.start( st);
+		setupCharas();				//	バトルキャラ配置。
+		setupBattleUI();			//	バトルUIを配置。
+		emitOption( "prebattle", null);		//	こいつが呼ばれるときはまだワイプアウト時。
+		//	ここからスレッドを切り離して
+		thread = newthread( "TurnBattle Thread");
+		thread.call( runTurnBattle, this);
+	}
+
+	//	
+	function update( dt){
+		thread.wakeup( dt);
+		//	アクティブバトルの場合はここでゲージを進める
+	}
+	
+	//	
+	function runTurnBattle(){
+		//	ここからタイミング取って戦闘シーン開始。まだワイプは閉じてる。
+		battleStart();
+		waitMainEvent();
+		try{
+			for( ;;){
+				battleTurn();
+				suspend();
+				waitMainEvent();
+			}
+		}catch( ex){
+			printexception( ex);
+			if( ex instanceof Exception){
+				
+			}
+			// foreach( pc in charas){	//	ここではやらない。暗転前に状態が戻っちゃう
+			// 	pc.endBattle();
+			// }
+			endfunc( this);
+		}
+	}
+
+	//	バトル開始。
+	//	・カメラを戦闘用に切り替えて、登場演出をキャラごとに指定して、、、って処理はオートイベントで行う。これで特別な演出を入れられる
+	function battleStart(){
+		//
+		local alives = members.filter( @( v) !v.isDead());
+		local alive3ds = alives.map( @( v) getChara3D( v));
+		foreach( v in members){
+			local p3d = getChara3D( v);
+			if( !v.isDead()) p3d.anime2( {id="fight"});
+			else  p3d.anime2( {id="stand"});
+		}
+		sleep( 1200);
+		foreach( p3d in alive3ds) p3d.anime2( {id="stand"});
+	}
+	
+	//	1ターンの処理
+	function battleTurn(){
+		emitOption( "preturn", turn);	//	ターン開始前
+		//	コマンド入力
+		cmdqueue = [];	//	敵味方含めた全てのコマンド配列。2回行動のキャラは2つ入る。ソート時にばらけないように。。。
+		local cmdcharas = members.filter( @( v) v.isCommandable());	//	コマンドを選択するパーティメンバー
+		for( local l = 0; l < length( cmdcharas); ){
+			local pc = cmdcharas[l];
+			pc.skill = null;
+			pc.selected = true;
+			cmdchr = pc;
+			local cmd = chooseCommand( pc);
+			cmdchr = null;
+			pc.selected = false;
+			if( !cmd){
+				if( l){ --l; cmdqueue.pop(); }
+			}else{
+				cmdqueue..cmd; ++l;
+			}
+		}
+		selectCommandTargets( []);
+		battleui.action( "showtgt").waitAction();
+		sleep( 200);
+		//
+		// setBack( false);
+		//	敵味方AI、行動不能キャラもここ。死亡者も一応は通す。
+		local autocharas = members.filter( @( v) !v.isCommandable()) ... enemies;	//	コマンドを選択出来ないパーティメンバー＋敵全員
+		foreach( pc in autocharas){
+			local cmds = chooseAutoCommands( pc);
+			if( cmds) cmdqueue ... cmds;
+		}
+		//	素早さ等でコマンドをソート
+		cmdqueue.sort( @( v) v.order);
+		//	
+		//	ターン開始
+		//	
+		emitOption( "preturn", turn);	//	ターン開始。マクロとかでキャラの行動を入れ替えたりとかも出来る。
+		//	コマンド処理。メインイベント実行とは排他的。
+		while( cmdqueue[0]){
+			suspend();
+			if( stage.mainevent) continue;	//	メインイベント動作中。
+			local cmd = delete cmdqueue[0];
+			cmd.exec();
+			checkBattleEnd();
+			resetPosition();
+		}
+		//	ターン終了処理。防御解除、毒ダメージ、他？
+		//	※ターン終了時に大きな攻撃みたいなスキルはどうすればいいかなー？cmdに入れるか？単にorder値目一杯上げるだけでいいか
+		emitOption( "postturn", turn);
+		dieCheck( null);	//	cmd=null
+		foreach( chr in charas){	//	ターン経過で解除されるコンディションをチェック。
+			local rems = chr.spendTurn();
+			if( rems){
+				local rp3d = getChara3D( chr);
+				rp3d.manuaction.act( @(){
+					foreach( r in rems){
+						chr.removeCondition( r.dataid);
+						if( r.data.showpop){
+							popcond( r.dataid, "rem");
+							wait( 300);
+						}
+					}
+				});
+			}
+		}
+		checkBattleEnd();
+		foreach( pc in charas) pc.setSkill( null);	//	何もしないスキルはskillが残ってるのでここでリセット
+		foreach( pc in charas){
+			local rp3d = getChara3D( pc);
+			rp3d["manuaction"]?.waitActions();	//	タイミング待ちまでは行わない
+		}
+		++turn;
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	選択UI
+	
+	//	コマンド選択、スキル選択、ターゲット選択。それぞれのフェーズでUI表示と入力待ち。
+	//	※混乱中や何かAIの設定されているときは呼ばれない。
+	//	pc : RPGPlayer
+	function chooseCommand( pc){
+		//////////////////////////////////////////////////////////////
+		//	コマンド選択
+		local cmds = pc.getBattleCommandList().map( @( v){
+			return !v.cmddef ? v : { ...v, grayout=@() v.cmddef.isDisabled( v.bcmd, pc)?"on":"off", };
+		});
+		local cmdidx = pc.etc["cmdidx"] || 0;
+		battleui.bindValue( "cmdlist", cmds);
+		// ::playSound( "SE001");
+	CHOOSE_COMMAND:
+		battleui.findChild( "infog").setVisible( false);
+		selectCommandTargets( [pc]);
+		battleui.action( "showcmd").waitAction();
+		battleui.focusTo( "bcmd"..cmdidx);
+	CHOOSE_COMMAND_SKIP:
+		//	
+		local cmditem = RPGMain.uiLoop( {
+			"action" : @( e){
+				if( e.item["cmddef"]){
+					return e.item;
+				}else{
+					playSound( "SE002");
+				}
+			}	//	cmds[idx]が返ってくる
+			"back" : @( e){
+				playSound( "SE004");
+				return "back";
+			}
+		});
+		if( cmditem == "back") return null;		//	コマンドのところでbackされたらnullを返す
+		cmdidx = cmds.indexOf( cmditem);
+		//////////////////////////////////////////////////////////////
+		//	スキル／アイテム選択
+		local cmddef = cmditem.cmddef;
+	CHOOSE_SKILL:
+		battleui.findChild( "infog").setVisible( true);
+		battleui.bindValue( "infollbl", @() ::rtf( sprintf( "%S　[M]$T.HP %d $T.MP %d $T.TP %d[O]", pc.name, pc.HP, pc.MP, pc.TP)));
+		local skill = cmddef.selectSkill( cmditem.bcmd, pc);
+		if( !skill){
+			if( skill == false) goto CHOOSE_COMMAND_SKIP;
+			else{
+				playSound( "SE004");
+				goto CHOOSE_COMMAND;
+			}
+		}
+		//////////////////////////////////////////////////////////////
+		//	ターゲット選択
+		local dst = null;
+		if( skill.cmdtgt == 0){		//	防御、逃げるとかはターゲット選択無し。仮に自分自身をターゲットしておく。
+			playSound( "SE013");
+			dst = pc;
+		}else{
+			playSound( "SE013");
+			battleui.action( "showtgt").waitAction();
+			local self = this;
+			local t0 = enableTargetSelect( pc, skill.cmdtgt, false);	//	選択可能なターゲットを指定
+			::rootview.focusTo( t0["tgtview"]["name"]);
+			dst = RPGMain.uiLoop( {
+				"action" : @( e){
+					playSound( "SE013");
+					return e.item["rpgobj"];
+				}
+				"back" : @( e){
+					playSound( "SE004");
+					return "back";
+				}
+				"select" : @( e){
+					if( !e.item["rpgobj"]) return;
+					local dsts = self.getCommandTargets( pc, e.item.rpgobj, skill.cmdtgt, false);
+					self.selectCommandTargets( dsts);
+				}
+			});
+			enableTargetSelect( pc, 0, false);
+			if( dst == "back") goto CHOOSE_COMMAND;	//	コマンドのところまで戻るで良い？コマンドで変わるなこれは。。。
+		}
+		local dsts = getCommandTargets( pc, dst, skill.cmdtgt);
+		local cmd = SkillCommand( pc, skill, dsts);
+		pc.setSkill( skill);
+		battleui.findChild( "infog").setVisible( true);
+		return cmd;
+	}
+}

@@ -1,0 +1,643 @@
+import VirtualKeyCode;
+import CommandTargetType;
+import CollisionGroupID;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	TurnBattle
+//	ランダムエンカウント、イベントコマンドから実行される。
+//	TurnBattle( battledata, endfunc).launch();
+//	↑の命令でステージ遷移含めてバトル処理が開始される
+//	勝利時、敗北時、中止時それぞれの処理をendfuncで処理する。
+//	・ランダムエンカウントの場合
+//		- 勝利、中止時はそのまま前のステージに戻る。
+//		- 敗北時には決められたマクロを実行する。このマクロ内でゲームオーバーを表示するか、復活マップに移動するか処理。
+//		  デフォルトではゲームオーバーだが、ドラクエみたいな復活も可能に。
+//	・イベントコマンドの場合
+//		- 勝利、中止、敗北で処理を分岐。
+//	
+//	
+//	バトルのデータは以下のように定義されている。マップのエンカウントグループ、イベントコマンドのバトル（詳細設定）で定義。
+/*
+	"encount":[
+		{
+			"area":"GgAIAAj/AAAA/wAAAP8AAAD/AAAA/wAAAP8AAAD/AAAA/wAAAA==",	//	バトルでは未使用
+			"bgm":"MU001",	//	nullの場合はBGM変更なし
+			"enemies":[		//	エネミー配置設定
+				{"id":"E000","x":0.0,"z":0.0}
+			],
+			"escape":true,	//	逃げられるか。もうちょい細かい設定出来たほうが良いかな？
+			"filterbits":127,
+			"gid":1,
+			"mapid":"M000",	//	バトルマップ
+			"name":"グループ01",
+			"rate":50
+		}
+	],
+*/
+
+local m_1 = Matrix(), v_1 = Vector3D();
+
+//	
+//	
+class BattleRunnerBase
+{
+	battledata = null;				//	{ enemies, escape,  } : エネミーグループの設定データ。
+	endfunc = null;					//	バトル終了時に呼ばれるコールバック関数。endfunc( this)と呼ばれる。
+	stage = null;					//	RPGStage
+
+	members = null;					//	RPGCharaBase[]
+	enemies = null;					//	RPGCharaBase[]
+	charas = null;					//	RPGCharaBase[] : 全てのキャラ
+	chara3ds = null;
+	
+	battleui = null;				//	SKView : バトル画面下部に常駐するUI。
+	thread = null;					//	バトル処理を走らせるスレッド。runTurnBattleがループする。
+	result = null;					//	戦闘結果。1:勝利、-1:敗北、0:中止（逃げ、時間切れ等）、あとはエラーかな
+	forceend = null;				//	強制終了フラグ。
+	
+	turn = 0;
+	cmdqueue = null;				//	実行コマンド配列。battleTurn内で使用されるが、マクロでコマンド入れ替えとかする時に可視にする必要あり。
+	
+	atkchr = null;					//	攻撃側のキャラ。SkillCommand実行中に一時的に書き換わる。マクロなどで参照可能。
+	defchr = null;					//	防御側のキャラ。SkillCommand実行中に一時的に書き換わる。マクロなどで参照可能。
+	cmdchr = null;					//	コマンド選択中のキャラ。
+
+	//	
+	constructor( st, bd){
+		stage = st;
+		battledata = bd;
+		endfunc = bd.endfunc;
+		members = [];
+		enemies = [];
+		charas = [];
+		chara3ds = [];
+	}
+	
+	//	サブクラスでUI、キャラを初期化。この時点ではまだ画面表示前。
+	function start( st){
+	}
+	
+	//	メインイベント実行終了を待つ。コマンド実行とメインイベントは同時に実行しないようにしなければならない。
+	//	コマンド入力は、メインイベントで入力が無い限りは同時実行可能。
+	function waitMainEvent(){
+		while( stage.mainevent){
+			suspend();
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////
+	//	登場キャラのセットアップ
+
+	static pwidths = [0.0, 0.0, 3.5, 4.0, 4.5, 4.5, 4.5, 4.5, 4.5];	//	メンバー数で陣形の幅を変更
+
+	//	バトル用のキャラをステージに配置する。※後から追加できるように！！！
+	//	パーティーメンバー、エネミー
+	function setupCharas(){
+		foreach( pc in rpgstat.members){	//	パーティーメンバーをバトルに参加
+			if( !pc) continue;
+			local p3d = addBattleMember( pc);
+			local p = getBasePosition( pc);
+			p3d.setPosition( p);
+		}
+		//	※エネミーの配置。バトルに渡されたエネミーグループ設定。
+		local eloc = stage.getLocation( "*enemyloc");	//	マーカー位置
+		foreach( v in battledata.enemies){		//	{id,x,z}
+			local ec = RPGEnemy();
+			ec.setDataID( v.id);
+			local e3d = addBattleEnemy( ec);
+			local p = Vector3D( eloc.pos).add( v.x, 0 v.z);
+			local epos = (p.x, p.y, p.z, eloc.dir);
+			e3d.setPosition( epos);
+		}
+	}
+	
+	//	※パーティメンバーの配置は計算でやる。。。キャラが多い方がキャラ同士の隙間を狭くするように
+	//	1=0m, 2=2.0m, 3=3.0m, 4~=4.5m
+	function getBasePosition( pc){
+		local a = rpgstat.members.filter( @( v) v);	//	実際のメンバー数
+		local i = a.indexOf( pc), n = length( a);
+		local w = pwidths[n];
+		local m = stage.getLocation( "*memberloc");	//	マーカー位置
+		local pvec = Vector3D( 1, 0, 0).rotate( m.dir, 0, 0);		//	横視点だと右から左だけど、縦視点だと左から右だなー。。。カメラでチェックするしか
+		local ploc = m.pos;
+		if( n > 0) ploc += pvec * ((0.5-i/(n-1.0))*w);
+		if( pc["formation"]) ploc += Vector3D( 0, 0, -0.7).rotate( m.dir, 0, 0);
+		return (ploc.x,ploc.y,ploc.z,m.dir);
+	}
+
+	//	バトル用のパーティメンバーの3Dオブジェクトを追加
+	//	また、ターゲット選択用にRPG3DTargetViewを生成してview3dに追加する。
+	function addBattleMember( pc){	//	pc:RPGPlayer
+		pc.startBattle();
+		local rp3d = RPG3DObject.create3DObject( pc.data);
+		local wmdlid = pc.getWeapon()["data"]["mdlid"];
+		local smdlid = pc.getShield()["data"]["mdlid"];
+		rp3d.setEquipVox( ::conf._resource.equip_vox[wmdlid], "item_R");
+		rp3d.setEquipVox( ::conf._resource.equip_vox[smdlid], "item_L");
+		//
+		rp3d.rpgobj = pc;
+		rp3d.manuaction = ManualMoveAction( rp3d);		//	バトル用のマニュアルアクション
+		stage.scn.addObject( rp3d);
+		members .. pc;
+		charas .. pc;
+		chara3ds .. rp3d;
+		//	ターゲット
+		local tgtview = ::loadSKView( "/resource/ui/parts/target.ui", RPG3DTargetView);
+		tgtview.name = "target"..pc;
+		tgtview.setTarget( rp3d);
+		tgtview.setVisible( false);
+		stage.view3d.addChild( tgtview);
+		rp3d.tgtview = tgtview;
+		return rp3d;
+	}
+
+	//	バトル用のエネミーの3Dオブジェクトを追加。メンバーとやることは変わらない
+	function addBattleEnemy( ec){	//	ec:RPGEnemy
+		local rp3d = RPG3DObject.create3DObject( ec.data);
+		rp3d.rpgobj = ec;
+		rp3d.manuaction = ManualMoveAction( rp3d);		//	バトル用のマニュアルアクション
+		stage.scn.addObject( rp3d);
+		enemies .. ec;
+		charas .. ec;
+		chara3ds .. rp3d;
+		//	ターゲット
+		local tgtview = ::loadSKView( "/resource/ui/parts/target.ui", RPG3DTargetView);
+		tgtview.name = "target"..ec;
+		tgtview.setTarget( rp3d);
+		tgtview.setVisible( false);
+		stage.view3d.addChild( tgtview);
+		rp3d.tgtview = tgtview;
+		rp3d.anime2( #{id="stand"});
+		return rp3d;
+	}
+
+	//	ターゲット選択時の初期カーソルを良い感じにするためにソート
+	function sortChara3Ds(){
+		chara3ds.sort( @( v){
+			local i = members.indexOf( v.rpgobj);
+			if( i >= 0) return 1000 + i;	//	TGT_ANY_*では先に敵を選択したい
+			//	敵については、カメラ中心からの2D距離で良い？フロントビューの場合は左からのほうが良いのかも
+			local p = v_1( v.getEffectPosition( 0)).transform( v.mat);
+			local cam = stage.cam, iw = 1.0 / p.transform( cam.viewmat).transformw( cam.prjmat);
+			p.scale( iw*cam.aspect, iw, 0.0);
+			return p.lengthSq();
+		});
+	}
+
+	//	RPGCharaBaseからRPG3DObjectを取得する。
+	function getChara3D( pc){
+		return chara3ds.find( @( v) v.rpgobj==pc);
+	}
+
+	//	pcの味方リストを返す
+	function getTeam( pc){
+		local a = members.contains( pc) ? members : enemies;
+		return a.filter( @( v) v);
+	}
+
+	//	スキルの後処理としてアニメ、位置を元に戻す
+	//	
+	function resetPosition(){
+		foreach( chr in charas){
+			local rp3d = getChara3D( chr);
+			if( rp3d) rp3d.manuaction.act( @(){
+				wait( -1);	//	アニメefx待ち
+				anime( #{id="stand"});
+				rp3d.resetPosition();
+			});
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////
+	//	UIのセットアップ
+
+	function setupBattleUI(){
+		battleui = ::RPGMain.showView( {
+			uipath = "battleui.ui"		//	パーティメンバーリスト、コマンドリストを持つ。画面下部に常駐
+			name = "battleui"
+			layer = "stageui"
+		});
+		battleui.findChild( "infog").setVisible( false);
+		syncMemberListUI();
+		syncEnemyListUI();
+	}
+
+	//	戦闘中にメンバーの交代をした場合には再度呼び出す。
+	//	※3Dモデルも追加や位置の更新が必要なので実際の対応はちょっと後回し
+	function syncMemberListUI(){
+		local memberlist = battleui.findChild( "memberlist");
+		memberlist.bindValue( members.map( @( v) v?{	//	v:RPGPlayer[] プレイヤーのパラメータを同期させる
+			name = v.name
+			isdead = @() v.isDead() ? 1 : 0
+			hp = @() v.HP
+			mp = @() v.MP
+			tp = @() v.TP
+			timeguage = @() v.timeguage		//	アクティブバトル時に表示 0-100
+			sel = @() v.selected ? "on" : "off"
+			conds = @() ::RPGSystem.getConditionString( v.conds)
+		}:{	//	v=nullの場合は非表示
+			g = ptr({ hide=true})
+		}));
+	}
+
+	//	戦闘中にエネミーが出現した場合に再度呼び出す。※死んでも呼ばないで良い。死んだエネミーも消えてはいない
+	//	同じ種類はグループ化されてx2のような表示になる
+	function syncEnemyListUI(){
+		local a = enemies.map( @( v, i){	
+			if( enemies.findi( @( x) x.dataid==v.dataid) != i) return undefined;	//	同じIDはグループ化される
+			return { id=v.dataid, data=v.data, name=v.data.name, };
+		});
+		local self = this;
+		local countAliveEnemy( eid){
+			return self.enemies.reduce( @( v, x) (v.dataid==eid && !v.isDead())?x+1 : x, 0);
+		}
+		local enemyselected( eid){
+			return !!self.enemies.find( @( v) v.dataid==eid && v.rpgobj["selected"]);
+		}
+		//	エネミーリストは名前、数だけ分かれば良し？全部分離すればコンディションとかも表示できるけど、リストが窮屈になる
+		local enemylist = battleui.findChild( "enemylist");
+		enemylist.bindValue( a.map( @( v)({	//	v:RPGEnemy[] エネミーのパラメータを同期させる
+			lbl = @(){ local n = countAliveEnemy( v.id); return n<=1 ? v.name : `${v.name}x$n` },
+			grayout = @() countAliveEnemy( v.id) ? "off" : "on",
+			sel = @() enemyselected( v.id) ? "on" : "off"
+		}) ));
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	SkillCommandからも呼ばれる
+
+	//	追撃オプション、カウンターなどで現在走っているcmdqueueに追加のコマンドを挿入する
+	function insertCommand( cmd){
+		local i = cmdqueue.findi( @( v) v.order > cmd.order);	//	同じorderの場合は後ろにつく。
+		if( i >= 0) cmdqueue[i] <- cmd; else cmdqueue .. cmd;
+	}
+
+	//	指定したキャラが発動予定のコマンドをキャンセルする。スキルもリセットする。←これによって防御なども解除される。
+	//	状態異常でuncommandableになった場合に呼ぶ。
+	function cancelCommand( chr){
+		foreach( v in cmdqueue){
+			if( v["src"] == chr) removei;
+		}
+		chr.setSkill( null);
+	}
+
+	//	死亡のチェックを行う。HP=0になってもここを呼ばなければ死亡しない。
+	//	※全キャラの死亡判定を同時に並列に判定、実行する。
+	//	※cmd=nullの場合あり。
+	function dieCheck( cmd){
+		local nptr = ptr( length( charas)), uisyncptr = ptr( false), actsyncptr = ptr( false);
+		foreach( chr in charas){
+			stage.subthread( @(){
+				local rp3d = getChara3D( chr);
+				rp3d.manuaction.waitActions();	//	実行中のアクションの中にダメージが入るものがあったら終わるまで待つ。
+				if( !chr.isDead() && chr.HP <= 0){
+					local b = emitOption( "dying", {self=chr,cmd=cmd,src=cmd["src"]});	//	自動復活、死亡時スキル。
+					if( b){
+						actsyncptr << true;
+					}else
+					if( chr.HP <= 0){
+						rp3d.manuaction.act( @(){
+							wait( -1);
+							chr.updateDead();	//	死亡状態付与はdeathAnimeの後に！
+							deathAnime();
+							nptr << (~nptr-1);	//	ここまで完了待ち
+						}, null);	//	死亡アニメ
+						cancelCommand( chr);	//	コマンドキャンセル
+						uisyncptr << true;
+						return;
+					}
+				}
+				nptr << (~nptr-1);
+			}, this);
+		}
+		while( ~nptr) suspend();
+		if( ~actsyncptr){
+			foreach( v in chara3ds) v["manuaction"]?.waitActions();
+		}
+		if( ~uisyncptr) syncEnemyListUI();
+	}
+
+	//	ここで判断するのは全滅、勝利のみ。
+	//	※全滅フック、勝利フックを掛けられるように。マクロとかをコール出来るように。
+	//	バトル終了時にはthrowを
+	function checkBattleEnd(){
+		//	強制終了
+		if( forceend != null){
+			result = forceend;
+			printf( "FORCE END................ %S\n", result);
+			throw "battleend";	//	endfunc( this);
+		}
+		//	先に味方の全滅をチェック
+		local defeated = !members.find( @( v) !v.isDefeated());
+		if( defeated){
+			if( members.find( @( v) v.escaped)){	//	ゲームのモードによっては一人一人別個に逃げてる場合がある
+				result = 0;
+				printf( "ESCAPED................\n");
+			}else{
+				result = -1;
+				printf( "DEFEATED................\n");
+				//	ゲームオーバー時のタイミング合わせ。。。
+				foreach( v in chara3ds) v.manuaction?.wait();
+				sleep( 1000);
+			}
+			throw "battleend";	//	endfunc( this);
+		}else{
+			//	敵の全滅をチェック
+			local victory = !enemies.find( @( v) !v.isDefeated());
+			if( victory){
+				showVictoryUI();		//	戦闘勝利パネルの表示。これを表示しないと経験値等は入らない。ラスボスとかはここすっ飛ばす。
+				result = 1;
+				printf( "VICTORY!!!!!!!!!!!!!!!\n");
+				throw "battleend";	//	endfunc( this);
+			}
+		}
+	}
+
+	//	バトルを終了する。次にcheckBattleEnd()が呼ばれた時。
+	function stopBattle( res=0){
+		forceend = res;
+		// printf( "STOP BATTLE..............\n");
+		// throw "battleend";	//	endfunc( this);
+	}
+
+	//	自動でコマンドを選択する。pcにBattleAIがあったらchooseAICommandを呼び、そうでない場合は通常攻撃又は防御を選択。
+	//	複数行動はここで判定。
+	function chooseAutoCommands( pc){
+		if( !pc.isCommandable()){
+			return [SkillCommand( pc, ::conf.skill["S000"], [pc])];	//	攻撃回数分入れないで良い？
+		}
+		local cmds = null, ai = pc.data["ai"];
+		if( ai){
+			local cmd = chooseAICommand( pc, ai);
+			if( cmd) cmds = [cmd];
+		}else{
+			//	aiない場合は攻撃？オートだと前回の行動かも
+		}
+		return cmds;
+	}
+	
+	//	
+	function chooseAICommand( pc, ai){
+		//	まずはページ選択
+		local page = ai[pc.aipage];
+		if( !page || pc.aiturn>=page["turn"][1] || (pc.aiturn>=page["turn"][0] && rnd(1.0)>=0.5) ){
+			pc.aiturn = 0;
+			pc.aipage = chooseAIPage( pc, ai);
+			page = ai[pc.aipage];
+			if( !page) return null;	//	ページが選択できなかった。何もしない
+		}
+		local turnbits = 1 << (pc.aiturn % 12);
+		//	次はページ内のコマンド選択
+		local cmds = page.cmds.filter( @( v) v.turnbits & turnbits);
+		cmds.sort( @( v) -rnd(0.0,v.rate));		//	rateでランダムソート
+		//	最後にターゲットを指定してコマンド完成
+		foreach( cmd in cmds){
+			local skill = ::conf.skill[cmd.skillid] || pc.getAttackSkill();
+			local dst = chooseAITarget( skill, pc, page, cmd, charas);
+			local dsts = dst && getCommandTargets( pc, dst, skill.cmdtgt, false);
+			if( length( dsts)) return SkillCommand( pc, skill, dsts);
+		}
+		return null;	//	どのコマンドも使えなかった。ページを切り替えとかしてリトライしても良い
+	}
+
+	function chooseAIPage( pc, ai){
+		if( length( ai) <= 1) return 0;
+		local a = ai.map( @( v, i){
+			local req0 = RPGSystem.aipagereq[v["req0"]]["calc"];
+			local req1 = RPGSystem.aipagereq[v["req1"]]["calc"];
+			if( (req0 && !req0( v.req0, pc)) || (req1 && !req1( v.req1, pc))) return undefined;
+			local rate = ::rnd( 0.0, v.rate);
+			return {idx=i, rate=rate};
+		});
+		a.sort( @( v) v.rate);
+		return a.last().idx;
+	}
+
+	//	指定したキャラとスキルの対象を自動で選択する。
+	//	主にエネミーの行動選択で使われ、AIページ、AIコマンドが決定している。AIコマンドのtarget、rndwgtが判断材料。
+	//	※また、ailvによっては相手に効くかを順序付けに加える。
+	//	
+	function chooseAITarget( skill, src, aipage, aicmd, charalist=null){
+		if( !charalist) charalist = charas || ::rpgstat.members;
+		local tgtlist = charalist.filter( @( dst) ::isCommandTarget( src, dst, skill.cmdtgt));	//	まずスキルのターゲットで絞る
+		local aitgt = ::RPGSystem.aitarget[aicmd.target], tgtfunc = aitgt.calc, w = aicmd.rndwgt*0.01;
+		local tgrw = aicmd["affecttgr"] ? 1.0 : 0.0;
+		tgtlist.sort( @( dst) Math.lerp( tgtfunc( skill, src, dst), ::rnd( 100.0), w) * Math.lerp( 100.0, dst.TGR, tgrw));
+		return tgtlist.last();
+	}
+
+	//	cmdtgtの相手からランダムに選ぶ
+	function chooseRandomTarget( src, cmdtgt, tgr=true){
+		local tgtlist = charas.filter( @( dst) ::isCommandTarget( src, dst, cmdtgt));
+		if( tgr){
+			tgtlist.sort( @( v) rnd( v.TGR));
+			return tgtlist.last();
+		}else{
+			return rnd.choosea( tgtlist);
+		}
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////////////////
+	//	
+	//	勝利演出
+
+	function calcdexp( alives, exp){
+		local dlvexp = 1;
+		foreach( v in alives){
+			dlvexp = Math.max( dlvexp, RPGSystem.getExpByLV( v.LV+1, v.data.expcurv)-RPGSystem.getExpByLV( v.LV, v.data.expcurv));
+		}
+		return Math.max( exp/100, dlvexp/20, 1);
+	}
+
+	//	勝利演出、獲得パネル表示、
+	//	一連の処理をマクロにすることも不可能ではないが煩雑すぎるのでプログラムでやっちゃう
+	//	
+	function showVictoryUI(){
+		sleep( 1500);
+		::playBGMID( "MU021");	//	勝利のテーマ
+		//	カメラを切り替え、キャラをアニメーション
+		battleui.setVisible( false);
+		stage.setCamerawork({ type=2, mkid="*victorycam", trans=0, });
+		stage.addCameraMotion({ type=1, playtype=2, pos=[0,0,0], hpb=[40,0,0], zoom=0.3, time=20000, easing=0, });
+		//	
+		local alives = members.filter( @( v) !v.isDefeated());	//	defeatedなキャラは経験値はいらない
+		local alive3ds = alives.map( @( v) getChara3D( v));
+		foreach( p3d in alive3ds) p3d.anime2( {id="victory"});
+		//	取得値
+		local jxp = 0, money = 0, exp = 0, items = [];	//	items:RPGItem[]
+		foreach( e in enemies){
+			if( e.escaped) continue;	//	逃げたエネミーはカウント対象外
+			exp += e.data.exp;
+			jxp += e.data.jxp;
+			money += e.data.money;
+			//	ドロップアイテムは一人一つまで
+			for( local l = 0, di; di=e.data["item"..l]; l ++){
+				if( !di.itemid) continue;
+				local item = RPGObject.create( di.itemid);
+				items .. item;	//	スタックできる場合はするように。。。
+				break;
+			}
+		}
+		//	取得UIを表示、キャラにも経験値ゲージ追加。
+		local view = RPGMain.showView( {
+			uipath = "victory.ui"
+			layer = "stageui"
+			pos = {bottom = 40,},	//	画面下部
+			binds = {
+				pointlist = [
+					{ lbl=rtf( "[b]$T.EXP"), rlbl=rtf( "[M]"..commanum( exp)) },
+					{ lbl=rtf( "[b]$T.JXP"), rlbl=rtf( "[M]"..commanum( jxp)) },
+					{ lbl=rtf( "[b]$T.money"), rlbl=rtf( "[M]"..commanum( money)) },
+				],
+				itemlist = items[0] ? items.map( @( v)({
+					lbl = v.iconname(), 
+				})) : [
+					{ lbl=rtf( "[i][-]入手アイテム無し") },
+				]
+			}
+		});
+		RPGMain.showUI( { key="info_top", text="バトルに勝利！"});
+		
+		//	少々タイミング合わせ
+		sleep( 1000);
+
+		local _addexp( pc, dexp){
+			if( pc.addExp( dexp)){
+				getChara3D( pc).effect( {id="FX080"});
+				playSound( "SE014");
+				if( ::RPGMain.waitClick( 400)) return 1;
+			}
+			return 0;
+		}
+		
+		//	経験値を少しずつ加算していく
+		//	次のレベルまでの経験値/20、最大でexp/100、最低で1。最大時には5秒かかる。
+		local olds = alives.map( @( v) v.cloneForCompare());	//	レベルアップ判定用
+		local dexp = calcdexp( alives, exp);
+		foreach( p3d in alive3ds) p3d.popupExpGauge();
+		local lvups = [], skip = 0;
+		while( exp > dexp){
+			foreach( pc in alives) skip |= _addexp( pc, dexp);
+			exp -= dexp;
+			if( !skip && ::RPGMain.waitClick( 50)) skip = 1;
+		}
+		foreach( pc in alives) _addexp( pc, exp);
+		//	ジョブレベルも加算
+		foreach( pc in alives) pc.addJobExp( jxp);
+		//	レベルアップをパネル表示
+		if( length( alives)) sleep( 300);	//	タイミング合わせ
+		foreach( i, pc in alives){
+			local old = olds[i];
+			if( pc.LV > old.LV || pc.jobs.find( @( v, i) v&&v.JOBLV>old.jobs[i].JOBLV )){
+				local lvui = RPGMain.showUI( { key = "misc_levelup", p0 = old, p1 = pc.cloneForCompare(), });	//	p1も比較用に状態リセット
+				if( pc.LV > old.LV && ::conf.setting["lvupheal"]){	//	レベルアップで回復設定
+					pc.HP = pc.MAXHP;
+					pc.MP = pc.MAXMP;
+				}
+			}
+		}
+		//	その他追加
+		::rpgstat.money += money;
+		foreach( item in items) ::rpgstat.addItemID( item.dataid, item.num);
+
+		//	最後にクリック待ち
+		RPGMain.showUI( { key="misc_waitclick"});	// RPGMain.waitClick();
+		RPGMain.showUI( { key="info_top", op="hide"});
+	}
+	
+	/////////////////////////////////////////////////////////////////////////
+	//	ターゲット選択
+	//	ターゲット決定の流れ
+	//	1 コマンド選択時にターゲットを仮決定
+	//	2 コマンド発動時にdstにコマンド発動できるかチェック。出来なかったら再度dstを自動選択、もしくはコマンドをキャンセル。
+	//	3 再度ターゲットを取得して決定。
+	//	
+
+	//	ターゲット選択UIを有効化する。初期カーソルのキャラを返す。
+	function enableTargetSelect( src, cmdtgt, choosedead){
+		sortChara3Ds();
+		local c = 0, tv = null;
+		foreach( v in chara3ds){
+			local dst = v.rpgobj, b = true;
+			if( !isCommandTarget( src, dst, cmdtgt)) b = false;
+			//	
+			v.tgtview.setVisible( b);
+			if( b && !tv) tv = v;
+		}
+		return tv;
+	}
+
+	//	コマンドターゲットの選択範囲に入る全ての対象を取得する。
+	//	※基本ルールとして、味方は死亡してても選択可能。敵が死亡していたら選択不能。これはisCommandTargetも同じ。
+	function getCommandTargets( src, dst, cmdtgt, choosedead=false){
+		switch( cmdtgt){
+		//	自分選択 : 誰を選択してもsrcを対象に
+		case TGT_MYSELF:
+			return [src];
+		//	単体選択系 : dstそのまま
+		case TGT_ENEMY_SINGLE:
+		case TGT_ANY_SINGLE:
+		case TGT_PARTY_SINGLE:
+			if( !::isCommandTarget( src, dst, cmdtgt)) return null;		//	選択不可の場合はnullを返す。
+			return [dst];
+		case TGT_PARTY_SINGLE_NOTME:
+			if( src==dst || !::isCommandTarget( src, dst, cmdtgt)) return null;		//	選択不可の場合はnullを返す。
+			return [dst];
+		//	ランダム選択 : ※選択時の表示はdstにすること。。。また、ランダムは死亡キャラを含まない。
+		case TGT_ENEMY_RANDOM:
+		case TGT_ANY_RANDOM:
+			local b = cmdtgt==TGT_ENEMY_RANDOM?2:3;
+			local a = charas.filter( @( v) (getRelation( src, v)&b) && !v.isDead());
+			a.removeValue( src);
+			return a[0] ? [::rnd.choosea( a)] : null;
+		//	全体選択 : charasの中から敵味方でフィルター
+		case TGT_ENEMY_ALL:
+			return charas.filter( @( v) (getRelation( src, v)&2) && !v.isDead());
+		case TGT_PARTY_ALL:
+			return charas.filter( @( v) getRelation( src, v)&1);
+		case TGT_PARTY_ALL_NOTME:
+			return charas.filter( @( v) src!=v && (getRelation( src, v)&1));
+		case TGT_ANY_ALL:
+			return clone charas;
+		//	範囲選択 : RPG3DObjectのシェイプに対してdstを中心に立体的な当たり判定を行う。
+		case TGT_ENEMY_R3:			//	R3の球
+		case TGT_ENEMY_R6:			//	R6の球
+		case TGT_ENEMY_LINE:		//	(16,4,0.5)のボックス
+		case TGT_ENEMY_COLUMN:		//	(0.5,4,16)のボックス
+		case TGT_PARTY_COLUMN:		//	(0.5,4,16)のボックス
+			local shpmap = #{
+				[TGT_ENEMY_R3] = b3Shape.createSphere( 2.0),
+				[TGT_ENEMY_R6] = b3Shape.createSphere( 6.0),
+				[TGT_ENEMY_LINE] = b3Shape.createBox( 0.5,4,8),
+				[TGT_ENEMY_COLUMN] = b3Shape.createBox( 0.5,4,8),
+				[TGT_PARTY_COLUMN] = b3Shape.createBox( 0.5,4,8),
+			};
+			if( !::isCommandTarget( src, dst, cmdtgt)) return null;		//	選択不可の場合はnullを返す。
+			local b = cmdtgt ==TGT_PARTY_COLUMN ? 1:2;
+			local shp = shpmap[cmdtgt];
+			m_1.identity().translate( getChara3D( dst).pos);	//	getChara3D( dst).b3body.getRawTransform( m_1)
+			local refs = stage.b3world.contactTest( 0, shp, m_1, -1, G_CHARA).getReferences();
+			local dsts = refs.map( @( v, i){
+				local ch = v["rpgobj"];
+				return (ch && (getRelation( src, ch)&b) && !(b==2 && ch.isDead())) ? ch : undefined;
+			});
+			return dsts;
+		}
+	}
+	
+	//	ステージ内の全3Dキャラに対して選択状態の変更を行う。
+	//	nullを渡せば選択解除。
+	function selectCommandTargets( dsts){
+		foreach( v in chara3ds){
+			local b = dsts?.contains( v.rpgobj);
+			if( b){
+				v.setSelected( v.selbits|1);
+			}else{
+				v.setSelected( v.selbits&~1);
+			}
+		}
+		stage.envcoltime = skGetTime();
+	}
+}

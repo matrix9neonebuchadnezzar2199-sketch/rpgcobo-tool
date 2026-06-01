@@ -1,0 +1,7 @@
+{
+	"rpgtools":{
+		"enable":true,
+		"lock":true,
+		"prop1":1234
+	}
+}

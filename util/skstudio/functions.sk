@@ -1,0 +1,563 @@
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	skstudioで使われるグローバル関数をここに集める。
+//	他のツールで読み込んでも使用できる。
+//	自動翻訳の機能や文字列操作などツールに関する細々なものが入る
+//	
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	翻訳
+//	- makeTranslationTable : confのテーブルから翻訳用のキー・テキストを抽出して翻訳元テーブルを生成する。
+//	- makeTranslationHTML  : 翻訳元テーブルから機械翻訳に渡すためのHTMLを生成する。
+//	- makeTableFromTranslatedHTML : 機械翻訳後のHTMLから翻訳後テーブルを生成する。これで機械翻訳完了。
+//	
+//	※makeTableFromTranslatedHTML時に、前回の翻訳後テーブルで元テキストの変更が無いものについては無視をするようにする。
+//	　これにはmakeTranslationTableで元テキストのハッシュを埋め込む。以下のように
+//	元テーブル : "name":["ポーション",121523,121523] ... [2]のハッシュをHTMLに埋め込む
+//	元HTML    :  <li id='name' hash=121523> ... これは一時的なもの。
+//	後テーブル : "name":["Potion",121523,3142] ... 元ハッシュ、現ハッシュ
+//	
+//	ja->en の変換をしてから en->fr をするみたいな事も可能。
+//	
+
+::translationkeys <- {
+	"name":1, "text":1, "desc":1, "msg":1, "title":1, "texts":1, "text0":1, "text1":1, "text2":1, "text3":1, "text4":1, "text5":1, "text6":1, "text7":1, 
+};
+
+function defaultTranslationRule( t, i, v, langcode){
+	//	_から始まるフィールド名は無視される
+	if( /*typeof( i)==SS_STRING &&*/ i[0]=='_') return undefined;
+	switch( typeof( v)){
+	case SS_STRING:
+		if( ::translationkeys[i] && !(i in t["_var"])){	//	_varで置き換えるプロパティは無視
+			if( v!="" && v[0] != '*' && v[0] != '$') return v;
+		}
+		break;
+	case SS_TABLE:
+		if( i == "dict"){	//	dictテーブルはそのままクローンして返す
+			v = clone( v);
+			foreach( i,_ in v){
+				if( i[0] == '_') removei;
+			}
+			return v;
+		}
+	case SS_ARRAY:
+	case SS_INSTANCE:
+		if( typeof( i)==SS_STRING || typeof( i)==SS_INTEGER){
+			return TranslationUtil.makeTranslationTable( v, callee(), langcode);	//	実行中のfunction
+		}
+		break;
+	}
+	return undefined;
+}
+
+
+class TranslationUtil
+{
+	//	confのテーブルを渡してソース翻訳辞書を作成する。
+	function makeTranslationTable( src, rule=defaultTranslationRule, langcode=null){
+		langcode = langcode || ::lang.code;
+		local t = undefined;
+		foreach( i, v in src){
+			local m = rule( src, i, v, langcode);
+			if( m != undefined){
+				if( t) t[i] <- m; else t = {[i]=m};
+			}
+		}
+		return t;
+	}
+	
+	//	[b]などのタグ、$X.Yや${x123+1234+"xxx"}などの
+	function _stringToHTML( sb, s){
+		if( s.indexOf( '$') < 0 && s.indexOf( '[') < 0){
+			return sb .. s;
+		}
+		local len = length( s), i0 = 0;
+		local sb2 = #StringBuffer();
+		for( local l = 0; l < len; l ++){
+			local c = s[l];
+			switch( c){
+			case '[':	//	""なし
+				sb .. s.substring( i0, l);
+				i0 = l++;
+				for( ; l < len;l ++){ if( s[l] == 93) break; }	//	93=]
+				++l;
+				local rawstr = s.substring( i0, l);
+				sb .. "<b translate='no' rawstr='" .. rawstr .. "'>" .. rawstr .. "</b>"
+				i0 = l;
+				break;
+			case '$':
+				sb .. s.substring( i0, l);
+				i0 = l++;
+				if( s[l]=='{'){	//	""あり、、、めんどい
+					++l;
+					local m = 0;
+					for( ;;l ++){
+						switch( s[l]){
+						case '"':
+							for( ++l; l < len;l ++){ if( s[l] == '"') break; }	//	\" は未対応。。。。
+							break;
+						case '\'':
+							for( ++l; l < len;l ++){ if( s[l] == '\'') break; } //  \' は未対応。。。
+							break;
+						case '{': ++m; break;
+						case '}': if( --m < 0){ goto BREAK; }; break;
+						case 0 : throw Exception( "unexpected EOS");
+						}
+					}
+					BREAK:
+					++l;
+				}else{
+					local alnumdot_ = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._";
+					for( ; l < len;l ++){ if( !alnumdot_.contains( s[l])) break; }	//	厳密には違う。。。
+				}
+				local rawstr = s.substring( i0, l);
+				sb .. "<b translate='no' rawstr='" .. rawstr .. "'>" .. rawstr .. "</b>"
+				i0 = l;
+				break;
+			}
+		}
+		sb .. s.substring( i0);
+	}
+
+	function _tableToHTML( sb, t, prefix){
+		local ka = Table.keys( t).sort();
+		foreach( k in ka){
+			local v = t[k];
+			if( typeof( v) == SS_STRING){
+				sb .. `$prefix<li id='$k'><code translate='no'>$k : </code>`;
+				v = v.replace( "\n", "<br>");
+				_stringToHTML( sb, v);
+				sb .. "</li>\n";
+			}else
+			if( typeof( v) == SS_TABLE){
+				sb .. `$prefix<b translate='no'>$k</b> <ul id='$k'>` .. "\n";
+				_tableToHTML( sb, v, prefix+"\t");
+				sb .. "</ul>\n"
+			}
+		}
+		return sb;
+	}
+	
+	//	翻訳元のテーブルから機械翻訳にかけるためのHTMLを作成する。
+	function makeTranslationHTML( t, srclang, dstlang){
+		local sb = StringBuffer();
+		sb .. ("<html lang='%S'>" % srclang);
+		sb .. `
+<head><title>transsrc</title><meta charset='UTF-8'/></head>
+<link rel='stylesheet' href='https://cdn.simplecss.org/simple.min.css'>
+<style> .step{ border:2px solid #fc0; border-radius: 8px; padding: 16px; margin: 16px; } </style>
+<script>
+function copy(){
+	let text = document.querySelector( 'sakana').outerHTML;
+	navigator.clipboard.writeText( text).then( () => {
+		console.log( 'html copied.\n', text); document.getElementById('COPYOK').hidden=false;
+	}).catch( () => {
+		console.log( 'copy error....', text);
+	})
+}
+function scrolldown(){
+	var e = document.querySelector( 'body'), by = e.getBoundingClientRect().bottom, y = 0;
+	var i = setInterval( () => {
+		y = Math.min( y+240, by);
+		scrollTo( 0, y);
+		if( y >= by) clearInterval( i);
+	}, 10);
+}
+function googleTranslateElementInit(){
+	let opt = { pageLanguage: '$srclang', includedLanguages: '$dstlang,$srclang', layout: google.translate.TranslateElement.InlineLayout.VERTICAL};
+	new google.translate.TranslateElement(opt, 'google_translate_element');
+	var e = document.querySelector( '.goog-te-combo'), step = ['step1','step2','step3'].map( ( v) => document.getElementById( v));
+	var i = setInterval( () => {
+		if( e.value=='$dstlang'){ step[1].hidden=false; step[2].hidden=false; step[0].className=''; clearInterval( i);}
+	}, 100);
+}
+</script>
+<body>
+<center id='step1' class='step'>
+<p translate='no'> $T.dlg_trans_web_help1 </p>
+<div id='google_translate_element'></div>
+</center>
+<center id='step2' hidden translate='no' class='step'>
+	 $T.dlg_trans_web_help2 
+	<button translate='no' onclick='scrolldown()'> $T.dlg_trans_web_scroll </button>
+</center>
+<sakana>`;
+	_tableToHTML( sb, t, "");
+sb .. `</sakana>
+<div>
+<br><br><br><br><br>
+</div>
+<center id='step3' class='step' translate='no' hidden=1>
+<p> $T.dlg_trans_web_help3 </p>
+<p id='COPYOK' hidden=1> $T.dlg_trans_web_help4 </p>
+<br><button id='COPY' onclick='copy()'> $T.dlg_trans_web_copy </button><br>
+</center>
+<div>
+<br><br><br><br><br>
+</div>
+<script type='text/javaScript' src='https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit'></script>
+</body>
+</html>`;
+		return string( sb);
+	}
+
+
+
+	function makePlainTranslationHTML( t, srclang, dstlang){
+		local sb = StringBuffer();
+		sb .. ("<html lang='%S'>" % srclang);
+		sb .. @"
+<head><title>transsrc</title><meta charset='UTF-8'/></head>
+<body><sakana>
+";
+		_tableToHTML( sb, t, "");
+		sb .. @"
+</sakana></body>
+</html>"
+		return string( sb);
+	}
+	
+	function _getTranslatedNodeText( n, _s=""){
+		foreach( c in n.getChildren()){
+			local val = c.value;
+			if( val == "br"){
+				_s = _s.."\n";
+			}else{
+				local t = c.text, attr = c.getAttributes();
+				if( attr["rawstr"]){
+					_s = _s .. attr["rawstr"];
+				}else
+				if( attr["translate"]=="no"){
+				}else
+				if( c.isText()){
+					_s = _s..(val.trim());
+				}else
+				if( t){
+					_s = _s..(t.trim());
+				}else{
+					_s = _getTranslatedNodeText( c, _s);
+				}
+			}
+		}
+		return _s;
+	}
+	
+	function _parseTranslatedNode( n, t){
+		local attrs = n.getAttributes();
+		switch( n.value){
+		case "sakana":
+		case "ul":
+			local ct = {};
+			foreach( c in n.getChildren()){
+				_parseTranslatedNode( c, ct);
+			}
+			if( n.value == "sakana") t = ct;
+			else t[attrs.id] <- ct;
+			break;
+		case "li":
+			t[attrs.id] <- _getTranslatedNodeText( n);
+			break;
+		}
+		return t;
+	}
+	
+	//	翻訳済みのHTML(ブラウザ上でソースHTMLを開き翻訳後にCOPYボタンで取得可能)から
+	//	翻訳後テーブルを生成する。
+	function makeTableFromTranslatedHTML( s){
+		local s1 = s.replace( "<br>", "<br/>");
+		local xml = XMLDocument( s1);
+		local n0 = xml.getChildren()[0];
+		if( n0.value != "sakana"){
+			
+		}
+		local t = _parseTranslatedNode( n0, null);
+		return t;
+	}
+
+	//	{ a={b=1}, c={d=2}, e=3} を
+	//	{ "a.b"=1, "c.d"=2, e=3} の形式にする。
+	static function flattenTable( src){
+		local dst = {};
+		_flattenTable( src, dst, null);
+		return dst;
+	}
+
+	static function _flattenTable( src, dst, pre){
+		foreach( i, v in src){
+			local pi = pre ? `${pre}.${i}` : i;
+			if( typeof( v) == SS_TABLE){
+				_flattenTable( v, dst, pi);
+			}else{
+				dst[pi] <- v;
+			}
+		}
+	}
+	
+	//	flattenされたテーブルを元に戻す。
+	//	
+	static function unflattenTable( src, dst){
+		foreach( i, v in src){
+			::putField( dst, i, v);
+		}
+	}
+
+	//	flattenされたテーブルから、ソースワードのハッシュのテーブルに変換
+	static function getWordHashTable( src){
+		local t = {};
+		foreach( i, v in src) t[i] <- hashcode( v);
+		return t;
+	}
+
+	//	flattenされたテーブルのdiffを取る。
+	//	
+	static function diffTable( t0, t1){
+		local added = {}, changed = {}, deleted = {};
+		foreach( i, v0 in t0){
+			local v1 = t1[i];
+			if( v1 == undefined){
+				deleted[i] <- v0;
+			}else
+			if( v1 != v0){
+				changed[i] <- v1;
+			}
+		}
+		foreach( i, v1 in t1){
+			local v0 = t0[i];
+			if( v0 == undefined){
+				added[i] <- v1;
+			}
+		}
+		return (added,changed,deleted);
+	}
+
+	//	
+	static function applyDiff( t, diff){
+		foreach( i, v in diff[2]) delete t[i];
+		foreach( i, v in diff[1]) t[i] =  v;
+		foreach( i, v in diff[0]) t[i] <- v;
+	}
+}
+
+//	翻訳作業をする時にはこの形式で行う。辞書のjsonから生成。
+//	
+class TransDict
+{
+	flattb = null;			//	dictconf.transdictをflattenしたもの。編集はこの状態で行う
+	checktb = null;			//	キーに対して翻訳済みの場合に元ワードのハッシュが入る。
+	_meta = null;			//	{ srcver=int, transed=date, edited=date }
+
+	function _cloned( org){
+		flattb = clone flattb;
+		checktb = clone checktb;
+		_meta = clone _meta;
+	}
+
+	//	
+	constructor( dictconf){
+		flattb = TranslationUtil.flattenTable( dictconf.transdict);
+		_meta = deepclone( dictconf._meta);
+		checktb = {};
+		if( length( dictconf["check"])){
+			local cbb = decodeBASE64( dictconf.check, ByteBuffer());
+			local ctb = decodeJSON( uncompressZSTD( cbb));
+			local keys = Table.keys( flattb).sort();
+			foreach( i, v in ctb){
+				checktb[keys[i]] <- v;
+			}
+		}
+	}
+	
+	//	作業データをテーブルに書き出して返す
+	function write(){
+		//	まずはflattenされた作業テーブルを復元。
+		local tb = { transdict={}, };
+		TranslationUtil.unflattenTable( flattb, tb.transdict);
+		local pg = 0;
+		//	checktbを圧縮してstringに。prelexはあんま変わらなそうだからしない
+		if( !length( checktb)){
+			tb.check <- null;
+		}else{
+			local keys = Table.keys( flattb).sort();
+			local ctb = {};
+			foreach( i, v in keys){
+				if( v in checktb) ctb[i] <- checktb[v];
+			}
+			local bb = encodeJSON( ctb, 0, ByteBuffer()); bb.pos = 0;
+			local cbb = compressZSTD( bb); cbb.pos = 0;
+			tb.check <- encodeBASE64( cbb);
+			pg = 100 * length( checktb) / length( flattb);
+		}
+		//	メタデータに現在時刻、進捗率を入れる。
+		local mt = deepclone( _meta);
+		mt.edited <- string( Date.currentTime());
+		mt.progress <- pg;
+		tb._meta <- mt;
+		return tb;
+	}
+
+	//	翻訳状態を変更する
+	function check( i, v){
+		if( v) checktb[i] <- v; else delete checktb[i];
+	}
+	
+	//	翻訳済みワードに関して、ソースワードが変化していたら変化、さもなければ未変化とする。
+	//	※手動で翻訳したワードが自動翻訳によって上書きされないために行う。
+	//	changed: diffTableで取得した変化したワード一覧
+	//	checktb: 翻訳済みチェック辞書。翻訳済みの場合、ソースワードのハッシュが入る。
+	//	srchashtb: ソースワードのハッシュが入ったテーブル。getWordHashTableで作る。
+	function removeSouceUnchanged( changed, srchashtb){
+		local a = [];
+		// printf( "srchashtb.... %S\n", encodeJSON( srchashtb, 5));
+		foreach( k, h in checktb){	//	k: flattenされた辞書キー h:ソースワードのハッシュ
+			local sh = srchashtb[k];
+			// printf( "changed %S    - %S %S\n", k, h, sh);
+			if( sh){
+				if( sh == h){
+					delete changed[k];
+					a .. k;
+				} else removei;	//	翻訳済みのチェックを外す。そしてワードは自動翻訳された新しいワードに置き換えられる
+			}
+		}
+		printf( "removeSouceUnchanged num:%S %S\n", length( a), encodeJSON( a));
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	文字列操作
+//	- getStringMatchScore : ファイル検索やdict検索に使う
+//	- 
+
+
+//	文字列に対して部分前方一致のスコアを返す。
+//	※また、一致した部分を強調するための一致箇所一覧も返す。
+//	※string, wstringどっちでも渡せる
+function getStringMatchScore( str, k){
+	local klen = length( k), slen = length( str);
+	if( klen > slen) return -1.0;
+	k = k.toLowerCase();
+	str = str.toLowerCase();
+	local sc = 0.0, add = 100.0-klen, s = 0;
+	foreach( c in k){
+		local i = str.indexOf( c, s);
+		if( i < 0) return -1.0;			//	kの全ての文字を含まないとNG
+		sc += (add / (i+1));
+		s = i + 1;
+	}
+	return sc * klen / slen;	//	slen短い方が高スコア
+}
+
+//	path2をpath1からの相対パスにした文字列を返す。
+//	
+function getRelativePath( path1, path2){
+	if( path1.endsWith("/")) path1 = path1.substring( 0, length( path1)-1);		//	最後の/を取り払う
+	if( path2.endsWith("/")) path2 = path2.substring( 0, length( path2)-1);		//	最後の/を取り払う
+	if( path1 == path2) return "";							//	同じファイル。。。
+	local len1 = length( path1);
+	local len2 = length( path2);
+	local minlen = Math.min( len1, len2);
+	local i1 = -1;
+	for( local l = 0;; ++l){
+		local c1 = path1[l], c2 = path2[l];
+		if( l == minlen){
+			if( ((!c1)||c1=='/') && ((!c2)||c2=='/')) i1 = l+1;
+			break;
+		}
+		if( c1 != c2) break;
+		if( c1 == '/') i1 = l+1;
+	}
+	if( i1>=len1) return path2.substring( i1);
+	local num = 0;
+	foreach( ch in path1.substring( i1)){
+		if( ch == '/') ++num;
+	}
+	local pf = "../";
+	for( local l = 0;l < num; ++l) pf = pf .. "../";
+	return pf .. path2.substring( i1);
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	ショートカットキー
+
+import VirtualKeyCode;
+import ModifiersMask;
+
+local vknamemap = {
+	[VK_PAGE_UP] = "PageUp", [VK_PAGE_DOWN] = "PageDown", [VK_END] = "End", [VK_HOME] = "Home",
+	[VK_LEFT] = "Left", [VK_UP] = "Up", [VK_RIGHT] = "Right", [VK_DOWN] = "Down",
+	[VK_DELETE] = "Delete", [VK_SPACE] = "Space", [VK_ENTER]  = "Enter",
+	[VK_0] = "0", [VK_1] = "1", [VK_2] = "2", [VK_3] = "3", [VK_4] = "4", [VK_5] = "5", [VK_6] = "6", [VK_7] = "7", [VK_8] = "8", [VK_9] = "9", 
+	[VK_A] = "A", [VK_B] = "B", [VK_C] = "C", [VK_D] = "D", [VK_E] = "E", [VK_F] = "F", [VK_G] = "G", 
+	[VK_H] = "H", [VK_I] = "I", [VK_J] = "J", [VK_K] = "K", [VK_L] = "L", [VK_M] = "M", [VK_N] = "N", 
+	[VK_O] = "O", [VK_P] = "P", [VK_Q] = "Q", [VK_R] = "R", [VK_S] = "S", [VK_T] = "T", [VK_U] = "U", 
+	[VK_V] = "V", [VK_W] = "W", [VK_X] = "X", [VK_Y] = "Y", [VK_Z] = "Z", 
+	[VK_COMMA] = ",", [VK_AT] = "@",
+	[VK_F1] = "F1", [VK_F2] = "F2", [VK_F3] = "F3", [VK_F4] = "F4", [VK_F5] = "F5", [VK_F6] = "F6", 
+	[VK_F7] = "F7", [VK_F8] = "F8", [VK_F9] = "F9", [VK_F10] = "F10", [VK_F11] = "F11", [VK_F12] = "F12", 
+};
+
+//	指定したvkコードとModifiersMaskからkeymodifier文字列を生成する
+//	無効な組み合わせの場合はnullを返す
+function toModifierKeyString( key, mod){
+	local sb = (#StringBuffer()).clear();
+	if( mod & CTRL_MASK) sb .. "^";
+	if( mod & ALT_MASK)  sb .. "~";
+	if( mod & SHIFT_MASK) sb .. "_";
+	if( key in vknamemap){
+		sb .. vknamemap[key];
+	}else
+	if( key >= VK_SPACE && key <= VK_CLOSE_BRACKET){
+		sb .. char( key).toUpperCase();
+	}else{
+		return null;
+	}
+	return string( sb);
+}
+
+function getModifierKeyName( str){
+	local sb = (#StringBuffer()).clear();
+	local l = 0, len = length( str);
+	for( ;l < len;l ++){
+		switch( str[l]){
+		case '^': sb .. "\ued11"; break;
+		case '_': sb .. "\ued10"; break;
+		case '~': sb .. "\ued12"; break;
+		default:
+			local k = str.substring( l);
+			local c = Table.indexOf( vknamemap, k);
+			if( c){
+				sb .. char( 0xed00 + c);		//	0xec00 | 0xed00
+			}else{
+				sb .. str.substring( l);
+			}
+			l = len;
+			break;
+		}
+	}
+	return string( sb);
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	クリップボード
+//	jsonを通して
+
+function putClipboard( id, data){
+	local cbdata = encodeJSON( { type="skstudio", id=id, data=data });
+	skPutClipboardData( cbdata);
+}
+
+function getClipboard( id){
+	if( !skCheckClipboardType( ClipboardType.CLIPBOARD_TEXT)) return null;
+	try{
+		local t = decodeJSON( skGetClipboardData( ClipboardType.CLIPBOARD_TEXT));
+		if( t["type"]!="skstudio" || t["id"]!=id) return null;
+		return t.data;
+	}catch( ex){
+		return null;
+	}
+}

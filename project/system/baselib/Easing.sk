@@ -1,0 +1,316 @@
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	イージング関数
+//
+
+enum TweenType
+{
+	CONST = 0,
+	LINEAR = 1,
+	
+	SINE_EASEIN = 2,
+	SINE_EASEOUT = 3,
+	SINE_EASEINOUT = 4,
+	
+	QUAD_EASEIN = 5,
+	QUAD_EASEOUT = 6,
+	QUAD_EASEINOUT = 7,
+	
+	CUBIC_EASEIN = 8,
+	CUBIC_EASEOUT = 9,
+	CUBIC_EASEINOUT = 10,
+	
+	QUART_EASEIN = 11,
+	QUART_EASEOUT = 12,
+	QUART_EASEINOUT = 13,
+	
+	EXPO_EASEIN = 14,
+	EXPO_EASEOUT = 15,
+	EXPO_EASEINOUT = 16,
+	
+	ELASTIC_EASEIN = 17,
+	ELASTIC_EASEOUT = 18,
+	ELASTIC_EASEINOUT = 19,
+	
+	BACK_EASEIN = 20,
+	BACK_EASEOUT = 21,
+	BACK_EASEINOUT = 22,
+	
+	BOUNCE_EASEIN = 23,
+	BOUNCE_EASEOUT = 24,
+	BOUNCE_EASEINOUT = 25,
+}
+
+local _bounceTime = function( time1) {
+	time1 = Math.saturate( time1);
+	if( time1 < 1.0 / 2.75) {
+		return 7.5625 * time1 * time1;
+	} else if( time1 < 2.0 / 2.75) {
+		time1 -= 1.5 / 2.75;
+		return 7.5625 * time1 * time1 + 0.75;
+	} else if (time1 < 2.5 / 2.75) {
+		time1 -= 2.25 / 2.75;
+		return 7.5625 * time1 * time1 + 0.9375;
+	}
+    time1 -= 2.625 / 2.75;
+    return 7.5625 * time1 * time1 + 0.984375;
+};
+
+class Easing
+{
+	function easeConst( dt){
+		return 0.0;
+	}
+	
+	static easeLinear = Math.saturate;
+	
+	function easeIn( rate){
+		return @( dt) {
+			return Math.pow( Math.saturate( dt), rate);
+		}
+	}
+	
+	function easeOut( rate){
+		local irate = 1.0 / rate;
+		return @( dt) {
+			return Math.pow( dt, irate);
+		};
+	}
+	
+	function easeInOut( rate){
+		return @( dt) {
+			dt = Math.saturate( dt) * 2.0;
+			if( dt < 1.0) return 0.5 * Math.pow( dt, rate);
+			else return 1.0 - 0.5 * Math.pow( 2.0 - dt, rate);
+		};
+	}
+	
+	function easeExponentialIn( dt){
+		return Math.pow( 2.0, 10.0 * (Math.saturate( dt) - 1.0));
+	}
+	
+	function easeExponentialOut( dt){
+		return -(Math.pow( 2.0, -10.0 * Math.saturate( dt))) + 1.0;
+	}
+	
+	function easeExponentialInOut( dt){
+		dt = Math.saturate( dt) * 2.0;
+		if( dt < 1.0) return 0.5 * Math.pow( 2, 10.0 * (dt - 1.0));
+		else return 0.5 * (-Math.pow( 2.0, -10.0 * (dt - 1.0)) + 2.0);
+	}
+	
+	function easeSineIn( dt){
+		return -Math.cos( Math.saturate( dt) * Math.PI*0.5) + 1.0;
+	}
+	
+	function easeSineOut( dt){
+		return Math.sin( Math.saturate( dt) * Math.PI*0.5);
+	}
+	
+	function easeSineInOut( dt){
+		return -0.5 * (Math.cos( Math.PI * Math.saturate( dt)) - 1.0);
+	}
+	
+	function easeElasticIn( period=0.3){
+		return @( dt) {
+			dt = Math.saturate( dt) - 1.0;
+			return -Math.pow( 2.0, 10.0 * dt) * Math.sin((dt - (period / 4.0)) * Math.PI * 2.0 / period);
+		};
+	}
+	
+	function easeElasticOut( period=0.3){
+		return @( dt) {
+			dt = Math.saturate( dt);
+			return Math.pow( 2.0, -10.0 * dt) * Math.sin((dt - (period / 4.0)) * Math.PI * 2.0 / period) + 1.0;
+		};
+	}
+	
+	function easeElasticInOut( period=0.3){
+		return @( dt) {
+			local newT = 0.0;
+			local locPeriod = period;
+			dt = Math.saturate( dt) * 2.0;
+			//if( !locPeriod) locPeriod = period = 0.3 * 1.5;
+			local s = locPeriod / 4.0;
+			dt = dt - 1.0;
+			if( dt < 0.0) newT = -0.5 * Math.pow( 2.0, 10.0 * dt) * Math.sin((dt - s) * Math.PI2 / locPeriod);
+			else newT = Math.pow( 2.0, -10.0 * dt) * Math.sin((dt - s) * Math.PI2 / locPeriod) * 0.5 + 1.0;
+			return newT;
+		};
+	}
+	
+	function easeBounceIn( dt){
+		return 1.0 - _bounceTime( 1.0 - dt);
+	}
+	
+	function easeBounceOut( dt){
+		return _bounceTime( dt);
+	}
+	
+	function easeBounceInOut( dt){
+		local newT;
+		if( dt < 0.5) {
+			dt *= 2.0;
+			newT = (1.0 - _bounceTime( 1.0 - dt)) * 0.5;
+		} else {
+			newT = _bounceTime( dt * 2.0 - 1.0) * 0.5 + 0.5;
+		}
+		return newT;
+	}
+	
+	function easeBackIn( overshoot = 1.70158){
+		return @( dt) {
+			dt = Math.saturate( dt);
+			return (dt<=0.0 || dt>=1.0) ? dt : dt * dt * ((overshoot + 1.0) * dt - overshoot);
+		};
+	}
+	
+	function easeBackOut( overshoot = 1.70158){
+		return @( dt) {
+			dt = Math.saturate( dt) - 1.0;
+			return dt * dt * ((overshoot + 1.0) * dt + overshoot) + 1.0;
+		}
+	}
+	
+	function easeBackInOut( overshoot = 2.5949095){	//	1.70158 * 1.525
+		return @( dt) {
+			dt = Math.saturate( dt) * 2.0;
+			if( dt < 1.0){
+				return (dt * dt * ((overshoot + 1.0) * dt - overshoot)) / 2.0;
+			} else {
+				dt -= 2.0;
+				return (dt * dt * ((overshoot + 1.0) * dt + overshoot)) / 2.0 + 1.0;
+			}
+		};
+	}
+	
+	function easeBezier( x1, y1, x2, y2){
+		return @( dt) {
+			dt = Math.saturate( dt);
+			return (Math.pow( 1.0-dt,3.0) * x1 + 3.0*t*(Math.pow(1.0-dt,2.0))*y1 + 3.0*Math.pow(dt,2.0)*(1.0-t)*x2 + Math.pow(dt,3.0)*y2 );
+		};
+	}
+	
+	function easeQuadraticIn( dt){
+		dt = Math.saturate( dt);
+		return dt * dt;
+	}
+	
+	function easeQuadraticOut( dt){
+		dt = Math.saturate( dt);
+		return -dt*(dt-2.0);
+	}
+	
+	function easeQuadraticInOut( dt){
+		dt = Math.saturate( dt);
+		local resultTime = dt;
+		dt *= 2.0;
+		if( dt < 1.0){
+			resultTime = dt * dt * 0.5;
+		}else{
+			dt -= 1.0;
+			resultTime = -0.5 * ( dt * ( dt - 2.0 ) - 1.0)
+		}
+		return resultTime;
+	}
+	
+	function easeQuarticIn( dt){
+		dt = Math.saturate( dt);
+		return dt*dt*dt*dt;
+	}
+	
+	function easeQuarticOut( dt){
+		dt = Math.saturate( dt) - 1.0;
+		return -(dt * dt * dt * dt - 1);
+	}
+	
+	function easeQuarticInOut( dt){
+		dt = Math.saturate( dt) * 2.0;
+		if( dt < 1.0)
+			return 0.5 * dt * dt * dt * dt;
+		dt -= 2.0;
+		return -0.5 * (dt * dt * dt * dt - 2.0);
+	}
+	
+	function easeQuinticIn( dt){
+		dt = Math.saturate( dt);
+		return dt*dt*dt*dt*dt;
+	}
+	
+	function easeQuinticOut( dt){
+		dt = Math.saturate( dt) - 1.0;
+		return -(dt * dt * dt * dt * dt - 1);
+	}
+	
+	function easeQuinticInOut( dt){
+		dt = Math.saturate( dt) * 2.0;
+		if( dt < 1.0) return 0.5 * dt * dt * dt * dt * dt;
+		dt -= 2.0;
+		return -0.5 * (dt * dt * dt * dt * dt - 2.0);
+	}
+	
+	function easeCircleIn( dt){
+		dt = Math.saturate( dt);
+		return -1.0 * (Math.sqrt( 1.0 - dt * dt) - 1.0);
+	}
+	
+	function easeCircleOut( dt){
+		dt = Math.saturate( dt) - 1.0;
+		return Math.sqrt( 1.0 - dt * dt);
+	}
+	
+	function easeCircleInOut( dt){
+		dt = Math.saturate( dt) * 2.0;
+		if( dt < 1.0) return -0.5 * (Math.sqrt( 1.0 - dt * dt) - 1.0);
+		dt -= 2.0;
+		return 0.5 * (Math.sqrt(1.0 - dt * dt) + 1.0);
+	}
+	
+
+	function easeCubicIn( dt){
+		dt = Math.saturate( dt);
+		return dt*dt*dt;
+	}
+	
+	function easeCubicOut( dt){
+		dt = Math.saturate( dt) - 1.0;
+		return -(-dt * dt * dt - 1.0);
+	}
+	
+	function easeCubicInOut( dt){
+		dt = Math.saturate( dt) * 2.0;
+		if( dt < 1.0) return 0.5 * dt * dt * dt;
+		dt -= 2.0;
+		return -0.5 * (-dt * dt * dt - 2.0);
+	}
+
+	static presets = null;
+}
+
+Easing.presets <-
+[
+	Easing.easeConst, // CONST
+	Easing.easeLinear, // LINEAR
+	Easing.easeSineIn, // SINE_EASEIN
+	Easing.easeSineOut, // SINE_EASEOUT
+	Easing.easeSineInOut, // CUBIC_EASEINOUT
+	Easing.easeQuadraticIn, // QUAD_EASEIN
+	Easing.easeQuadraticOut, // QUAD_EASEOUT
+	Easing.easeQuadraticInOut, // QUAD_EASEINOUT
+	Easing.easeCubicIn, // CUBIC_EASEIN
+	Easing.easeCubicOut, // CUBIC_EASEOUT
+	Easing.easeCubicInOut, // CUBIC_EASEINOUT
+	Easing.easeExponentialIn, // EXPO_EASEIN
+	Easing.easeExponentialOut, // EXPO_EASEOUT
+	Easing.easeExponentialInOut, // EXPO_EASEINOUT
+	Easing.easeElasticIn(), // ELASTIC_EASEIN
+	Easing.easeElasticOut(), // ELASTIC_EASEOUT
+	Easing.easeElasticInOut(), // ELASTIC_EASEINOUT
+	Easing.easeBackIn(), // BACK_EASEIN
+	Easing.easeBackOut(), // BACK_EASEOUT
+	Easing.easeBackInOut(), // BACK_EASEINOUT
+	Easing.easeBounceIn, // BOUNCE_EASEIN
+	Easing.easeBounceOut, // BOUNCE_EASEOUT
+	Easing.easeBounceInOut, // BOUNCE_EASEINOUT
+]

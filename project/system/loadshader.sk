@@ -1,0 +1,34 @@
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//	load modules / shader
+//
+
+loadskfx <- function( res){
+	if( res.isDirectory()){
+		foreach( r in res.getList()){
+			loadskfx( r);
+		}
+	}else{
+		try{
+			if( !res.name.endsWith(".skfx")) return;
+			local skfx = skFXCompile( res.loadData());
+			if( !skfx.name) throw Exception( "SKFX has no name");
+			skFXRegisterModule( skfx.name, skfx);
+			printf("SKFX Module registered : %S - %S\n", skfx.name, res.path);
+		}catch( e){
+			println("?? " .. e);
+			printexception( e);
+			printf("SKFX load failure : %S\n", res.path);
+		}
+	}
+}
+
+loadskfx( getResource("/system/shadermod"));
+loadskfx( getResource("/system/shader"));
+
+//	default sprite shader
+skSetDefaultSpriteShader( skFXFindTechnique("sprite.def").getShaderSource(0) );
+skSetDefaultFontShader( skFXFindTechnique("sprite.strokefont").getShaderSource(0) );
+skFXSetDefaultTechnique( skFXFindTechnique("defaults.def") );
+

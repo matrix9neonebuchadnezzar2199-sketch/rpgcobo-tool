@@ -1,0 +1,175 @@
+
+//	undo,redoの共通処理のためのクラス。
+//	undo操作を持つエディターはopフィールドで持っている。
+//	
+class OperationStack
+{
+	undobuf = null;
+	undocurs = -1;			//	-1 ~ length( undobuf)-1
+	tracking = null;		//	操作の重複チェック用。連続した移動や数値変化は一つの操作としてまとめるため
+	savecurs = -1;
+
+	constructor(){
+		undobuf = [];
+	}
+
+	function undoable(){
+		return undocurs>=0;
+	}
+	
+	function redoable(){
+		return undocurs<length( undobuf)-1;
+	}
+
+	function markSaved(){
+		savecurs = undocurs;
+	}
+
+	function isChanged(){
+		return undocurs!=savecurs;
+	}
+
+	function clear(){
+		undobuf = [];
+		undocurs = -1;
+		savecurs = -1;
+	}
+
+	//	trackingを破棄
+	function untrack(){
+		tracking = null;
+	}
+
+	//	redo, undoを指定してredo操作を実行する
+	//	※trkを指定するとtrackingと比較して一致していたら直前操作のundoを先に行う。
+	function submit( redo, undo, trk=null){
+		if( undocurs >= 199){
+			delete undobuf[0]; --undocurs; --savecurs;
+		}
+		undobuf.resize( undocurs+1);	//	カーソル以降のundo情報を破棄
+		if( savecurs > undocurs) savecurs=-100;	//	セーブカーソルがundocurs以降に会った場合は無効に
+		//
+		//	trackingと同一ならundoを置き換えつつundo実行
+		if( trk!=null && trk==tracking){
+			undo = undobuf[undocurs--][0]; undobuf.pop(); exec( undo);	//	undoの操作はいる、、、、
+		}
+		tracking = trk;
+		undobuf .. (undo,redo);
+		undocurs ++;
+		exec( redo);				//	redo処理をここで実行
+		return true;
+	}
+
+	//	直前の操作にこの操作を追加する。
+	//	
+	function merge( redo, undo){
+		if( redoable()) return false;
+		exec( redo);
+		local a = undobuf.last();
+		a[0] = [ ...undo, ...a[0]];
+		a[1] ... redo;
+		return true;
+	}
+	
+	function undo(){
+		if( undocurs < 0){
+			return false;
+		}
+		local a = undobuf[undocurs--][0];
+		exec( a);
+		tracking = null;	//	undoを入れるとtrackingはリセット
+		return true;
+	}
+
+	function redo(){
+		if( undocurs >= length( undobuf)-1){
+			return false;
+		}
+		local a = undobuf[++undocurs][1];
+		exec( a);
+		return true;
+	}
+
+	function exec( a){
+		foreach( op in a) op( this);
+	}
+}
+
+//	データまるまるをストアしていく簡易型OperationStack
+//	pm,ptdなんかで一々オペレーションを定義するのが面倒な場合にこれで簡単に実装可能
+//	※OperationStackのサブクラスではないが、APIは大体同じ。ただし初期データを渡してやる必要がある
+//	
+class DataOperationStack
+{
+	databuf = null;
+	datacurs = -1;			//	-1 ~ length( undobuf)-1
+	tracking = null;		//	操作の重複チェック用。連続した移動や数値変化は一つの操作としてまとめるため
+	savecurs = -1;
+
+	inidata = null;
+	setdatafunc = null;		//	closure : データをストアするための関数
+
+	constructor( func, data){
+		databuf = [];
+		setdatafunc = func;
+		inidata = data;
+	}
+
+	function undoable(){
+		return datacurs>=0;
+	}
+	
+	function redoable(){
+		return datacurs<length( databuf)-1;
+	}
+
+	function markSaved(){
+		savecurs = datacurs;
+	}
+
+	function isChanged(){
+		return datacurs!=savecurs;
+	}
+
+	function clear( data){
+		databuf = [];
+		datacurs = -1;
+		savecurs = -1;
+		inidata = data;
+	}
+
+	function submit( data, trk=null){
+		if( datacurs >= 199){
+			delete databuf[0]; --datacurs; --savecurs;
+		}
+		databuf.resize( datacurs+1);	//	カーソル以降のundo情報を破棄
+		if( savecurs > datacurs) savecurs=-100;	//	セーブカーソルがundocurs以降に会った場合は無効に
+		//	trackingと同一ならundoを置き換え
+		if( trk!=null && trk==tracking){ --datacurs; }
+		tracking = trk;
+		databuf .. data;
+		datacurs ++;
+		// setdatafunc( data);
+		return true;
+	}
+
+	function undo(){
+		if( datacurs < 0){
+			return false;
+		}
+		--datacurs;
+		local d = datacurs>=0?databuf[datacurs]:inidata;
+		setdatafunc( d);
+		tracking = null;	//	undoを入れるとtrackingはリセット
+		return true;
+	}
+
+	function redo(){
+		if( datacurs >= length( databuf)-1){
+			return false;
+		}
+		local d = databuf[++datacurs];
+		setdatafunc( d);
+		return true;
+	}
+}

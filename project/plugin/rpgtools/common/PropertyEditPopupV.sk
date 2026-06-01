@@ -1,0 +1,200 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+/////////////////////////////////////////////////////////////////////////////////
+//	
+//	イベントコマンドエディタでのみ使用される。コマンドに_var機能を追加し、
+//	
+//	
+
+local srcdir = dirname( callee().getSourceName());
+
+class PropertyEditPopupV extends PropertyEditPopup
+{
+	function setupProperties(){
+		if( !length( data["_var"])) return super.setupProperties();
+		//
+		local d = clone data;
+		local props = clone fget( propdef, "props", propdef, data);
+		setDefaultProperties( props, data);
+		foreach( pid, v in data["_var"]){
+			local pi = props.findi( @( v) v.pid==pid);
+			if( pi >= 0){
+				local prop = clone props[pi];
+				prop.type = VARIABLE;
+				if( !("constbits" in prop)) prop.constbits <- 8;
+				if( !("varbits" in prop)) prop.varbits <- 1|2|4;
+				prop.varchk <- true;
+				prop.cnt <- "cntv.ui";
+				props[pi] = prop;
+				d[prop.pid] <- v;
+			}
+		}
+		proplist.bindProperties( props);
+		proplist.setParameters( d);
+	}
+
+	function actionevent( e){
+		return super.actionevent( e);
+	}
+	
+	function propevent( e){
+		e.consume();
+		local cmd = e.actioncmd;
+		if( cmd.cmd == "varchk"){
+			local pid = cmd.prop.pid;
+			if( cmd.prop.variable == 2) return;
+			local data = this.data;
+			local defval = cmd.prop["defval"];	//	defvalを定義しとけば消すことが可能
+			if( pid in data["_var"]){
+				if( MenuPopup.run( [{ lbl="$T.lbl_unlink_var", icon="\ue16f", val=0, }])){
+					local self = this, oldvar = data._var[pid];
+					local redo = [@(){
+						delete data._var[pid];
+						if( !length( data._var)) delete data._var;
+						if( defval != undefined) data[pid] <- defval;
+						self.setupProperties();
+						self.updateViewSize();
+					}];
+					local undo = [@(){
+						if( !data["_var"]) data._var <- {};
+						data._var[pid] <- oldvar;
+						if( defval != undefined) delete data[pid];
+						self.setupProperties();
+						self.updateViewSize();
+					}];
+					submitOp( redo, undo, null);
+				}
+			}else{
+				if( MenuPopup.run( [{ lbl="$T.lbl_link_var", icon="\ue157", val=0, }])){
+					local self = this;
+					local oldval = data[pid];
+					local redo = [@(){
+						if( !data["_var"]) data._var <- {};
+						data._var[pid] <- "A";
+						if( defval != undefined) delete data[pid];
+						self.setupProperties();
+						self.updateViewSize();
+					}];
+					local undo = [@(){
+						delete data._var[pid];
+						if( !length( data._var)) delete data._var;
+						data[pid] <- oldval;
+						self.setupProperties();
+						self.updateViewSize();
+					}];
+					submitOp( redo, undo, null);
+				}
+			}
+		}else
+		if( cmd.cmd == "prop"){
+			setParamOp( cmd.prop, cmd.val);
+		}
+	}
+
+	function setParamOp( prop, val){
+		local self = this;
+		local data = this.data, oldval = ::getProperty( prop, data);
+		local makefn = @( v, d) @(){
+			if( prop["varchk"]){
+				data._var[prop.pid] = v;
+			}else{
+				::setProperty( prop, data, v);
+			}
+			if( d) Table.clear( data) ... d;
+			if( self.propdef["setprop"]) self.propdef.setprop( prop, data, v, self);
+			if( prop["refresh"]){
+				self.setupProperties();
+			}else{
+				self.proplist.setParam( prop.pid, v);
+			}
+			self.updateViewSize();
+		}
+		local redo = [makefn( val, null)];
+		local undo = [makefn( oldval, prop["refresh"] && deepclone( data))];
+		submitOp( redo, undo, null);	//	trk無し
+	}
+}
+
+
+//	ピクチャ配置用。
+//	posを調整可能。
+//	
+class PicPropertyEditPopupV extends PropertyEditPopupV
+{
+	static POPUPUIPATH = srcdir .. "/ui/picproppopup.ui";
+
+	pic = null;		//	EventPicView
+	canvas = null;
+	minheight = 398;
+
+	pmx = 0;
+	pmy = 0;
+
+	function init( v){
+		super.init( v);
+		canvas = v.findChild( "canvas");
+		pic = EventPicView();
+		canvas.addChild( pic);
+		pic.enabled = true;
+		pic.addEventListener( MOUSE_EVENT, picevent);
+	}
+	
+	function setupProperties(){
+		super.setupProperties();
+		updatePicture();
+	}
+
+	function updatePicture(){
+		local v = data;
+		if( v.op == 0){
+			if( v.picid != pic.picid) pic.setPicID( v.picid);
+			pic.pos( v.pos[0], v.pos[1], 0);
+			pic.scale( v.scale*0.01);
+			pic.rot.z = v.rot * Math.DTOR;
+			pic.matdirty = true;
+			pic.repaint();
+			pic.setVisible( true);
+		}else{
+			pic.setVisible( false);
+		}
+	}
+	
+	function propevent( e){
+		super.propevent( e);
+		local cmd = e.actioncmd;
+		switch( cmd["prop"]["pid"]){
+		case "picid": case "pos": case "scale": case "rot": case "color":
+			updatePicture();
+		}
+	}
+
+	function picevent( e){
+		switch( e.id){
+		case MOUSE_ENTERED:
+			pic.sp.colormat = Matrix.fromHSV( 0, 1.0, 1.1);
+			pic.repaint();
+			break;
+		case MOUSE_EXITED:
+			pic.sp.colormat = null;
+			pic.repaint();
+			break;
+		case MOUSE_PRESSED:
+			e.computeLocal( canvas.getInvMatrix());
+			pmx = e.lx; pmy = e.ly;
+			break;
+		case MOUSE_DRAGGED:
+			e.computeLocal( canvas.getInvMatrix());
+			local dx = e.lx-pmx, dy = e.ly-pmy;
+			pmx = e.lx; pmy = e.ly;
+			local px = (pic.pos.x+dx)|0, py = (pic.pos.y+dy)|0;
+			pic.pos( px, py, 0.0);
+			pic.matdirty = true;
+			pic.repaint();
+			proplist.setParam( "pos", data.pos=[px,py]);
+			break;
+		}
+	}
+}

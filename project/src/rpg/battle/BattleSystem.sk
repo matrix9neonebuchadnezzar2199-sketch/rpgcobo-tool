@@ -1,0 +1,704 @@
+
+import DamageResultType;
+import CommandTargetType;
+import SkillFlag;
+
+local rnd = Random( skGetTime()^371141263);
+
+//	全てのキャラのすべてのオプション(action関数があるもののみ)を羅列して順に処理していく。
+//	メニューを開いていた場合はそのメニュー内のメンバー全員、その他の場合はステージ中の敵キャラ含め全キャラに対して
+//	actで指定したアクション名の影響を与えていく。
+function emitOption( act, arg, charalist=null){
+	if( !charalist) charalist = ::rpgstage.battle["charas"] || ::rpgstat.members;
+	local ops;	//	(chara,op,order)[]
+	foreach( c in charalist){
+		if( !c) continue;
+		if( c.isDead()) continue;		//	死亡者のオプションは無視。眠り等で効果無しの場合はオプション内で個別にチェックすること
+		foreach( op in c.options){
+			if( op.opt["action"]){
+				local order = float( fget( op.opd, "order")) + rnd.nextf();	//	0.0~1.0のランダム幅で「かばう」のようなスキルでの選択揺らぎを
+				(ops||(ops=[])) .. (c,op,order);
+			}
+		}
+	}
+	if( ops){
+		ops.sort( @( v) v[2]);	//	orderでソート
+		foreach( v in ops){
+			local r = v[1].opt.action( v[1].opd, act, arg, v[0]);
+			if( r == true) return true;	//	true返したら中断。"dying"アクションでは死亡をキャンセル
+		}
+	}
+	return false;
+}
+
+//	キャラ同士の関係を返す。1:味方 2:敵 4:自分自身。自分自身なら実際は1|4=5
+function getRelation( src, dst){
+	if( src == dst) return 5;
+	local srce = (src instanceof RPGEnemy);
+	local dste = (dst instanceof RPGEnemy);
+	return srce==dste ? 1 : 2;
+}
+
+//	srcに対してdstがコマンドの標的になるかを返す。
+//	dstが敵で、且つ死亡していたらターゲットとみなさない。
+function isCommandTarget( src, dst, cmdtgt){
+	local rel = getRelation( src, dst);
+	local tgtrelbits = #{
+		[TGT_NONE]=0,
+		[TGT_PARTY_SINGLE]=1, [TGT_PARTY_SINGLE_NOTME]=1, [TGT_PARTY_COLUMN]=1, [TGT_PARTY_ALL]=1, [TGT_PARTY_ALL_NOTME]=1, 
+		[TGT_ENEMY_SINGLE]=2, [TGT_ENEMY_RANDOM]=2, [TGT_ENEMY_R3]=2, [TGT_ENEMY_R6]=2, [TGT_ENEMY_LINE]=2, [TGT_ENEMY_COLUMN]=2, [TGT_ENEMY_ALL]=2, 
+		[TGT_ANY_SINGLE]=3, [TGT_ANY_RANDOM]=3, [TGT_ANY_ALL]=3, 
+		[TGT_MYSELF]=4,
+	};
+	if( (tgtrelbits[cmdtgt]||0) & rel){
+		return !((rel&2) && dst.isDead());
+	}
+	return false;
+}
+
+//	属性や状態の防御率を計算する。各defは高い方が防御率も高くなる。100だと完全防御。-100だと倍。
+function defenceRate( deflist, bits){
+	if( !bits) return 1.0;
+	local dr = 0;
+	foreach( i, v in deflist) if( bits&(1<<i)) dr += v;
+	return Math.clamp( 100-dr, 0, 400) * 0.01;	//	0~4倍
+}
+
+//	指定したデバフを付与する事ができる確率を返す
+//	耐性CDRは表示上±99が限度。-100で4倍かかりやすく、+100で1/4倍。
+//	hitrateは基礎的なヒット率。0.5で半分。1.0以上の場合もある。この場合確実に掛かる。。。？
+//	atan化して1.0以内に収める？
+function debuffRate( chr, putconds, hitrate){
+	local r = 0.0, div = 0;
+	foreach( i in bitdblist( putconds, "cond")){
+		local cond = rpgdata[i];
+		local v = chr.CDR[cond["resistg"]]||0;
+		r += Math.pow( 2.0, v/50.0);
+		div++;
+	}
+	return div ? (r/div)*hitrate : 0.0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	SkillCommand
+//	スキルと使用者と対象（複数）を指定したスキル発動用のコマンド。主にバトルで使用する。メニューでも計算用に一時的に作られる。
+
+class SkillCommand
+{
+	order = 0;				//	ターンバトルでは行動順ソート用。
+	delay = 0;				//	アクティブバトルで使用。コマンド実行までのディレイ。普通は0。
+	src = null;				//	RPGChara : コマンドの実行者
+	dsts = null;			//	RPGChara[] : コマンド選択時の範囲選択対象。dstも含む。dstが死んでたらここから選びなおしたり。
+	
+	skill = null;			//	conf.skill|item : 隊列変更などの特別なものはconf外のオブジェクトが入る
+	resetskill = null;		//	実行後に元に戻すスキル
+
+	//	その他の影響。オプションにより追加されていく。以下の指定が可能。
+	//	・HP,MP,TPダメージ（回復）
+	//	・コンディションの付与・解除
+	events = null;
+
+	//	skilltype, DamageResultTypeで置き換える。更にオプションでも置き換えられる
+	static hitact_replacemap = {
+		attack = {
+			[DMG_MISS] = { hitani={id="avoid"}, hitnoov=true, hitsnd="SE210", },
+			[DMG_SHIELD] = { hitani={id="shield"}, hitnoov=true, hitsnd="SE209", },
+			[DMG_HEAL] = { hitani=null, hitsnd="SE220", },
+			[DMG_CRITICAL] = { cri=true, }, 
+			[DMG_SKIP] = { hitani=null, hitsnd=null, hitefx=null, hitdelay=0, },
+			[DMG_NONE] = { hitani=null, },
+		},
+		heal = {
+			[DMG_MISS] = { hitani=null, hitnoov=true, },
+			[DMG_SKIP] = { hitani=null, hitsnd=null, hitefx=null, hitdelay=0, },
+			[DMG_NONE] = { hitani=null, },
+		},
+		buff = {
+			[DMG_MISS] = { hitani=null, hitnoov=true, },
+			[DMG_SKIP] = { hitani=null, hitsnd=null, hitefx=null, hitdelay=0, },
+			[DMG_NONE] = { hitani=null, },
+		},
+		debuff = {
+			[DMG_MISS] = { hitani=null, hitnoov=true, hitsnd="SE210", },
+			[DMG_SKIP] = { hitani=null, hitsnd=null, hitefx=null, hitdelay=0, },
+			[DMG_NONE] = { hitani=null, },
+		},
+	};
+
+	static israndomtgt = { [TGT_ENEMY_RANDOM]=1, [TGT_ANY_RANDOM]=1, };
+
+	constructor( sr, sk, ds){
+		src = sr;
+		skill = sk;
+		dsts = ds;
+		order = calcCommandOrder( sr, sk);
+		events = [];
+	}
+	
+	//	ターンバトルの行動順の計算。数値が低い方が速い。
+	static function calcCommandOrder( src, skill){
+		return (10 + src.AGI * (skill["spdrate"]??1.0)) * rnd( 0.6, 1.0) * -1.0;	//	最後-1掛ける。
+	}
+	
+	//	コマンドを実行。
+	function exec(){
+		printf( "EXEC SkillCommand src=%S skill=%S %S\n", src["name"], skill["name"], skill["skilltype"]);
+		rpgstage.battle.atkchr = src;		//	atkchrを設定。defchrはまだ。
+		emitOption( "precommand", this);
+		//	使用可能かチェック。スキルならMPが足りない、アイテムなら消費が失敗したら失敗アクションになる。※封印はIDで行うからどうするかな～
+		if( !src.isCommandable() || !src.consumeForSkill( skill)/*|| pc.isSkillSealed( i)*/){
+			skill = ::conf.skill["S000"];	//	これ固定で良いかな？不発スキルとか？
+		}
+		execBody();
+		//	コマンド終了処理
+		emitOption( "postcommand", this);	//	
+	}
+	
+	//	コマンドを指定した時点でskillが付く。
+	//	付いたスキルはターン中続く。
+	//	カウンターなどで一時的にスキルが付け変わった場合は元のスキルに付けなおされる。
+	function execBody(){
+		src.setSkill( skill);							//	これは念のためのセット
+		emitOption( "skillchange", this);				//	スキル変化オプション。呪いで動けなかったり、ぶんどり、逃げるに切り替わったり。ターゲットも変わる。
+		if( ("flags" in skill) && !(skill["flags"] & 1)){	//	通常スキル以外はスキル名表示
+			showSkillName( skill);
+		}
+		local st = ::RPGSystem.skilltype[skill.skilltype];	//	
+		~( st.battlefunc, this);						//	commonSkillFunc等のスキル関数を実行
+		if( skill["skilltype"] != "noop") src.setSkill( resetskill);//	何もしないアクションの場合はスキルは残る
+		// resetPosition();	//	キャラの位置、アニメを元に戻す
+	}
+
+	function showSkillName( s){
+		::RPGMain.showUI({ key="info_top", time=1000, text=`$s.icon $s.name`});
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////////////////////
+	//	スキルタイプ別実行関数
+
+	//	何もしない実行メソッド。
+	function noopSkillFunc(){
+		if( skill["useact"]){
+			waitFor( src);
+			act( skill["useact"])?.wait();			//	発動モーション実行。指定されてなければ無視。
+		}
+	}
+	
+	//	スキルの一般的な実行メソッド。攻撃と回復どっちもこれを使う。
+	function commonSkillFunc(){
+		waitFor( src);
+		act( skill["useact"])?.wait();			//	発動モーション実行。指定されてなければ無視。
+		local na = skill["atknum"];
+		for( local l = (na?rnd( na[0], na[1]+1):1); l > 0;l --){		//	
+			local refs = [];
+			foreach( i, dst in dsts){
+				local dmg = prepareTarget( dst);				//	共通セットアップ処理。ここで対象変化の場合あり。かばうなど。
+				if( !dmg) continue;								//	対象に効果ない場合は飛ばし
+				calcDamage( dmg);								//	ダメージを計算。カウンター、反射、吸収などもここで決まる。
+				attackAction( dmg);								//	攻撃モーション＋ヒットモーション。ウェイトする。
+			}
+			::rpgstage.battle.dieCheck( this);	//	HP=0のキャラを死亡させる。ここでバラバラに動作してたキャラ達が同期する。
+			applyEvents();
+			::rpgstage.battle.dieCheck( this);	//	applyEventsで死んでる場合がある。。。
+			if( src.isDead()) break;			//	カウンター等で死んでたら
+			if( l > 1 && israndomtgt[skill.cmdtgt]){	//	ランダムターゲットは複数回攻撃時に毎回標的を変える
+				dsts = [rpgstage.battle.chooseRandomTarget( src, skill.cmdtgt)];
+			}
+		}
+		act( skill["endact"]);			//	終了モーション実行。待たないほうが良い
+	}
+	
+	//	バフスキルの一般的な実行メソッド
+	//	バフスキルは失敗しない、ダメージ計算しない。
+	function buffSkillFunc(){
+		waitFor( src);
+		act( skill["useact"])?.wait();
+		foreach( dst in dsts){
+			local dmg = prepareTarget( dst);
+			if( !dmg) continue;
+			calcDamage( dmg);
+			attackAction( dmg);
+		}
+		::rpgstage.battle.dieCheck( this);	//	HP=0のキャラを死亡させる。ここでバラバラに動作してたキャラ達が同期する。
+		applyEvents();
+		::rpgstage.battle.dieCheck( this);	//	applyEventsで死んでる場合がある。。。
+		act( skill["endact"]);
+	}
+	
+	//	デバフスキルの一般的な実行メソッド
+	//	デバフはヒット／ミスの判定があるのみであとはバフスキルと同じ。
+	//	ヒット判定は、一般的な耐性グループとスキル威力の
+	function debuffSkillFunc(){
+		waitFor( src);
+		act( skill["useact"])?.wait();
+		foreach( dst in dsts){
+			local dmg = prepareTarget( dst);
+			if( !dmg) continue;
+			calcDamage( dmg);
+			attackAction( dmg);
+		}
+		::rpgstage.battle.dieCheck( this);	//	HP=0のキャラを死亡させる。ここでバラバラに動作してたキャラ達が同期する。
+		applyEvents();
+		::rpgstage.battle.dieCheck( this);	//	applyEventsで死んでる場合がある。。。
+		act( skill["endact"]);
+	}
+
+	//	マクロスキルの実行メソッド。
+	function macroSkillFunc(){
+		waitFor( src);
+		act( skill["useact"])?.wait();
+		//	マクロ実行。終わるまで待つ。
+		local wvar = clone RPGEventRunner.iniwvar;
+		local m = ::rpgstage.startMacro( skill.macroid_battle, false, wvar);
+		while( m["mode"] == 2){
+			suspend();
+		}
+		::rpgstage.battle.dieCheck( this);	//	HP=0のキャラを死亡させる。ここでバラバラに動作してたキャラ達が同期する。
+		applyEvents();
+		::rpgstage.battle.dieCheck( this);	//	applyEventsで死んでる場合がある。。。
+		act( skill["endact"]);
+	}
+
+	//	強化攻撃の実行メソッド。
+	function enhanceSkillFunc(){
+		//	使用演出
+		act( skill["useact"])?.wait();
+		//	パラメータをオーバーライドするために_skillはcloneする
+		local _skill = ::conf.skill[skill["skillid"]];
+		if( !_skill) _skill = src.getAttackSkill();
+		_skill = clone _skill;
+		_skill.option = [ ...skill.option, ..._skill.option];	//	こんな方法で良いんか
+		//	コマンド自身のskillを入れ替えちゃう。その後はexecBodyと大体同じ
+		skill = _skill;
+		src.setSkill( _skill);
+		local st = ::RPGSystem.skilltype[_skill.skilltype];	//	
+		~( st.battlefunc, this);							//	commonSkillFunc等のスキル関数を実行
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////////////////////
+	//	内部処理
+	
+	//	
+	function prepareTarget( dst){
+		rpgstage.battle.defchr = dst;		//	ひとまず現段階でのdefchrを設定
+		if( dst.isDead()){
+			if( skill.flags & (1<<FLAG_TARGET_ALT)){	//	対象が死亡時に別の対象を選択する
+				local dst_ = rpgstage.battle.chooseRandomTarget( src, skill.cmdtgt);
+				if( dst_) dst = dst_;
+			}
+		}
+		local dmg = Damage( this, dst);
+		emitOption( "targetchange", dmg);	//	ターゲット変化オプション。かばう、
+		rpgstage.battle.defchr = dst;		//	dstが変わっていることがあるので再代入
+		return dmg;
+	}
+	
+	//	
+	function calcDamage( dmg){
+		dmg.calcDamage();
+		emitOption( "defend", dmg);			//	パリィ、カウンター、吸収など。反射は特殊
+		emitOption( "attack", dmg);			//	特攻のダメージボーナス等
+		//	対象が死亡又は死亡相当時に攻撃を無効化する。ただし効果があるものは継続
+		if( dmg.dst.isDead()){
+			local st = ::RPGSystem.skilltype[skill.skilltype];
+			if( !st.forecast( skill, dmg.src, dmg.dst)) dmg.skip = true;
+		}else
+		if( skill.flags & (1<<FLAG_NOOP_ALIVE)){	//	死者にのみ有効なスキルは使用不能な場合はミス扱い
+			dmg.miss = true;
+		}else
+		if( !dmg.miss && !dmg.skip && (skill.flags & (1<<FLAG_NOOP_BOSS)) && dmg.dst.isBoss()){	//	ボスフラグチェック
+			dmg.miss = true;
+		}
+		dmg.finishDamage();
+		emitOption( "condchk", dmg);		//	コンディションの付与・解除。dst,src共に
+		emitOption( "recoil", dmg);			//	反動ダメージ／回復。コンディションの付与等が済んでから
+		//	成功時にはスキルに設定されているコンディション付与・解除を実行する。
+		//	回復スキルにはremconds, バフ・デバフにはputcondsが付いている事がある。両方は無い。
+		if( dmg.isSuccess()){
+			local showmiss = dmg.atk<=0 && (skill["remconds"] || skill["putconds"]);
+			foreach( condid in bitdblist( skill["remconds"], "cond")){
+				if( dmg.dst.canRemoveCondition( condid)){
+					dmg.addEvent( { chr=dmg.dst, id="remcond", condid=condid});
+					showmiss = false;
+				}
+			}
+			foreach( condid in bitdblist( skill["putconds"], "cond")){
+				if( dmg.dst.canPutCondition( condid)){
+					dmg.addEvent( { chr=dmg.dst, id="putcond", condid=condid});
+					showmiss = false;
+				}
+			}
+			if( showmiss) dmg.addEvent( { chr=dmg.dst, id="miss"});
+		}
+	}
+
+	//	atkactから繋がるようにhitactまで実行
+	function attackAction( dmg){
+		local dst3d = ::rpgstage.battle.getChara3D( dmg.dst);
+		local atkact = act( skill["atkact"], { dmg=dmg, chr=dmg.src, dst3d=dst3d });
+		atkact?.wait();	//	この場で待つ必要あり
+		hitAction( dmg);
+	}
+
+	//	ヒット時のアクションをdmg.dstに実行させる。attackActionのつながりで呼ばれたり、reflectからよばれたり。
+	//	ダメージのポップアップ、ダメージの適用もここで行う。
+	function hitAction( dmg){
+		local rep = hitact_replacemap[skill.skilltype][dmg.result];	//	ミス、シールドなどの時にヒットエフェクトを置き換える
+		local ctx = { dmg=dmg, chr=dmg.dst, res=dmg.result, val=dmg.val, ...rep, ...dmg.ovctx };	//	更にovctxで置き換える
+		if( ctx["hitani"]["id"]=="avoid" && dmg.dst.isSkillFlagSealed( 1<<FLAG_AVOIDABLE)){	//	回避封印状態では"avoid"アニメーションは再生しない。マヒ時に動かないため。無理やりだが。。。
+			ctx.hitani = null;
+		}
+		act( skill["hitact"], ctx);	//	hitactはdstに対して実行。
+		local rp3d = ::rpgstage.battle.getChara3D( dmg.dst);
+		rp3d.manuaction.act( @(){
+			dmg.dst.addPoint( dmg.pid, -dmg.val);
+			popdamage( dmg);
+		});
+	}
+
+	//	追加効果の発生
+	function applyEvents(){
+		// addEvent( { chr=dmg.dst, id="putcond", condid="K001"});
+		foreach( i, dst in rpgstage.battle.charas){
+			waitFor( dst);
+		}
+		foreach( e in events){
+			local rp3d = ::rpgstage.battle.getChara3D( e.chr);
+			switch( e["id"]){
+			case "pid":	//	反動、追加ダメージ
+				e.chr.addPoint( e.pid, e.val);
+				//	popdamageするかしないか
+				if( rp3d.manuaction && e.val){
+					local act = rp3d.manuaction.act( @(){
+						wait( EFX);
+						if( e["efx"]){ efx( e.efx); wait( EFX); }
+						popdamage( Math.abs( e.val));
+					});
+				}
+				break;
+			case "putcond":
+				local condid = e.condid, cd = ::conf.cond[condid];
+				if( rp3d.manuaction && (cd.showpop | cd.showstat) && e.chr.canPutCondition( condid)){
+					rp3d.manuaction.act( @(){
+						if( cd["efx_start"]){
+							efx( {id=cd.efx_start});
+							wait( 0x80000002);	//	エフェクト待ち
+						}
+						if( cd.showpop){
+							popcond( condid, "put");
+							wait( 300);
+						}
+						e.chr.putCondition( condid);
+					});
+				}
+				break;
+			case "remcond":
+				local condid = e.condid, cd = ::conf.cond[condid];
+				if( rp3d.manuaction && (cd.showstat) && e.chr.canRemoveCondition( condid)){
+					rp3d.manuaction.act( @(){
+						if( cd.showpop){
+							popcond( condid, "rem");
+							wait( 300);
+						}
+						e.chr.removeCondition( condid);
+					});
+				}
+				break;
+			case "cmd":	//	追加コマンドを挿入。追撃、カウンターなど
+				::rpgstage.battle.insertCommand( e.cmd);
+				break;
+			case "cancel":	//	指定キャラのコマンドをキャンセル。スキルもリセット。
+				::rpgstage.battle.cancelCommand( e.chr);
+				break;
+			case "reflect":
+				local dmg = Damage( this, e.chr);	//	自分自身に同じスキルで攻撃。反射元は見ない
+				dmg.dmgrate *= e.dmgrate;			//	反射ダメージレートを入れる
+				dmg.calcDamage();
+				// emitOption( "defend", dmg);		//	パリィ、カウンター、吸収など。反射は特殊
+				// emitOption( "attack", dmg);		//	特攻のダメージボーナス等
+				dmg.finishDamage();
+				hitAction( dmg);
+				break;
+			case "miss":	//	MISSのポップ。
+				if( rp3d.manuaction){
+					local act = rp3d.manuaction.act( @(){
+						popdamage( "MISS");
+						wait( EFX);
+					});
+				}
+				break;
+			}
+		}
+	}
+	
+	//	指定したキャラにアクションを実行する。
+	//	funcはfunction又はtableが指定可能。tableの場合は{scp}にスクリプトが入っている。
+	function act( func, ctx=null){
+		local src3d = ::rpgstage.battle.getChara3D( ctx["chr"]||src);
+		if( src3d["manuaction"]){
+			if( !func) return;
+			if( typeof( func) == SS_TABLE){
+				local scp = func["scp"] || ::skillscriptmap[func["id"]];	//	デフォルト
+				if( !length( scp)) return;	//	scpが空文字列ならact自体をキャンセル
+				ctx = { ...func, ...ctx};	//	引数のctxがfuncのデータを上書きする
+				func = compilestring_c( scp, scp);
+			}
+			return src3d.manuaction.act( func, ctx);
+		}
+	}
+
+	//	指定したキャラ全員の動作完了を待つ。
+	function waitFor( ...){
+		local a = varguments();
+		for( ;;){
+			foreach( chr in a){
+				local rp3d = ::rpgstage.battle.getChara3D( chr);
+				if( rp3d["manuaction"]?.isActionRunning()) goto CONTINUE;
+			}
+			return;
+		CONTINUE:
+			suspend();
+		}
+	}
+
+	//	スキルの後処理としてアニメ、位置を元に戻す
+	//	
+	function resetPosition(){
+		foreach( chr in rpgstage.battle.charas){
+			local rp3d = ::rpgstage.battle.getChara3D( chr);
+			if( rp3d) rp3d.manuaction.act( @(){
+				wait( -1);	//	アニメefx待ち
+				anime( #{id="stand"});
+				rp3d.resetPosition();
+			});
+		}
+	}
+
+	//	その他の影響を追加する。以下のパターンが有効。
+	function addEvent( t){
+		local ea = events.filter( @( v) v.chr==t.chr);		//	対象が同一なものをフィルタ
+		if( ea.find( @( v) v["putcond"]=="K000")) return;	//	死を与えられてたらその後のイベントは無視
+		switch( t.id){
+		case "pid":
+			local e0 = ea.find( @( v) v.pid == t.pid);
+			if( e0){
+				e0.val += t.val;
+			}else{
+				events .. t;
+			}
+			break;
+		case "putcond":
+			if( !t.chr.canPutCondition( t.condid)) return;
+			if( ea.find( @( v) !(v<>t))) return;	//	同じ効果が掛ってたら無視 ... 同じバフは同時にかけられない？
+			events..t;
+			break;
+		case "remcond":
+			if( !t.chr.canRemoveCondition( t.condid)) return;	//	
+			if( ea.find( @( v) !(v<>t))) return;	//	同じ効果が掛ってたら無視
+			events..t;
+			break;
+		case "reflect":
+			if( !ea[0]){
+				events..t;
+			}
+			break;
+		default:
+			events..t;
+			break;
+		}
+	}
+}
+
+//	タイプ設定のダメージ式文字列の実体化。内部的に使用される。
+//	(1) Damageのsrcとdstから必要なパラメータをatkとdefに抽出。他にhitrate,crirate,shieldrate,edrなど途中計算に必要な値を全て設定。
+//	(2) ↑の状態で設定されたダメージ計算式(ex. atk-def)でダメージ計算。ミスやクリティカルの確率も計算し、調整前のダメージ結果が求まる。
+//	(3) オプションの適用でダメージ値・率、ミスなどの結果変更を
+//	
+class DamageFormula
+{
+	static _formcache = {};
+
+	//	dmgform設定によって上書きされるダメージ計算パラメータ。直値又はfunctionが入る
+	atk = 0;
+	def = 0;
+	hit = 100.0;			//	ヒット率は未指定では必中。
+	cri = 0.0;				//	クリティカルはデフォではOFF。
+	shd = 100.0;			//	シールド防御は盾のオプションで判定される。shdはその判定の確率計算に乗算される。
+	rate = 1.0;				//	レベル依存のダメージ上昇なんかをさせたい場合式を入れる
+	//	計算時に実行する関数。基本あまり置き換えないが上書き可能。
+	edr = 1.0;				//	属性ダメージ率計算。デフォルトは_calcedr。
+	dmgcalc = null;			//	通常ヒット時のダメージ計算。デフォルトは_calcdmg。
+	cricalc = null;			//	クリティカル時のダメージ計算。デフォルトは_calccri。
+	
+	////////////////////////////////////////////////////////////
+	//	基本計算式 : this=Damage
+
+	static function _calcdmg(){
+		return atk - def;
+	}
+	
+	static function _calccri(){
+		return atk;
+	}
+	
+	static function _calcedr(){
+		return ::defenceRate( skill["elembits"], dst.EDR);
+	}
+
+	////////////////////////////////////////////////////////////
+	
+	//	formstrはダメージ式全体を表すテーブルを返すskスクリプト。
+	constructor( formstr, t){
+		edr = _calcedr;
+		dmgcalc = _calcdmg;
+		cricalc = _calccri;
+		setFormula( formstr);
+		if( length( t["atkform"])) atk = compilestring_c( t.atkform);
+		if( length( t["hitform"])) hit = compilestring_c( t.hitform);
+	}
+	
+	//	ダメージタイプ設定によって置き換えていく。カスタム計算でも。
+	//	formstrは文字列。
+	function setFormula( formstr){
+		local formt = _formcache[formstr];
+		if( !formt){	//	式を生成。atk:@() (src.ATK+skill.pow)*4
+			formt = compilestring( "({%S})" % formstr) ();
+			_formcache[formstr] <- formt;
+		}
+		foreach( i, v in formt){
+			if( i in this) this[i] = v;
+		}
+		this.formstr = formstr;
+	}
+
+	formstr = null;
+	
+	//	ダメージ計算準備パラメータを設定する
+	function setupDamage( dmg){
+		dmg.atk = fget( this, "atk", dmg);
+		dmg.def = fget( this, "def", dmg);
+		dmg.hitrate = fget( this, "hit", dmg);
+		dmg.crirate = fget( this, "cri", dmg);
+		dmg.shieldrate = fget( this, "shd", dmg);
+		dmg.edr = fget( this, "edr", dmg);
+		dmg.dmgrate = fget( this, "rate", dmg);
+		//	スキルにダメージ率指定があれば乗算
+		local skill = dmg.skill;
+		if( skill["hitrate"]) dmg.hitrate = dmg.hitrate * skill["hitrate"];
+		if( skill["dmgrate"]) dmg.dmgrate = dmg.dmgrate * rnd.nextf( skill["dmgrate"][0], skill["dmgrate"][1]);
+	}
+	
+	//	一次ダメージを計算する。
+	//	結果はcvalに格納され、オプションによる調整で値や率を変化させていき最終値になる。
+	//	ミスやクリティカルの確率判定もここで行われる。オプションでこの結果は変化させられるが、クリティカル判定を変更しても
+	//	ダメージは変化しない。
+	function calcDamage( dmg){
+		dmg.skip = false;
+		local r = rnd.nextf( 0.0, 100.0);
+		dmg.miss = (r > dmg.hitrate);
+		dmg.critical = (rnd.nextf( 0.0, 100.0) < dmg.crirate);
+		//	cval計算
+		local v0 = Math.max( int( fget( this, dmg.critical?"cricalc":"dmgcalc", dmg)), 0);
+		dmg.cval = compval( v0);
+		dmg.cval.baserate = dmg.dmgrate * dmg.edr;
+	}
+}
+
+//	SkillCommand実行時にダメージ処理の流れを一連にまとめる一時オブジェクト。
+//	常に一対一、攻撃者と被攻撃者に対してダメージ処理は行われる。全体攻撃でもdst全員にDamageオブジェクトを作り処理を行う。
+//	戦闘系のオプションはほとんどがDamageを渡される。
+//	
+class Damage
+{
+	cmd = null;				//	SkillCommand : 指示したコマンド。
+	
+	src = null;				//	RPGChara : 攻撃者
+	dst = null;				//	RPGChara : 被攻撃者
+	
+	skill = null;			//	スキルデータ
+	form = null;			//	DamageFormula
+	
+	//	ダメージ計算準備。"target"エミット時のみこの数値変化が有効。
+	atk = 0;				
+	def = 0;				
+	dmgrate = 1.0			//	技等の倍率
+	edr = 1.0				//	属性倍率
+	hitrate = 0.97;			//	
+	crirate = 0.07;			//	skill.CRI * src.CRI - dst.CEVA
+	shieldrate = 1.0;		//	オプションから参照されるシールド可能レート
+	
+	//	ダメージ計算値。calcDamageで計算され、"defend","attack"エミット時に数値変化が有効。その後fixされ最終ダメージとなる。
+	//	↑ここでcriticalのフラグだけいじってもダメージ量に変化はない。"target"エミット時にcrirateを変化させること！
+	pid = "HP";				//	
+	heal = false;
+	skip = false;
+	miss = false;
+	critical = false;
+	shield = false;			//	"defend"時にオプションで判定される。ダメージ減衰はオプション内で計算。
+	cval = null;			//	計算後cval
+	
+	//	最終値。==cval.fix()
+	result = 0;				//	DamageResultType
+	val = 0;				//	+がダメージ、-が回復。
+
+	ovctx = null;				//	ヒットアクション等の値上書き
+
+	//	
+	constructor( cm, d){
+		cmd = cm;
+		src = cm.src;
+		dst = d;
+		skill = cm.skill;
+		local dmgform = ::conf.type.dmgform[skill["dmgform"]] || #{formula=""};	//	ダメージ式取得。
+		form = DamageFormula( dmgform.formula, skill);
+		form.setupDamage( this);
+		local dmgtype = skill["dmgtype"]||0;
+		pid = DamageTypePID[dmgtype];	//	HP,MP,TPのいずれかに影響する
+		heal = dmgtype && (dmgtype&2);
+		ovctx = {};
+	}
+
+	//	※DamageFormulaから直接参照したい値を返せるように
+	function _get( key){
+		return undefined;
+	}
+
+	function _tostring(){
+		return encodeJSON( {
+			atk=atk, def=def, dmgrate=dmgrate, edr=edr, hitrate=hitrate, crirate=crirate, shieldrate=shieldrate, pid=pid, result=result, val=val,
+		});
+	}
+
+	//	被攻撃者を変更する。ダメージ計算準備の内容が変化する。calcDamage()以降の変更は無効。
+	function changeTarget( d){
+		dst = d;
+		form.setupDamage( this);
+	}
+
+	//	ターゲットが確定したときにダメージの一時計算を行う。
+	function calcDamage(){
+		form.calcDamage( this);
+	}
+
+	//	結果タイプによって値をスケールする
+	static dmgscale = { [DMG_SKIP]=0, [DMG_MISS]=0, [DMG_SHIELD]=1, [DMG_HEAL]=-1, [DMG_CRITICAL]=1, [DMG_HIT]=1, [DMG_NONE]=0 };
+
+	//	ダメージ又は回復の数値を確定させる。
+	function finishDamage(){
+		result = skip?DMG_SKIP : miss?DMG_MISS: critical?DMG_CRITICAL: shield?DMG_SHIELD: heal?DMG_HEAL : atk?DMG_HIT : DMG_NONE;
+		local v = cval.fix();
+		val = v * dmgscale[result];
+		if( val<=0 && result==DMG_HIT){	//	ここハードコーディングじゃないほうが良いな
+			val = ::rnd( 0, 2);
+		}
+	}
+
+	function isSuccess(){
+		return result <= DMG_CRITICAL;
+	}
+
+	function addEvent( t){
+		cmd?.addEvent( t);
+	}
+}

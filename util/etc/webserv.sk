@@ -1,0 +1,43 @@
+﻿/////////////////////////////////////////////////////////////////////////////
+//	
+
+runsk("/system/exlib/TinyHTTPServer.sk");
+
+Win32.setConsoleVisible( true);
+
+local port = 9910;
+local basedir = FileRef( skGetCurrentDir());
+local args = ::arguments, i;
+if( (i=args.indexOf( "-dir")) >= 0){
+	basedir = FileRef( basedir, args[i+1]);
+}
+
+try{
+	local ip = [127,0,0,1,port];
+	local addr = IPAddress( ip);
+	local httpserv = TinyHTTPServer();
+	if( !httpserv.bindServer( addr)){
+		throw Exception( "Could not bind to port:"..port);
+	}
+	local fn = !args.contains( "-coep") ? null : @( res, path, cd){	//	coep/coopヘッダ挿入オプション
+		res.addHeader( "Cross-Origin-Embedder-Policy", "require-corp");
+		res.addHeader( "Cross-Origin-Opener-Policy", "same-origin");
+		return res;
+	}
+	httpserv.setHandlers( [TinyHTTPServer.StaticContentsHandler( basedir, "/", fn)]);
+	printf( "basedir = %S\n", basedir.path);
+
+	if( args.contains( "-browse")){
+		printf( "Opening Browser...\n");
+		sleep( 1000);
+		skOpenURL( "http://localhost:%d/index.html" % port);
+	}
+}catch( ex){
+	printexception( ex);
+	printf( "Failed to launch web server...\n");
+	Win32.pauseConsole();
+}
+
+for( ;;){
+	suspend();
+}

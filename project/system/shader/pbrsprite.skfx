@@ -1,0 +1,688 @@
+declare pbrsprite;
+
+module mod_math;
+
+vs def
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	building histgram pass
+
+param img2hist
+{
+	uniform sampler2D coltex <id=COLORTEX1, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp vec2 coltexscale <id=COLORTEX1_PIX>;
+	varying highp float v_c;
+
+	fragout highp uint fragcolor;	//	512 * uint
+}
+
+vs img2hist
+{
+	void main(){
+		const highp vec2 da[9] = vec2[](
+			vec2( -1.0, -1.0), vec2(  0.0, -1.0), vec2(  1.0, -1.0),
+			vec2( -1.0,  0.0), vec2(  0.0,  0.0), vec2(  1.0,  0.0),
+			vec2( -1.0,  1.0), vec2(  0.0,  1.0), vec2(  1.0,  1.0)
+		);
+		//	8x8のブロックに対して9回サンプリング
+		highp float u = float(gl_InstanceID) * coltexscale.x * 8.0;	//	w%8==0じゃないとずれていく。。。
+		highp vec2 uv = vec2( fract( u), floor( u)*coltexscale.y * 8.0) + (coltexscale*4.0);
+		highp vec2 d = coltexscale*2.0;
+		highp vec3 sum = vec3( 0.0);
+		for( int l = 0;l < 9;l ++){
+			sum += texture2D( coltex, uv+d*da[l]).xyz;
+		}
+		sum = sum*(1.0/9.0);
+		highp float lumi = (log2( dot( sum, vec3(0.2125, 0.7154, 0.0721)))+6.0) / 12.0;	//	logスペースで-4.0~8.0(≒2,981)まで。
+		v_c = 1.0 - length( uv-vec2(0.5,0.5));
+		gl_Position = vec4( clamp( lumi, 0.0, 1.0)*2.0-1.0, 0.0, 0.0, 1.0);
+		gl_PointSize = 1.0;
+	}
+}
+
+fs img2hist
+{
+	void main(){
+		fragcolor = uint( v_c * 65536.0);
+	}
+}
+
+technique img2hist
+{
+	apilevel = 30;
+
+	pass {
+		param = img2hist;
+		vs = img2hist;
+		fs = img2hist;
+	}
+}
+
+////////////////////////////////////////////////////////////////
+//	extract bloom (half reso)
+
+param extractbloom
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+
+	uniform mediump sampler2D coltex <id=COLORTEX1, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp vec2 coltexscale <id=COLORTEX1_PIX>;
+	
+	uniform highp mat4 p1 <id=MISC1MAT>;	//	(offs,scale,1,1),...
+
+	varying highp vec2 v_uv;
+	varying highp vec4 v_ex;
+
+	fragout mediump vec4 fragcolor;
+}
+
+vs extractbloom
+{
+	void main(){
+		v_uv = in_uv.xy + coltexscale*0.5;
+		gl_Position = in_pos;
+	}
+}
+
+fs extractbloom
+{
+	mediump vec4 tex( highp vec2 uv){
+		mediump vec4 pix = texture2D( coltex, v_uv);
+		mediump float lumi = max( dot( pix.xyz, vec3(0.2125, 0.7154, 0.0721)), 0.001);
+		return pix * (sqrt( max( lumi+p1[0].x, 0.0)) / lumi * p1[0].y);
+	}
+
+	void main(){
+		highp vec4 d = vec4( 0.0, 0.0, coltexscale);
+		fragcolor = tex( v_uv+d.xy);// ( tex( v_uv+d.xy)+tex( v_uv+d.zy)+tex( v_uv+d.xw)+tex( v_uv+d.zw)) * 0.25;
+	}
+}
+
+technique extractbloom
+{
+	apilevel = 30;
+
+	pass {
+		using colorspace, extractbloom;
+
+		param = extractbloom;
+		vs = extractbloom;
+		fs = extractbloom;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	DOF make CoC (circle of confusion)
+//	
+param coc
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	
+	uniform mediump usampler2D uztex <id=DEPTHTEX>;
+	uniform highp mat4 p0 <id=MISC1MAT>;			//	focus z, focus size, 
+	
+	varying highp vec4 v_uv;
+	
+	fragout mediump vec4 fragcolor;
+}
+
+fs coc
+{
+	void main() {
+		highp vec4 v = p0[0];
+		float vz = float( texture( uztex, v_uv.xy).x) * v.z + v.w;	//	vz = positive
+		float coc = abs(vz - p0[1].x) * p0[1].y;
+		coc = clamp( coc-0.1, 0.0, 1.0);
+		fragcolor = vec4( coc);
+	}
+}
+
+technique coc
+{
+	apilevel = 30;
+
+	pass {
+		using reconstwvp;
+		param = coc;
+		vs = def;
+		fs = coc;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	DOF Gather Blur
+//	
+
+param dofblur
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	
+	uniform mediump sampler2D coltex <id=COLORTEX1, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform lowp sampler2D coctex <id=COLORTEX2, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	
+	uniform highp mat4 p0 <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	
+	fragout mediump vec4 fragcolor;
+}
+
+fs dofblur
+{
+	void main(){
+		vec2 uv = v_uv.xy, d = p0[0].xy;
+		float coc = texture( coctex, v_uv.xy).x;
+		float R = coc * p0[0].z + 0.1, dx = R*2.0 / ceil( R*2.0);
+		float SIGMA = R * 0.7;
+		float FALLOFF = 1.0 / (2.0*SIGMA*SIGMA);
+		//	
+		vec4 sum = vec4( 0.0);
+		float wsum = 0.00001;
+		for( float x = -R; x <= R; x += dx) {
+			float w = texture( coctex, uv+d*x).x * exp2( -x*x*FALLOFF);
+			vec4 c = texture( coltex, uv+d*x);
+			sum += c * w;
+			wsum += w;
+		}
+		fragcolor = sum / wsum;
+	}
+}
+
+technique dofblur
+{
+	apilevel = 30;
+
+	pass {
+		param = dofblur;
+		vs = def;
+		fs = dofblur;
+	}
+}
+
+///////////////////////////////////////////////////////////////////////
+//	final tonemapping (+ bloom + DOF|ZOOM) => sRGB SD Texture
+
+param pbrmix
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform mediump sampler2D coltex <id=COLORTEX1, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform mediump sampler2D bloomtex <id=COLORTEX2, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform mediump sampler2D blurtex <id=COLORTEX3, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform lowp sampler2D coctex <id=COLORTEX4>;
+	
+	uniform highp mat4 p1 <id=MISC1MAT>;
+	
+	varying highp vec2 v_uv;
+
+	fragout lowp vec4 fragcolor;
+}
+
+vs pbrmix
+{
+	void main(){
+		v_uv = in_uv.xy;
+		gl_Position = in_pos;
+	}
+}
+
+fs pbrmix
+{
+	void main(){
+		mediump ivec2 uv = ivec2( gl_FragCoord);
+		mediump vec4 pix = texelFetch( coltex, uv, 0);
+		$(COLORTEX3 && COLORTEX4) {
+			float coc = texelFetch( coctex, uv, 0).x;
+			vec4 blur = texture( blurtex, v_uv);
+			float fgw = smoothstep( 0.05, 0.25, coc);	//	0.02 ~ 0.15
+			pix = mix( pix, blur, fgw);
+		}
+		$(COLORTEX2) {
+			pix.xyz = pix.xyz+texture( bloomtex, v_uv).xyz;
+		}
+		pix.xyz = toSRGB( clamp( tonemap( pix.xyz), 0.0, 1.0));
+		fragcolor = pix;
+	}
+}
+
+technique pbrmix
+{
+	apilevel = 30;
+
+	pass {
+		using colorspace, tonemapping;
+
+		param = pbrmix;
+		vs = pbrmix;
+		fs = pbrmix;
+	}
+}
+
+
+///////////////////////////////////////////////////////////////////////
+//	build Hierarchical Z
+
+param firsthiz
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec2 in_uv <id=UV1>;
+	uniform highp sampler2D ztex <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump mat4 p1 <id=MISC1MAT>;
+
+	varying mediump vec2 v_uv;
+	fragout mediump uint fragcolor;
+}
+
+param buildhiz
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec2 in_uv <id=UV1>;
+	uniform highp usampler2D ztex <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump mat4 p1 <id=MISC1MAT>;
+
+	varying mediump vec2 v_uv;
+	fragout mediump uint fragcolor;
+}
+
+fs firsthiz
+{
+	void main(){
+		highp ivec2 uv = ivec2( gl_FragCoord.xy);
+		highp vec4 dotzw = p1[0];
+		highp vec2 zw = vec2( texelFetch( ztex, uv, 0).x * 2.0 - 1.0, 1.0);
+		fragcolor = uint( (dot( zw, dotzw.xy) / dot( zw, dotzw.zw) + p1[1].y) * p1[1].x);	//	0~65535
+	}
+}
+
+fs buildhiz
+{
+	void main(){
+		highp ivec2 uv = ivec2( gl_FragCoord.xy)*2, d = ivec2( 0, 1);
+		int lv = int( p1[0].x);
+		mediump uint z0 = texelFetch( ztex, uv, lv).x;
+		mediump uint z1 = texelFetch( ztex, uv+d.xy, lv).x;
+		mediump uint z2 = texelFetch( ztex, uv+d.yx, lv).x;
+		mediump uint z3 = texelFetch( ztex, uv+d.yy, lv).x;
+		mediump uint z = min( min( z0, z1), min( z2, z3));
+		fragcolor = z;
+	}
+}
+
+technique firsthiz
+{
+	apilevel = 30;
+
+	pass {
+		param = firsthiz;
+		vs = def;
+		fs = firsthiz;
+	}
+}
+
+technique buildhiz
+{
+	apilevel = 30;
+
+	pass {
+		param = buildhiz;
+		vs = def;
+		fs = buildhiz;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	camera reprojection shader
+//	
+
+param reproject
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform mediump sampler2D coltex1 <id=COLORTEX1, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump sampler2D coltex2 <id=COLORTEX2, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump sampler2D coltex3 <id=COLORTEX3, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump usampler2D olduztex <id=COLORTEX4, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump usampler2D curuztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	
+	uniform mediump mat4 p0 <id=MISC1MAT>;
+	uniform mediump mat4 pmat <id=MISC2MAT>;
+	uniform mediump mat4 reprojectmat <id=MISC3MAT>;		//	newcamera to oldcamera
+	
+	varying highp vec4 v_uv;
+	
+	fragout mediump vec4 fragcolor1;
+	fragout mediump vec4 fragcolor2;
+	fragout mediump vec4 fragcolor3;
+}
+
+fs reproject
+{
+	void main(){
+		highp vec4 curwvp = reconstructWVPtex( curuztex, v_uv.xy, p0[0]);
+		highp vec4 oldwvp = reprojectmat * curwvp;	//	old camera's view pos
+		//	
+		highp vec4 oldwvpp = pmat * oldwvp; oldwvpp /= oldwvpp.w;
+		highp vec2 olduv = oldwvpp.xy*0.5 + 0.5;		//	pick a pixel from older frame's uv.
+		highp vec4 samwvp = reconstructWVPtex( olduztex, olduv, p0[1]);	//	sampled wvp
+		float d = length( oldwvp.xyz-samwvp.xyz);	//	kore!
+		float accuracy = clamp( 1.0-d*15.0, 0.0, 1.0);
+		//	
+		// vec3 pix = texture( coltex1, olduv).xyz;
+		// vec3 pix = mix( vec3( 1.0, 0.0, 0.0), texture( coltex1, olduv).xyz, accuracy);
+		// $(COLORTEX1) fragcolor1 = vec4( pix, 1.0);
+		$(COLORTEX1) fragcolor1 = vec4( texture( coltex1, olduv).xyz, accuracy);
+		$(COLORTEX2) fragcolor2 = vec4( texture( coltex2, olduv).xyz, accuracy);
+		$(COLORTEX3) fragcolor3 = vec4( texture( coltex3, olduv).xyz, accuracy);
+	}
+}
+
+technique reproject
+{
+	apilevel = 30;
+
+	pass {
+		using reconstwvp;
+		param = reproject;
+		vs = def;
+		fs = reproject;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	SSAO
+//	
+
+param ssao
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform highp usampler2D gtex1 <id=GTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump sampler2D temptex <id=COLORTEX3, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump usampler2D uztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp vec2 uztexscale <id=DEPTHTEX_PIX>;
+	
+	uniform mediump mat4 p0 <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	
+	fragout mediump vec4 fragcolor;
+	
+	const float PI = 3.14159263358979323845;
+	const float HPI = (PI / 2.0);
+}
+
+fs ssao
+{
+	//	offset pos, dir
+	vec2 getSpreds(	const vec2 fragpos){
+		return vec2(
+			( 1.0 / 4.0 ) * float( int( fragpos.y-fragpos.x) & 3 ),
+			fract( 52.9829189 * fract( dot( fragpos, vec2( 0.06711056, 0.00583715 ))))		// Jimenez's "Interleaved Gradient Noise"
+		);
+	}
+
+	highp vec3 wvpos( highp vec2 wvpxy){
+		return reconstructWVP( wvpxy, texture( uztex, wvpxy*vec2(0.5,0.5)+0.5).x, p0[3]);
+	}
+
+	vec2 aosteps( const vec2 pos0, const vec2 vec, const float stepr, const float voffs, const float attnscale, const float tickdecay, const vec3 vpos, const vec3 vdir){
+		vec2 h = vec2( -1.0, -1.0 );
+		vec2 d = vec * stepr, offs = d * voffs;
+		for( int s = 0; s < STEPCNT; s++){
+			vec3 ds = wvpos( pos0+offs ).xyz - vpos;
+			vec3 dt = wvpos( pos0-offs ).xyz - vpos;
+			vec2 dsdt = vec2( dot( ds, ds ), dot( dt, dt ) ) + 0.00001;
+			vec2 H = vec2( dot( ds, vdir ), dot( dt, vdir ) ) / sqrt( dsdt);	//	rsqrt = 1/sqrt
+			vec2 attn = clamp( dsdt * attnscale, 0.0, 1.0);
+			H = mix( H, h, attn);
+			h = max( H, mix( H, h, tickdecay )); // h.x = ( H.x > h.x ) ? H.x : mix( H.x, h.x, tickdecay ); // h.y = ( H.y > h.y ) ? H.y : mix( H.y, h.y, tickdecay );
+			offs += d;
+		}
+		return h;
+	}
+
+	mediump vec3 unpackn( highp uint u1){
+		const mediump vec3 S = vec3( 1.0/1023.5, 1.0/1023.5, 1.0), T = -vec3( 1.0);
+		mediump vec3 un = vec3( (uvec3( u1)>>uvec3( 0, 11, 21)) & uvec3( 2047, 2047, 2)) * S + T;
+		return vec3( un.xy, sqrt( clamp( 1.0-dot( un.xy, un.xy), 0.0, 1.0)) * un.z);
+	}
+
+	void main(){
+		highp vec2 wvpp = v_uv.xy*2.0-1.0;	//	-1.0-1.0
+		highp vec2 cuv = v_uv.xy + bayer4( gl_FragCoord.xy) * uztexscale;
+		mediump vec3 vpos = wvpos( wvpp.xy);
+		mediump float zfade = clamp( (-vpos.z-p0[1].x) * p0[1].y, 0.0, 1.0);
+		mediump vec3 irt = mix( p0[0].xyz, vec3( 0.0, p0[0].y, 0.98), zfade);	//	0.98 <= tick=1.0
+		//	calc occlusion => pix
+		mediump float occ = 1.0;
+		if( irt.x > 1e-4){
+			vec3 vdir = normalize( -vpos), vn = unpackn( texture( gtex1, cuv).x); vn *= vec3( 1.0, -1.0, 1.0);	//	
+			float vdirxy = dot( vdir.xy, vdir.xy );
+			// float radiusToScreen = irt.y * p0[2].z;	//	projscale
+			float screenRadius = clamp( irt.y * p0[2].z / -vpos.z, 0.005, 0.5 );	//	radius * projscale / z
+			float stepr = screenRadius / (float( STEPCNT) + 1.0);
+			float attnscale = 2.0 / (irt.y*irt.y);
+			//	
+			vec2 spr = getSpreds( gl_FragCoord.xy);// + p0[3].xy;	//	( TemporalOffsets, TemporalDirections);
+			float voffs = fract( spr.x)*0.9+0.1;
+			float dirstep = (PI / float( DIRCNT));
+			float th = spr.y * dirstep;
+			//	
+			for( int d = 0; d < DIRCNT; d++){
+				vec3 slicedir = vec3( sin( vec2( th+HPI, th)), 0.0 );	//	cos, sin
+				vec2 h = aosteps( wvpp, slicedir.xy*p0[2].xy, stepr, voffs, attnscale, irt.z, vpos, vdir );
+				// "Project (and normalize) the normal to the slice plane for the integration" - s2016_pbs_activision_occlusion - Slide 62
+				vec3 normalSlicePlane = normalize( cross( slicedir, vdir ) );
+				vec3 tangent = cross( vdir, normalSlicePlane );
+				float vndot = dot( vn, normalSlicePlane );
+				// Gram-Schmidt process https://en.wikipedia.org/wiki/Gram-Schmidt_process
+				vec3 normalProjected = vn - normalSlicePlane * vndot; // There is no need to divide by ||np|| as np is normalized
+				float projLength = length( normalProjected ) + 0.0001;
+				float cos_gamma = dot( normalProjected, vdir) / projLength; // cos() = a.b / ( ||a|| * ||b|| )		clamp(-1,1) iranai???
+				float gamma = -sign( dot( normalProjected, tangent ) ) * acos( cos_gamma );
+				// "We have to clamp them with the normal hemisphere" - s2016_pbs_activision_occlusion - Slide 58
+				// h = acos( h); h.x = gamma + max( -h.x - gamma, -HPI ); h.y = gamma + min( +h.y - gamma, +HPI );
+				h = max( -acos( h)-gamma*vec2( 1.0, -1.0), -HPI)*vec2( 1.0, -1.0) + gamma;	//	acos( clamp(h,-1,1)) iranai???
+				vec2 h2 = 2.0 * h;
+				vec2 innerIntegral = ( -cos( h2 - gamma ) + cos_gamma + h2 * sin( gamma ) );
+				// float wc = dot( vn, cross( slicedir, vdir) ) * vdirxy;	//	wallDarkeningCorrection
+				float wc = vndot * vdirxy;	//	wallDarkeningCorrection wc no sign ha iminasi
+				// "Multiply each slice contribution by the length of the projected normal" - s2016_pbs_activision_occlusion - Slide 62
+				occ += ( projLength + wc*wc ) * 0.25 * ( innerIntegral.x + innerIntegral.y + p0[1].z );
+				th += dirstep;
+			}
+			occ = clamp( occ/float( DIRCNT), 0.0, 1.0);
+			mediump float ex = mix( p0[0].w, 1.0, zfade);		//	FadeToPowerExponent = 1.0
+			occ = pow( occ, 1.0/ex);
+			occ = mix( 1.0, occ, irt.x);
+		}
+		//	mix temp
+		// mediump vec4 temp = texture( temptex, v_uv.xy);
+		// mediump float mixw = mix( 0.8, 0.08, temp.w);
+		// mediump float tocc = mix( 1.0, temp.x, temp.w);
+		// occ = mix( tocc, occ, mixw);
+		fragcolor = vec4( occ);
+	}
+}
+
+param ssao_normal
+{
+	const int DIRCNT = 4;
+	const int STEPCNT = 6;
+}
+
+param ssao_quality
+{
+	const int DIRCNT = 6;
+	const int STEPCNT = 8;
+}
+
+technique ssao_normal
+{
+	apilevel = 30;
+	
+	pass {
+		using ssao_normal, bayer, reconstwvp;
+
+		param = ssao;
+		vs = def;
+		fs = ssao;
+	}
+}
+
+technique ssao_quality
+{
+	apilevel = 30;
+	
+	pass {
+		using ssao_quality, bayer, reconstwvp;
+
+		param = ssao;
+		vs = def;
+		fs = ssao;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	SSAO Blur
+//	
+
+param ssaoblur
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform lowp sampler2D aotex <id=COLORTEX1, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform mediump usampler2D uztex <id=DEPTHTEX, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	
+	uniform mediump mat4 invpmat <id=ENV2MAT>;
+	uniform mediump mat4 p0 <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	
+	fragout mediump vec4 fragcolor;
+}
+
+fs ssaoblur
+{
+	const float R = 5;
+	const float SIGMA = R * 0.7;
+	const float FALLOFF = 1.0 / (2.0*SIGMA*SIGMA);
+	const float SHARPEN = 10.0;
+
+	float wvz( highp vec2 uv){
+		highp vec4 v = p0[1];
+		return float( texture( uztex, uv).x) * v.z + v.w;	//	vz = positive
+	}
+
+	vec2 blurfunc( highp vec2 uv, const float r, const highp float z0){
+		vec2 aoz = vec2( texture( aotex, uv).x, wvz( uv));
+		float ddiff = (aoz.y - z0) * SHARPEN;
+		float w = exp2( -r*r*FALLOFF - ddiff*ddiff);
+		return vec2( aoz.x*w, w);
+	}
+
+	void main(){
+		highp vec2 uv = v_uv.xy;
+		highp float z0 = wvz( uv);
+		mediump vec2 aozsum = vec2( texture( aotex, uv).x, 1.0);
+		for( float r = 1.0; r < R; r ++){
+			aozsum += blurfunc( uv + p0[0].xy*r, r, z0);
+		}
+		for( float r = 1.0; r < R; r ++){
+			aozsum += blurfunc( uv - p0[0].xy*r, r, z0);
+		}
+		fragcolor = vec4( aozsum.x/aozsum.y);
+	}
+}
+
+technique ssaoblur
+{
+	apilevel = 30;
+
+	pass {
+		param = ssaoblur;
+		vs = def;
+		fs = ssaoblur;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	SSAO Cross-Bilateral Upsampling
+
+param ssaoupsample
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform lowp sampler2D aotex <id=COLORTEX1, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform mediump usampler2D uztex <id=DEPTHTEX, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	
+	uniform highp mat4 p0 <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	
+	fragout mediump vec4 fragcolor;
+}
+
+fs ssaoupsample
+{
+	const int R = 2;
+	const float SIGMA = float( R) * 0.7;
+	const float FALLOFF = 1.0 / (2.0*SIGMA*SIGMA);
+	const float SHARPEN = 10.0;
+
+	float wvz( highp vec2 uv){
+		highp vec4 v = p0[1];
+		return float( texture( uztex, uv).x) * v.z + v.w;	//	vz = positive
+	}
+	
+	void main(){
+		highp vec2 uv = v_uv.xy;
+		highp float z0 = wvz( uv);
+		highp vec2 texsc = p0[0].xy;
+		mediump float sumw = 0.0, sumao = 0.0;
+		for( int y=-R; y<=R; y ++){
+			for( int x=-R; x<=R; x ++){
+				highp vec2 xy = vec2( x, y);
+				float ao = texture( aotex, uv+xy*texsc).r;
+				highp float z = wvz( uv+xy*texsc);
+				float ddiff = (z - z0) * SHARPEN;
+				float w = exp2( -dot( xy, xy)*FALLOFF - ddiff*ddiff);
+				sumao += ao * w;
+				sumw += w;
+			}
+		}
+		fragcolor = vec4( sumao / sumw, 0.0, 0.0, 1.0);
+	}
+}
+
+technique ssaoupsample
+{
+	apilevel = 30;
+
+	pass {
+		param = ssaoupsample;
+		vs = def;
+		fs = ssaoupsample;
+	}
+}

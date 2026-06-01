@@ -1,0 +1,771 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+import BlockPlacementID;
+import FreeBlockCategoryID;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorMapVox : マップ用ボクセル編集
+//	
+/*
+
+リソースエディタで定義できるようにvoxフォルダを整理する
+
+通常ブロック
+/vox/floor + carpet
+/vox/wall
+/vox/fence
+/vox/color
+フリーブロック
+/vox/treerock
+/vox/door
+/vox/lamp
+/vox/exterior
+/vox/interior
+/vox/column
+/vox/slope
+/vox/roof
+/vox/decal
+
+								プロパティ				プレビュー
+自然床				MV100-115	vox, pal, floortype
+自然壁				MV116-131	vox, pal				mid1
+人工床1				MV100-115	vox, pal, floortype
+人工壁1				MV116-131	vox, pal, edgeshp		mid1
+人工床2				MV132-147	vox, pal, floortype
+人工壁2				MV148-163	vox, pal, edgeshp		mid1
+古代床				MV164-179	vox, pal, floortype
+古代壁				MV180-195	vox, pal, edgeshp		mid1
+カーペット			MV196-227	vox, pal, floortype
+フェンス			MV228-259	vox, pal, edgeshp		2
+シェイプ			MV000-099	vox, pal, blkshp
+--
+樹木岩				MV300-399	vox, pal, cols
+ドア				MV400-449	vox, pal, size, cols, plc, push
+ランプ				MV450-499	vox, pal, size, cols, plc, push, light
+屋外装飾			MV500-599	vox, pal, size, cols, plc, push
+屋内装飾			MV600-699	vox, pal, size, cols, plc, push
+柱・ハシゴ			MV700-749	vox, pal, ctype, push
+階段				MV750-799	vox, pal
+屋根				MV800-849	vox, pal, rooftype
+
+
+※フリーブロックはサイズ、コリジョン、配置ルール、pushをちゃんと設定できるように。
+また、trns=255は自動判別。vox指定時に255があるかチェック。
+サイズはボクセルより小さくならないように
+
+
+コリジョン定義
+・ボックス
+・ドア、窓
+・シリンダー
+・オートシェイプ
+・マニュアル・・・？？？
+*/
+
+//	
+local alignlist = [
+	{ lbl="$T.lbl_center", val=13 }
+	{ lbl="$T.lbl_up", val=14 }
+	{ lbl="$T.lbl_uprear", val=23 }
+	{ lbl="$T.lbl_down", val=12 }
+	{ lbl="$T.lbl_front", val=4 }
+	{ lbl="$T.lbl_rear", val=22 }
+	{ lbl="$T.lbl_downrear", val=21 }
+];
+
+local plclist = [
+	{ lbl="$T.plctype0", val=PLC_ANY }
+	{ lbl="$T.plctype1", val=PLC_FLOOR }
+	{ lbl="$T.plctype2", val=PLC_WALL }
+	{ lbl="$T.plctype3", val=PLC_DOOR }
+];
+
+local rooftypelist = [
+	{ lbl="三角", val=0 }
+	{ lbl="斜め", val=1 }
+	{ lbl="四角", val=2 }
+];
+
+local floortypelist = [
+	{ lbl="$T.floortype0", val=0 }
+	{ lbl="$T.floortype1", val=1 }
+	{ lbl="$T.floortype2", val=2 }
+];
+
+local edgeshplist = [
+	{ lbl="$T.edgeshp0", val=0 }
+	{ lbl="$T.edgeshp1", val=1 }
+	{ lbl="$T.edgeshp2", val=2 }
+];
+
+local shapelist = [
+	{ lbl="ボックス", val=0 }
+	{ lbl="面取り1", val=1 }
+	{ lbl="面取り2", val=2 }
+	{ lbl="縦面取り1", val=3 }
+	{ lbl="縦面取り2", val=4 }
+	{ lbl="スロープ", val=5 }
+	{ lbl="階段", val=6 }
+];
+
+local ctypelist = [
+	{ lbl="$T.columntype0", val=0 }
+	{ lbl="$T.columntype1", val=1 }
+	{ lbl="$T.columntype2", val=2 }
+];
+
+local blendlist = [
+	{ lbl="$T.lbl_normal", val=0 }
+	{ lbl="ハードライト", val=1 }
+]
+
+local inexprop( incatg, excatg){
+	return {
+		pid = "catg"
+		lbl = "in/ex"
+		type = LIST
+		list = [ { lbl="$T.blk_exterior", val=excatg}, { lbl="$T.blk_interior", val=incatg}, { lbl="$T.lbl_both", val=incatg|excatg } ];
+		defval = excatg
+	}
+}
+
+//	共通プロパティ
+//	壁、床はvox,パレットが分離されている。壁=vp0,pal0, 床=vp0,pal1
+// local nameprop = { pid="name", lbl="$T.lbl_name", type=LANGSTRING, defval = "", }	//	名前なし！
+local vp0prop = { pid="vp0", lbl="$T.lbl_model", type=VOXEL_PARTS, dir=@() ::skstudio.editor.selcatg.dir0, restype="voxparts", usevcname=true, defval=null, showpartstree=true }
+local vp1prop = { pid="vp1", lbl="$T.lbl_model", type=VOXEL_PARTS, dir=@() ::skstudio.editor.selcatg.dir1, restype="voxparts", usevcname=true, defval=null, showpartstree=true }
+local pal0prop = { pid="pal0", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui", inipal=@() ::skstudio.editor.getIniPalette(), defval=[] };
+local pal1prop = { pid="pal1", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui", inipal=@() ::skstudio.editor.getIniPalette(), defval=[] };
+
+local doorcatgprop = { pid="catg", lbl="in/ex", type=LIST, }
+
+//	個別プロパティ
+local vp0wprop = { ...vp0prop, lbl="$T.lbl_model - $T.lbl_wall" }
+local vp1fprop = { ...vp1prop, lbl="$T.lbl_model - $T.lbl_floor", hide=@( pl) !pl.getParam( "vp0") }
+local floortypeprop = { pid="floortype", lbl="$T.floortype", type=LIST, list=floortypelist, defval=2 }
+local edgeshpprop = { pid="edgeshp", lbl="$T.edgeshp", type=LIST, list=edgeshplist, defval=0 }
+local colsprop = { pid="cols", lbl="$T.lbl_collision", type=CUSTOMBUTTON, tostring=@( v) v? sprintf( "%d, %d, %d", v.w, v.h, v.d) : "---", defval=null }	//	サイズ設定はダイアログ表示で行う
+local alignprop = { pid="align", lbl="$T.lbl_align", type=LIST, list=alignlist, defval=12 }
+local plcprop = { pid="plc", lbl="$T.plctype", type=LIST, list=plclist, defval=PLC_FLOOR }
+local pushprop = { pid="push", lbl="$T.lbl_plcpush", type=VEC2, range=(-4,4), defval=[0,0] }		//	Y,Z
+local ctypeprop = { pid="ctype", lbl="$T.columntype", type=LIST, list=ctypelist, defval=0 }
+local pokeprop = { pid="poke", lbl="$T.lbl_poke", type=BOOL, defval=false }
+local rooftypeprop = { pid="rooftype", lbl="$T.lbl_rooftype", type=LIST, list=rooftypelist, defval=0 }
+local shapeprop = { pid="shape", lbl="$T.lbl_shape", type=LIST, list=shapelist, defval=0 }
+local fitfloorprop = { pid="fitfloor", lbl="$T.lbl_fitfloor", type=BOOL, defval=true }
+local blendprop = { pid="blend", lbl="$T.lbl_blend", type=LIST, list=blendlist, defval=0}
+
+//
+local lightprops = [
+	{ pid="LIT", lbl="$T.lbl_light", type=HEADER, }
+	{ pid="lcol", lbl="$T.lbl_color", type=RGBA, defval=0xffffcc66 }
+	{ pid="lr", lbl="$T.lbl_size", type=SCALAR, range=(0.1,99.9), q=10, defval=2.0 }
+	{ pid="lpos", lbl="$T.lbl_position", type=VEC3, range=(-8.0,8.0), q=100, defval=(0.0,0.0,0.0) }
+	{ pid="lhpb", lbl="$T.lbl_direction", type=VEC2, range=(-180,180), defval=(0,0) }
+	{ pid="lspot", lbl="$T.lbl_litspot", type=VEC2, range=((0,180),(0,100)), defval=(180,10), ui="r", rlbl0="#" }
+	{ pid="flicker", lbl="$T.lbl_filcker", type=LIST, list=::lightflickerlist, defval=0 }
+];
+
+
+local typefn( t){
+	return { pid="type", lbl="_", type=NOEDITOR,defval=t };
+}
+
+//	マップエディタのブロックリストを作り直すためのカウンター
+::voxloadseq <- 0;
+
+//	
+class ResEditorMapVox extends EditorViewBase
+{
+	static alignlist = alignlist;
+
+	static categories = [
+		{ lbl="$T.blk_basic", props=[typefn("shape"),vp0prop,pal0prop,shapeprop,], dir0="/resource/vox/map/shape", caps=128, id="shape" }
+		{ lbl="$T.blk_naturefloor", props=[typefn("floor0"),vp1prop,pal1prop,floortypeprop,], dir1="/resource/vox/map/floor", caps=16, id="floor0" }
+		{ lbl="$T.blk_naturewall", props=[typefn("wall0"),vp0prop,pal0prop,], dir0="/resource/vox/map/terrain", caps=16, id="wall0" }
+		{ lbl="$T.blk_structa", props=[typefn("struct0"),vp0wprop,vp1fprop,pal0prop,edgeshpprop,floortypeprop], dir0="/resource/vox/map/wall", dir1="/resource/vox/map/floor", caps=128, id="struct0" }
+		// { lbl="$T.blk_structb", props=[typefn("struct1"),vp0wprop,vp1fprop,pal0prop,edgeshpprop,floortypeprop], dir0="/resource/vox/map/wall", dir1="/resource/vox/map/floor", caps=128, id="struct1" }
+		// { lbl="$T.blk_structc", props=[typefn("struct2"),vp0wprop,vp1fprop,pal0prop,edgeshpprop,floortypeprop], dir0="/resource/vox/map/wall", dir1="/resource/vox/map/floor", caps=128, id="struct2" }
+		{ lbl="$T.blk_carpet", props=[typefn("carpet"),vp0prop,pal0prop,], dir0="/resource/vox/map/carpet", caps=64, id="carpet" }
+		{ lbl="$T.blk_water", props=[typefn("water"),vp0prop,pal0prop,], dir0="/resource/vox/map/water", caps=64, id="water" }
+		{ lbl="$T.blk_fence", props=[typefn("fence"),vp0prop,pal0prop,], dir0="/resource/vox/map/fence", caps=64, id="fence" }
+		{ lbl="$T.blk_plant", props=[typefn("plant"),vp0prop,pal0prop,], dir0="/resource/vox/map/plant", caps=64, id="plant" }
+		null,
+		{ lbl="$T.blk_door", props=[typefn("door"),vp0prop,pal0prop,inexprop( FB_INDOOR, FB_EXDOOR),colsprop,pushprop,], dir0="/resource/vox/map/door", caps=64, id="door" }
+		{ lbl="$T.blk_lamp", props=[typefn("lamp"),vp0prop,pal0prop,inexprop( FB_INLAMP, FB_EXLAMP),colsprop,plcprop,pushprop,lightprops,], dir0="/resource/vox/map/lamp", caps=64, id="lamp" }
+		{ lbl="$T.blk_exterior", props=[typefn("exterior"),vp0prop,pal0prop,colsprop,plcprop,pushprop,], dir0="/resource/vox/map/exterior", caps=128, id="exterior" }
+		{ lbl="$T.blk_interior", props=[typefn("interior"),vp0prop,pal0prop,colsprop,plcprop,pushprop,], dir0="/resource/vox/map/interior", caps=128, id="interior" }
+		{ lbl="$T.blk_column", props=[typefn("column"),vp0prop,pal0prop,ctypeprop,pushprop,], dir0="/resource/vox/map/column", caps=64, id="column" }
+		{ lbl="$T.blk_slopestair", props=[typefn("slope"),vp0prop,pal0prop,pokeprop,], dir0="/resource/vox/map/slope", caps=64, id="slope" }
+		{ lbl="$T.blk_roof", props=[typefn("roof"),vp0prop,pal0prop,rooftypeprop,], dir0="/resource/vox/map/roof", caps=64, id="roof" }
+		{ lbl="$T.blk_treerock", props=[typefn("treerock"),vp0prop,pal0prop,colsprop,plcprop,pushprop,], dir0="/resource/vox/map/treerock", caps=128, id="treerock" }
+		{ lbl="$T.blk_crack", props=[typefn("crack"),vp0prop,pal0prop,fitfloorprop,blendprop,], dir0="/resource/vox/map/crack", caps=128, id="crack" }
+	];
+	
+	res = null;				//	Resource : 
+	data = null;			//	::conf.res.map_voxのコピー。
+
+	catglist = null;		//	GPUIListView : 
+	previewlist = null;		//	ResourcePreviewList
+	proplist = null;		//	PropertyListBehavior
+
+	preview = null;
+
+	selcatg = null;			//	選択されてカテゴリ
+	catgitems = null;		//	
+	selitem = null;			//	選択されたアイテム。selcatgに属している
+	selvp = null;			//	選択されたアイテム内のVoxelParts。
+
+	function init( path){
+		op = OperationStack();
+		//
+		local lv = findChild( "itemlist");
+		local uipath = srcdir.."/ui/resslot4.ui"
+		lv.setRowPath( uipath);
+		previewlist = ResourcePreviewList( lv);
+		previewlist.dndfunc = 3;
+		previewlist.showpartstree = true;
+		lv.addEventListener( ITEM_EVENT, sortevent);
+		lv.addEventListener( ACTION_EVENT, listevent);
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.ref = this;
+		preview = ResPreview( findChild( "preview"), this);
+		//	
+		res = ::getResource( path);	//	.bw resource
+		res.userdata = null;
+		data = deepclone( res.getContent());
+		//	
+		//	categories
+		catglist = findChild( "catglist");
+		catglist.setRowCount( 4);
+		catglist.addEventListener( ACTION_EVENT, catgevent);
+		local n = 6*4;
+		for( local l = 0;l < n; l ++){
+			local v = categories[l];
+			local c = catglist.rows[l/6].findChild( "c"..(l%6));
+			if( v){
+				c.setValue( "lbl", v.lbl);
+				c.ref = v;
+			}else{
+				c.setVisible( false);
+			}
+		}
+		categorySelected( categories[0]);
+	}
+
+	function findCategoryButton( v){
+		foreach( r in catglist.rows){
+			foreach( c in r.children) if( c.ref == v) return c;
+		}
+	}
+	
+	function categorySelected( v){
+		findCategoryButton( selcatg)?.setSelected( false);
+		findCategoryButton( v)?.setSelected( true);
+		selcatg = v;
+		catgitems = array( v.caps);
+		local catgmap = data[v.id] || (data[v.id]<-{});	//	
+		for( local l = 0;l < v.caps;l ++){
+			catgitems[l] = {id:l, data:catgmap[l]};
+		}
+		previewlist.setItemList( catgitems);
+		proplist.bindProperties( []);
+		previewlist.selectItem( null);
+		preview.setResourceData( "", null);
+	}
+	
+	function itemSelected( v){
+		proplist.bindProperties( selcatg.props);
+		if( !v) return;
+		//	
+		local dt = data[selcatg.id];
+		local d = dt[v.id];
+		if( !d){
+			d = v.data = dt[v.id] <- {};
+		}
+		setDefaultProperties( selcatg.props, d);
+		//
+		proplist.setParameters( d);
+		preview.setResourceData( v.id, d);
+	}
+
+	function updateItemView( resid, d){
+		previewlist.updateItemView( resid, d);
+		preview.setResourceData( resid, d);
+	}
+	
+	//	※refreshではアイテムのプレビューは変化させない。100個の表示を再初期化することになるので、、、
+	function refresh(){
+		itemSelected( selitem);
+	}
+
+	function catgevent( e){
+		if( e.src["ref"]){
+			categorySelected( e.src.ref);
+		}
+	}
+
+	function sortevent( e){
+		if( e.id == ITEM_SORT){
+			local cmd = e.actioncmd;
+			local catgid = selcatg.id, resid = selitem.id, self = this;
+			local data = this.data;
+			local id0 = cmd.from.mdlid, d0 = data[catgid][id0];
+			local id1 = cmd.to.mdlid, d1 = data[catgid][id1];
+			if( !d1){ d1 = data[catgid][id1] <- {}; catgitems.find( @(v) v.id==id1).data = d1; }
+			d0 = deepclone( d0);
+			d1 = deepclone( d1);
+			local redo = [@(){
+				Table.clear( data[catgid][id0]) ... d1;
+				Table.clear( data[catgid][id1]) ... d0;
+				self.updateItemView( id0, d1);
+				self.updateItemView( id1, d0);
+				self.refresh();
+			}];
+			local undo = [@(){
+				Table.clear( data[catgid][id0]) ... d0;
+				Table.clear( data[catgid][id1]) ... d1;
+				self.updateItemView( id0, d0);
+				self.updateItemView( id1, d1);
+				self.refresh();
+			}];
+			submitOp( redo, undo, null);
+			refresh();
+		}
+	}
+	
+	function filterData(){
+		local d = deepclone( data);
+		foreach( c in categories){
+			local t = d[c["id"]];
+			foreach( v in t){
+				if( !v["vp0"] && !v["vp1"]) removei;
+			}
+		}
+		return d;
+	}
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			local fd = filterData( data);	//	セーブしちゃまずいのはフィルタ
+			res.save( fd);
+			reloadVoxelConfig();
+			return true;
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_copy":
+			copy();
+			return true;
+		case "menu_edit_paste":
+			paste( getClipboard( "mapvox"));
+			return true;
+		}
+		return false;
+	}
+
+	function reloadVoxelConfig(){
+		::setupVoxelConfig();
+		//	全てのBlockWorldインスタンスを取得して変化したブロック定義に合わせてリフレッシュ処理を行う。
+		local allbws = getclassinstances( BlockWorld);
+		foreach( bw in allbws){
+			bw.refreshAllBlocks();
+		}
+		//	FreeBlockインスタンスも同様。
+		local allfbs = getclassinstances( FreeBlock);
+		foreach( fb in allfbs){
+			fb.refresh();
+		}
+		//	マップアセットのエディタは閉じちゃう
+		::skstudio.flushEditors( @( path, ed) (ed instanceof ResEditorMapAsset));
+		//	マップエディタのブロックリストを作り直すためのカウンターを足す
+		++::voxloadseq;
+		SelectBlock.clearPreviewTexCache();
+	}
+
+
+	function copy(){
+		putClipboard( "mapvox", {...selitem, catgid=selcatg.id});	//	{id,data}のままコピー。ペースト時には同じカテゴリじゃないとできないように。。。
+	}
+
+	function paste( cbdata){
+		if( cbdata && cbdata["catgid"] == selcatg.id){
+			local catgid = selcatg.id, resid = selitem.id, d = data[catgid][resid], oldd = deepclone( d), self = this;
+			local newd = cbdata.data;
+			local redo = [@(){
+				Table.clear( d);
+				Table.merge( d, newd);
+				self.updateItemView( resid, d);	//	catg変更時に関係ないのがupdateされる場合あるけど問題は起きないはず。。。。
+			}];
+			local undo = [@(){
+				Table.clear( d);
+				Table.merge( d, oldd);
+				self.updateItemView( resid, d);
+			}];
+			submitOp( redo, undo, null);	//	trk無し
+			refresh();
+		}
+	}
+
+	function listevent( e){
+		switch( e.id){
+		case ACTION_PERFORMED:
+			selitem = e.actioncmd;
+			setValue( "itemlbl", sprintf( "$T.lbl_property : %S - %S", selitem["id"], selitem["data"]["name"]));
+			itemSelected( e.actioncmd);
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showItemContextMenu( e);
+			}else
+			if( e.count == 2){
+				// editVox( selitem.data.vp0[0]);
+			}
+			break;
+		}
+	}
+
+	function showItemContextMenu( e){
+		local d = selitem.data;
+		local hasvp1 = selitem.data["vp1"];
+		local cbdata = getClipboard( "mapvox");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="edit", lbl="$T.lbl_editvox"..(d.vp0[0]?" - "..d.vp0[0]:""), icon="\ue745", disable=!d.vp0[0] },
+			hasvp1 ? { id="edit", lbl="$T.lbl_editvox - "..d.vp1[0], icon="\ue745" } : undefined,
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!(cbdata && cbdata["catgid"] == selcatg.id)},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "edit": return editVox( d.vp0[0]);
+		case "copy": return copy();
+		case "paste": return paste( cbdata);
+		}
+	}
+
+	//	
+	function editVox( vcname){
+		local vc = VoxelContainer.getGlobal( vcname);
+		local f = vc.ref.file;
+		local prm = {
+			name = "MagicaVoxel"
+			exe = FileRef( "tools/magicavoxel_open.ps1")
+			args = vc.ref.file.path
+		};
+		Dialogs.launchTool( prm);
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		switch( cmd.cmd){
+		case "menu":
+			switch( cmd.prop.pid){
+			case "cols":
+				local self = this, resid = selitem.id, d = data[selcatg.id][resid], oldcols = d.cols;
+				local newcols = MapVoxCollisionDialog.run( d);
+				if( newcols){
+					local redo = [@(){
+						d.cols <- newcols;
+						self.updateItemView( resid, d);
+					}];
+					local undo = [@(){
+						d.cols <- oldcols;
+						self.updateItemView( resid, d);
+					}];
+					submitOp( redo, undo, null);	//	trk無し
+					refresh();
+				}
+				break;
+			}
+			break;
+		case "prop":
+		{
+			local pid = cmd.prop.pid, val = cmd.val;
+			switch( pid){
+			case "vp0": case "vp1":	// vox変更によって、名前、パレット、中心点
+				setVoxParamOp( pid, val);
+				break;
+			default:
+				setParamOp( selcatg.id, selitem.id, pid, val);
+				break;
+			}
+			break;
+		}
+		}
+	}
+
+	function getIniPalette(){
+		local d = data[selcatg.id][selitem.id];
+		local camap = {};
+		for( local l = 0;l < 2;l ++){
+			local vcvp = d["vp"..l];
+			if( !vcvp) continue;
+			local vc = VoxelContainer.getGlobal( vcvp[0]), vcpal = vc.pal;
+			local vp = vc.findParts( vcvp[1]);
+			local ca = vp.getUsingColors();		//	パレット
+			foreach( v in ca){ if( v<249) camap[v] <- vcpal[v]; }
+		}
+		local palmod = [];
+		for( local l = 1; l < 249; l ++){
+			if( camap[l]) palmod .. l .. camap[l];
+		}
+		return palmod;
+	}
+	
+	function getTransColor(){
+		local d = data[selcatg.id][selitem.id];
+		local camap = {};
+		for( local l = 0;l < 2;l ++){
+			local vcvp = d["vp"..l];
+			if( !vcvp) continue;
+			local vc = VoxelContainer.getGlobal( vcvp[0]);
+			local vp = vc.findParts( vcvp[1]);
+			local ca = vp.getUsingColors();		//	パレット
+			printf( "getTransColor   ......... %S\n", encodeJSON( ca));
+			if( ca.contains( 255)) return 255;
+		}
+		return 0;
+	}
+
+	function sizeRange(){
+		local sz = selitem["size"];
+		if( sz){
+			return (sz, (sz[0]+7, sz[1]+7, sz[2]+7))
+		}else{
+			return (1,8);
+		}
+	}
+	
+	//	
+	function setParamOp( catgid, resid, pid, val, updateview=true){
+		local self = this;
+		local d = data[catgid][resid];
+		local oldval = d[pid];
+		local redo = [@(){
+			self.setMapVoxParam( d, pid, val);
+			if( updateview) self.updateItemView( resid, d);
+		}];
+		local undo = [@(){
+			self.setMapVoxParam( d, pid, oldval);
+			if( updateview) self.updateItemView( resid, d);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+	}
+
+	function setMapVoxParam( d, pid, val){
+		switch( pid){
+		case "ctype":
+			d[pid] <- val;
+			if( val==2) d["plc"] <- PLC_ANY; else delete d["plc"];	// バーの場合はどこでも置ける
+			return val;
+		}
+		d[pid] <- val;
+	}
+
+	function setVoxParamOp( pid, val){
+		local vc = VoxelContainer.getGlobal( val[0]), vcpal = vc.pal;
+		local vp = vc.findParts( val[1]);
+		//	パレット取得＋抜き色
+		local ca = vp.getUsingColors();
+		local palpid = selcatg.props.find( @( p) p.type==PALETTEMAP ).pid;
+		//
+		local resid = selitem.id, d = data[selcatg.id][resid], self = this;
+		local oldvcvp = d[pid], oldpal = d[palpid], oldtrns=d["trns"]||0;
+		//	コリジョン自動生成。FreeBlockのみ
+		local oldcols = d["cols"], cols = oldcols;
+		if( "cols" in d){
+			local _vp = (d.type=="door"||d.type=="lamp") ? vp.children : vp;	//	ドア、ランプは最初の子パーツ
+			local vr = _vp.wholebnd();	//	ドア、ランプは
+			local size = ((vr.w+7)/8, ((vr.h+7)/8), (vr.d+7)/8);
+			cols = ("cols" in d) && makeAutoCollisionData( _vp, size[0], size[1], size[2], ("align" in oldcols)?oldcols.align:12);
+		}
+		//	
+		local redo = [@(){
+			d[pid] <- val;
+			d[palpid] <- self.getIniPalette();
+			d.trns <- self.getTransColor();
+			if( cols) d.cols <- cols;
+			self.updateItemView( resid, d);	//	catg変更時に関係ないのがupdateされる場合あるけど問題は起きないはず。。。。
+		}];
+		local undo = [@(){
+			d[pid] <- oldvcvp;
+			d[palpid] <- oldpal;
+			d.trns <- oldtrns;
+			if( cols) d.cols <- oldcols;
+			self.updateItemView( resid, d);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+		refresh();
+	}
+
+	//	
+	static function makeAutoCollisionData( vp, bw, bh, bd, align){
+		local colvd = makeAutoCollision( vp, bw, bh, bd, align);
+		local bb = ByteBuffer();
+		local n = bw*bh*bd;
+		for( local l = 0;l < n;l ++) bb.putb( colvd[l]&255);
+		bb.pos = 0;
+		local bb2 = compressZSTD( bb);
+		local vox64 = encodeBASE64( bb2);
+		return { w:bw, h:bh, d:bd, vox64:vox64, align:align }
+	}
+
+	//	
+	static function makeAutoCollision( vp, bw, bh, bd, align){
+		local vd0 = makeAlignedVoxelData( vp, bw, bh, bd, align);
+		local colvd = ::BlockColiderInterface.convertCollisionVoxel( vd0);
+		return colvd;
+	}
+
+	static function makeAlignedVoxelData( vp, bw, bh, bd, align){
+		local vd0 = VoxelData8( bw*8, bh*8, bd*8, false, true);
+		//	レイアウト。一応アライン対応しよう。。。
+		local vr = vp.wholebnd(), vb = IRect3D( -bw*4, -bh*4, -bd*4, bw*8, bh*8, bd*8);
+		local dx = 0, dy = 0, dz = 0;
+		//	y align
+		switch( align%3){
+		case 0: dy = vb.y-vr.y; break;
+		case 1: dy = (vb.y+vb.h/2)-(vr.y+vr.h/2); break;
+		case 2: dy = (vb.y+vb.h)-(vr.y+vr.h); break;
+		}
+		//	x align
+		switch( (align/3)%3){
+		case 0: dx = vb.x-vr.x; break;
+		case 1: dx = (vb.x+vb.w/2)-(vr.x+vr.w/2); break;
+		case 2: dx = (vb.x+vb.w)-(vr.x+vr.w); break;
+		}
+		//	z align
+		switch( align/9){
+		case 0: dz = vb.z-vr.z; break;
+		case 1: dz = (vb.z+vb.d/2)-(vr.z+vr.d/2); break;
+		case 2: dz = (vb.z+vb.d)-(vr.z+vr.d); break;
+		}
+		//
+		// printf( "align %S  vr %S %S %S %S %S %S   vb %S %S %S\n", align, vr.x,vr.y,vr.z,vr.w,vr.h,vr.d, vb.w,vb.h,vb.d);
+		// printf( "d %S %S %S\n", dx, dy, dz);
+		//	vp
+		local cv = VoxelCanvas8( vd0);
+		cv.vm.translate( dx+vb.w/2, dy+vb.h/2, dz+vb.d/2);
+		local drawvp( vp, vm){	//	基本
+			local v = vp.vd8;
+			if( v) cv.draw( v, vm);
+			for( local cp = vp.children; cp; cp = cp.next){
+				drawvp( cp, vm.mult( cp.mat()));
+			}
+		}
+		local v = vp.vd8;
+		drawvp( vp, v?IMat(-v.w/2,-v.h/2,-v.d/2):IMat());
+		return vd0;
+	}
+}
+
+//	
+//	
+class ResEditorMapVox.ResPreview extends ResourcePreviewCanvas
+{
+	editor = null;
+
+	pntchk = null;
+	rsetid = "pbr_fw";
+
+	lampsk = null;
+	
+	constructor( v, e){
+		super( v, true);
+		pntchk = v.findChild( "pntchk");
+		pntchk.setSelected( true);
+		view.addEventListener( ACTION_EVENT, actionevent);
+		wheelenabled = true;
+		view3d.addEventListener( MOUSE_EVENT, colpickevent);
+	}
+	
+	function setResourceData( id, d){
+		super.setResourceData( id, d);
+		lampsk?.kill();
+		lampsk = null;
+		if( sk3d){
+			sk3d.children[0].setVisible( pntchk.isSelected());
+			lampsk = makelamp( d);
+			if( lampsk) sk3d.addChild( lampsk);
+			lampsk?.setVisible( pntchk.isSelected());
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "pntchk":
+			if( sk3d) sk3d.children[0].setVisible( pntchk.isSelected());
+			lampsk?.setVisible( pntchk.isSelected());
+			break;
+		}
+	}
+
+	//	マウス座標のボクセル色を取得したい。。。ただしBlockRendererのレンダリング結果はパレット適用後のフルカラー。更に色も合成している。
+	function colpickevent( e){
+		switch( e.id){
+		case MOUSE_PRESSED:
+		case MOUSE_DRAGGED:
+			if( e.isMouseDown( BUTTON1_MASK)){
+				//e.computeLocal( view3d.getInvMatrix());
+				//local u = e.lx/view3d.bnd.w, v = e.ly/view3d.bnd.h;
+				//local p = view3d.renderer.queryWorldPos( u, v);
+			}
+			break;
+		}
+	}
+
+	//	
+	function makelamp( d){
+		if( !d["lcol"]) return null;
+		//
+		local mb = ::PrimitiveMeshes.getMeshBuilder();
+		mb.clear();
+		local m0 = Material();
+		m0.tec = skFXFindTechnique( "decal.def");
+		m0.Kd = d.lcol | 0xff;
+		m0.depthtest = false;
+		m0.depthmask = false;
+		m0.visiblemask = SK_VISIBLE_DECAL;
+		//
+		local m1 = clone m0;
+		// m1.fillmode = SK_LINE;
+		m1.cullface = SK_CW;	//	ura
+		m1.blend = SK_MIX;
+		m1.Kd = m1.Kd & 0xffffff33;
+		//
+		local spt = d.lspot[0]/180.0;
+		mb.setMaterial( m0);
+		::PrimitiveMeshes._createSphere( 0.0625, 8, 6);
+		mb.setMaterial( m1);
+		mb.setMatrix( Matrix.fromHPB( d.lhpb[0]*Math.DTOR, d.lhpb[1]*Math.DTOR, 0.0).rotate( 0.0, Math.HPI, 0.0) );
+		::PrimitiveMeshes._createSphere( d.lr, 16, Math.max( (16*spt)|0, 4), 1.0, 1.0-spt, spt<1.0);
+		//
+		mb.setMatrix( Matrix.fromHPB( d.lhpb[0]*Math.DTOR, d.lhpb[1]*Math.DTOR, 0.0).rotate( 0.0, Math.HPI, 0.0).translate( 0, d.lr*0.5, 0) );
+		::PrimitiveMeshes._createBox( 0.03125, d.lr*0.5, 0.03125);
+		local pm = mb.toPolygonMesh();
+		mb.clear();
+		//	
+		local sk = SK3DObject( pm);
+		sk.pos( d.lpos);
+		sk.rot.setHPB( d.lhpb);
+		return sk;
+	}
+}

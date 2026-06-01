@@ -1,0 +1,371 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+
+
+::preferencetypes .. { id="apikey", lbl="$T.act_setting_apikey", };
+::preferencetypes .. { id="debug", lbl="$T.act_setting_debug", };
+
+//	gemini
+preferenceprops .. {
+	ctg="apikey", pid="geminiapikey", lbl="Gemini $T.act_setting_apikey", type=STRING, 
+	getpref = @() ::account["apikeymap"]["gemini"] || null,
+	applypref = @( prop, val){
+		if( !::account["apikeymap"]) ::account["apikeymap"] = {};
+		::account["apikeymap"]["gemini"] <- val;
+		::account.save();
+	}
+	defval = null
+}
+
+//	google trans
+preferenceprops .. {
+	ctg="apikey", pid="googletransapikey", lbl="Google Translation $T.act_setting_apikey", type=STRING, 
+	getpref = @() ::account["apikeymap"]["googletrans"] || null,
+	applypref = @( prop, val){
+		if( !::account["apikeymap"]) ::account["apikeymap"] = {};
+		::account["apikeymap"]["googletrans"] <- val;
+		::account.save();
+	}
+	defval = null
+}
+
+///////////////////////////	デバッグ用設定
+
+preferenceprops .. {
+	ctg="debug", pid="debuglang", lbl="デバッグする言語", type=LIST, list= @()[
+		{ lbl="$T.lbl_notspecify", val = null,},
+		... ::sakana.languagelist.map( @( v)({ lbl=v.name, icon=v.icon, val=v.code })),
+	], defval = null,
+}
+
+preferenceprops .. {
+	ctg="debug", pid="debugtouch", lbl="タッチをデバッグ", type=BOOL, defval=false,
+}
+
+preferenceprops .. {
+	ctg="debug", pid="debugskills", lbl="全スキル解放", type=BOOL, defval=false,
+}
+
+preferenceprops .. {
+	ctg="debug", pid="debugitems", lbl="全アイテム所持", type=BOOL, defval=false,
+}
+
+preferenceprops .. {
+	ctg="debug", pid="debuglv", lbl="レベル指定(0で無効)", type=SCALAR, range=(0,99), defval=0,
+}
+
+
+local visitfile( f, fn){
+	if( f.isDirectory()){
+		foreach( cf in f.getList()) visitfile( cf, fn);
+	}else{
+		fn( f);
+	}
+}
+
+//	※zip書き出しに数秒～かかるのでsuspendを挟んでいく必要あり
+//	isbg=trueの場合はバックグラウンドからの呼び出し。ツールが重くならないように負荷を抑える
+local saveProjectBackup( outfile, isbg=false){
+	local fn = @( prgfunc){
+		local t0 = skGetTime();
+		local srcdir = FileRef( "project");
+		//	zipするファイルを集める
+		local ziplist = [];
+		foreach( dn in ["data","resource"]){
+			visitfile( FileRef( srcdir, dn), @( f) ziplist .. f);
+		}
+		foreach( f in FileRef( srcdir, "plugin").getList()){
+			if( f.name != "rpgtools") visitfile( f, @( f) ziplist .. f);
+		}
+		//	zip実行。6並列で高速化
+		local num = length( ziplist), size = 0;
+		local zip = ZipWriter( outfile);
+		local fa = [], paranum = isbg ? 2 : 6;
+		for( local l = 0;l < num;l ++){
+			local f = ziplist[l];
+			fa .. (f, ::getRelativePath( srcdir.path, f.path));
+			if( length( fa)>=paranum || l==num-1){
+				size += zip.writeLocalFilesAtOnce( fa);
+				fa.clear();
+				prgfunc( l * 1.0 / num, sizestr( size));
+			}
+			if( isbg && (l&1)) suspend();	//	ファイル読み込みでも重いのでbgの時はsuspendをマメに
+		}
+		//	.backupinfo
+		local verf = FileRef( "rpgcobo.ver"), ver = verf.exists()? decodeJSON( verf.load()) : null;
+		local backupinfo = {
+			projname = ::conf.setting.projname,
+			time = string( Date.currentTime()),
+			auto = isbg,
+			...ver,
+		};
+		local bb = encodeJSON( backupinfo, 5, ByteBuffer()); bb.pos = 0;
+		zip.writeLocalBuffer( bb, ".backupinfo");
+		zip.writeCentral();
+		zip.close();
+		printf( "Backup done! time=%S\n", skGetTime( t0));
+	}
+	//	プログレスダイアログ開始
+	return fn;
+}
+
+local backupfilename( postfix=""){
+	local d = Date( Date.currentTime() - Date.timezone());
+	local dstr = sprintf( "%02d%02d%02d-%02d%02d", d.tm_year%100, d.tm_mon+1, d.tm_mday, d.tm_hour, d.tm_min);
+	return "backup-%S%S.zip" % (dstr, postfix);
+}
+
+//	自動バックアップ処理を開始。時刻が来た時に以下の条件で開始。
+//	・バックグラウンドが5秒間以上続いた 〇
+//	・しばらく操作が行われていない
+//	zipはtempフォルダで作成し、完成後にbackupフォルダに移動。その時に現在時刻をworkspaceに記録。
+//	※最大で500MB程度の生成になる。遅いPCだと1分ぐらいかかるかも。
+//	
+local runAutoBackup(){
+	local fn = backupfilename( "a");
+	local tmpf = FileRef( "tmp/autobackup.zip");
+	local prgfunc( r, sz){}	//	noop
+	local t0 = skGetTime();
+	printf( "Auto Backup start...\n");
+	saveProjectBackup( tmpf, true) ( prgfunc);
+	local bf = FileRef( "backup/"..fn);
+	tmpf.moveTo( bf);
+	printf( "Auto Backup done. time=%S file=%S\n", skGetTime( t0), bf.path);
+}
+
+local checkAutoBackup(){q
+	local t = Date.currentTime();
+	local h = ::workspace["autobackup"] ?? 24;
+	if( !::workspace["autobackuped"]){
+		return ::workspace.autobackuped <- string( t);
+	}
+	if( !h) return;		//	autobackup off
+	local x = long( workspace.autobackuped) + long( h * 3600);
+	if( x > t) return;	//	not expired
+	//	バックグラウンド時にバックアップ開始
+	if( !skIsForeProcess()){
+		::workspace.autobackuped = string( t);
+		newthread().start( runAutoBackup, this);
+	}
+}
+
+setInterval( checkAutoBackup, 8000);	//	定期的にcheckAutoBackupを実行
+
+//	プロジェクトをバックアップ。
+//	data, resource, plugin( rpgtoolsを除く )がバックアップされる。
+//	
+function showBackupMenu(){
+	local dir = FileRef( "backup");
+	local fn = backupfilename();
+	local f = FileRef( dir, fn);
+	if( Dialogs.confirm( {msg=tmpl( T.tmpl_savebackup, {v=f.path}), icon="\uf057"})){
+		suspend();
+		dir.mkdirs();
+		::skstudio.freezeEditorView( true);	//	editorの再描画を抑制して並列処理を高速化
+		local ret = Dialogs.progress( "$T.lbl_runbackup", saveProjectBackup( f), true);	//	キャンセル可
+		if( ret){	//	キャンセルされる場合もあり
+			// skOpenURL( "dir://" .. f.path);
+			Popups.showInfo( "$T.lbl_backup_done");
+		}
+		::skstudio.freezeEditorView( false);
+	}
+}
+
+//	バックアップを復旧(フルバックアップではない。フルバックアップはツールからは出来ない)
+//	・実行後は直ちにリロードが入る。
+//	・書き込みロックがかかっているファイルのことは考慮しない。exeとかは置き換えないので。
+//	・/data, /resource, /plugin/~ のみのバックアップ。.backupinfoは書かないこと
+//	・最初に現在の data, resource, pluginをテンポラリに移動。
+//	・freezeEditorViewは必須かな
+//	
+function restoreProjectBackup( zipfile){
+	local fn = @( prgfunc){
+		local zip = ZipReader( zipfile);
+		local outdir = FileRef( "project"), tmpdir = FileRef( "tmp/restore");
+		if( tmpdir.exists()) tmpdir.deleteAll();
+		suspend();
+		tmpdir.mkdirs();
+		//	moveToは操作が早すぎると失敗するなー
+		local trymove( f0, f1){
+			suspend();
+			printf( "file moving ... %S => %S\n", f0.path, f1.path);
+			for( local l = 0;l < 5;l ++){
+				if( f0.moveTo( f1)) return true;
+				sleep( 50);
+			}
+			throw Exception( "file move error %S => %S" % (f0.path, f1.path));
+		}
+		//	出力先をクリア。消せなかったら失敗
+		local mvlist = [];	//	移動の取り消しのために残す。。。
+		try{
+			foreach( dn in ["data","resource"]){
+				local d0 = FileRef( outdir, dn), d1 = FileRef( tmpdir, dn);
+				trymove( d0, d1);
+				mvlist .. (d0,d1);
+			}
+			foreach( d0 in FileRef( outdir, "plugin").getList()){
+				if( d0.name == "rpgtools") continue;	//	rpgtoolsは現状のまま
+				local d1 = FileRef( tmpdir, "plugin-"..d0.name);
+				trymove( d0, d1);
+				mvlist .. (d0,d1);
+			}
+		}catch( ex){
+			printf( "BACKUP FILE MOVE FAILURE!!!!!!!!!!!!!!\n");
+			foreach( v in mvlist){
+				try{
+					trymove( v[1], v[0]);	//	これはさすがにエラー起きないっしょ
+				}catch( ex){
+					printexception( ex);
+				}
+			}
+			throw ex;
+		}
+		//	zipを展開
+		local ea = [], dirmap = {};
+		local entries = zip.entries, num = length( entries);
+		for( local l = 0;l < num;l ++){
+			ea .. entries[l];
+			if( length( ea)>=6 || l==num-1){
+				local ra = zip.readEntriesAtOnce( ea);
+				ea.clear();
+				foreach( r in ra){
+					if( r.fn == ".backupinfo") continue;
+					local i = r.fn.lastIndexOf( "/");
+					if( i >= 0){
+						local dir = r.fn.substring( 0, i);
+						if( !dirmap[dir]){ FileRef( outdir, dir).mkdirs(); dirmap[dir]<-1; }
+					}
+					local f = FileRef( outdir, r.fn);
+					f.save( r.data);
+				}
+				prgfunc( l * 1.0 / num, l.." / "..num);
+			}
+		}
+		zip.close();
+		tmpdir.deleteAll();
+	};
+	return fn;
+}
+
+//	バックアップが無かったらshowInfo
+function showRestoreMenu(){
+	local verf = FileRef( "rpgcobo.ver"), ver = verf.exists()? decodeJSON( verf.load()) : null;
+	local backups = (FileRef( "backup").getList( "*.zip")||[]).map( @( f){
+		local zip = ZipReader( f);
+		local be = zip.readFileEntry( ".backupinfo");
+		if( !be) return undefined;
+		local bi = decodeJSON( be.data);
+		local d = Date( long( bi.time) - Date.timezone());
+		local dstr = sprintf( "%04d/%02d/%02d/ %02d:%02d", d.tm_year+1900, d.tm_mon+1, d.tm_mday, d.tm_hour, d.tm_min);
+		return { ...bi, file = f, datestr = dstr, sizestr = sizestr( f.size), name = bi["auto"] ? "$T.lbl_backup_auto":"$T.lbl_backup_manual"}
+	});
+	backups.sort( @( v) v.datestr).reverse();
+	// printf( "list = %S\n", encodeJSON( backups));
+	//	クラス定義するほどじゃないのでここで全部処理書いちゃう！
+	local dlg = Dialog( "/skstudio/ui/dialog/backuplist.ui"), view = dlg.view;
+	local list = ListBehavior( view.findChild( "LIST"));
+	list.setviewfunc = @( la, v, i){
+		v.setValue( "name", i.name);
+		v.setValue( "date", i.datestr);
+		v.setValue( "size", i.sizestr);
+		v.setValue( "ver", i["tag"] || "");
+		v.pickable = false;
+	}
+	list.setListItems( backups);
+	list.listview.addEventListener( ACTION_EVENT, @( e){
+		if( e.id == ACTION_PERFORMED){
+			local sel = e.actioncmd;
+			if( Dialogs.confirm( {msg=tmpl( T.tmpl_restorebackup, {name=sel.name,date=sel.datestr,size=sel.sizestr}), check="$T.lbl_run_restore", needcheck=true, })){
+				dlg.ret = sel;
+				dlg.close();
+			}
+		}
+	});
+	dlg.show();
+	local sel = dlg.ret;
+	if( !sel) return;
+	//	
+	::skstudio.freezeEditorView( true);	//	editorの再描画を抑制して並列処理を高速化
+	local ret = Dialogs.progress( "$T.lbl_runrestore", restoreProjectBackup( sel.file));
+	if( ret){	//	キャンセルされる場合もあり
+		Popups.showInfo( "$T.lbl_restore_done_reload");
+		sleep( 500);
+		skstudio.menuRelaunch( {force=true});
+	}
+	::skstudio.freezeEditorView( false);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+
+local showSettingMenu( btn){
+	local langlist = [];
+	foreach( v in ::sakana.languagelist){
+		langlist .. { lbl=v.name, icon=v["icon"], id="lang", code=v.code, checked=v.code==::lang.code };
+	};
+	local menudata = [
+		{ id="lang", lbl="$T.act_setting_ctxmenu_lang", submenu=langlist},
+		"-",
+		{ id="uiscale", lbl="$T.act_setting_ctxmenu_uiscale", submenu=uiscalelist.map( @( v) +{...v, checked=v.val==::workspace.uiscale}) },
+		"-",
+		{ id="pref", lbl="$T.act_setting_ctxmenu_pref", icon="\ue8b8", defkey="^,",},
+		{ id="plugin", lbl="$T.menu_file_plugin", icon="\ue87b"},
+		{ lbl="$T.lbl_backupop", icon="\ue623", submenu=[
+			{ id="backup", lbl="$T.lbl_backupproj", icon="\ue623"},
+			"-",
+			{ id="restore", lbl="$T.lbl_restoreproj", icon="\ue929"},
+		]}
+	]
+	local ret = MenuPopup.run( menudata, btn);
+	switch( ret["id"]){
+	case "lang":
+		if( Dialogs.confirm( {msg="$T.dlg_change_lang"})){
+			if( ::skstudio.checkSaveFiles()){
+				::workspace.lang = ret.code;
+				::skstudio.menuRelaunch( null);
+			}
+		}
+		break;
+	case "uiscale":
+		::rootview.setDisplayResolution( ret.val*0.01);
+		::workspace.uiscale <- ret.val;
+		::skstudio._savews();
+		break;
+	case "backup":
+		showBackupMenu();
+		break;
+	case "restore":
+		showRestoreMenu();
+		break;
+	case "pref":
+		::skstudio.menuPreference( ret);
+		break;
+	case "plugin":
+		PluginDialog.run();
+		break;
+	}
+}
+
+//	setting activity
+local activity = {
+	uid="act_setting",
+	place="bottom",
+	order=100,
+	icon="\ue8b8",
+	badge=null,
+	tips="$T.act_setting"
+	
+	func = showSettingMenu,
+}
+
+::skstudio.registerActivity( activity);
+
+//	ファイルメニューを追加
+::skstudio.registerMenu( { uid="menu_file_plugin", parentid="menu_file", block="*4", lbl="$T.menu_file_plugin", icon="\ue87b", func=@( m) PluginDialog.run() });
+::skstudio.registerMenu( { uid="menu_file_backup", parentid="menu_file", block="*4", lbl="$T.lbl_backupop", icon="\ue623", 
+	submenu = [
+		{ lbl="$T.lbl_backupproj", icon="\ue623", func=@( m) showBackupMenu()},
+		"-",
+		{ lbl="$T.lbl_restoreproj", icon="\ue929" func=@( m) showRestoreMenu()},
+	]
+});

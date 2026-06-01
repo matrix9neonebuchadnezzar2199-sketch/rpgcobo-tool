@@ -1,0 +1,1949 @@
+/////////////////////////////////////////////////////////////////////////////
+//
+//	SKView extension
+//
+
+import SKViewPropertyID;
+
+::viewactiondef <- {};
+
+with SKView
+{
+	local r_1 = Rect2D();
+
+	name <- null;					// string   : 名前
+	listeners <- null;
+	updateFunc <- null;				// function : 毎フレーム呼び出されるアップデート
+	dragsource <- null;				// DragSource : acceptDrag, dndrender, (acceptDrop)
+	motion <- null;
+	fxlist <- null;					//	fx
+	
+	//	align, stretch
+	stretchalign <- 3;				//	0-15
+	alignpos <- null;
+	stretchsize <- null;
+	bindrect <- null;				//	((x,y),(w,h)) : ストレッチの基準矩形。親からの相対。
+	
+	viewdata <- null;				//	SKViewEntityData
+	actionmap <- null;				//	
+	
+	//	gpui
+	gpui <- null;
+
+	ref <- null;
+	tips <- null;					//	tips string
+	
+	function setChild( i, c){
+		if( c.parent) throw Exception("SKView has another parent");
+		local oldc = children[i];
+		if( !oldc) throw Exception( "child not found:" .. i)
+		if( oldc.contains( ::rootview.focusview)) requestFocus( "removeChild");
+		local root = getRoot(); if( root==::rootview){ oldc.removed(); }
+		oldc.parent = null;
+		//	
+		children[i] = c;
+		c.parent = this;
+		c.matdirty = true;
+		if( root==::rootview){ c.added(); ++root.structrev; }
+		repaint();
+	}
+	
+	function addChild( c){
+		if( c.parent) throw Exception("SKView has another parent");
+		if( !children) children = [c]; else children .. c;
+		c.parent = this;
+		c.matdirty = true;
+		local root = getRoot(); if( root==::rootview){ c.added(); ++root.structrev; }
+		repaint();
+	}
+	
+	function insertChild( i, c){
+		if( c.parent) throw Exception("SKView has another parent");
+		if( !children) children = [c]; else children[i] <- c;
+		c.parent = this;
+		c.matdirty = true;
+		local root = getRoot(); if( root==::rootview){ c.added(); ++root.structrev; }
+		repaint();
+	}
+	
+	function removeChild( c){
+		local i;
+		if( typeof( c)==SS_INTEGER){ c = children[c]; i = c;} else { i = children.indexOf( c)}
+		if( i >= 0){
+			if( c.contains( ::rootview.focusview)) requestFocus( "removeChild");
+			delete children[i];
+			dorepaint = true;
+			local root = getRoot(); if( root==::rootview){ c.removed(); ++root.structrev; }
+			c.parent = null;
+			repaint();
+			return i;
+		}
+		return -1;
+	}
+	
+	function removeFromParent(){
+		return parent ? parent.removeChild( this) : -1;
+	}
+	
+	function moveChild( c, mi){
+		if( c.parent != this) throw Exception("SKView has another parent");
+		local i = children.indexOf( c);
+		if( i == mi) return;
+		if( i < mi){
+			children[mi] <- c;
+			delete children[i];
+		}else{
+			delete children[i];
+			children[mi] <- c;
+		}
+		local root = getRoot(); if( root==::rootview){ ++root.structrev; }
+		repaint();
+	}
+
+	function childIndexOf( c){
+		return children?.indexOf( c);
+	}
+
+	function clearChildren(){
+		if( !children) return;
+		local root = getRoot();
+		if( root == ::rootview){
+			foreach( o in children){
+				o.removed();
+				o.parent = null;
+			}
+			++root.structrev;
+		}else{
+			foreach( o in children) o.parent = null;
+		}
+		children.clear();
+		repaint();
+	}
+
+	//	rootviewのツリー内に追加されていたらtrue
+	function isShown(){
+		return ::rootview.contains( this);
+	}
+
+	/**
+	 *
+	 */
+	function startModal( breakfunc=null){
+		local root = ::rootview;
+		modal = 1;
+		if( !breakfunc) breakfunc = function(){ return !(root.contains( this)&&modal); }.bindenv( this);
+		if( currentthread() == root.eventthread){
+			//	新しいイベントループが始まる・・・
+			root.eventloop( breakfunc);
+		}else{
+			while( !breakfunc()){
+				suspend();
+			}
+		}
+	}
+
+	function isInModal(){
+		for( local p = this; p; p = p.parent){
+			if( p.modal) return true;
+		}
+		return false;
+	}
+
+	function setRect( x, y, w, h, px=0, py=0){
+		pos.set(x+px,y+py,0);
+		bnd.set(-px,-py,w,h);
+		updateLayout();
+		matdirty = true;
+	}
+	
+	function setScale( x, y=null, z=null){
+		if( y==null){ y = z = x; }
+		scale( x, y, z);
+		matdirty=true; if( parent){ parent.dorepaint = true;}
+	}
+
+	function updateLayout(){
+	}
+
+	function getOriginalSize(){
+		local r;
+		if( viewdata.link){
+			local orgvd = ::getResourceContent( viewdata.link);
+			r = orgvd.rootdata.getStatic( SIZE_STATIC);	if( r) return r;
+		}
+		r = getMotion( SIZE)["key"]["p"];	if( r) return r;
+		r = viewdata.getStatic( SIZE_STATIC);	if( r) return r;
+		return null;	//	umm-
+	}
+
+	function getOriginalPivot(){
+		local r = getMotion( PIVOT)["key"]["p"]; if( r) return r;
+		r = viewdata.getStatic( PIVOT_STATIC);	 if( r) return r;
+		if( viewdata.link){
+			local orgvd = ::getResourceContent( viewdata.link);
+			r = orgvd.getStatic( PIVOT_STATIC);	 if( r) return r;
+		}
+		return #(0.0,0.0);
+	}
+	
+	function _stretch( dw, dh, pr0){
+		local a = stretchalign;
+		if( a!=3){
+			local ss = (a&5)==5 || (a&10)==10;
+			local px = 0.0, py = 0.0, sx = 0.0, sy = 0.0, ax = 0.0, ay = 0.0;
+			local r0, p0, a0, orgr;
+			if( ss){
+				orgr = getOriginalSize();
+				r0 = this["bindrect"][1] || orgr;
+				a0 = this["bindrect"][0] || getOriginalPivot();
+				p0 = getMotion( POSITION)["key"]["p"] || #(0,0,0);
+			}
+			switch( a&5){
+			case 0: px = (dw*0.5)|0; break;
+			case 1: px = 0.0; break;
+			case 4: px = dw; break;
+			case 5: 
+				if( a&16){ px = dw*p0[0]/pr0[0]; ax = dw*(-a0[0])/pr0[0]; sx = dw*r0[0]/pr0[0]; }else{ sx = dw;}
+				break;
+			}
+			switch( a&10){
+			case 0: py = (dh*0.5)|0; break;
+			case 2: py = 0.0; break;
+			case 8: py = dh; break;
+			case 10: 
+				if( a&16){ py = dh*p0[1]/pr0[1]; ay = dh*(-a0[1])/pr0[1]; sy = dh*r0[1]/pr0[1]; }else{ sy = dh;}
+				break;
+			}
+			ax = Math.round( ax); ay = Math.round( ay);
+			px = Math.round( px); py = Math.round( py);
+			sx = Math.round( sx); sy = Math.round( sy);
+			alignpos = (px||py) ? Vector3D( px, py, 0.0) : null;
+			updateMotionParam( POSITION, framepos);
+			if( ss){
+				setStretchRect( -a0[0]+ax, -a0[1]+ay, r0[0]+sx, r0[1]+sy);
+				sx = bnd.w - orgr[0];	//	setStretchRectで実際に変化したbnd幅に更新
+				sy = bnd.h - orgr[1];
+				stretchsize = (sx, sy);
+				if( !this["nostretchinner"]) foreach( v in children){ v._stretch( sx, sy, orgr); }
+				updateLayout();
+			}else{
+				stretchsize = null;
+			}
+			matdirty = true;
+		}else{
+			alignpos = stretchsize = null;
+			matdirty = true;
+		}
+	}
+	
+	function stretchSize( w, h, force=false){
+		if( w==bnd.w && h==bnd.h && !force) return;
+		local orgr = getOriginalSize();
+		if( !orgr){ bnd.w = w; bnd.h = h; updateLayout(); return; }
+		setStretchRect( bnd.x, bnd.y, w, h);
+		local dw = bnd.w-orgr[0], dh = bnd.h-orgr[1];
+		if( !this["nostretchinner"]) foreach( v in children){ v._stretch( dw, dh, orgr); }
+		updateLayout();
+		matdirty = true;
+	}
+
+	//	レイアウトビューでオーバーライド
+	function setStretchRect( x, y, w, h){
+		bnd.set( x, y, w, h);
+		matdirty = true;
+	}
+
+	//	親のstretchに自身を合わせる
+	function stretchToParent(){
+		local pr0 = parent["bindrect"][1] || parent.viewdata?.getStatic( SIZE_STATIC);
+		local dw = parent.bnd.w-pr0[0], dh = parent.bnd.h-pr0[1];
+		_stretch( dw, dh, pr0);
+	}
+
+	function revalidate(){
+		if( parent) parent.revalidate();
+	}
+
+	//	このSKViewがちょうどいいサイズになるためのサイズ差分値を返す。
+	//	内部のテキストが飛び出てたり伸縮するSKViewが親より大きかったり。
+	//	※基本的には小さくなる方には変形しないようにする。また、左上側へ飛び出しても何もしない。
+	//	※ストレッチするSKViewの入れ子構造のみ作用する。等間隔ストレッチの場合は現状無効。計算が面倒なため
+	//	※スケールを考慮しない。SKScalingLayoutViewは。。。。。。。中にやる分には問題なし
+	function computeSizeDeltaSelf( d){
+		local sa = stretchalign, hs = (sa&5)==5, vs = (sa&10)==10, pr0 = parent?.getOriginalSize();
+		local r0 = this["bindrect"][1] || getOriginalSize();
+		if( !((sa&16)&&!pr0) && (hs|vs)){	//	&16の時は無視
+			local pb = parent.bnd, b = r_1.set( 0, 0, bnd.w, bnd.h).transform( mat).transform( parent.getInvMatrix());
+			if( hs && b.x+b.w>pb.w){
+				local dx = b.x+b.w-pb.w;
+				if( sa&16){ dx = dx*r0[0]/pr0[0]; }
+				d.x = Math.max( d.x, Math.ceil( dx));
+			}
+			if( vs && b.y+b.h>pb.h){
+				local dy = b.y+b.h-pb.h;
+				if( sa&16){ dy = dy*r0[1]/pr0[1]; }
+				d.y = Math.max( d.y, Math.ceil( dy));
+			}
+			return true;
+		}else{
+			return false;
+		}
+	}
+	
+	function _computeSizeDelta( d){
+		foreach( c in children){
+			if( c.computeSizeDeltaSelf( d)){
+				c._computeSizeDelta( d);
+			}
+		}
+	}
+
+	function computeSizeDelta(){
+		local d = Vector3D(-10000.0);
+		_computeSizeDelta( d);
+		if( d.x == -10000.0) d.x = 0.0;
+		if( d.y == -10000.0) d.y = 0.0;
+		if( d.z == -10000.0) d.z = 0.0;
+		return d;
+	}
+
+	function getPreferredSize( ret){
+		return ret( bnd.w, bnd.h, 1);
+	}
+
+	function setFocused( b){
+		b = b?1:0;	//	focusedは0か1！！！！
+		if( b != focused){
+			focused = b;
+			focusStateChanged( b);
+		}
+	}
+
+	function setEnabled( b){
+		b = b?1:0;	//	enabledは0か1！！！！
+		if( b != enabled){
+			enableStateChanged( b);
+			enabled = b;
+		}
+	}
+
+	function focusTo( name, cmd=null){
+		local v = findChild( name);
+		if( v["gpui"]){
+			::rootview.updateMatrixAll( true);
+			::gpui.updateGPUIMap();
+			::gpui.moveCursorTo( v["gpui"], true);
+		}
+	}
+	
+	function requestFocus( cmd=null){
+		::rootview.changeKeyEventFocus( this, cmd);
+	}
+	
+	function requestDrag( e){
+		::rootview.changeDragTarget( e.mouseid, this, e) ;
+	}
+	
+	function setUpdateFunc( func){
+		updateFunc = func;
+		local root = getRoot(); if( root==::rootview){ ++root.structrev; }
+	}
+	
+	function setMouseCursor( t){
+		mousecurs = t;
+		if( ::rootview.contains( this)){
+			local f = ::rootview.mouses[0].entered;	//	mouses[0] == PCマウス
+			if( contains( f)){ ::rootview.refreshMouseCursor( f.getMouseCursor()); }
+		}
+	}
+	
+	function addUpdateFunc( func){
+		if( typeof( updateFunc) == SS_ARRAY){
+			updateFunc .. func;
+		}else{
+			if( updateFunc){
+				local f0 = updateFunc, f1 = (@( dt) f0( dt)).bindenv( this);
+				updateFunc = [f1,func];
+			}else{
+				updateFunc = [func];
+			}
+			local root = getRoot(); if( root==::rootview){ ++root.structrev; }
+		}
+	}
+	
+	function removeUpdateFunc( filt){
+		if( typeof( updateFunc) == SS_ARRAY){
+			foreach( i, v in updateFunc){
+				if( filt( v)) updateFunc[i] = function(){};	//	removeiしちゃうと変になる。。。
+			}
+			if( !length( updateFunc)){
+				updateFunc = null;
+				local root = getRoot(); if( root==::rootview){ ++root.structrev; }
+			}
+		}
+	}
+	
+	//
+	//	Focus & Tab
+	//
+	function rotateFocus() {
+		local tg = this["tabgroup"];
+		if( !tg) return null;
+		local c = this;
+		local p = parent;
+		local next = null;
+		while( p){
+			local i = p.children.indexOf( c)+1;
+			if( next = p.getNextTab( i, tg)) break;
+			c = p;
+			p = p.parent;
+		}
+		if( !next){
+			local root = getModalRoot();
+			if( !root) root = getRoot();
+			if( root) next = root.getNextTab(-1,tg);
+		}
+		if( next && next != this){
+			next.requestFocus( "rotateFocus");
+			return next;
+		}else{
+			return null;
+		}
+	}
+
+	function getNextTab( ci, tabg){
+		if( ci < 0){
+			if( this["tabgroup"]==tabg&&isAvailable()) return this;
+			ci = 0;
+		}
+		local a = children;
+		if( !a) return null;
+		local len = length( a), c;
+		for( local l = ci;l < len;l ++){
+			if( c=(a[l].getNextTab( -1, tabg)) ) return c;
+		}
+		return null;
+	}
+
+
+	////////////////////////////////////////////////////////////////////////////////
+	//	検索
+	
+	function _call( caller, n){
+		return findChild( n);
+	}
+
+	function findChild( n) {
+		if ( !n) return null;
+		local v;
+		local i = n.indexOf( '.');
+		local s = (i >= 0)?n.substring( 0, i):n;
+		v = findChildFor( s);	//	,"name", 8
+		while( v && i >= 0) {
+			local i2 = n.indexOf( '.', i+1);
+			s = (i2 >= 0)?n.substring( i+1, i2):n.substring( i+1);
+			v = v.findChildFor( s);	//	,"name", 8
+			i = i2;
+		}
+		return v;
+	}
+	
+	function setValue( a, b=undefined){
+		if( b != undefined){
+			findChild( a)?.setValue( b);
+		}else
+		if( a instanceof ::ptr){
+			setSKViewValue( a);
+		}
+	}
+
+	function setValues( t){
+		foreach( i, v in t) findChild( i)?.setValue( v);
+	}
+	
+	function setSKViewValue( pt){
+		foreach( i, v in pt.val){
+			switch( i){
+			case "action": if( v){ action( v); }; continue;
+			case "text": setText( v); continue;
+			case "color": setColor( v); continue;
+			case "anime": anime( v); continue;
+			case "enabled": setEnabled( !!v); continue;
+			case "visible": setVisible( !!v); continue;
+			case "disable": setEnabled( !v); continue;
+			case "hide": setVisible( !v); continue;
+			case "ref": ref = v; continue;
+			}
+		}
+	}
+	
+	//	
+	function bindValues( valmap){
+		// unbindValues();
+		if( typeof( valmap) == SS_CLOSURE){	//	丸ごとfunctionの場合もある
+			local self = this, oldmap = {};
+			local _bindvalue(){
+				foreach( i, v in valmap()){	//	前回と値が違うものを更新
+					if( oldmap[i] <> v){ self.setValue( i, v); oldmap[i] <- v; }
+				}
+				return true;
+			};
+			addUpdateFunc( _bindvalue);
+		}else{
+			foreach( i, v in valmap){
+				bindValue( i, v);
+			}
+		}
+	}
+
+	//	
+	function bindValue( a, b=undefined){
+		if( b != undefined){
+			findChild( a)?.bindValue( b);
+		}else{
+			unbindValue();
+			if( typeof( a) == SS_CLOSURE){
+				local self = this, o = (null,);
+				local _bindvalue(){
+					local n = a();
+					if( o[0] <> n){ self.setValue( n); o[0] = n; }
+					return true;
+				}
+				addUpdateFunc( _bindvalue);
+			}else{
+				setValue( a);	//	直値の場合は設定するだけ。
+			}
+		}
+	}
+
+	//	
+	function unbindValue(){
+		removeUpdateFunc( @( v) v["getName"] && v.getName()=="_bindvalue");
+	}
+
+	////////////////////////////////////////////////////////////////////////////////
+	//	状態変化
+
+	function added(){
+		foreach( c in children){ c.added(); }
+	}
+
+	function removed(){
+		foreach( c in children){ c.removed(); }
+	}
+
+	function focusStateChanged( b){
+	}
+
+	function enableStateChanged( b){
+		foreach( c in children){
+			local cb = c.enabled & b;	//	disabledは子に伝搬する
+			c.enableStateChanged( cb);
+		}
+		gpui?.enableStateChanged( b);
+	}
+
+	////////////////////////////////////////////////////////////////////////////////
+	//	並列動作メソッド(アニメ、タイミング処理)
+
+	function startMethod( func){
+		stopMethod();
+		local t = newthread();
+		t.call( func, this);
+		if( t.getState() != 2) return true;		//	おわた
+		local methodfunc( dt){
+			if( dt == null){
+				t.wakeupThrow( "interrupt");
+				return false;
+			}else{
+				return t.wakeup( dt);
+			}
+		}
+		addUpdateFunc( methodfunc);
+		return true;
+	}
+
+	function stopMethod(){
+		foreach( v in updateFunc){
+			if( v.getName() == "methodfunc"){ v.update( null); removei; }	//	無効化
+		}
+	}
+
+	function waitForMethod(){
+		while( isFuncRunning( "methodfunc")){
+			suspend();
+		}
+	}
+	
+	function isFuncRunning( name){
+		foreach( v in updateFunc){
+			if( v.getName() == name) return true;
+		}
+		return false;
+	}
+
+	//	指定したアクションを実行。
+	function action( name){
+		local actions = actionmap[name];
+		if( !length( actions)){
+			return null;
+		}
+		removeUpdateFunc( @( o) o.getName() == "actionfunc");	//	実行中のアクションは中断。。。
+		local self = this, time = [0], endtime = actions.last().time+1;
+		local actionfunc( dt){
+			local t0 = time[0], t1 = t0+dt, rdt;
+			time[0] += dt;
+			LOOP:
+			try{
+				foreach( i, a in actions){
+					if( a.time >= t0 && a.time < t1){
+						rdt = a.time-t0;
+						local pa = ::viewactiondef[a.acttype];
+						pa.exec( self, a);
+					}
+				}
+			}catch( ex){
+				if( typeof( ex) == SS_INTEGER){	//	※todo 無限ループみたいにならないように、、、、
+					t0 = ex; t1 = t0 + rdt;
+					goto LOOP;
+				}else{
+					printexception( ex);
+				}
+			}
+			// if( time[0] >= endtime) printf( "ACTION OWATA! %S\n", name);
+			return time[0] < endtime;
+		}
+		if( actionfunc( 4)){		//	初回実行。
+			addUpdateFunc( actionfunc);
+		}
+		return this;
+	}
+	
+	function actionAndDie( name){
+		this.name = null;	//	これから消えるので今後名前で検索できないようにnullを入れる。。。
+		action( name);
+		local self = this;
+		addUpdateFunc( @(){
+			if( !self.isFuncRunning( "actionfunc")){
+				self.removeFromParent();
+				return false;
+			}else
+				return true;
+		});
+		return this;
+	}
+
+	function waitAction(){
+		while( isFuncRunning( "actionfunc") && ::rootview==getRoot()){	//	viewが削除されたら抜ける。。。
+			suspend();
+		}
+	}
+
+	function isActionRunning(){
+		return isFuncRunning( "actionfunc");
+	}
+	
+	////////////////////////////////////////////////////////////////////////////////
+	//	イベント処理
+	
+	function addEventListener( type, func, self=null){
+		if( !listeners) listeners = tuple(30);
+		if( !listeners[type]) listeners[type] = [];
+		local fn = (func.bindenv( self || getcaller( 1)));
+		listeners[type] .. fn;	//	呼び出し元のthisがbindenvされる。
+		return fn;
+	}
+	
+	function removeEventListener( type, func){
+		local r = listeners[type]?.removeValue( func);
+		if( r) return r;
+		foreach( i, clo in listeners[type]){	//	bindenv前のfunctionにも対応
+			local a = clo.unbindenv(); if( a[0] == func) return delete listeners[type][i];
+		}
+		return null;
+	}
+	
+	function processEvent( e) {
+		foreach( f in listeners[e.id/100]){
+			f( e);
+			if( e.consumed) return false;
+		}
+		if( modal){ if( !e.consumed) e.consumed=2; return false; }	//	モーダルでconsumeした場合は2を入れる
+		if( parent) return parent.processEvent( e);	//	parent?.でやると末尾再帰しない。。。
+	}
+
+	function acceptDrop( e, x, y){
+		if( dragsource!=this && dragsource["acceptDrop"]) return dragsource.acceptDrop( e, x, y);
+		return false;
+	}
+
+	////////////////////////////////////////////////////////////////////////////////
+	//	バッファ・FX処理
+
+	function setBuffer( f){
+		if( typeof( f) != SS_INTEGER){
+			f = f?1:0;
+		}
+		if( buftype == f) return;
+		if( buftype = f){
+			local tex = Texture(), texw = Math.iround( bnd.w), texh = Math.iround( bnd.h);
+			tex.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_LINEAR, SK_LINEAR));
+			// tex.create( texw, texh, SK_RGBA8, f, 0);	//	ここでcreateする必要はない。_renderToBufferでcreateされる。viewresoがsetBuffer時に不定なことが多い
+			buf = Sprite( tex);
+			buf.blend = SK_PMAMIX;
+			buf.color = Math.lerpcolor( bufcolor&0xff, bufcolor, (bufcolor&0xff)/255.0);
+			buf.bnd.set( 0.0, 0.0, bnd.w, bnd.h);
+			buf.setSubBounds( r_1.set( 0, 0, texw, texh));
+			buf.pixelfit = 1;		//	pixelfitモード！
+		}else{
+			buf = null;
+		}
+		repaint();
+	}
+	
+	function setFXList( a){
+		fxlist = a;
+	}
+
+	//	バッファのレンダリング時にスケールされる解像度。レイアウトビューで変化する。
+	function getBufferResolution(){
+		local p = parent; return p ? p.getBufferResolution() : 1.0;
+	}
+
+	//	このSKViewが含む最大の解像度を返す。これを元にフォントの解像度を設定したりする。
+	function getMaxResolution(){
+		if( children){
+			local r = 0.1;
+			foreach( c in children){
+				r = Math.max( r, c.getMaxResolution());
+			}
+			return r;
+		}else{
+			return getBufferResolution();
+		}
+	}
+	
+	//	
+	function renderAll(){
+		dorepaint = false;
+		if( !(visible&layerflags&1)) return;
+		if( buf){
+			skSetMatrix( SK_WORLD, mat);
+			skDrawSprite( buf);
+		}else{
+			local r = render;
+			if( r){
+				skSetMatrix( SK_WORLD, mat);
+				r();
+			}
+			foreach( c in children){ c.renderAll(); }	//	ちょい無駄
+		}
+	}
+
+	//	描画の後はレンダーターゲットやビューポートを元に戻すこと！
+	function renderToBuffer(){
+		_renderToBuffer( buf, buftype, fxlist, getBufferResolution());	//	TODO : レイアウトビューで解像度を柔軟に設定できるように
+	}
+
+	function _renderToBuffer( buf, buftype, fxlist, reso){
+		local tex = buf.tex0;
+		
+		//	FXが奇数の場合はswaptexから描画
+		local numpass = 0, useorg = false;
+		local mbnd = #Rect2D(); mbnd.set( 0, 0, bnd.w, bnd.h);
+		foreach( fx in fxlist){
+			if( fx.isEnabled()){
+				fx.viewreso = reso;		//	※ここでレンダリング解像度を設定
+				numpass += length( fx.pass);
+				useorg |= fx.useoriginal;
+				fx.growBound( mbnd);
+			}
+		}
+		
+		//	スプライト範囲を指定
+		local bx, by,  bndw, bndh;
+		bx = mbnd.x, by = mbnd.y, bndw = mbnd.w, bndh = mbnd.h;
+		
+		if( bndw <= 0 || bndh <= 0) return;
+		
+		local texw = Math.iceil( bndw*reso), texh = Math.iceil( bndh*reso);
+		if( tex.width < texw || tex.height < texh){
+			tex.create( texw, texh, SK_RGBA8, buftype, 0);
+		}
+		buf.setSubBounds( r_1.set( 0, 0, texw, texh));
+		bndw = texw/reso; bndh = texh/reso;	//	※texと厳密に同じサイズにするためにbndw, bndhを変更
+		// buf.bnd.set( bx, by, texw/reso, texh/reso);
+		buf.bnd.set( bx, by, bndw, bndh);
+		// printf( "buf %S %S  tex %S %S  reso %S\n", bndw, bndh, texw, texh, reso);
+		
+		//	本体描画
+		{
+			local swaptex = null, orgtex = tex;
+			if( numpass){ 
+				if( numpass & 1){
+					swaptex = tex; orgtex = tex = gettempbuf( tex); }
+				else {
+					swaptex = gettempbuf( tex);
+				}
+				if( useorg && numpass>1) orgtex = gettempbuf( tex, -1);
+			}
+			skSetRenderTarget( orgtex);
+			skClearScreen( #ClearParam( 0,0,0,0, 1));
+			skSetViewport( 0, 0, texw, texh);
+			skPushMatrix( 0, 1, 2);
+			skSetMatrix( SK_WORLD, mat);
+			skSetMatrix( SK_VIEW, getInvMatrix());
+			skSetMatrix( SK_PROJECTION, Matrix.fromOrtho( bx, bndw+bx, bndh+by, by, -2000, 2000));	//	ずらした位置でortho
+			if( buf.blend == SK_PMAMIX) skSetPMAMode( SK_MIX);
+			if( render) render();
+			foreach( c in children){ c.renderAll(); };
+			if( buf.blend == SK_PMAMIX) skSetPMAMode( 0);
+			//	fx適用 ... pma画像で処理できるように
+			if( numpass){
+				skInitMatrix( SK_WORLD);
+				skInitMatrix( SK_VIEW);
+				skSetMatrix( SK_PROJECTION, Matrix.fromOrtho( 0, bndw, bndh, 0, -2000, 2000));	//	スプライト全体を更新
+				foreach( fx in fxlist){
+					if( fx.isEnabled()){
+						fx.prepare( swaptex, tex, orgtex);
+						foreach( i, fxpass in fx.pass){
+							local tmp = tex; tex = swaptex; swaptex = tmp;
+							fx.renderfx( fxpass, tex, i?swaptex:orgtex, buf.bnd, texw, texh);	//	swaptexをbndw, bndhの範囲で描画
+						}
+						if( useorg){ local tmp = tex; tex = orgtex; orgtex = tmp; }
+					}
+				}
+			}
+			skPopMatrix( 2, 1, 0);
+		}
+	}
+	
+	local tbmap = {};
+
+	function gettempbuf( t, xor=0){
+		local f = t.flags & ~(4);	//	mipmapは不要, depthはいる。。。
+		local id = (t.width | (t.height<<13) | (f<<26)) ^ xor;
+		local t1 = tbmap[id];
+		if( !t1){
+			t1 = Texture();
+			t1.create( t.width, t.height, t.format, f, 0);
+			tbmap[id] <- t1;
+		}
+		t1.ref = skGetTime();
+		return t1;
+	}
+	
+	function flushtempbufs(){
+		foreach( tex in tbmap){
+			if( skGetTime( tex.ref) >= 5000){	//	前回使われてから5秒以上使われないテクスチャは開放
+				// printf( "TEMPBUF UNLOAD %S %S\n", tex.width, tex.height);
+				tex.unload();
+				removei;
+			}
+		}
+	}
+
+	//	画面をキャプチャしてSpriteを返す。flagやfxは指定したものになる。
+	//	※
+	function capture( _buftype=2, fxlist=null, sp=null){
+		if( skBeginRender()){
+			local rt = skGetRenderTarget();
+			//	buf更新
+			local abuf = [];
+			if( repaintCheck( abuf) && length( abuf) > 0){
+				skPushRenderStates();
+				foreach( c in abuf){
+					c.renderToBuffer();
+				}
+				skPopRenderStates();
+			}
+			try{
+				if( !sp){
+					local tex = Texture();
+					tex.create( bnd.w, bnd.h, SK_RGBA8, _buftype, 0);
+					sp = Sprite( tex);
+					sp.blend = SK_PMAMIX;
+				}
+				skPushRenderStates();
+				skSetRenderTarget( sp.tex0);
+				skClearScreen( SK_CLEAR_DEPTH);		//	u-m
+				_renderToBuffer( sp, _buftype, fxlist, sp.reso);
+				skSetRenderTarget( rt);
+				skPopRenderStates();
+			}catch( ex){
+				printexception( ex);
+			}
+			skEndRender();
+			return sp;
+		}else{
+			return null;
+		}
+	}
+	
+	function inneranime( st, en=null, spd=null, lp=false){
+	}
+	
+	function outeranime( st, en=null, spd=null, lp=false){
+		anime( st, en, spd, lp);
+	}
+	
+	function anime( st, en=null, spd=null, lp=false){
+		if( typeof( st) == SS_ARRAY){
+			switch( length( st)){
+			case 4: lp = st[3];
+			case 3: spd = st[2];
+			case 2: en = st[1];
+			}
+			st = st[0];
+		}
+		if( en == null){
+			en = st;
+			spd = 1.0;
+		}else
+		if( spd == null){
+			spd = en;
+			en = st;
+			st = framepos;
+		}
+		removeUpdateFunc( @( o) o.getName() == "animefunc");	//	== stop animation
+		moveFrame( framepos, st+0.0);
+		if( st != en){
+			local a = Animation( st, en, spd, lp), self = this;
+			local animefunc( dt) self.animate( a, dt);
+			addUpdateFunc( animefunc);
+		}
+	}
+
+	function animate( a, dt){
+		local ret = a.update( dt);
+		moveFrame( framepos, a.frametime);
+		return ret;
+	}
+
+	function moveFrameSelf( t0, t){
+		local force = t0==null;
+		foreach( f in motion){
+			if( !f.key) continue;
+			local pid = f.pid;
+			local k = f.keyAt( t);
+			local tweenfunc = k.next && k.tweenfunc;	//	closureになる
+			if( tweenfunc){
+				setParam( pid, k.p,k.next.p, tweenfunc( (t-k.time)*k.iw) );
+			}else{
+				if( force || k != f.keyAt( t0)){
+					setParam( pid, k.p);
+				}
+			}
+		}
+		framepos = t;
+		//	fx motion
+		foreach( fx in fxlist){
+			fx.moveFrame( t0, t);
+			dorepaint |= fx.dorepaint;
+			fx.dorepaint = false;
+		}
+	}
+	
+	function moveFrame( t0, t){
+		return moveFrameSelf( t0, t);
+	}
+	
+	function getMotion( pid, create=true){
+		if( !motion){
+			if( !create) return null;
+			motion = [ MotionTimeline( pid)];
+			return motion[0];
+		}else{
+			foreach( m in motion){
+				if( m.pid == pid) return m;
+			}
+			if( create){
+				motion .. MotionTimeline( pid);
+				return motion.last();
+			}else{
+				return null;
+			}
+		}
+	}
+	
+	function updateMotionParam( pid, t){
+		foreach( f in motion){
+			if( !f.key || pid != f.pid) continue;
+			local k = f.keyAt( t);
+			local tweenfunc = k.next && k.tweenfunc;	//	closureになる
+			if( tweenfunc){
+				setParam( pid, k.p,k.next.p, tweenfunc( (t-k.time)*k.iw) );
+			}else{
+				setParam( pid, k.p);
+			}
+			return;
+		}
+	}
+	
+	function updateStaticParam( pid){
+		if( !viewdata) return;
+		foreach( v in viewdata.staticparams){
+			if( v[0]==pid) setParam( pid, v[1]);
+		}
+	}
+	
+	function scrollRectToVisible( c, r) {
+		if( parent){
+			return parent.scrollRectToVisible( c, r);
+		}
+		return false;
+	}
+	
+	////////////////////////////////////////////////////////////////////////////////
+	//	イベント
+	
+	function postActionEvent( cmd=null, count=1, modifiers=0){
+		postIDEvent( ACTION_PERFORMED, cmd, count, modifiers);
+	}
+
+	function postIDEvent( id, cmd=null, count=1, modifiers=0){
+		local e = Event();
+		e.id = id;
+		e.src = this;
+		e.actioncmd = cmd;
+		e.count = count;
+		e.modifiers = modifiers;
+		::rootview.postEvent(e);
+	}
+	
+	function postNotifyEvent( cmd=null){
+		postIDEvent( NOTIFY_STATUS, cmd);
+	}
+
+	function postErrorEvent( cmd){
+		postIDEvent( NOTIFY_ERROR, cmd);
+	}
+
+	//	通常のイベントと違い、全ての子に再帰的にブロードキャストするイベントポスト。
+	//	enableでないview, visibleでないviewにもブロードキャストされる。
+	//	BROADCASTのidでactioncmdに所定のフォーマットのオブジェクトやテーブルを指定して処理させる。
+	//	画面リサイズのハンドリング、パラメータの更新監視、エディタのactive化、
+	//	{ cmd="resize" }
+	//	通常は::rootview.broadcastEvent( cmd)で送信する
+	//	
+	function broadcastEvent( cmd){
+		local e = Event();
+		e.id = BROADCAST;
+		e.actioncmd = cmd;
+		e.src = {
+			name = name,
+			view = this,	//	大体はrootview
+			//	再帰で全てのviewに伝えるのじゃなく、findOwnersで少なくとも何かリスナーがあるSKViewを取ってきた方が
+			//	速そう。arrayに追加するオーバーヘッド、enabled,visible等を親階層から辿れない、などあるが。
+			processEvent = @( e){
+				local a = [], eidx = e.id/100;
+				view.findOwners( "listeners", a);	//	リスナー持ちのviewをかき集める。["listeners",eidx]とか指定できるとより絞れる
+				foreach( v in a){
+					foreach( f in v.listeners[eidx]){
+						f( e);
+						// if( e.consumed) return false;	//	やるべきじゃないかー
+					}
+				}
+			},
+		};
+		::rootview.postEvent(e);
+	}
+	
+	function callInEventThread( func, ...){	//	selfも入ってる
+		local root = ::rootview;
+		local fa = varguments([]);
+		fa[0] <- func;
+		if( !fa[1]) fa[1] <- getcaller( 1);
+		if( currentthread() == root.eventthread){
+			~fa;
+		}else{
+			local e = Event();
+			e.id = -1;
+			e.src = { processEvent = @( e){ ~fa;} }
+			root.postEvent( e);
+		}
+	}
+	
+	////////////////////////////////////////////////////////////////////////////////
+	//	パラメータ
+	
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		]
+	}
+	
+	//	かなり非効率だけどそんな使うことないしいいか、、、
+	function getProperty( pid){
+		local a = getProperties();
+		foreach( p in a){
+			if( p.pid == pid) return p;
+		}
+		return null;
+	}
+	
+	function isParamKeyed( pid){
+		foreach( f in motion){
+			if( f.pid == pid){
+				local k = f.existingkey( framepos|0);
+				return k ? k.tween+1 : 0;
+			}
+		}
+		return 0;
+	}
+	
+	function getParam( pid){
+		switch( pid){
+		case POSITION : return alignpos ? ((pos.x-alignpos[0])|0,(pos.y-alignpos[1])|0) : (Math.iround( pos.x), Math.iround( pos.y));
+		case SCALE : return (Math.iround( scale.x*100.0),Math.iround( scale.y*100.0));
+		case ROTATION : return (rot.z*Math.RTOD+0.5)|0;
+		case VISIBLE : return visible;
+		case ENABLED :
+		case ENABLED_STATIC : 
+			return enabled?(pickable?1:2):0;
+		case SIZE :
+		case SIZE_STATIC : 
+			local v = (Math.iround( bnd.w), Math.iround( bnd.h));
+			if( stretchsize){ v[0] -= stretchsize[0]; v[1] -= stretchsize[1]; }
+			return v;
+		case PIVOT :
+		case PIVOT_STATIC :
+			local v = (Math.iround( -bnd.x), Math.iround( -bnd.y));
+			if( (stretchalign&16) && alignpos){ v[0]+=alignpos[0]; v[1]+=alignpos[1]; }
+			return v;
+		case BUFFER : return buftype;
+		case BUFFERCOLOR : return bufcolor;
+		case STRETCHALIGN : return stretchalign;
+		case TIPS : return tips;
+		case ACTIONMAP : return actionmap;
+		}
+		return undefined;
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case POSITION :
+			transivec2( p0, p1, w, pos, 0.0).add( alignpos);
+			matdirty=true; if( parent){ parent.dorepaint = true;}
+			break;
+		case SCALE :
+			transivec2( p0, p1, w, scale, 100.0).scale( 0.01);
+			matdirty=true; if( parent){ parent.dorepaint = true;}
+			break;
+		case ROTATION :
+			rot.z = (w>0.0 ? (p0+(p1-p0)*w) : p0) * Math.DTOR;
+			matdirty=true; if( parent){ parent.dorepaint = true;}
+			break;
+		case VISIBLE :
+			visible = p0?1:0;
+			if( parent) parent.repaint();
+			break;
+		case ENABLED :
+		case ENABLED_STATIC : 
+			local e = p0?1:0;
+			if( e != enabled) enableStateChanged( e);
+			enabled = e; pickable = 1-(p0>>1);
+			break;
+		case SIZE :
+		case SIZE_STATIC :
+			local _w, _h;
+			if( w > 0.0){
+				_w = (p0[0]+(p1[0]-p0[0])*w); _h = (p0[1]+(p1[1]-p0[1])*w);
+			}else{
+				_w = p0[0]; _h = p0[1];
+			}
+			if( stretchsize){ _w += stretchsize[0]; _h += stretchsize[1]; }
+			_w = _w|0; _h = _h|0;
+			if( _w != bnd.w || _h != bnd.h){
+				bnd.w = _w;
+				bnd.h = _h;
+				updateLayout();
+				matdirty=dorepaint=true;
+			}
+			break;
+		case PIVOT :
+		case PIVOT_STATIC :
+			if( w > 0.0){
+				bnd.x = -(p0[0]+(p1[0]-p0[0])*w)|0; bnd.y = -(p0[1]+(p1[1]-p0[1])*w)|0;
+			}else{
+				bnd.x = -p0[0]|0; bnd.y = -p0[1]|0;
+			}
+			if( (stretchalign&16) && alignpos){ bnd.x-=alignpos[0]; bnd.y-=alignpos[1]; }
+			matdirty=true; if( parent){ parent.dorepaint = true;}
+			break;
+		//	buffer params *optional
+		case BUFFER :
+			setBuffer( p0);
+			break;
+		case BUFFERCOLOR :
+			bufcolor = Math.lerpcolor( p0, p1, w);
+			if( buf){
+				buf.color = (buf.blend==SK_PMAMIX) ? Math.lerpcolor( bufcolor&0xff, bufcolor, (bufcolor&0xff)/255.0) : bufcolor;
+				if( parent) parent.repaint();
+			}
+			break;
+		case STRETCHALIGN : 
+			stretchalign = p0&31;
+			break;
+		case TIPS :
+			tips = p0=="" ? null : p0;
+			break;
+		case ACTIONMAP :
+			actionmap = p0;
+			break;
+		}
+	}
+
+	function transivec2( i0, i1, w, ret, z){
+		if( w > 0.0){
+			return ret( (i0[0]+(i1[0]-i0[0])*w), (i0[1]+(i1[1]-i0[1])*w), z);//.floor();
+		}else{
+			return ret(i0[0],i0[1],z);
+		}
+	}
+
+	function setSKViewEntityData( d){
+		viewdata = d;
+		foreach( v in d.staticparams){
+			setParam( v[0], v[1]);
+		}
+		motion = d.motion;
+		moveFrameSelf( null, 0.0);
+	}
+
+	function setVisible( b){
+		visible = b;
+		parent?.repaint();
+	}
+	
+	//	script use
+	
+	function pass( dt=-1){
+		if( dt >= 0){
+			sleep( dt);
+			return dt;
+		}else{
+			local t = skGetTime();
+			suspend();
+			return skGetTime()-t;
+		}
+	}
+	
+	function kill(){
+		return removeFromParent();
+	}
+
+	//	exported parameters
+
+	//	エクスポート用のstirng文字列をパースしてターゲットのSKViewとそのパラメータIDを抽出
+	//	文字列はname1.PARAM1, name2.PARAM2, ...となる
+	//	SKLibView, GPUILibView等で使う。毎度パースするのはバカバカしいが
+	function parseExports( str){
+		if( !length( str)) return null;
+		local a = [], s = 0;
+		try{
+			for( ;;){
+				local i0 = str.indexOf( ".", s); if( i0<0) break;
+				local i1 = str.indexOf( ",", i0); if( i1<0) i1 = length( str);
+				local name = str.substring( s, i0).trim();
+				local pstr = str.substring( i0+1, i1).trim();
+				local pid = SKViewPropertyID[pstr];
+				if( !pid){ printf( "WARN: no SKViewPropertyID: %S", pstr); goto NEXT; }
+				local v = findChild( name);
+				if( !v){ printf( "WARN: no view of name: %S", name); goto NEXT; }
+				a .. (pid+10000*(1+length( a)),v,pid);
+			NEXT:
+				s = i1+1;
+			}
+		}catch( ex){
+			printexception( ex);
+		}
+		return a;
+	}
+}
+
+class MotionKey
+{
+	time = 0;
+	tween = 0;			//	int | customtween?
+	tweenfunc = null;	//	
+	iw = 0.0;
+	p = null;
+
+	next = null;
+}
+
+local tweenlist = ::Easing.presets;
+
+class MotionTimeline extends Serializable
+{
+	static SerialUID = 30;
+	pid = null;			//	parameter name
+	key = null;			//
+	keyline = null;
+	keyoffs = 0;
+	
+	constructor( _pid=null){
+		pid = _pid;
+	}
+	
+	function _cloned( org){
+		keyline = null;
+		key = deepclone( key);
+		build();
+	}
+	
+	function keyAt( i){
+		return keyline[Math.ifloor( i)-keyoffs] || ((i<=keyoffs)?key:keyline.last());
+	}
+
+	function existingkey( t){
+		if( !key) return null;
+		local k = keyAt( t);
+		return k.time==t ? k:null;
+	}
+
+	function remove( time){
+		local kt = key, prev = null;
+		if( !kt) return null;
+		while( kt.time < time){
+			if( !kt.next) { return this; }
+			prev = kt;
+			kt = kt.next;
+		}
+		if( kt.time == time){	//	replace
+			if( prev){
+				prev.next = kt.next;
+			}else{
+				key = kt.next;
+			}
+		}
+		return null;
+	}
+
+	//	build functions
+
+	function put( time, p=null, tween=null){
+		local k;
+		if( p == null){
+			k = time;		//	time=key
+		}else{
+			k = MotionKey();
+			k.time = time;
+			k.p = p;
+			k.tween = tween;
+		}
+		//
+		if( !key) { key = k; return this; }
+		local kt = key, prev = null;
+		while( kt.time < k.time){
+			if( !kt.next) { kt.next = k; k.next = null; return this; }	//	ketu ni add
+			prev = kt;
+			kt = kt.next;
+		}
+		if( kt.time == k.time){	//	replace
+			if( prev){
+				k.next = kt.next;
+				prev.next = k;
+			}else{
+				k.next = kt.next;
+				key = k;
+			}
+		}else{					//
+			if( prev){
+				prev.next = k;
+				k.next = kt;
+			}else{
+				k.next = key;
+				key = k;
+			}
+		}
+		return this;
+	}
+
+	function tail(){
+		local kt = key;
+		while( kt.next) kt = kt.next;
+		return kt;
+	}
+
+	function build(){
+		if( !key) { keyline = null; return this;}
+		local tk = tail(), koff = keyoffs = key.time;
+		keyline = tuple( tk.time+1-koff);
+		local kt = key, pk = null;
+		while( kt != tk){
+			local t0 = kt.time;
+			local t1 = kt.next.time;
+			kt.tweenfunc = (kt.tween && (kt.p<>kt.next["p"])) ? tweenlist[kt.tween] : null;
+			kt.iw = 1.0/(t1-t0);
+			for( local l = t0;l < t1;l ++) keyline[l-koff] = kt;
+			pk = kt;
+			kt = kt.next;
+		}
+		keyline[tk.time-koff] = tk;
+		//	trns
+		return this;
+	}
+
+	//	IO
+	
+	function countkeys(){
+		local i = 0, k = key;
+		while( k){ ++i; k = k.next; }
+		return i;
+	}
+
+	function writeObject( o){
+		o.puti( pid);
+		o.puti( countkeys());
+		local k = key;
+		while( k){
+			o.puti( k.time);
+			o.puto( k.tween);
+			o.puto( k.p);
+			k = k.next;
+		}
+	}
+
+	function readObject( i){
+		pid = i.geti();
+		local k0 = null;
+		for( local n = i.geti();n > 0;n--){
+			local k = MotionKey();
+			k.time = i.geti();
+			k.tween = i.geto();
+			k.p = i.geto();
+			if( k0) k0.next = k; else key = k;
+			k0 = k;
+		}
+		build();
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////
+
+//	UIEditorで作成されるView。子を持つことができ、エディタ内でbndは自動的に子を全て含む大きさにするので、アニメーション不可。
+//	パラメータとしては設定されない
+
+local r_1 = Rect2D();
+
+class SKNestableView extends SKView
+{
+	innerframepos = -1;
+	syncanime = false;
+	
+	function anime( st, en=null, spd=null, lp=false){
+		if( syncanime){
+			super.anime( st, en, spd, lp);
+		}else{
+			inneranime( st, en, spd, lp);
+		}
+	}
+	
+	function outeranime( st, en=null, spd=null, lp=false){
+		super.anime( st, en, spd, lp);
+	}
+	
+	function inneranime( st, en=null, spd=null, lp=false){
+		if( syncanime) return;		//	syncanimeモードの場合は中を独立して動かすことは出来ない。
+		if( typeof( st) == SS_ARRAY){
+			switch( length( st)){
+			case 4: lp = st[3];
+			case 3: spd = st[2];
+			case 2: en = st[1];
+			}
+			st = st[0];
+		}
+		if( en == null){
+			en = st;
+			spd = 1.0;
+		}else
+		if( spd == null){
+			spd = en;
+			en = st;
+			st = innerframepos;
+		}
+		removeUpdateFunc( @( o) o.getName() == "inanimefunc");	//	== stop animation
+		innerMoveFrame( innerframepos, st+0.0);
+		if( st != en){
+			local a = Animation( st, en, spd, lp), self = this;
+			local inanimefunc( dt) self.inneranimate( a, dt);
+			addUpdateFunc( inanimefunc);
+		}
+	}
+	
+	function inneranimate( a, dt){
+		local ret = a.update( dt);
+		innerMoveFrame( innerframepos, a.frametime);
+		return ret;
+	}
+	
+	function innerMoveFrame( t0, t){
+		foreach( c in children){
+			c.moveFrame( t0, t);
+		}
+		innerframepos = t;
+	}
+	
+	function moveFrame( t0, t){
+		moveFrameSelf( t0, t);
+		if( syncanime){
+			foreach( c in children){
+				c.moveFrame( c.framepos, t);
+			}
+			innerframepos = t;
+		}
+	}
+
+	function setSKViewEntityData( d){
+		super.setSKViewEntityData( d);
+		if( !syncanime){
+			innerMoveFrame( null, 0.0);
+		}
+	}
+}
+
+class SKGroupView extends SKNestableView
+{
+	static isdir = true;
+	static icontype = "dir";
+	static noexportcls = true;	//	SKViewData書き出し時にクラス名を書き出さない
+	syncanime = true;
+	
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[BUFFER]),
+		( SKVP[BUFFERCOLOR]),
+		( SKVP[SYNC_ANIMATION]),
+		( SKVP[ENABLED]),
+		];
+	}
+	
+	function getParam( pid){
+		switch( pid){
+		case SYNC_ANIMATION : return syncanime;
+		default: return super.getParam( pid);
+		}
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case SYNC_ANIMATION : syncanime = p0; break;
+		default: return super.setParam( pid, p0, p1, w);
+		}
+	}
+	
+	function setValue( a, b=undefined){
+		if( b==undefined){
+			if( a instanceof ::ptr){
+				setSKViewValue( a);
+			}else
+			switch( typeof( a)){
+			case SS_INTEGER: case SS_FLOAT: anime( a); break;
+			case SS_STRING: action( a); break;
+			}
+		}else{
+			super.setValue( a, b);
+		}
+	}
+}
+
+//	.skuiから生成されるシンボルSKView。bndは
+
+class SKLibView extends SKNestableView
+{
+	static isdir = false;
+	static icontype = "ui";
+	syncanime = false;
+	sizechangeable = false;
+	imports = null;
+	
+	function getProperties(){
+		local a = #[
+		( SKVP[VISIBLE]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[BUFFER]),
+		( SKVP[BUFFERCOLOR]),
+		( SKVP[ENABLED]),
+		];
+		local cloned = false;
+		if( sizechangeable){
+			a = clone a; cloned = true;
+			a[2] <- SKVP[SIZE_STATIC];
+			a[3] <- SKVP[PIVOT];
+		}
+		if( length( imports)){
+			if( !cloned) a = clone a;
+			foreach( v in imports){
+				a .. with( clone SKVP[v[2]]){ pid = v[0]; };
+			}
+		}
+		return a;
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case SIZE_CHANGEABLE : return sizechangeable;
+		}
+		foreach( v in imports){
+			if( v[0] == pid) return v[1].getParam( v[2]);
+		}
+		return super.getParam( pid);
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case SIZE_CHANGEABLE :
+			return sizechangeable = p0;
+		case EXPORTS :
+			return imports = parseExports( p0);
+		}
+		foreach( v in imports){
+			if( v[0] == pid) return v[1].setParam( v[2], p0, p1, w);
+		}
+		return super.setParam( pid, p0, p1, w);
+	}
+
+	function setValue( a, b=undefined){
+		if( b==undefined){
+			if( a instanceof ::ptr){
+				setSKViewValue( a);
+			}else
+			switch( typeof( a)){
+			case SS_INTEGER: case SS_FLOAT: anime( a); break;
+			case SS_STRING: action( a); break;
+			}
+		}else{
+			super.setValue( a, b);
+		}
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+//	レイアウトビュー
+
+
+//	サイズ変更に対してスケールで調整するSKView
+//	スケール基準は内包ルールで行う(min(w/w0,h/h0))
+//	※stretchSize以外からのスケール設定はしてはいけない。
+class SKScalingLayoutView extends SKNestableView
+{
+	static isdir = true;
+	static icontype = "scale";
+	syncanime = true;
+
+	scaleweight = 0.5;
+
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[SCALEWEIGHT]),
+		( SKVP[BUFFER]),
+		( SKVP[BUFFERCOLOR]),
+		( SKVP[SYNC_ANIMATION]),
+		( SKVP[ENABLED]),
+		];
+	}
+
+	//	バッファのレンダリング時にスケールされる解像度。レイアウトビューで変化する。
+	function getBufferResolution(){
+		local p = parent; return (p ? p.getBufferResolution() : 1.0) * scale.x;
+	}
+
+	function setStretchRect( x, y, w, h){
+		if( scaleweight<=0.01) return super.setStretchRect( x, y, w, h);
+		local r0 = this["bindrect"][1] || getMotion( SIZE)["key"]["p"] || viewdata.getStatic( SIZE_STATIC);
+		//	
+		local sw = w/r0[0], sh = h/r0[1], s_ = Math.min( sw, sh);
+		local s = Math.pow( s_, scaleweight);	//	scaleweightを加味して最終的なスケールを入れる
+		//	最終設定
+		scale( s);
+		bnd.set( x/s, y/s, w/s, h/s);
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case SYNC_ANIMATION : return syncanime;
+		case SCALEWEIGHT : return scaleweight;
+		default: return super.getParam( pid);
+		}
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case SYNC_ANIMATION : syncanime = p0; break;
+		case SCALEWEIGHT : scaleweight = p0; break;
+		default: return super.setParam( pid, p0, p1, w);
+		}
+	}
+}
+
+//	サイズ変更に対して内包ルールでリサイズするレイアウト
+//	元のアスペクト比を保持する
+//	ピボットは(0,0)固定
+class SKContainLayoutView extends SKNestableView
+{
+	static isdir = true;
+	static icontype = "scale";
+	syncanime = true;
+
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[POSITION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[BUFFER]),
+		( SKVP[BUFFERCOLOR]),
+		( SKVP[SYNC_ANIMATION]),
+		( SKVP[ENABLED]),
+		];
+	}
+
+	function setStretchRect( x, y, w, h){
+		local r0 = this["bindrect"][1] || getMotion( SIZE)["key"]["p"] || viewdata.getStatic( SIZE_STATIC);
+		local sw = w/r0[0], sh = h/r0[1], s = Math.min( sw, sh);
+		local w1 = r0[0] * s, h1 = r0[1] * s;
+		bnd.set( (w-w1)*0.5, (h-h1)*0.5, w1, h1);//.round();
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case SYNC_ANIMATION : return syncanime;
+		default: return super.getParam( pid);
+		}
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case SYNC_ANIMATION : syncanime = p0; break;
+		default: return super.setParam( pid, p0, p1, w);
+		}
+	}
+}
+
+//	
+//	
+class SKFrameLayoutView extends SKNestableView
+{
+	static isdir = true;
+	static icontype = "frame";
+	static nostretchinner = 1;
+	syncanime = true;
+
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[POSITION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[BUFFER]),
+		( SKVP[BUFFERCOLOR]),
+		( SKVP[SYNC_ANIMATION]),
+		( SKVP[ENABLED]),
+		];
+	}
+
+	function revalidate(){
+		super.revalidate();
+		setStretchRect( bnd.x, bnd.y, bnd.w, bnd.h);
+	}
+	
+	//	上下左右の枠を計算。この時!visibleな子ビューは除外。
+	function setStretchRect( x, y, w, h){
+		super.setStretchRect( x, y, w, h);
+		if( !length( children)) return;
+		local a = children.filter( @( v) v.visible & (v.layerflags&1)).reverse();
+		local u = 0.0, d = 0.0, l = 0.0, r = 0.0;	//	それぞれの幅
+		//	1.フレーム計算
+		foreach( v in a){
+			local s = v.stretchalign;
+			local r0 = v["bindrect"][1] || v.getOriginalSize();
+			switch( s&5){
+			case 1: l = Math.max( l, r0[0]); break;
+			case 4: r = Math.max( r, r0[0]); break;
+			}
+			switch( s&10){
+			case 2: u = Math.max( u, r0[1]); break;
+			case 8: d = Math.max( d, r0[1]); break;
+			}
+		}
+		local cw = w-l-r, ch = h-u-d;
+		//	2.フレーム適用
+		local gbits = 0;		//	bits
+		foreach( v in a){
+			local s = v.stretchalign;
+			local gx = (s&5)==1?0:(s&5)==4?2:1, gy = (s&10)==2?0:(s&10)==8?2:1, gi = gx+gy*3;
+			local px, py, pw, ph;
+			switch( gx){
+			case 0: px = 0; pw = l; break;
+			case 1: 
+				px = l; pw = cw;
+				if( !(gbits&(1<<(gi-1)))){ gbits|=(1<<(gi-1)); px-=l; pw+=l; }
+				if( !(gbits&(1<<(gi+1)))){ gbits|=(1<<(gi+1)); pw+=r; }
+				break;
+			case 2: px = w-r; pw = r; break;
+			}
+			switch( gy){
+			case 0: py = 0; ph = u; break;
+			case 1:
+				py = u; ph = ch;
+				if( !(gbits&(1<<(gi-3)))){ gbits|=(1<<(gi-3)); py-=u; ph+=u; }
+				if( !(gbits&(1<<(gi+3)))){ gbits|=(1<<(gi+3)); ph+=d; }
+				break;
+			case 2: py = h-d; ph = d; break;
+			}
+			gbits |= 1<<gi;
+			local p0 = v.getMotion( POSITION)["key"]["p"] || #(0,0,0);
+			v.stretchSize( pw, ph);
+			v.alignpos = Vector3D( px-p0[0], py-p0[1], 0.0);
+			v.updateMotionParam( POSITION, v.framepos);
+			v.updateLayout();
+		}
+	}
+}
+
+
+import PropertyType;
+
+::SKViewActions <- [];
+
+SKViewActions .. {
+	key = "anime",
+	name = "$T.lbl_anime",
+	icon = "\ue1c4",
+	info = @(){
+		local info = "$T.lbl_anime: %S => %S" % (target, en);
+		if( spd) info = info .. (" ≫%S" % spd);
+		return info;
+	},
+	exec = @( v, acd){
+		if( length( acd["target"])){
+			if( !(v = v.findChild( acd.target))) return;
+		}
+		v.anime( acd.en, acd.spd||null);
+	},
+	props = [
+		{ pid = "target", lbl = "$T.lbl_target", type = STRING, defval = "", },
+		{ pid = "en", lbl = "$T.lbl_endpoint", type = SCALAR, range = (-10,999), defval = 0, },
+		{ pid = "spd", lbl = "$T.lbl_speed", type = SCALAR, range = (0.0,999.0), q = 10, defval = 0.0, },
+	],
+};
+
+SKViewActions .. {
+	key = "loopanime",
+	name = "$T.lbl_anime",
+	icon = "\ue9d6",
+	info = @() "$T.lbl_anime: %S => (%S ~ %S) ≫%S%S" % (target, st,en,spd,loop?" ↻":""),
+	exec = @( v, acd){
+		if( length( acd["target"])){
+			if( !(v = v.findChild( acd.target))) return;
+		}
+		v.anime( acd.st, acd.en, acd.spd, acd.loop);
+	},
+	props = [
+		{ pid = "target", lbl = "$T.lbl_target", type = STRING, defval = "", },
+		{ pid = "st", lbl = "$T.lbl_startpoint", type = SCALAR, range = (-10,999), defval = 0, },
+		{ pid = "en", lbl = "$T.lbl_endpoint", type = SCALAR, range = (-10,999), defval = 0, },
+		{ pid = "spd", lbl = "$T.lbl_speed", type = SCALAR, range = (0.0,999.0), q = 10, defval = 0.0, },
+		{ pid = "loop", lbl = "$T.lbl_loop", type = BOOL, defval = false, },
+	],
+};
+
+SKViewActions .. {
+	key = "snd",
+	name = "$T.lbl_sound",
+	icon = "\ue7f4",
+	info = @(){
+		local sd = ::soundmanager.getConf().sounds[sndid];
+		local lbl = length( sndid) ? sprintf( "%S", sd?::lang(sd.name) : "???") : "$T.lbl_notset";
+		return "$T.lbl_sound: "..lbl;
+	},
+	exec = @( v, acd){
+		if( acd.sndid){
+			::playSound( acd.sndid, null);		//	gain,detune...
+		}
+	},
+	props = [
+		{ pid = "sndid", lbl = "$T.lbl_sound", type = SOUNDID, defval = null }
+		{ pid = "gain", lbl = "$T.lbl_gain", type = SCALAR, range = (0.0,2.0), q=10, defval = 1.0, }
+		{ pid = "detune", lbl = "$T.lbl_detune", type = SCALAR, range = (-12.0,12.0), q=10, defval = 0.0, }
+	],
+};
+
+SKViewActions .. {
+	key = "scp",
+	name = "$T.lbl_script",
+	icon = "\uec1c",
+	info = @(){
+		local info = "$T.lbl_script: ";
+		if( length( code) < 20){
+			info = info .. code;
+		}else{
+			info = info .. code.substring( 0, 18) .. "...";
+		}
+		return info;
+	},
+	exec = @( v, acd){
+		local code = "local pe = vargv[0], v = vargv[1];\n" .. v.code;
+		local fn = ::compilestring_c( code);	//	キャッシュされる
+		fn( v, acd);
+	},
+	props = [
+		{ pid = "code", cnt = "cnt6.ui", lbl = "$T.lbl_script", type = SCRIPT, multiline = true, defval = "", }
+	],
+};
+
+SKViewActions .. {
+	key = "action",
+	name = "$T.lbl_action",
+	icon = "\ue037",
+	info = @(){
+		local info = "$T.lbl_action: %S . %S" % (target, actid);
+		return info;
+	},
+	exec = @( v, acd){
+		if( acd.target) v = v.findChild( acd.target);
+		v?.action( acd.actid);
+	},
+	props = [
+		{ pid = "target", lbl = "$T.lbl_target", type = STRING, defval = "child", },
+		{ pid = "actid", lbl = "$T.lbl_action", type = STRING, defval = "start", },
+	],
+};
+
+SKViewActions .. {
+	key = "anchor",
+	name = "$T.lbl_anchor",
+	icon = "\uf1cd",
+	info = "$T.lbl_anchor",
+	exec = @( v, acd){	//	noop
+	},
+	props = [
+	],
+};
+
+foreach( pa in SKViewActions) viewactiondef[pa.key] <- pa;

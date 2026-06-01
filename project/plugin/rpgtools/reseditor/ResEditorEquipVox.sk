@@ -1,0 +1,260 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorEquipVox : 装備ボクセルの編集。
+//	プロパティは特に特別なことはないので標準プロパティ編集。
+//	プレビューは持ち方タイプによってアニメを変えられる
+//	
+//	
+//	武器、盾、左手武器(=弓)
+//	
+
+//	
+class ResEditorEquipVox extends ResEditor
+{
+	static props = [
+		{ pid="name", lbl="$T.lbl_name", type=LANGSTRING, }
+		{ pid="vox", lbl="$T.lbl_model", type=VOXEL_PARTS, dir="/resource/vox/equip", restype="voxparts",  }
+		{ pid="pal", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui", inipal=@() ::skstudio.editor.getIniPalette(), }
+		{ pid="pivot", lbl="$T.lbl_pivot", type=VEC3, range=(-32.0,32.0), q=10 }
+		{ pid="memo", lbl="$T.lbl_memo", type=STRING, multiline=true, cnt="cnt6.ui" }
+	];
+
+	function init( path){
+		super.init( path);
+		resdirpath = ::resroot.file.path .. "/resource/vox/equip";
+	}
+
+	function isValidData( d){
+		return !!length( d["vox"]);
+	}
+	
+	function itemSelected( v){
+		proplist.bindProperties( props);
+		//	
+		local d = v.data;
+		if( !d){
+			d = v.data = data[v.id] <- {
+				name = "", vox = ["",""], pivot = (0,0,0), pal = {[1]=0x01010101},
+			};
+		}
+		proplist.setParameters( d);
+
+		preview.setResourceData( v.id, d);
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd.cmd != "prop") return;
+		local pid = cmd.prop.pid, val = cmd.val;
+		switch( pid){
+		case "vox":	// vox変更によって、名前、パレット、中心点
+			setVoxParamOp( val);
+			break;
+		default:
+			setParamOp( selitem.id, cmd.prop, val);
+			preview.updatePos();
+			preview.updateSK3D();
+			break;
+		}
+	}
+
+	function itemAction( e){
+		local d = e.actioncmd["data"];
+		if( length( d["vox"][0])) editVox( d.vox[0]);
+	}
+
+	// function showItemContextMenu( e){
+	// 	local d = selitem.data;
+	// 	local menudata = [
+	// 		{ id="editvox", lbl="$T.lbl_editvox", icon="\ue745", disable=!length( d["vox"][0]) },
+	// 		"-"
+	// 		{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+	// 		{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f"},
+	// 		"-",
+	// 		{ id="sort", lbl="$T.lbl_idsort", icon="\ue240"},
+	// 	]
+	// 	local ret = MenuPopup.run( menudata);
+	// 	switch( ret["id"]){
+	// 	case "editvox": return editVox( d.vox[0]);
+	// 	case "copy": return copy();
+	// 	case "paste": return paste();
+	// 	case "sort": return showIDSortDialog();
+	// 	}
+	// }
+
+	function editVox( voxpath){
+		local prm = {
+			name = "MagicaVoxel"
+			exe = FileRef( "tools/magicavoxel_open.ps1")
+			args = FileRef( ::resroot.file, voxpath.substring( 1)).path
+		};
+		Dialogs.launchTool( prm);
+	}
+
+	function getIniPalette( vox=null){
+		if( !vox) vox = data[selitem.id].vox;
+		local vc = ::getResourceContent( vox[0]), vcpal = vc.pal;
+		local vp = vc.findParts( vox[1]);
+		local ca = vp.getUsingColors();		//	パレット
+		local palmod = [];
+		foreach( v in ca){
+			if( v<249) palmod .. v .. vcpal[v];
+		}
+		return palmod;
+	}
+
+	function setVoxParamOp( val){
+		local vc = ::getResourceContent( val[0]), vcpal = vc.pal;
+		local vp = vc.findParts( val[1]);
+		local pal = getIniPalette( val);
+		local resid = selitem.id, d = data[resid], self = this;
+		local oldvox = d["vox"], oldpal = d["pal"], oldname = d["name"], oldpiv=d["pivot"];
+		local changename = !length( d.name);
+		//	中心点計算
+		local vdp = _getvdparts( vp), vd = vdp.vd8;
+		local m = vdp.gmat();
+		local piv = (vd.w*0.5, vd.h*0.5, -m.r);
+		//	
+		local redo = [@(){
+			if( changename) d.name <- {[::lang.code]=vp.name};
+			d.vox <- val;
+			d.pal <- pal;
+			d.pivot <- piv;
+			self.previewlist.updateItemView( resid, d);
+		}];
+		local undo = [@(){
+			if( changename) d.name <- oldname;
+			d.vox <- oldvox;
+			d.pal <- oldpal;
+			d.pivot <- oldpiv;
+			self.previewlist.updateItemView( resid, d);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+		refresh();
+	}
+
+	function _getvdparts( vp){
+		if( vp.vd8) return vp;
+		local vp1 = vp.findChild( "1");
+		if( vp1["vd8"]) return vp1;
+		if( vp.children["vd8"]) return vp.children;
+	}
+}
+
+
+//	構え、斬り（打ち、シールド）ぐらい表示できれば良し
+//	
+class ResEditorEquipVox.ResPreview extends ResEditor.ResPreview
+{
+	charask = null;		//	RPG3DObject
+	cntsk = null;
+
+	selani = null;		//	nullの場合はキャラ表示なし
+	eqval = null;
+	isshield = false;
+	
+	constructor( v, e){
+		super( v, e);
+		local pm = PrimitiveMeshes.createSphere( 0.07, 12, 12);
+		local m = pm.face[0].m;
+		m.Kd = 0xffff00ff;
+		m.depthtest = 0;
+		m.visiblemask = SK_VISIBLE_DECAL;
+		cntsk = SK3DObject( pm);
+		pntchk.setSelected( true);
+		anig.setVisible( true);
+		local a = [{lbl="$T.lbl_none", val=null}, {lbl="$T.anim_aim", val="aim"}, {lbl="$T.lbl_attack", val="attack"}, ];
+		animenu.setMenu( a);
+	}
+
+	function setResourceData( id, val){
+		eqval = val;
+		isshield = val.vox[1]?.contains( "shield");
+		updateSK3D();
+		playAnime();
+	}
+
+	function updateSK3D(){
+		if( selani){
+			if( !(sk3d instanceof RPG3DVoxChara)){
+				super.setResourceData( "1", ::conf._resource.chara_vox["CV000"]);
+				playAnime();
+			}
+			sk3d.setEquipVox( eqval, isshield?"item_L":"item_R");
+		}else{
+			super.setResourceData( "1", eqval);
+			if( sk3d){
+				sk3d.addChild( cntsk);
+				updatePos();
+			}
+		}
+	}
+
+	function playAnime(){
+		local animap = RPG3DObject.animelistmap.leg2;
+		local aniid = null;
+		switch( selani){
+		case "aim":
+			aniid = isshield ? "shield" : "aimw";
+			break;
+		case "attack":
+			aniid = isshield ? "shield" : "slash1";
+			break;
+		}
+		if( aniid){
+			local ani = animap.find( @( v) v.id==aniid);
+			sk3d.tanime( ani);
+		}
+	}
+
+	function updatePos(){
+		local rid = editor.selitem.id;
+		local d = editor.data[rid];
+		if( !selani && sk3d && d){
+			local vc = ::getResourceContent( d.vox[0]);
+			local vp = vc?.findParts( d.vox[1]), vd8 = vp["vd8"] || (vp.children["vd8"]);
+			local r = sk3d.bnd;
+			local p0 = Vector3D( -vd8.w/2, -vd8.h/2, -vd8.d/2);
+			cntsk.pos << (p0.add( d.pivot[0], d.pivot[1], d.pivot[2]).scale( 0.0625));
+			cntsk.matdirty = 1;
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "playbtn":
+			playAnime();
+			break;
+		case "pntchk":
+			cntsk?.setVisible( pntchk.isSelected());
+			break;
+		case "animenu":
+			selani = animenu.selitem.val;
+			updateSK3D();
+			playAnime();
+			break;
+		case "rbtn":
+		case "lbtn":
+			local i = animenu.menuitems.indexOf( animenu.selitem);
+			i = Math.clamp( i+(e.src.name=="rbtn"?1:-1), 0, length( animenu.menuitems)-1);
+			local v = animenu.menuitems[i];
+			animenu.selectItem( v);
+			selani = v.val;
+			updateSK3D();
+			playAnime();
+			break;
+		case "animenu":
+			break;
+		}
+		if( !e.consumed) super.actionevent( e);
+	}
+}

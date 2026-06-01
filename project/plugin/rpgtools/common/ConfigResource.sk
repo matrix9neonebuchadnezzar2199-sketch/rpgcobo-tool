@@ -1,0 +1,394 @@
+
+
+
+
+import VirtualKeyCode;
+import ModifiersMask;
+
+//	conf内に配置されたテーブルをResourceパスにマップしてskstudioで編集できるようにする。
+//	
+//	予め不可視ディレクトリ /.xを作っておく
+//	conf.player => /.x/player/P000 ~ P999
+//	conf._res.chara_vox => /.x/chara_vox/
+//	
+//	※リソースの場合、resource["chara_vox"]["chara1"]のように入れ子になっている。chara1を保存するとき
+//	　conf._resを"/resource/resources.json"で保存できるように。
+
+local confdir = FileRef( skGetCodebase() .. "/data");
+local resdir = FileRef( skGetCodebase() .. "/resource");
+
+
+class DirResource extends Resource
+{
+	constructor( pr, n){
+		pres = pr;
+		name = n;
+		isdir = true;
+		list = []
+		flags |= 0x5000;
+	}
+
+	function flush(){	//	リストの開放を行わない
+	}
+}
+
+
+//	
+//	
+class ConfigResource extends Resource
+{
+	static dbiconmap = {
+		"game" : ("\uf25a",0xffffffff),
+		"player" : ("\uf250",0xffffffff),
+		"job" : ("\uf24b",0xffffffff),
+		"skill" : ("\uf24c",0xffffffff),
+		"enemy" : ("\uf252",0xffffffff),
+		"cond" : ("\uf24a",0xffffffff),
+		"item" : ("\uf24f",0xffffffff),
+		"weapon" : ("\uf253",0xffffffff),
+		"armor" : ("\uf810",0xffffffff),
+		"store" : ("\ue54c",0xffffffff),
+		"quest" : ("\uea23",0xffffffff),
+		"macro" : ("\uf80e",0xffffffff),
+		"map" : ("\uf11e",0xaaffffff),		//	mm
+	};
+
+	static filedir = confdir;
+
+	//	リスト対応
+	prefix = "P";			//	ファイルのプレフィクス。
+	icon = null;
+
+	file = null;
+	confrev = 0;
+
+	dirty = false;
+
+	constructor( p, t){
+		pres = p;
+		isdir = true;
+		name = t.name;
+		prefix = t.prefix;
+		icon = t["icon"] || dbiconmap[name];
+		file = FileRef( filedir, name..".json");
+	}
+
+	function table(){
+		return ::conf[name];
+	}
+
+	function loadList(){
+		local caps = Math.clamp( table()["_meta"]["caps"] || 100, 1, 1000);
+		local a = [];
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "%S%03d", prefix, l);
+			a .. ConfigItemResource( this, id);
+		}
+		list = a;
+	}
+
+	function checkrev(){
+		local f0 = file;
+		file = FileRef( f0.path);
+		if( dirty || f0.lastmodified <> file.lastmodified){
+			++confrev;
+			dirty = false;
+		}
+	}
+
+	function refresh(){
+		checkrev();
+		if( rev != confrev){
+			rev = confrev;
+			foreach( r in list) r.flush();
+			return true;
+		}
+		return false;
+	}
+
+	//	現在のconf[name]の状態を保存する
+	function save( _d=null){
+		if( _d && _d != table()){
+			Table.clear( table()) ... _d;
+		}
+		local bb = encodeJSON( table(), 1|4, ByteBuffer());
+		bb.pos = 0;
+		FileRef( filedir, name..".json").save( bb);
+		printf( "conf[%S] = %S\n", name, encodeJSON( table(), 1|4));
+		cache = null;
+		userdata = null;
+		dirty = true;
+	}
+}
+
+//	P000など編集の最小単位。セーブもこれ毎に行う。
+//	セーブ時には親元のテーブルを置き換え、大本のファイルを保存する。
+class ConfigItemResource extends Resource
+{
+	id = null;
+
+	constructor( pr, _id){
+		pres = pr;
+		name = _id;
+		id = _id;
+	}
+
+	function load( i = 1){
+		if( !cache){
+			cache = pres.table()[id];	//	emptyデータはどうしましょ
+		}
+	}
+
+	//	
+	//	※dataはjsonで保存されるのでインスタンスなどは入れないこと！！！
+	function save( data){
+		pres.table()[id] <- deepclone( data);	//	セーブ元のconfと参照がダブるとまずいのでdeepclone....
+		local bb = encodeJSON( pres.table(), 1|4, ByteBuffer());	//	dir.name
+		bb.pos = 0;
+		FileRef( pres.filedir, pres.name..".json").save( bb);
+		printf( "conf[%S] = %S\n", pres.name, encodeJSON( pres.table(), 1|4));
+		cache = null;
+		userdata = null;
+	}
+	
+	function getResourceName(){
+		local n = getContent()["name"];
+		if( !length( n)) n = "---";
+		return sprintf( "%S: %S", id, ::lang( n));
+	}
+	
+	function getResourceIcon(){
+		local i = getContent()["icon"];
+		return length( i) ? i : pres.icon;
+	}
+
+	function refresh(){
+		pres.checkrev();
+		if( rev != pres.confrev){
+			rev = pres.confrev;
+			cache = null;
+			return true;
+		}
+		return false;
+	}
+
+	//	データは消去されるがリソース自体は消えない
+	function clear(){
+		delete pres.table()[id];
+		pres.save();
+		return true;
+	}
+}
+
+//	ゲーム設定からのサブ項目は、ほかのID連番リソースではなく個別の～～～～～～～。
+//	0:system, 1:type, 2:gvar, 3:dict
+//	
+class GameConfigResource extends Resource
+{
+	id = null;
+	itemname = null;
+	itemicon = null;
+
+	file = null;
+
+	constructor( p, _id, _n, _i){
+		pres = p;
+		name = _id;
+		id = _id;
+		itemname = _n;
+		itemicon = _i;
+		file = FileRef( confdir, id..".json");
+	}
+	
+	function load( i = 1){
+		if( !cache){
+			cache = ::conf[id];
+		}
+	}
+
+	//	※dataはjsonで保存されるのでインスタンスなどは入れないこと！！！
+	function save( data){
+		::conf[id] <- deepclone( data);
+		local bb = encodeJSON( ::conf[id], 1|4, ByteBuffer());
+		bb.pos = 0;
+		file.save( bb);
+		printf( "conf[%S] = %S\n", id, encodeJSON( ::conf[id], 1|4));
+	}
+
+	function getResourceName(){
+		return itemname;
+	}
+	
+	function getResourceIcon(){
+		return itemicon;
+	}
+
+	function refresh(){
+		local f0 = file;
+		file = FileRef( f0.path);
+		if( f0.lastmodified <> file.lastmodified){
+			++rev;
+			cache = null;
+			return true;
+		}
+		return false;
+	}
+}
+
+//	Resourceのワードがダブって使われてるんで変な名前。。。
+//	
+class GameResourceResource extends Resource
+{
+	static resiconmap = {
+		"chara_vox" : ("\uf11c",0x99ffaaff),
+		"obj_vox" : ("\uf11a",0x99ffaaff),
+		"equip_vox" : ("\uf11a",0x99ffaaff),
+		"event_pic" : ("\ue416",0x99ffaaff),
+		"enemy_pic" : ("\ue859",0x99ffaaff),
+		"enemy_pm" : ("\ue859",0x99ffaaff),
+		"efx" : ("\ue3e7",0x99ffaaff),
+		"map_vox" : ("\uf11d",0x99ffaaff),
+		"map_asset" : ("\uea09",0x99ffaaff),
+		"icon" : ("\ue545",0x99ffaaff),
+		"uimap" : ("\ue1bd",0x99ffaaff),
+		"bgm" : ("\ue521",0x99ffaaff),
+		"snd" : ("\ue7f4",0x99ffaaff),
+		"voice" : ("\ue029",0x99ffaaff),
+	};
+
+	id = null;
+	itemname = null;
+	itemicon = null;
+	
+	file = null;
+	
+	constructor( p, _id, _n, _i){
+		pres = p;
+		name = _id;
+		id = _id;
+		itemname = _n;
+		itemicon = resiconmap[name];
+		file = FileRef( resdir, id..".json");
+	}
+
+	function table(){
+		return ::conf._resource[id];
+	}
+	
+	function load( i = 1){
+		if( !cache){
+			cache = ::conf._resource[id];
+		}
+	}
+
+	//	※dataはjsonで保存されるのでインスタンスなどは入れないこと！！！
+	function save( data){
+		::conf._resource[id] <- data;
+		local bb = encodeJSON( ::conf._resource[id], 1|4, ByteBuffer());
+		bb.pos = 0;
+		FileRef( resdir, id..".json").save( bb);
+		printf( "resource.%S = %S\n", id, encodeJSON( ::conf._resource[id], 1|4));
+		// printf( "resource = %S\n", encodeJSON( ::conf._resource, 1|4));
+	}
+
+	function getResourceName(){
+		return itemname;
+	}
+	
+	function getResourceIcon(){
+		return itemicon;
+	}
+
+	function refresh(){
+		local f0 = file;
+		file = FileRef( f0.path);
+		if( f0.lastmodified <> file.lastmodified){
+			++rev;
+			cache = null;
+			return true;
+		}
+		return false;
+	}
+}
+
+//	リソースの中でもマップアセットだけは特殊。。。
+//	フォルダ構造になってて内部にMA000-MA999がある
+class MapAssetResource extends ConfigResource
+{
+	static filedir = resdir;
+
+	constructor( p, t){
+		super( p, t);
+		icon = ("\uea09",0x99ffaaff);
+	}
+
+	function table(){
+		return ::conf._resource[name];
+	}
+
+	function getResourceName(){
+		return "$T.side_res_map_asset";
+	}
+
+	function getResourceIcon(){
+		return icon;
+	}
+}
+
+
+
+//	plugin.skからプラグインロード時に呼ばれる。
+//
+local initConfigResource(){
+	local x = DirResource( ::resroot, ".x");
+	::resroot.getList() .. x;	//	ルートにくっつけちゃう。。。
+	//
+	//	ゲーム設定
+	local gamedir = DirResource( x, "game");
+	gamedir.list .. GameConfigResource( gamedir, "setting", "$T.side_dbview_game_setting", "\ue8b8");
+	gamedir.list .. GameConfigResource( gamedir, "type", "$T.side_dbview_game_type", "\ue574");
+	gamedir.list .. GameConfigResource( gamedir, "dict", "$T.side_dbview_game_dict", "\ue0e0");
+	gamedir.list .. GameConfigResource( gamedir, "gvar", "$T.side_dbview_game_gvar", "\ue16e");
+
+	//	データベースリソース設定
+	x.list .. gamedir;
+	x.list .. ConfigResource( x, {prefix:"P", name:"player", } );
+	x.list .. ConfigResource( x, {prefix:"J", name:"job", } );
+	x.list .. ConfigResource( x, {prefix:"S", name:"skill", } );
+	x.list .. ConfigResource( x, {prefix:"E", name:"enemy", } );
+	x.list .. ConfigResource( x, {prefix:"K", name:"cond", } );
+	x.list .. ConfigResource( x, {prefix:"I", name:"item", } );
+	x.list .. ConfigResource( x, {prefix:"W", name:"weapon", } );
+	x.list .. ConfigResource( x, {prefix:"A", name:"armor", } );
+	x.list .. ConfigResource( x, {prefix:"Q", name:"quest", } );
+	x.list .. ConfigResource( x, {prefix:"X", name:"macro", } );
+	x.list .. ConfigResource( x, {prefix:"M", name:"map", } );
+	x.list .. ConfigResource( x, {prefix:"R", name:"store", } );
+
+	//	リソースリソース設定
+	x.list .. GameResourceResource( x, "chara_vox", "$T.side_res_chara_vox", "\ue8b8");
+	x.list .. GameResourceResource( x, "equip_vox", "$T.side_res_equip_vox", "\ue8b8");
+	x.list .. GameResourceResource( x, "enemy_pic", "$T.side_res_enemy_pic", "\ue8b8");
+	x.list .. GameResourceResource( x, "event_pic", "$T.side_res_event_pic", "\ue8b8");
+	x.list .. GameResourceResource( x, "map_vox", "$T.side_res_map_vox", "\ue8b8");
+	x.list .. GameResourceResource( x, "efx", "$T.side_res_efx", "\ue8b8");
+	x.list .. GameResourceResource( x, "icon", "$T.side_res_icon", "\ue545");
+	x.list .. GameResourceResource( x, "snd", "$T.side_res_snd", "\ue8b8");
+	x.list .. GameResourceResource( x, "bgm", "$T.side_res_bgm", "\ue8b8");
+	x.list .. GameResourceResource( x, "voice", "$T.side_res_voice", "\ue029");
+	x.list .. GameResourceResource( x, "uimap", "$T.side_res_uimap", "\ue029");
+
+	x.list .. MapAssetResource( x, {prefix:"MA", name:"map_asset", });
+
+	getclass( RenderSettings).confsaver <- @( rsets){
+		local renderset = ::conf._resource.renderset;
+		renderset.rendersets <- deepclone( rsets);
+		local bb = encodeJSON( renderset, 1|4, ByteBuffer());
+		bb.pos = 0;
+		local conffile = FileRef( skGetCodebase() .. "/resource/renderset.json");
+		conffile.save( bb);
+		printf( "renderset = %S\n", encodeJSON( renderset, 1|4));
+	}
+}
+
+initConfigResource();

@@ -1,0 +1,119 @@
+import VirtualKeyCode;
+import GamepadButtonCode;
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////////
+//	WipeUI.sk ワイプ表示UI
+//	
+
+local oplist = [
+	{ lbl="$T.lbl_show", val=null }	//	showの場合はop=nullが入る
+	{ lbl="$T.lbl_hide", val="hide" }	
+];
+
+local wipeuilist = [
+	{ lbl="$T.wipeview0", val="wipe_blackout.ui" }
+	{ lbl="$T.wipeview1", val="wipe_whiteout.ui" }
+	{ lbl="$T.wipeview2", val="wipe_circle.ui" }
+];
+
+////////////////////////////////////////////////////////////////////////////////////
+//	上部汎用情報表示
+//	表示時間を指定可能
+
+local showWipeUI( uidef, prms){
+	local view = rootview.findChild( "wipe1");
+	if( prms["op"]=="hide"){
+		view?.actionAndDie( "hide");
+		if( prms["wait"]) view?.waitAction();
+		return;
+	}
+	if( view){
+		view.actionAndDie( "hide");	//	今あるやつは消す！
+	}
+	local vprms = { ...uidef.defval,
+		...prms,
+		layer = "wipe"
+		name = "wipe1"
+		action = prms["show"] || "show"
+	};
+	local view = RPGMain.showView( vprms);
+	if( prms["wait"]){
+		view.waitAction();
+	}
+}
+
+//	システムに登録。
+RPGSystem.ui ..
+{
+	key = "wipe"
+	lbl = "ワイプ表示"
+	type = "wipe"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	icon = "\ue3e8"
+	
+	props = [				//	
+		{ pid="op", lbl="$T.lbl_operation", type=LIST, list=oplist, refresh=true }
+		{ pid="uipath", lbl="$T.wipeview", type=LIST, list=wipeuilist hide=@( pl) !!pl.getParam( "op") }
+		{ pid="wait", lbl="$T.lbl_wait", type=BOOL, }
+	],
+
+	defval = {
+		uipath = "wipe_blackout.ui",
+		pos = { top=0, bottom=0, left=0, right=0 }
+		op = null
+		wait = true
+	}
+
+	uifunc = @( t) showWipeUI( this, t)
+};
+
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	マップ移動時のワイププリセット
+
+::mapwipelist <- [
+	{
+		lbl = "$T.wipe0", 
+		wipein = @(){},
+		wipeout = @(){},
+	},
+	{
+		lbl = "$T.wipe1", 
+		wipein = @(){
+			RPGMain.showUI( { key="wipe", wait=true});
+		},
+		wipeout = @(){
+			RPGMain.showUI( { key="wipe", op="hide", wait=false});
+		},
+	},
+	{
+		lbl = "$T.wipe2",
+		wipein = @(){
+			RPGMain.showUI( { key="wipe", wait=true, uipath="wipe_circle.ui"});
+		},
+		wipeout = @(){
+			RPGMain.showUI( { key="wipe", op="hide", wait=false});
+		},
+	},
+	{
+		lbl = "$T.wipe3", 
+		wipein = @(){
+			::rpgstage.screenfx.screenEffectOn({
+				"time":400,"scan":25,"blink":10,"phase1":0,"grain":10,"ghost":10,"sfxid":"raster2","freq1":10,"num":1,"ybug":10,"color":-1,"amp1":30,"amp2":-5,"dirty":10,"tscale":1.0,"strip":10,"phase2":20,"freq2":10
+			});
+			sleep( 200);
+			RPGMain.showUI( { key="wipe", wait=true});
+		},
+		wipeout = @(){
+			::rpgstage.screenfx.screenEffectOn({
+				"time":10,"scan":25,"blink":10,"phase1":0,"grain":10,"ghost":10,"sfxid":"raster2","freq1":10,"num":1,"ybug":10,"color":-1,"amp1":30,"amp2":-5,"dirty":10,"tscale":1.0,"strip":10,"phase2":20,"freq2":10
+			});
+			RPGMain.showUI( { key="wipe", op="hide", wait=false});
+			sleep( 200);
+			::rpgstage.screenfx.screenEffectOff( {"sfxbits":2,"time":800});
+			sleep( 800);
+		},
+	},
+];

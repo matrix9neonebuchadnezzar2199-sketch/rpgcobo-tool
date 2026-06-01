@@ -1,0 +1,1009 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import CollisionGroupID;
+import BlockFlagID;
+import BlockPlacementID;
+import FreeBlockCategoryID;
+import PenMode;
+
+		
+function makebox( p0, p1, h, mx=null){
+	local r = IRect3D( p0.bx+p0.nx*h, p0.by+p0.ny*h, p0.bz+p0.nz*h, 1, 1, 1);
+	local bx = p1.bx+p1.nx*h;
+	local by = p1.by+p1.ny*h;
+	local bz = p1.bz+p1.nz*h;
+	if( mx){
+		if( Math.abs( bx-r.x) > mx[0]) bx = r.x+mx[0]*Math.sign( bx-r.x);
+		if( Math.abs( bz-r.z) > mx[2]) bz = r.z+mx[2]*Math.sign( bz-r.z);
+	}
+	r.expand( (bx,by,bz));
+	return r;
+}
+
+
+////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////
+//	
+//	フリーブロックツール。以下のツールの派生元
+//	tool_exterior, tool_interior, tool_tree : そのままextends
+//	tool_column : 柱ツール。ドラッグで上に伸ばせる
+//	tool_slope : 階段ツール。壁側範囲選択、床側範囲選択
+//	tool_roof : 屋根ツール。天井を範囲選択。UIが違う
+//	
+////////////////////////////////////////////////////////////////////////
+
+class MapTools.tool_fblk extends MapTool
+{
+	static OPTIONUIPATH = "/plugin/rpgtools/mapeditor/ui/tool_fblk.ui";
+	usestat = false;
+
+	blkflag = BLK_SOLID |BLK_SOLIDFB;	//	rayTestで使う
+	drot = 0;				//	カメラの回転に追加される
+	stat = 0;				//	multistateブロックに有効
+	filter = 63;
+
+	//	selection
+	selgz = null;		//	SK3DGizmo : 選択したフリーブロック。
+	monfbuid = 0;			//	マウス
+	
+	ispensel = false;		//	ペンで選択。坂、屋根用
+
+	constructor( e){
+		super( e);
+		//
+		optionview = ::loadSKView( OPTIONUIPATH);
+		optionview.addEventListener( ACTION_EVENT, optionevent);
+		selblk = SelectBlock( optionview.findChild( "selblock"));
+		selblk.setBlockPages( [1]);
+		selblk.view.addEventListener( ACTION_EVENT, selblkevent);
+		//	
+		optionview.findChild( "rot0")?.setSelected( true);
+		optionview.findChild( "stat0")?.setSelected( true);
+		local statg = optionview.findChild( "statg");
+		if( statg){
+			if( !usestat){
+				statg.setVisible( false);
+			}else{
+				optionview.findChild( "stata").setSelected( true);
+			}
+		}
+		if( !ispensel){
+			selblk.dnd = 1;
+		}
+	}
+
+	function changeActiveTool( t){
+		if( t != this){
+			clearGuides();
+			selgz = null;
+			if( !(t instanceof MapTools.tool_fblk)){
+				canvas.clearFBSelection();
+			}
+		}else{
+			updateFBSelectionColor();
+		}
+	}
+	
+	//	
+	function refresh(){
+		if( selgz){
+			local fb0 = selgz.ref;
+			local fb = editor.bw.getFreeBlock( fb0.fbuid);
+			if( !fb){
+				removeGuide( "gz"); selgz = null;
+			}else{
+				selgz.setFreeBlock( fb);
+			}
+			updateFBSelectionColor();
+		}
+	}
+
+	function updateFBSelectionColor(){
+		local sel = selgz["ref"]["fbuid"], mon = guides["pen"]["ref"][0];
+		canvas.updateFBSelectionColor( @( fbuid, sk3d){
+			if( fbuid == sel || fbuid == mon) return -1;
+			return PEN_SELECT;
+		});
+	}
+
+	function placeFBGizmo( fb, mask){
+		selgz = super.placeFBGizmo( fb, mask);
+		canvas.addFBSelection( fb.fbuid);
+		updateFBSelectionColor();
+		return selgz;
+	}
+
+	//	pickBlockでフリーブロックが選択された。
+	function freeBlockPicked( fb){
+		placeFBGizmo( fb, -1);
+	}
+
+	function optionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "rot0": case "rot1": case "rot2": case "rot3":
+			optionview.findChild( "rot"..drot)?.setSelected( false);
+			drot = e.src.name[3]-'0';
+			e.src.setSelected( true);
+			break;
+		case "stata": case "statb":
+			local b = e.src.name=="stata"?0:1;
+			if( stat != b){
+				optionview.findChild( "stata").setSelected( b==0);
+				optionview.findChild( "statb").setSelected( b==1);
+				stat = b;
+				selblk.setFreeBlockPages( selblk.pagesrc, stat);
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+	function incParameter( e){
+		optionview.findChild( "rot"..drot)?.setSelected( false);
+		drot = (drot+e.count)&3;
+		optionview.findChild( "rot"..drot)?.setSelected( true);
+	}
+
+	function selblkevent( e){
+		e.consume();
+	}
+
+	function listfb(){
+		return selblk.selitem["fblk"];
+	}
+
+	//	
+	function dndevent( e){
+		local rot = getCameraRot() + drot;
+		local fblk = listfb();
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			e.consume();
+			local hb;
+			hb = fblk && rayTestFB( e, blkflag, fblk, rot);
+			if( hb && ((1<<hb.f)&(2|4|8|16))) rot = hb.f-1;
+			placeFBPlace( fblk, hb, rot);
+			break;
+		case TARGET_DRAG_EXIT:
+			e.consume();
+			placeFBPlace( fblk, null, rot);
+			break;
+		case TARGET_DROP:
+			e.consume();
+			local hb;
+			hb = fblk && rayTestFB( e, blkflag, fblk, rot);
+			if( hb && ((1<<hb.f)&(2|4|8|16))) rot = hb.f-1;
+			if( hb){
+				local fbuid = placeFreeBlock( e, hb, fblk, rot);
+				local fb = editor.bw.getFreeBlock( fbuid);
+				placeFBGizmo( fb, -1);
+			}
+			break;
+		}
+	}
+
+	function _pickfb( hb){
+		if( !pickBlock( hb)){
+			foreach( id in ::MapEditor.toolids){
+				local tool = editor.toolmap[id];
+				if( tool!=this && tool.pickBlock( hb)){
+					editor.changeTool( id);
+					break;
+				}
+			}
+		}
+	}
+
+	//	
+	function canvasevent( e){
+		//	先にギズモチェック
+		if( selgz){
+			local gfn = gizmoevent( e, _getgizmofunc(), null);
+			if( gfn) return gfn;
+			if( e.consumed) return null;
+		}
+		local rot = getCameraRot() + drot;
+		switch( e.id){
+		case MOUSE_MOVED:
+		{
+			local hb;
+			local pens = getPenmap()["p01"], pen = pens[0];
+			if( ispensel){
+				local fblk = listfb();
+				hb = rayTest( e, BLK_SOLID | BLK_SOLIDFB | BLK_DECAL);	//	blkflag
+				if( fblk && !hb["fbuid"]){
+					placePen( hb, pen, PEN_ATTACH);
+				}else{
+					placeSelectPen( hb["fbuid"]!=selgz["ref"]["fbuid"] ? hb : null, pen, PEN_SPOIT);
+				}
+			}else{
+				local hb = rayTest( e, BLK_SOLID | BLK_SOLIDFB | BLK_DECAL);
+				placeSelectPen( hb["fbuid"]!=selgz["ref"]["fbuid"] ? hb : null, pen, PEN_SPOIT);
+			}
+			updateFBSelectionColor();
+			e.consume();
+			break;
+		}
+		case MOUSE_PRESSED:
+		{
+			local hb;
+			if( ispensel){
+				hb = rayTest( e, BLK_SOLID | BLK_SOLIDFB | BLK_DECAL);
+				if( hb){
+					local fblk = listfb();
+					if( fblk && !hb["fbuid"]){
+						if( ((1<<hb.f)&(2|4|8|16))) rot = hb.f-1;
+						return mousePressed( e, hb, fblk, rot);	//	オーバーライドして処理を継続可能
+					}else
+					if( hb["fbuid"]){
+						if( !canvas.selfbmap[hb.fbuid]) canvas.clearFBSelection();
+						if( hb.fbuid != selgz["ref"]["fbuid"]) _pickfb( hb);
+					}
+				}
+			}else{
+				hb = rayTest( e, BLK_SOLID | BLK_SOLIDFB | BLK_DECAL);
+				if( hb["fbuid"]){
+					if( !canvas.selfbmap[hb.fbuid]) canvas.clearFBSelection();
+					if( hb.fbuid != selgz["ref"]["fbuid"]) _pickfb( hb);
+				}else{
+					removeGuide( "gz"); selgz = null;
+					//	階段ツール、屋根ツール以外はドラッグによる範囲選択に対応する！
+					if( !ispensel && hb && e.isMouseDown( BUTTON1_MASK)){
+						hb.setFace( 0);
+						return sel2DStart( e, hb);
+					}
+				}
+				e.consume();
+			}
+			break;
+		}
+		case MOUSE_RELEASED:
+		{
+			if( e.isClicked() && e.isMouseDown( BUTTON2_MASK)){
+				local hb = rayTest( e, BLK_SOLID | BLK_SOLIDFB | BLK_DECAL);
+				if( hb["fbuid"] && hb.fbuid != selgz["ref"]["fbuid"]){
+					_pickfb( hb);
+					suspend();
+				}
+				e.consume();
+				local tool = editor.tool;	//	_pickfbでツール変わってるかも。。。
+				tool.renameGuide( "pen", "tmp");	//	コンテキストメニューの間ガイド表示を継続。。。
+				local fn = tool.showContextMenu( e);
+				tool.removeGuide( "tmp");
+				return fn;
+			}
+			break;
+		}
+		case MOUSE_EXITED:
+		{
+			removeGuide( "fb");
+			removeGuide( "pen");
+			e.consume();
+			break;
+		}
+		case MOUSE_WHEEL_MOVED:
+		{
+			if( e.modifiers & CTRL_MASK){
+				self.incParameter( e);
+				e.consume();
+			}
+			break;
+		}
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_1: case VK_2: case VK_3: case VK_4: case VK_5: 
+				break;
+			case VK_ESCAPE:
+				e.consume();
+				removeGuide( "gz"); selgz = null;
+				updateFBSelectionColor();
+				break;
+			case VK_DELETE:
+				e.consume();
+				deleteSelection();
+				break;
+			case VK_D:
+				if( e.isCommandDown()){
+					if( selgz){
+						local fb = clone selgz.ref;
+						return startDuplicate( fb);
+					}
+				}
+				break;
+			case VK_R:
+				rotateSelection( e.isShiftDown()?-1:1, "rot"..selgz);
+				break;
+			}
+		}
+		if( !e.consumed){
+			return super.canvasevent( e);
+		}
+	}
+
+	function _getgizmofunc(){
+		local rotmv = #((0,0),(0,-1),(-1,-1),(-1,0),);
+		local self = this, editor = editor;
+		return @( gz, op, arg=null){
+			local bop = BlockOperation( editor.bw);
+			self.selblk.deselect();
+			local fb = gz.ref;
+			switch( op){
+			case "move":
+				local pos = (fb.x+arg.d[0],fb.y+arg.d[1],fb.z+arg.d[2]);
+				bop.placeFreeBlock({fblk:fb, fbuid:fb.fbuid, pos:pos});
+				break;
+			}
+			if( bop.len()){
+				//	ギズモの移動を反映。※ドア以外では変化しないはずだけど念のため全ての移動で行う
+				local synct = {}, self = self;
+				bop.redoop .. @() self.syncFBGizmo( synct);
+				bop.undoop .. @() self.restoreFBGizmo( synct);
+				bop.submit( editor, arg["trk"]||null);
+				gz.setFreeBlock( editor.bw.getFreeBlock( fb.fbuid));
+				//	ギズモ動かしたら選択消しちゃおう
+				// self.removeGuide( "fb"); self.selblk.deselect(); self.fblk = null;
+			}
+		}
+	}
+	
+	//	
+	function sel2DStart( e0, hb0){
+		local self = this, canvas = canvas, bw = editor.bw;
+		local box = IRect3D();
+		local a0 = [];
+		
+		local selbox( b){
+			local a = clone a0;
+			local fba = bw.collectFreeBlocks( b, []);
+			foreach( fb in fba){
+				if( fb.contacts( b)) a .. fb.fbuid;
+			}
+			canvas.setFBSelection( a);
+			self.updateFBSelectionColor();
+		}
+		{
+			canvas.setFBSelection( a0);
+			self.updateFBSelectionColor();
+		}
+		//	
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				local hb = self.planeTest( e, hb0);
+				if( hb){
+					local b = makebox( hb0, hb, 0); b.y = 0; b.h = 127;
+					if( b <> box){
+						box.set( b);
+						selbox( b);
+					}
+				}
+				self.removeGuide( "pen");
+				self.place2DRegion( box, PEN_SELECT);
+				break;
+			case MOUSE_RELEASED:
+				local hb = self.rayTest( e, BLK_SOLID | BLK_SOLIDFB | BLK_DECAL);	//	blkflag
+				if( hb.fbuid){
+					local fb = bw.getFreeBlock( hb.fbuid);
+					if( fb) self.placeFBGizmo( fb, -1);
+				}
+				self.removeGuide( "box");
+				return null;
+			case MOUSE_MOVED:	//	普通はこれ来ない
+			case MOUSE_CANCELLED:
+				return null;
+			case KEY_PRESSED:
+				break;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	//	
+	function mousePressed( e, hb, fb, rot){
+	}
+
+	function placeFreeBlock( e, hb, fb, rot){
+		removeGuide( "fb");
+		removeGuide( "gz");
+		selgz = null;
+		//
+		local fbt = ::fblks[fb.fbtype], va = fbt.variations[fb.fbparam&0xfff];
+		local pos = getFBPlacePos( fb, hb, rot);
+		//
+		local bop = BlockOperation( editor.bw);
+		local fbuid = bop.placeFreeBlock({fblk:fb, pos:pos, rot:rot});
+		if( bop.len()){
+			local synct = {}, self = this, canvas = canvas;
+			bop.redoop .. @(){ canvas.clearFBSelection(); }
+			bop.undoop .. @(){ canvas.updateFBSelection(); self.updateFBSelectionColor(); }
+			bop.submit( editor);
+		}
+		return fbuid;
+	}
+
+	function showContextMenu( e){
+		local ctxmenu = [
+			{ id="rotr", lbl="$T.lbl_rotr", icon="\uebab", modkey="R", disable=!selgz },
+			{ id="rotl", lbl="$T.lbl_rotl", icon="\ueba6", modkey="_R", disable=!selgz },
+			"-",
+			{ id="dup", lbl="$T.lbl_duplicate", icon="\ue2bd", modkey="^D", disable=!selgz },
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", modkey="Delete", disable=!selgz},
+			"-",
+			...getDefaultContextMenu( e),
+		];
+		local m = MenuPopup.run( ctxmenu);
+		switch( m["id"]){
+		case "dup":
+			if( selgz){
+				local fb = clone selgz.ref;
+				return startDuplicate( fb);
+			}
+			break;
+		case "delete":
+			deleteSelection();
+			break;
+		case "rotr": case "rotl":
+			rotateSelection( m.id=="rotr"?1:-1);
+			break;
+		default:
+			return processDefaultContextMenu( e, m);
+		}
+	}
+	
+	function rotateSelection( d, trk=null){
+		local rotmv = #((0,0),(0,-1),(-1,-1),(-1,0),);
+		local bop = BlockOperation( editor.bw), bw = editor.bw;
+		foreach( fbuid, sk3d in canvas.selfbmap){
+			local fb = bw.getFreeBlock( fbuid);
+			local rot = (fb.rot+d)&3;
+			local x = fb.x, y = fb.y, z = fb.z;
+			local r = unrotateRect( fb.br, fb.rot);
+			if( !(r.w&1)){ x = x - rotmv[fb.rot][0] + rotmv[rot][0]; }
+			if( !(r.d&1)){ z = z - rotmv[fb.rot][1] + rotmv[rot][1]; }
+			bop.placeFreeBlock({fblk:fb, fbuid:fb.fbuid, rot:rot, pos=(x,y,z)});
+		}
+		if( bop.len()){
+			//	ギズモの移動を反映。※ドア以外では変化しないはずだけど念のため全ての移動で行う
+			local synct = {}, self = this, canvas = canvas;
+			bop.redoop .. @(){ self.syncFBGizmo( synct); }
+			bop.undoop .. @(){ self.restoreFBGizmo( synct); }
+			bop.submit( editor, trk);
+			if( selgz){
+				selgz.setFreeBlock( bw.getFreeBlock( selgz.ref.fbuid));
+			}
+		}
+	}
+
+	function deleteSelection(){
+		removeGuide( "gz");
+		selgz = null;
+		local bop = BlockOperation( editor.bw);
+		local sels = Table.map( canvas.selfbmap, @( v, i) i);	//	戻す用
+		foreach( fbuid, sk3d in canvas.selfbmap){
+			bop.deleteFreeBlock({ fbuid:fbuid });
+		}
+		if( bop.len()){
+			//	ギズモの削除を反映。
+			local synct = {}, self = this, canvas = canvas;
+			bop.redoop .. @(){ self.syncFBGizmo( synct); canvas.clearFBSelection(); self.removeGuide( "pen"); }
+			bop.undoop .. @(){ self.restoreFBGizmo( synct); canvas.setFBSelection( sels); self.updateFBSelectionColor(); }
+			bop.submit( editor);
+		}
+	}
+
+	function startDuplicate( fb){
+		local blkflag = BLK_SOLID, rot = fb.rot, self = this, canvas = canvas;
+		fb = FreeBlock.create({fbtype=fb.fbtype, fbparam=fb.fbparam});
+		selgz = null;
+		removeGuide( "gz");
+		removeGuide( "pen");
+		removeGuide( "fb");
+		updateFBSelectionColor();
+		{
+			local p = _getlocalmouse();
+			local hb = rayTestFB( p, blkflag, fb, rot);
+			placeFBPlace( fb, hb, rot);
+		}
+		local editor = editor;
+		local fn( e){
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				local hb = self.rayTestFB( e, blkflag, fb, rot);
+				self.placeFBPlace( fb, hb, rot);
+				break;
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				local hb = self.rayTestFB( e, blkflag, fb, rot);
+				if( hb){
+					local fbuid = self.placeFreeBlock( e, hb, fb, rot);
+					local fb = editor.bw.getFreeBlock( fbuid);
+					self.placeFBGizmo( fb, -1);
+				}
+				return null;
+			case KEY_PRESSED:
+				break;
+			}
+			return fn;
+		}
+		return fn;
+	}
+}
+
+class MapTools.tool_exterior extends MapTools.tool_fblk
+{
+	usestat = true;
+
+	constructor( e){
+		super( e);
+		selblk.setFreeBlockPages( [FB_EXDOOR,FB_EXLAMP,FB_EXTERIOR]);
+		// selblk.setPage( 0);
+	}
+}
+
+class MapTools.tool_interior extends MapTools.tool_fblk
+{
+	usestat = true;
+
+	constructor( e){
+		super( e);
+		selblk.setFreeBlockPages( [FB_INDOOR,FB_INLAMP,FB_INTERIOR]);
+		// selblk.setPage( 0);
+	}
+}
+
+class MapTools.tool_column extends MapTools.tool_fblk
+{
+	constructor( e){
+		super( e);
+		selblk.setFreeBlockPages( [FB_COLUMN,FB_LADDER,]);	//	FB_BAR
+	}
+
+	function mousePressed( e, hb0, fb0, rot){
+		local fbt = fb0.conf(), va = fbt.variations[fb0.fbparam&0xfff];
+		if( va["ctype"] == 2){
+			return mousePressed_h( e, hb0, fb0, rot);
+		}else{
+			return mousePressed_v( e, hb0, fb0, rot);
+		}
+	}
+
+	function mousePressed_v( e, hb0, fb0, rot){
+		removeGuide( "gz");
+		selgz = null;
+		// if( hb0.f != 0){
+		// 	hb0.bx += hb0.nx; hb0.by += hb0.ny; hb0.bz += hb0.nz;
+		// 	hb0.setFace( 0);
+		// 	hb0.by --;
+		// }
+		local fbt = ::fblks[fb0.fbtype], vari = fb0.fbparam&0x3ff, va = fbt.variations[vari];
+		local br = fb0.br, h0 = br.h;
+		local hb = #HitBlock(); hb.set( hb0);
+		//
+		{
+			local p3d = SK3DObject( RPGToolMesh.createPushMesh( br.w, br.h, br.d, 1));
+			guides["fb"].addChild( p3d);
+		}
+		//
+		local self = this, editor = editor;
+		local fn( e){
+			e.computeLocal( self.canvas.view.getInvMatrix());
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				e.consume();
+				local h = self.planeFaceHeight( e, hb0, 0), bh = ((h*2.0)|0) + h0;
+				if( br.h != bh){
+					local _fb = FreeBlock.create({fbtype:fb0.fbtype, fbparam:vari|(bh<<26)});
+					hb.by = hb0.by + ((bh>=h0) ? (bh-h0)/2 : (bh-h0-1)/2);	//	floor
+					self.placeFBPlace( _fb, hb, rot);
+					br.h = bh;
+					local p3d = SK3DObject( RPGToolMesh.createPushMesh( br.w, br.h, br.d, 1));
+					self.guides["fb"].addChild( p3d);
+				}
+				break;
+			// case MOUSE_PRESSED:
+			case MOUSE_RELEASED:
+				self.removeGuide( "fb");
+				local _fb = FreeBlock.create({fbtype:fb0.fbtype, fbparam:vari|(br.h<<26)});
+				local bop = BlockOperation( editor.bw);
+				local pos = self.getFBPlacePos( _fb, hb, rot);
+				bop.placeFreeBlock({fblk:_fb, pos:pos, rot:rot});
+				if( bop.len()) bop.submit( editor);
+				return null;
+			}
+			return fn;
+		};
+		return fn;
+	}
+	
+	function mousePressed_h( e, hb0, fb0, rot){
+		removeGuide( "gz");
+		selgz = null;
+		local camrot = (rot+3)&3;
+		local fbt = ::fblks[fb0.fbtype], vari = fb0.fbparam&0x3ff, va = fbt.variations[vari];
+		local br = fb0.br, w0 = br.w;
+		local hb = #HitBlock(); hb.set( hb0);
+		//
+		{
+			local p3d = SK3DObject( RPGToolMesh.createPushMesh( br.w, br.h, br.d, 16));
+			guides["fb"].addChild( p3d);
+		}
+		//
+		local b_ = (rot&1)?"bz":"bx", bs = (rot==1||rot==2)?-1:1;
+		local self = this, editor = editor;
+		local fn( e){
+			e.computeLocal( self.canvas.view.getInvMatrix());
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				e.consume();
+				local h = self.planeFaceHeight( e, hb0, camrot+1), bw = ((h*2.0)|0) + w0;
+				if( br.w != bw){
+					local _fb = FreeBlock.create({fbtype:fb0.fbtype, fbparam:vari|(bw<<26)});
+					if( w0 < 0){	//	反対側に伸ばさんと、、、、
+					}else{
+						hb[b_] = hb0[b_] + ((bw>=w0) ? (bw-w0)/2 : (bw-w0-1)/2) * bs;	//	floor
+					}
+					self.placeFBPlace( _fb, hb, rot);
+					br.w = bw;
+					local p3d = SK3DObject( RPGToolMesh.createPushMesh( br.w, br.h, br.d, 4|16));
+					self.guides["fb"].addChild( p3d);
+				}
+				break;
+			// case MOUSE_PRESSED:
+			case MOUSE_RELEASED:
+				self.removeGuide( "fb");
+				local _fb = FreeBlock.create({fbtype:fb0.fbtype, fbparam:vari|(br.w<<26)});
+				local bop = BlockOperation( editor.bw);
+				local pos = self.getFBPlacePos( _fb, hb, rot);
+				bop.placeFreeBlock({fblk:_fb, pos:pos, rot:rot});
+				if( bop.len()) bop.submit( editor);
+				return null;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	function _getgizmofunc(){
+		local self = this, editor = editor;
+		local superfn = super._getgizmofunc();
+		local br0 = clone guides["gz"].br, fb0 = clone guides["gz"].ref;
+		local fbt = fb0.conf(), va = fbt.variations[fb0.fbparam&0xfff];
+		if( va.ctype!=2){
+			return @( gz, op, arg=null){
+				// self.removeGuide( "fb"); self.selblk.deselect(); self.fblk = null;
+				switch( op){
+				case "move":
+					if( arg.part==4){
+						local br1 = (clone br0).pushAxis( arg.part-1, arg.dot);
+						local fb1 = fb0.reshapeColumn( br1, fb0.rot);
+						local bop = BlockOperation( editor.bw);
+						local pos = (fb1.x,fb1.y,fb1.z);
+						bop.placeFreeBlock({fblk:fb1, fbuid:fb0.fbuid, pos:pos});
+						bop.submit( editor, arg["trk"]||null);
+						gz.setFreeBlock( editor.bw.getFreeBlock( fb0.fbuid));
+						return;
+					}
+					break;
+				}
+				return superfn( gz, op, arg);
+			}
+		}else{
+			return @( gz, op, arg=null){
+				// self.removeGuide( "fb"); self.selblk.deselect(); self.fblk = null;
+				switch( op){
+				case "move":
+					if( arg.part==1 || arg.part==2){
+						local br1 = (clone br0).pushAxis( arg.part-1, arg.dot);
+						local fb1 = fb0.reshapeColumn( br1, fb0.rot);
+						local bop = BlockOperation( editor.bw);
+						local pos = (fb1.x,fb1.y,fb1.z);
+						bop.placeFreeBlock({fblk:fb1, fbuid:fb0.fbuid, pos:pos});
+						bop.submit( editor, arg["trk"]||null);
+						gz.setFreeBlock( editor.bw.getFreeBlock( fb0.fbuid));
+						return;
+					}
+					break;
+				}
+				return superfn( gz, op, arg);
+			}
+		}
+	}
+}
+
+class MapTools.tool_slope extends MapTools.tool_fblk
+{
+	static OPTIONUIPATH = "/plugin/rpgtools/mapeditor/ui/tool_slope.ui";
+	ispensel = true;
+
+	constructor( e){
+		super( e);
+		selblk.setFreeBlockPages( [FB_SLOPE,FB_STAIR]);
+		// selblk.setPage( 0);
+	}
+
+	function mousePressed( e, hb0, fb0, rot){
+		removeGuide( "gz");
+		selgz = null;
+		canvas.clearFBSelection();
+		local fbt = ::fblks[fb0.fbtype], vari = fb0.fbparam&0x3ff, va = fbt.variations[vari];
+		local box = IRect3D();
+		//
+		local self = this, editor = editor, blkflag = blkflag;
+		
+		local makefb( b){
+			local _z = (rot&1)?"x":"z";
+			local _d = (rot&1)?"w":"d";
+			if( hb0.f>0 && b.h > b[_d]){
+				b = IRect3D( b);
+				if( rot < 2){
+					b[_z] += b[_d] - b.h; b[_d] = b.h;
+				}else{
+					b[_d] = b.h;
+				}
+			}
+			local rb = unrotateRect( b, rot);
+			local _fb = FreeBlock.create({fbtype:fb0.fbtype, fbparam:vari|(rb.w<<20)|(rb.d<<26)});
+			local br = _fb.br.rotate( rot);
+			local hb = HitBlock(); hb.set( hb0);
+			hb.bx = rb.x+rb.w/2 - hb.nx;
+			hb.by = rb.y/*+rb.h/2*/ - hb.ny + br.h/2;
+			hb.bz = rb.z+rb.d/2 - hb.nz;
+			return { fb = _fb, hb = hb};
+		}
+
+		local fn( e){
+			e.computeLocal( self.canvas.view.getInvMatrix());
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				e.consume();
+				local hb = self.rayTest( e, blkflag);
+				if( !hb) break;
+				local b = makebox( hb0, hb, 1, #(16,16,16));
+				if( hb && b <> box){
+					local t = makefb( b);
+					self.placeFBPlace( t.fb, t.hb, rot, false);
+					//
+					local pm = RPGToolMesh.createFaceMesh( b.w, b.h, b.d, PEN_ATTACH, 63);
+					local p3d = SK3DObject( pm);
+					p3d.pos( b.x, b.y, b.z).scale( 0.5);
+					self.addGuide( "push", p3d);
+					box.set( b);
+				}
+				break;
+			// case MOUSE_PRESSED:
+			case MOUSE_RELEASED:
+				self.removeGuide( "fb");
+				self.removeGuide( "push");
+				if( box.valid()){
+					local t = makefb( box), hb = t.hb;
+					local bop = BlockOperation( editor.bw);
+					local fbuid = bop.placeFreeBlock({fblk:t.fb, pos:(hb.bx+hb.nx,hb.by+hb.ny,hb.bz+hb.nz), rot:rot});
+					if( bop.len()){
+						bop.redoop .. @(){ self.canvas.clearFBSelection(); }
+						bop.undoop .. @(){ self.canvas.updateFBSelection(); self.updateFBSelectionColor(); }
+						bop.submit( editor);
+						local fb = editor.bw.getFreeBlock( fbuid);
+						if( fb) self.placeFBGizmo( fb, -1);
+					}
+				}
+				return null;
+			// case MOUSE_CANCELLED:
+			// 	return null;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	function _getgizmofunc(){
+		local self = this, editor = editor;
+		local superfn = super._getgizmofunc();
+		local br0 = clone guides["gz"].br, fb0 = clone guides["gz"].ref;
+		// local fb00 = editor.bw.getFreeBlock( fb0.fbuid), br00 = fb00.ir;		//	値がずれてるかチェック。。。
+		return @( gz, op, arg=null){
+			// self.removeGuide( "fb"); self.selblk.deselect(); self.fblk = null;
+			switch( op){
+			case "move":
+				if( arg.part==1||arg.part==2||arg.part==5||arg.part==6){
+					local br1 = (clone br0).pushAxis( arg.part-1, arg.dot);
+					local fb1 = fb0.reshapeSlope( br1, fb0.rot);
+					local bop = BlockOperation( editor.bw);
+					local pos = (fb1.x,fb1.y,fb1.z);
+					bop.placeFreeBlock({fblk:fb1, fbuid:fb0.fbuid, pos:pos});
+					bop.submit( editor, arg["trk"]||null);
+					gz.setFreeBlock( editor.bw.getFreeBlock( fb0.fbuid));
+					return;
+				}
+				break;
+			}
+			return superfn( gz, op, arg);
+		}
+	}
+}
+
+
+class MapTools.tool_roof extends MapTools.tool_fblk
+{
+	static OPTIONUIPATH = "/plugin/rpgtools/mapeditor/ui/tool_roof.ui";
+
+	hval = null;			//	
+	ispensel = true;
+	
+	constructor( e){
+		super( e);
+		selblk.setFreeBlockPages( [FB_ROOF]);
+		// selblk.setPage( 0);
+		optionview.findChild( "rot0")?.setSelected( false);
+		optionview.findChild( "rot1")?.setSelected( true);
+		drot = 1;
+		hval = createNumInputBehavior( optionview.findChild( "hval"));
+		hval.setRange( 1, 16, 1);
+		hval.setValue( 4);
+	}
+
+	function incParameter( e){
+		hval.setValue( hval.getValue() + e.count);
+	}
+
+	function selblkevent( e){
+		super.selblkevent( e);
+		if( e.count == 2 && selgz){
+			//	屋根置き換え。角度の違うのはダメ。
+			local fblk = listfb();
+			local fb0 = selgz.ref;	//	FreeBlock
+			local fbuid = fb0.fbuid;
+			removeGuide( "fb");
+			removeGuide( "gz");
+			local p = {
+				fbuid = fbuid,
+				fbtype = fblk.fbtype,
+				fbparam = (fblk.fbparam&255) | (fb0.fbparam&0xfffff000),
+				pos = [fb0.x,fb0.y,fb0.z],
+				rot = fb0.rot,
+			}
+			local fb = FreeBlock.create( p);
+			local bop = BlockOperation( editor.bw);
+			bop.placeFreeBlock( { fblk=fb, fbuid=fbuid});
+			if( bop.len()){
+				bop.submit( editor);
+				local fb = editor.bw.getFreeBlock( fbuid);
+				placeFBGizmo( fb, -1);
+			}
+		}
+	}
+
+	function mousePressed( e, hb0, fb0, rot){
+		removeGuide( "gz");
+		selgz = null;
+		canvas.clearFBSelection();
+		local fbt = ::fblks[fb0.fbtype], vari = fb0.fbparam&0x3ff, va = fbt.variations[vari];
+		local box = IRect3D();
+		//
+		local self = this, editor = editor, blkflag = blkflag, rbh = hval.getValue();
+		
+		local makefb( b){
+			local rb = unrotateRect( b, rot);
+			local _fb = FreeBlock.create({fbtype:fb0.fbtype, fbparam:vari|(rb.w<<14)|(rbh<<20)|(rb.d<<26)});
+			local br = _fb.br.rotate( rot);
+			local hb = HitBlock(); hb.set( hb0);
+			hb.bx = rb.x+rb.w/2 - hb.nx;
+			hb.by = rb.y/*+rb.h/2*/ - hb.ny + br.h/2 - 1;
+			hb.bz = rb.z+rb.d/2 - hb.nz;
+			return { fb = _fb, hb = hb};
+		}
+
+		local fn( e){
+			e.computeLocal( self.canvas.view.getInvMatrix());
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				e.consume();
+				local hb = self.planeTest( e, hb0);
+				local b = makebox( hb0, hb, 1, #(20,16,20));
+				if( hb && b <> box){
+					local t = makefb( b);
+					self.placeFBPlace( t.fb, t.hb, rot, false);
+					//
+					local pm = RPGToolMesh.createFaceMesh( b.w, b.h, b.d, PEN_ATTACH, 63);
+					local p3d = SK3DObject( pm);
+					p3d.pos( b.x, b.y, b.z).scale( 0.5);
+					self.addGuide( "push", p3d);
+					box.set( b);
+				}
+				break;
+			// case MOUSE_PRESSED:
+			case MOUSE_RELEASED:
+				self.removeGuide( "fb");
+				self.removeGuide( "push");
+				if( box.valid()){
+					local t = makefb( box), hb = t.hb;
+					local bop = BlockOperation( editor.bw);
+					local fbuid = bop.placeRoof({fblk:t.fb, pos:(hb.bx+hb.nx,hb.by+hb.ny,hb.bz+hb.nz), rot:rot});
+					if( bop.len()) {
+						bop.redoop .. @(){ self.canvas.clearFBSelection(); }
+						bop.undoop .. @(){ self.canvas.updateFBSelection(); self.updateFBSelectionColor(); }
+						bop.submit( editor);
+						local fb = editor.bw.getFreeBlock( fbuid);
+						if( fb) self.placeFBGizmo( fb, -1);
+					}
+				}
+				return null;
+			// case MOUSE_CANCELLED:
+			// 	return null;
+			}
+			return fn;
+		};
+		return fn;
+	}
+}
+
+class MapTools.tool_tree extends MapTools.tool_fblk
+{
+	constructor( e){
+		super( e);
+		selblk.setFreeBlockPages( [FB_TREE,FB_ROCK]);
+		// selblk.setPage( 0);
+	}
+}
+
+
+class MapTools.tool_crack extends MapTools.tool_fblk
+{
+	usestat = true;
+
+	constructor( e){
+		super( e);
+		selblk.setFreeBlockPages( [FB_CRACK]);
+		// selblk.setPage( 0);
+	}
+
+	//
+	function dndevent( e){
+		local rot = getCameraRot();// + drot;		//	drotは
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			e.consume();
+			local hb;
+			hb = fblk && rayTestFB( e, blkflag, fblk, rot);
+			if( hb && ((1<<hb.f)&(2|4|8|16))) rot = hb.f-1;
+			local fb = fblk && hb && _makefb( fblk, hb);
+			if( hb["f"] == 0){ hb.by += fblk.br.y - fb.br.y - 1; }
+			placeFBPlace( fb, hb, rot);
+			break;
+		case TARGET_DRAG_EXIT:
+			e.consume();
+			placeFBPlace( fblk, null, rot);
+			break;
+		case TARGET_DROP:
+			e.consume();
+			local hb;
+			hb = fblk && rayTestFB( e, blkflag, fblk, rot);
+			if( hb && ((1<<hb.f)&(2|4|8|16))) rot = hb.f-1;
+			if( hb){
+				local fb = _makefb( fblk, hb);
+				if( hb.f == 0){ hb.by += fblk.br.y - fb.br.y - 1; }
+				local fbuid = placeFreeBlock( e, hb, fb, rot);
+				local fb = editor.bw.getFreeBlock( fbuid);
+				placeFBGizmo( fb, -1);
+			}
+			break;
+		}
+	}
+
+	function _makefb( fb0, hb){
+		local fbt = fb0.conf(), va = fbt.variations[fb0.fbparam&0x3ff];
+		local p = (fb0.fbparam&(0x800003ff)) | ((hb.f==0&&!!va["fitfloor"])<<30) | (drot<<28);
+		return FreeBlock.create({fbtype:fb0.fbtype, fbparam:p});
+	}
+}

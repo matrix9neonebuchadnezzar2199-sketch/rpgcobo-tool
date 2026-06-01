@@ -1,0 +1,478 @@
+
+import SKViewPropertyID;
+
+class SKLabelView extends SKView
+{
+	static isdir = true;		//	
+	static icontype = "ttf";
+	static nostretchinner = 1;	//	中のstretchは行わない。
+
+	fontattr = null;				//	FontAttribute
+	resetattr = false;				//	bool
+	textbox = null;					//	TextBox 描画用
+	text = null;					//	* : エスケプシーケンスやdictを適用する前のテキスト。※string以外が入っている場合あり！！！！！
+	usetemplate = true;				//	bool : テンプレート書式を有効化
+
+	_defer = false;					//	bool : 内部計算を後回しモード
+
+	constructor( s="", a=null){
+		fontattr = a || #FontAttribute( Fonts.get( "ui"), 12, 0xffffffff, SK_FONT_BOLD);
+		text = s;
+		textbox = TextBox( fontattr);
+		if( s != "") setText( s);
+		pickable = false;
+	}
+
+	function getText(){
+		return text;
+	}
+
+	function resetAttribute(){
+		textbox.setAttribute( fontattr);
+		resetattr = false;
+	}
+	
+	//	テキストを設定する。↓のコード変換も行う。ただしgetText()で得られる文字列は渡したsそのもの。
+	//	・エスケープ文字のデコード
+	//	・テンプレート形式の解釈と実行
+	function setText( s){
+		if( s==null || s==undefined) s = "";
+		text = s;
+		if( !_defer) setTextBody( text);
+	}
+	
+	function setTextBody( s){
+		if( resetattr) resetAttribute();
+		if( text["applyToLabel"]){		//	RichText
+			text.applyToLabel( this);
+		}else{
+			if( typeof( s) == SS_TABLE) s = ::lang( s);
+			s = string( s);
+			if( usetemplate && s.contains( '$')){	//	テンプレート形式
+				local fn = ::compiletemplate_c( s);		//	※キャッシュされる
+				try{
+					s = fn();
+				}catch( ex){
+					printexception( ex);	//	とりあえずスルー
+				}
+			}
+			s = decodeESC( s);
+			textbox.setText( s, fontattr);
+			resetattr = false;
+		}
+		updateInnerLayout();
+		repaint();
+	}
+	
+	function setValue( a, b=undefined){
+		if( b==undefined){
+			if( typeof( a) == SS_CLOSURE){
+				a = a();
+			}
+			if( a instanceof ::ptr){
+				setSKViewValue( a);
+			}else
+			if( typeof( a) == SS_ARRAY){
+				setText( a[0]);
+				textbox.colormask = a[1]|(textbox.colormask&0xff);			//	setColor( a[1]);
+			}else{
+				setText( a);
+				textbox.colormask = 0xffffff00|(textbox.colormask&0xff);
+			}
+		}else{
+			return super.setValue( a, b);
+		}
+	}
+
+	function updateLayout(){
+		textbox.width = bnd.w | 0;
+		textbox.height = bnd.h | 0;
+		repaint();
+		updateInnerLayout();
+	}
+
+	function updateInnerLayout(){
+		//	子をテキストの矩形に合わせてアラインする
+		if( !_defer && children){
+			if( resetattr){
+				textbox.setAttribute( fontattr);
+				resetattr = false;
+			}
+			local tr = textbox.bnd, lx = textbox.lx, ly = textbox.ly+tr.y;
+			foreach( v in children){
+				//	ラベルに対してのアラインは上中下、左右。ストレッチモードの場合は上下に対しては中左右に対しては左。
+				local vr = v.bnd;
+				local a = v.stretchalign;
+				local px, py;
+				switch( a&5){
+				case 0:	case 1: case 5: px = lx; break;	//	左
+				case 4: px = lx+tr.w; break;	//	右
+				}
+				switch( a&10){
+				case 2: py = ly; break;			//	上
+				case 0: case 10: py = ly+tr.h*0.5; break;	//	中
+				case 8: py = ly+tr.h; break;		//	下
+				}
+				px = Math.round( px); py = Math.round( py);
+				v.alignpos = Vector3D( px, py, 0.0);
+				v.updateMotionParam( POSITION, v.framepos);
+				v.stretchsize = null;
+				v.repaint();
+			}
+		}
+	}
+	
+	//	SKLabelViewのルールで中のstretchは行わない。
+	function stretchSize( w, h){
+		if( w==bnd.w && h==bnd.h) return;
+		bnd.w = w; bnd.h = h;
+		updateLayout();
+		matdirty = true;
+	}
+
+	function computeSizeDeltaSelf( d){
+		local sa = stretchalign, hs = (sa&5)==5, vs = (sa&10)==10;
+		if( hs|vs){
+			local s0 = getOriginalSize(), mt = fontattr.getFontMetrics();
+			local mh = s0[1]-mt.linespace;	//	縦に限り上下のマージンを残すように
+			local tbnd = textbox.bnd, dw = tbnd.w-bnd.w, dh = tbnd.h-bnd.h+mh;
+			local a = 1<<textbox.align;
+			//["0:←↑・","1:・↑・","2:・↑→","3:←・・","4:・〇・","5:・・→","6:←↓・","7:・↓・","8:・↓→","9:・↑・(LINE)","10:・〇・(LINE)","11:・↓・(LINE)"];
+			local xmask = (1<<1)|(1<<4)|(1<<7)|(1<<9)|(1<<10)|(1<<11);
+			local ymask = (1<<3)|(1<<4)|(1<<5);
+			local sx = 1.0, sy = 1.0;
+			if( sa&16){ sx = parent.bnd.w / bnd.w; sy = parent.bnd.h / bnd.h; }
+			if( hs && dw*dw > 0.1) d.x = Math.max( d.x, Math.ceil( sx*dw*((a&xmask)?1:1)));	//1,4,7,9,10,11
+			if( vs && dh*dh > 0.1) d.y = Math.max( d.y, Math.ceil( sy*dh*((a&ymask)?1:1)));
+			return false;
+		}
+		return false;	//	中身がさらにレイアウトを伸ばすことはない
+	}
+
+	function addChild( c){
+		super.addChild( c);
+		updateInnerLayout();
+	}
+
+	function insertChild( i, c){
+		super.insertChild( i, c);
+		updateInnerLayout();
+	}
+	
+	function moveFrame( t0, t){
+		moveFrameSelf( t0, t);
+		foreach( c in children){
+			c.moveFrame( c.framepos, t);
+		}
+	}
+	
+	function render(){
+		if( resetattr){
+			textbox.setAttribute( fontattr);
+			resetattr = false;
+		}
+		skDrawTextBox( textbox);
+	}
+
+	/**
+	 *	フォントスタイルを設定する。
+	 */
+	function setFontAttribute( a){
+		fontattr = a;
+		resetattr = true;
+		repaint();
+	}
+
+	function isMultiline(){
+		local wrap = textbox.wrapmode;
+		return wrap==1 || wrap==2;
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//	Parameter get/set
+
+	function setColor( c){
+		fontattr.color = c;
+		resetattr = true;
+		repaint();
+	}
+
+	function getColor(){
+		return fontattr.color;
+	}
+
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[LABEL]),
+		( SKVP[TEXTCOLOR]),
+		( SKVP[FONT]),
+		( SKVP[TEXTALIGN]),
+		( SKVP[WRAPTEXT]),
+		( SKVP[AUTOFITWEIGHT]),
+		( SKVP[TEXTCLIP]),
+		( SKVP[USETEMPLATE]),
+		];
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case LABEL : return string( text);
+		case FONT : return {
+			fontname=fontattr.font.name, fontsize=fontattr.size, fontcolor=fontattr.color, fontflags=fontattr.flags,
+			strokecolor = fontattr.strokecolor, strokesize = fontattr.strokesize, strokex = fontattr.strokex, strokey = fontattr.strokey,
+		};	//	fontattr.advance, fontattr.linespace
+		case TEXTCOLOR : return (textbox.colormask&0xff) | (fontattr.color&0xffffff00);
+		case WRAPTEXT : return textbox.wrapmode;
+		case TEXTALIGN : return textbox.align;
+		case AUTOFITWEIGHT : return textbox.autofitw;
+		case TEXTCLIP : return textbox.clip;
+		case USETEMPLATE : return usetemplate;
+		default : return super.getParam( pid);
+		}
+	}
+
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case LABEL :
+			{
+				setText( p0);
+			}
+			break;
+		case FONT :
+			{
+				local c0 = fontattr.color;
+				local fa = FontAttribute( ::Fonts.get( p0.fontname), p0.fontsize, c0, p0.fontflags);
+				fa.strokecolor = p0["strokecolor"] || 0xff;
+				fa.strokesize = p0["strokesize"] || 0;
+				fa.strokex = p0["strokex"] || 0;
+				fa.strokey = p0["strokey"] || 0;
+				setFontAttribute( fa);
+				updateInnerLayout();
+			}
+			break;
+		case TEXTCOLOR :
+			local c = Math.lerpcolor( p0, p1, w);
+			textbox.colormask = (textbox.colormask&0xffffff00)|(c&0xff);	//	premult alphaなので
+			if( (fontattr.color&0xffffff00)!=(c&0xffffff00)){
+				fontattr.color = c | 0xff;
+				resetattr = true;
+			}
+			repaint();
+			break;
+		case WRAPTEXT :
+			textbox.wrapmode = p0; repaint();
+			updateInnerLayout();
+			break;
+		case TEXTALIGN :
+			textbox.align = p0; repaint();
+			updateInnerLayout();
+			break;
+//		case PARAM_TEXT_SPACE :
+//			fontattr.advance = (w<=0.0)?p0:p0+(p1-p0)*w;
+//			fontattr.linespace = (w<=0.0)?p0:p0+(p1-p0)*w;
+//			resetattr = true; repaint();
+//			break;
+		case AUTOFITWEIGHT :
+			textbox.autofitw = p0; textbox.wrapmode = textbox.wrapmode; repaint();
+			updateInnerLayout();
+			break;
+		case TEXTCLIP :
+			textbox.clip = p0; repaint();
+			break;
+		case USETEMPLATE :
+			usetemplate = !!p0;
+			if( !_defer) setTextBody( text);
+			break;
+		default:
+			super.setParam( pid, p0, p1, w);
+			break;
+		}
+	}
+	
+	//	一時的に内部レイアウト計算を
+	function setSKViewEntityData( d){
+		_defer = true;
+		super.setSKViewEntityData( d);
+		_defer = false;
+		setTextBody( text);
+	}
+}
+
+class SKSpriteLabelView extends SKView
+{
+	clpset = null;				//
+	format = "c_%c.png"			//
+	advx = 0;					//
+	textalign = 0;				//
+	text = "";					//	TODO wstringにしないと化ける
+
+	sp = null;					//	[] : 全てのSpriteが入る。
+	spcolor = 0xffffffff;
+	spblend = SK_PMAMIX;
+
+	constructor(){
+		enabled = 0;
+	}
+
+	function setText( t){
+		local t = string( t);
+		if( text == t) return;
+		text = t;
+		_setText( t);
+	}
+
+	function _setText( t){
+		if( !clpset) return;
+		local a = sp = [];
+		local x = 0, c = spcolor;
+		c = (spblend==SK_PMAMIX) ? Math.lerpcolor( c&0xff, c, (c&0xff)/255.0) : c;
+		foreach( ch in t){
+			local r = clpset.getResource( sprintf( format, ch));
+			if( r){
+				local s = clone r.getContent();
+				s.bnd.x = x;
+				s.color0 = c;
+				s.blend = spblend;
+				x += s.bnd.w + advx;
+				a .. s;
+			}else{
+				//	err sp?
+			}
+		}
+		updateLayout();
+	}
+
+	function setColor( c){
+		spcolor = c;
+		c = (spblend==SK_PMAMIX) ? Math.lerpcolor( c&0xff, c, (c&0xff)/255.0) : c;
+		foreach( s in sp) s.color0 = c;
+		repaint();
+	}
+
+	function updateLayout(){
+		local p = null;
+		if( textalign && length( sp)){
+			local w = bnd.w, h = bnd.h;
+			local s1 = sp[length( sp)-1];
+			local sw = s1.bnd.x+s1.bnd.w, sh = s1.bnd.h;
+			p = Vector3D( 0.0);
+			switch( textalign) {
+			case 1 : case 4 : case 7 :
+				p.x = ((w - sw) * 0.5) | 0;
+				break;
+			case 2 : case 5 : case 8 :
+				p.x = (w - sw) | 0;
+				break;
+			}
+			switch( textalign) {
+			case 3 : case 4 : case 5 :
+				p.y = ((h - sh) * 0.5)|0;
+				break;
+			case 6 : case 7 : case 8 :
+				p.y = (h - sh)|0;
+				break;
+			}
+		}
+		foreach( s in sp) s.pos = p;
+		repaint();
+	}
+
+	function render(){
+		skDrawSprites( sp);
+	}
+
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT]),
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[LABEL]),
+		( SKVP[SPRITESHEET]),
+		( SKVP[IMAGEBLEND]),
+		( SKVP[TEXTALIGN]),
+		( SKVP[TEXTADVANCE]),
+		( SKVP[TEXTCOLOR]),
+		( SKVP[PATHFORMAT]),
+		];
+	}
+
+	function getParam( pid){
+		switch( pid){
+		case LABEL : return text;
+		case TEXTALIGN : return textalign;
+		case SPRITESHEET : return clpset["path"] || "";
+		case IMAGEBLEND : return spblend;
+		case TEXTADVANCE : return advx;
+		case TEXTCOLOR : return spcolor;
+		case PATHFORMAT : return format;
+		default : return super.getParam( pid);
+		}
+	}
+
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case LABEL :
+			{
+				setText( p0);
+			}
+			break;
+		case SPRITESHEET :
+			{
+				local s = ::getResource( p0);
+				if( s instanceof ::SpriteSheet){
+					clpset = s;
+					_setText( text);
+					updateLayout();
+				}
+			}
+			break;
+		case IMAGEBLEND :
+			spblend = p0;
+			local c = spcolor;
+			c = (spblend==SK_PMAMIX) ? Math.lerpcolor( c&0xff, c, (c&0xff)/255.0) : c;
+			foreach( s in sp){ s.color0 = c; s.blend = p0; }
+			repaint();
+			break;
+		case TEXTALIGN :
+			if( textalign != p0){
+				textalign = p0;
+				updateLayout();
+			}
+			break;
+		case TEXTADVANCE :
+			if( advx != p0){
+				advx = p0;
+				_setText( text);
+				updateLayout();
+			}
+			break;
+		case TEXTCOLOR :
+			local c = spcolor = Math.lerpcolor( p0, p1, w);
+			c = (spblend==SK_PMAMIX) ? Math.lerpcolor( c&0xff, c, (c&0xff)/255.0) : c;
+			foreach( s in sp) s.color0 = c;
+			repaint();
+			break;
+		case PATHFORMAT :
+			if( p0 != format){
+				format = p0;
+				_setText( text);
+				updateLayout();
+			}
+			break;
+		default:
+			super.setParam( pid, p0, p1, w);
+			break;
+		}
+	}
+}

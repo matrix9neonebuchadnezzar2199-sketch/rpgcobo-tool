@@ -1,0 +1,494 @@
+
+local sermap_id = {}
+local sermap_cls = {}
+
+class Serializer
+{
+	cls = null;					//	class      : クラス。
+	classid = 0;				//	int : クラスID。被った場合はエラー。もしくはstaticを定義しておく。
+	
+	newinstance = null;			//	class|function :
+	readfunc = null;			//	function   : シリアライズメソッド。
+	writefunc = null;			//	function   : シリアライズメソッド。
+
+	constructor( c, cid, rfunc = null, wfunc = null){
+		if( !c) return;
+		cls = c;
+		classid = cid;
+		readfunc = rfunc || c["readObject"];
+		writefunc = wfunc || c["writeObject"];
+		newinstance = c["new"] || c;
+	}
+}
+
+function registerSerializable( cls, cid, rfunc = null, wfunc = null){
+	if( typeof( cid) != SS_INTEGER || cid < 16) throw Exception( "invalid SerialUID : " .. cid);
+	if( cid in sermap_id){
+		if( sermap_id[cid].cls == cls) return;	//	ma-ii
+		throw Exception( "Duplicated SerialUID : " .. cid .." : " .. cls .. " , " .. sermap_id[cid].cls );
+	}
+	local ser = Serializer( cls, cid, rfunc, wfunc);		//	シリアライザ生成
+	sermap_id[cid] <- ser;
+	sermap_cls[cls] <- ser;
+	printf( "serializable %S, id=%S\n", cls, cid);
+}
+
+local paramformat = {
+	['i'] = ( 0, "bb.geti()", "bb.puti( v)" ),		//	'i' : int32
+	['s'] = ( 0, "bb.gets()", "bb.puts( v)" ),		//	's' : int16
+	['b'] = ( 0, "bb.getb()", "bb.putb( v)" ),		//	'b' : int8
+	['f'] = ( 0.0, "bb.getf()", "bb.putf( v)" ),	//	'f' : float32
+	['h'] = ( 0.0, "bb.geth()", "bb.puth( v)" ),	//	'h' : float16
+	['o'] = ( null, "i.geto()", "o.puto( v)" ),		//	'o' : object
+	['p'] = ( null, "Vector3D( bb.getf(), bb.getf(), bb.getf())", "bb.putfs( v[0], v[1], v[2])" ),	//	'p' : float32 x 3
+	['v'] = ( null, "Vector3D( bb.geth(), bb.geth(), bb.geth())", "bb.puths( v[0], v[1], v[2])" ),	//	'v' : float16 x 3
+	['r'] = ( null, "Rect3D( bb.getf(), bb.getf(), bb.getf(), bb.geth(), bb.geth(), bb.geth())", "bb.putfs( v[0], v[1], v[2]); bb.puths( v[3], v[4], v[5])" ),	//	'v' : float16 x 3
+	['g'] = ( null, "(bb.geti(),bb.geti(),bb.geti())", "bb.putis( v[0], v[1], v[2])"),	//	'g' : [ix,iy,iz]
+}
+
+function addReadWriteFormat( i, readstr, writestr){
+	paramformat[i] <- (null, readstr, writestr);
+}
+
+//	fields : [(fid,"name0",'i'),...]
+function createReadWriteFunction( fields, loadedfunc){
+	local decodesrc = #StringBuffer();
+	local encodesrc = #StringBuffer();
+	decodesrc .. "@( i){ local bb = i.bbuf; ";
+	encodesrc .. "@( o){ local bb = o.bbuf, v; ";
+	foreach( v in fields){
+		local n = v[1], f = paramformat[v[2]];
+		decodesrc .. sprintf( " %S = %S;", n, f[1]);
+		encodesrc .. sprintf( " v = %S; %S;", n, f[2]);
+	}
+	if( loadedfunc) decodesrc .. "serloaded(); "
+	decodesrc .. "}";
+	encodesrc .. "}";
+	local ret = ( decodesrc.compile() (), encodesrc.compile() ());
+	decodesrc.clear();
+	encodesrc.clear();
+	return ret;
+}
+
+//	フィールド名も書き出すタイプ。クラス構造の変化に対応するけど非効率。
+function createReadWriteFunction2( keys, loadedfunc){
+	if( !loadedfunc) loadedfunc = @(){}
+	local dec = @( i){
+		for( ;;){
+			local key = i.gett();
+			if( key=="") break;
+			local val = i.geto();
+			if( key in this) this[key] = val;
+		}
+		loadedfunc();
+	}
+	local enc = @( o){
+		foreach( key in keys){
+			o.putt( key);
+			o.puto( this[key]);
+		}
+		o.putt( "");
+	}
+	return (dec, enc);
+}
+
+class Serializable
+{
+	static SerialUID = 0;
+	
+	//	field tagから取得。以下のように定義
+	//	<ser_i> x = 0;
+	//	<ser_f> f = 0.0;
+	static function getSerialFields(){
+		local a;
+		foreach( i, v in this){	//	this==class
+			if( v >= 2 && v <= 6 && typeof( i) == SS_STRING){
+				local f = getFieldTags( i)?.find( @( tag) tag.startsWith( "ser_"))[4];	//	ser_XのXを取る
+				if( f){
+					(a||(a=[])) .. (getFieldID( i)&4095,i,f);
+				}
+			}
+		}
+		a?.sort( @( v) v[0]);
+		return a;
+	}
+	
+	//	_newclassメタメソッド。class定義文の直後に呼ばれる。
+	static function _newclass( base){
+		_registerSerializer();
+	}
+
+	static function _registerSerializer(){
+		if( this["AutoSerialUID"]){	//	クラス名で自動でSerialUIDを割り振る。被る場合が多いので注意。
+			local n = hashcode( getclassname( this));
+			SerialUID <- ( n & 0x3fffffff) + 1024;
+		}
+		if( SerialUID){		//	SerialUIDが定義されているクラスのみ
+			local fa = (!this["readObject"] || !this["writeObject"]) && createReadWriteFunction( getSerialFields(), this["serloaded"]);
+			registerSerializable( this, SerialUID, fa[0], fa[1]);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//	ObjectOutput
+//
+////////////////////////////////////////////////////////////////////////////////
+
+//	
+//
+
+class ObjectOutput
+{
+	bbuf = null;
+	idtable = null;
+	nextid = 0;
+
+	constructor( bb){
+		bbuf = bb;
+		idtable = {}
+	}
+	
+	function reset(){
+		Table.clear( idtable);
+		nextid = 0;
+	}
+	
+	//	primitive output
+	function putv( b){
+		bbuf.putb( b?1:0);
+	}
+
+	function putb( b){	//	byte
+		bbuf.putb( b);
+	}
+
+	function puts( s){	//	unsigned short
+		bbuf.puts( s);
+	}
+
+	function puti( i){	//	int
+		bbuf.puti( i);
+	}
+
+	function putp( i){	//	packed int
+		bbuf.putp( i);
+	}
+
+	function putf( f){	//	float
+		bbuf.putf( f);
+	}
+
+	function puth( h){	//	half float (2byte float)
+		bbuf.puth( h);
+	}
+
+	function putt( s){	//	text
+		bbuf.putt( s);
+	}
+
+	function putBuffer( bb){
+		local p = bb.pos;
+		bbuf.putBuffer( bb);
+		bb.pos = p;
+	}
+
+	//	object output
+	function puto( o){
+		if( idtable[o]){
+			bbuf.putp( idtable[o]);
+		}else{
+			local type = typeof( o);
+			switch( type){
+			case SS_NULL:
+			case SS_UNDEFINED:
+				bbuf.putp( type); return;
+			case SS_INTEGER:
+				bbuf.putp( type); return bbuf.putp( o);
+			case SS_FLOAT:
+				bbuf.putp( type); return bbuf.putf( o);
+			case SS_BOOL:
+				bbuf.putp( type); return bbuf.putb( o);
+			case SS_ARRAY:
+				bbuf.putp( o.isTuple() ? 13:type); idtable[o] <- --nextid; return puta( o);
+			case SS_TABLE:
+				bbuf.putp( type); idtable[o] <- --nextid; return puttb( o);
+			case SS_STRING:
+				bbuf.putp( type); idtable[o] <- --nextid; return bbuf.putt( o);
+			default:
+				local ser = sermap_cls[getclass( o)];
+				if( !ser){ throw Exception( "can not puto. obj=" .. o); }
+				bbuf.putp( ser.classid);
+				idtable[o] <- --nextid;
+				return ser.writefunc.call( o, this);
+			}
+		}
+	}
+	
+	function puta( a){
+		bbuf.putp( length( a));
+		foreach( v in a) puto( v);
+	}
+	
+	function puttb( t){
+		local kv = Table.keyvalues( t);		//	ソート済みの[k1,v1,k2,v2,...]
+		bbuf.putp( length( t));
+		foreach( v in kv) puto( v);
+		kv?.clear();
+	}
+
+	function _encode( val){
+		local p = bbuf.pos;
+		reset();
+		puto( val);
+		bbuf.pos = p;
+		reset();
+		return bbuf;
+	}
+
+	static function encode( val, _clone=true){
+		local o = #ObjectOutput( null);
+		if( _clone){
+			o.bbuf = ByteBuffer();
+		}else{
+			(o.bbuf = #ByteBuffer()).clear();
+		}
+		return o._encode( val);
+	}
+
+	static function encodeInto( val, bb){
+		local o = #ObjectOutput( null);
+		o.bbuf = bb;
+		return o._encode( val);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//	ObjectInput
+//
+////////////////////////////////////////////////////////////////////////////////
+
+
+class ObjectInput
+{
+	bbuf = null;
+	idtable = null;
+	nextid = 0;
+
+	constructor( bb){
+		bbuf = bb;
+		idtable = {};
+	}
+	
+	function reset(){
+		Table.clear( idtable);
+		nextid = 0;
+	}
+	
+	//	primitive input
+
+	function getv(){
+		return !!bbuf.getb();
+	}
+
+	function getb(){
+		return bbuf.getb();
+	}
+
+	function gets(){
+		return bbuf.gets();
+	}
+
+	function geti(){
+		return bbuf.geti();
+	}
+
+	function getp(){
+		return bbuf.getp();
+	}
+
+	function getf(){
+		return bbuf.getf();
+	}
+
+	function geth(){
+		return bbuf.geth();
+	}
+
+	function gett(){
+		return bbuf.gett();
+	}
+
+	function getBuffer( bb, len){
+		local _size = bbuf.size;
+		bbuf.size = bbuf.pos + len;
+		bb.putBuffer( bbuf);
+		bbuf.size = _size;
+	}
+
+	//	object output
+
+	function geto(){
+		local type = bbuf.getp();
+		switch( type){
+		case SS_NULL: return null;
+		case SS_UNDEFINED: return undefined;
+		case SS_INTEGER: return bbuf.getp();
+		case SS_FLOAT: return bbuf.getf();
+		case SS_BOOL: return !!bbuf.getb();
+		case SS_STRING: return idtable[--nextid] <- bbuf.gett();
+		case SS_ARRAY: return idtable[--nextid] <- geta();
+		case SS_TABLE: return idtable[--nextid] <- gettb();
+		case 13: return idtable[--nextid] <- gettp();
+		default:
+			if( type < 0){
+				return idtable[type];
+			}else{
+				local ser = sermap_id[ type];
+				if( !ser){
+					throw Exception( "can not geto. classid=" .. type);
+				}
+				local o = ser.newinstance();
+				idtable[--nextid] <- (o);
+				ser.readfunc.call( o, this);
+				return o;
+			}
+		}
+	}
+
+	function geta(){
+		local num = bbuf.getp(), a = array( num);
+		for( local l = 0;l < num;l ++){ a[l] = geto(); }
+		return a;
+	}
+
+	function gettp(){
+		local num = bbuf.getp(), a = tuple( num);
+		for( local l = 0;l < num;l ++){ a[l] = geto(); }
+		return a;
+	}
+
+	function gettb(){
+		local num = bbuf.getp();
+		local t = {};
+		for( local l = 0;l < num;l ++){
+			local id = geto();
+			local val = geto();
+			t[ id] <- val;
+		}
+		return t;
+	}
+
+	static function decode( bb){
+		local i = ObjectInput( bb);
+		local pos = bb.pos;
+		i.bbuf = bb;
+		local ret = i.geto();
+		bb.pos = pos;
+		return ret;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////
+//
+//	common serializable classes
+//
+
+local VALUE_EXCEPTION	= 16;
+local VALUE_LONG		= 17;
+local VALUE_BYTEBUFFER	= 18;
+local VALUE_RECT2D		= 19;
+local VALUE_VECTOR3D	= 20;
+local VALUE_QUATERNION	= 21;
+local VALUE_RECT3D		= 22;
+local VALUE_MATRIX		= 23;
+local VALUE_IPADDRESS	= 24;
+local VALUE_DATE		= 25;
+local VALUE_BITMAP		= 26;
+local VALUE_BIGINT		= 27;
+
+registerSerializable( Exception, VALUE_EXCEPTION,
+	function( i){
+		thread = i.geto();
+		message = i.geto();
+		code = i.getp();
+		local a = i.geto();
+		setStackInfo( a);
+	},
+	function( o){
+		o.puto( string( thread));
+		o.puto( message);
+		o.putp( code);
+		local a = getStackInfo();
+		foreach( a2 in a){
+			local len = length( a2);
+			for( local l = 3;l < len;l ++){
+				if( typeof( a2[l]) > SS_STRING){
+					a2[l] = string( a2[l]);		//	SS_STRING以下はプリミティブとしてそのまま書く
+				}
+			}
+		}
+		o.puto( a);
+	}
+);
+
+registerSerializable( long, VALUE_LONG,
+	function( i){ set2i( i.geti(), i.geti()); },
+	function( o){ o.puti( this[0]); o.puti( this[1]); }
+);
+
+registerSerializable( ByteBuffer, VALUE_BYTEBUFFER,
+	function( i){ clear(); local size = i.geti(); pos = 0; i.getBuffer( this, size); pos = 0; },
+	function( o){ o.puti( remain); o.putBuffer( this); }
+);
+
+registerSerializable( Rect2D, VALUE_RECT2D,
+	function( i){ set( i.getf(), i.getf(), i.getf(), i.getf()); },
+	function( o){ o.putf( x); o.putf( y); o.putf( w); o.putf( h); }
+);
+
+registerSerializable( Vector3D, VALUE_VECTOR3D,
+	function( i){ set( i.getf(), i.getf(), i.getf()); },
+	function( o){ o.putf( x); o.putf( y); o.putf( z); }
+);
+
+registerSerializable( Quaternion, VALUE_QUATERNION,
+	function( i){ set( i.getf(), i.getf(), i.getf(), i.getf()); },
+	function( o){ o.putf( x); o.putf( y); o.putf( z); o.putf( w); }
+);
+
+registerSerializable( Rect3D, VALUE_RECT3D,
+	function( i){ set( i.getf(), i.getf(), i.getf(), i.getf(), i.getf(), i.getf()); },
+	function( o){ o.putf( x); o.putf( y); o.putf( z); o.putf( r); o.putf( s); o.putf( t); }
+);
+
+registerSerializable( Matrix, VALUE_MATRIX,
+	function( i){ for(local l=0;l<16;l++) this[l]=i.getf(); },
+	function( o){ for(local l=0;l<16;l++) o.putf( this[l]); }
+);
+
+try{
+	registerSerializable( IPAddress, VALUE_IPADDRESS,
+		function( i){ local tb = TempBuffer( 4096); i.getBuffer( tb, i.getb()); tb.pos = 0; setData( tb); tb.dispose(); },
+		function( o){ local tb = TempBuffer( 4096); getData( tb); tb.pos = 0; o.putb( tb.size); o.putBuffer( tb); tb.dispose(); }
+	);
+}catch( ex){
+	//	IPAddressはWebGL版には無い。恐らくこのまま。WebSocket対応する場合はWebConnectionみたいな別のクラスを作る
+}
+
+registerSerializable( Date, VALUE_DATE,
+	function( i){ local l = long( i.geti(), i.geti()); setTime( l); },
+	function( o){ local l = getTime(); o.puti( l[0]); o.puti( l[1]); }
+);
+
+registerSerializable( Bitmap, VALUE_BITMAP,
+	function( i){ load( i.bbuf); },
+	function( o){ store( o.bbuf); }
+);
+
+registerSerializable( bigint, VALUE_BIGINT,
+	function( i){ local size = i.getp(); local tb = TempBuffer( size); i.getBuffer( tb, size); tb.pos = 0; set( tb); tb.dispose(); },
+	function( o){ local tb = TempBuffer( 4096); getbytes( tb); o.puti( tb.size); o.putBuffer( tb); tb.dispose(); }
+);

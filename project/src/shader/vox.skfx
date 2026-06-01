@@ -1,0 +1,327 @@
+declare vox;
+
+module mod_math;
+module mod_transform;
+module mod_pbrg;
+module mod_pbrlighting;
+module mod_efx;
+
+param vox
+{
+	const highp float VOX_SCALE = 1.0/16.0;
+
+	attribute lowp vec4 in_rgbm <id=COLOR1>;
+	
+	uniform sampler2D mtltex <id=COLORTEX1, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform sampler3D ptntex <id=COLORTEX2, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform sampler2D paltex <id=COLORTEX3, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform lowp vec4 envcol <id=ENVCOLOR>;
+	uniform highp vec3 ptntexscale <id=COLORTEX2_PIX>;
+	uniform lowp float alpharef<ID=ALPHAREF>;
+	uniform lowp vec4 p1<id=UNICOLOR1>;
+	
+	varying highp vec3 v_lp;
+	flat varying mediump vec3 v_n;
+	varying highp vec3 v_wvp;
+	varying highp vec4 v_wvpp;
+	flat varying lowp vec4 v_rgbm;
+
+	flat varying lowp int v_f;
+	
+	const mediump vec3[6] fnlist = vec3[]( vec3(0.0,1.0,0.0), vec3(0.0,0.0,-1.0), vec3(-1.0,0.0,0.0), vec3(0.0,0.0,1.0), vec3(1.0,0.0,0.0),  vec3(0.0,-1.0,0.0) );
+	const mediump vec3[6] fulist = vec3[]( vec3(1.0,0.0,0.0), vec3(1.0,0.0,0.0), vec3(0.0,0.0,1.0), vec3(1.0,0.0,0.0), vec3(0.0,0.0,1.0),  vec3(1.0,0.0,0.0) );
+	const mediump vec3[6] fvlist = vec3[]( vec3(0.0,0.0,1.0), vec3(0.0,1.0,0.0), vec3(0.0,1.0,0.0), vec3(0.0,1.0,0.0), vec3(0.0,1.0,0.0),  vec3(0.0,0.0,1.0) );
+
+	const mediump vec3[27] enlist = vec3[](
+		vec3(-1.0,-1.0,-1.0), vec3( 0.0,-1.0,-1.0), vec3( 1.0,-1.0,-1.0),
+		vec3(-1.0, 0.0,-1.0), vec3( 0.0, 0.0,-1.0), vec3( 1.0, 0.0,-1.0),
+		vec3(-1.0, 1.0,-1.0), vec3( 0.0, 1.0,-1.0), vec3( 1.0, 1.0,-1.0),
+		//
+		vec3(-1.0,-1.0, 0.0), vec3( 0.0,-1.0, 0.0), vec3( 1.0,-1.0, 0.0),
+		vec3(-1.0, 0.0, 0.0), vec3( 0.0, 0.0, 0.0), vec3( 1.0, 0.0, 0.0),
+		vec3(-1.0, 1.0, 0.0), vec3( 0.0, 1.0, 0.0), vec3( 1.0, 1.0, 0.0),
+		//
+		vec3(-1.0,-1.0, 1.0), vec3( 0.0,-1.0, 1.0), vec3( 1.0,-1.0, 1.0),
+		vec3(-1.0, 0.0, 1.0), vec3( 0.0, 0.0, 1.0), vec3( 1.0, 0.0, 1.0),
+		vec3(-1.0, 1.0, 1.0), vec3( 0.0, 1.0, 1.0), vec3( 1.0, 1.0, 1.0)
+	);
+}
+
+vs vox
+{
+	void main(){
+		mediump vec3 n = fnlist[int(in_pos.w)&7];
+		highp mat4 transmat = getTransformedVectorsPN( in_pos.xyz*VOX_SCALE, n);
+		gl_Position = v_wvpp = pmat * transmat[0];
+		v_lp = in_pos.xyz - n*0.01;
+		v_wvp = transmat[0].xyz;
+		v_n = transmat[1].xyz;
+		v_rgbm = in_rgbm;
+		v_f = int(in_pos.w);
+	}
+}
+
+define grid_off
+{
+	#define DRAWGRID 0
+}
+
+define grid_on
+{
+	#define DRAWGRID 1
+}
+
+//////////////// legacy (=decal)
+
+param legacy
+{
+	fragout mediump vec4 fragcolor;
+}
+
+fs legacy
+{
+	void main(){
+		$(ALPHATEST) if( alpharef < bayer4( gl_FragCoord.xy)) discard;
+		$(COLORTEX3){
+			mediump vec4 pix = texture( paltex, vec2( v_rgbm.x*(255.1/256.0), 0.0));	//	palette index => R
+			lowp int mi = int( pix.w*255.0 + 0.1); pix.w = 1.0;
+		} : {
+			mediump vec4 pix = vec4( toLinear( v_rgbm.xyz), 1.0 );
+			lowp int mi = int( v_rgbm.w*255.0 + 0.1);
+		}
+		$(COLORMAT) pix = colormat * pix;
+		$(COLORTEX1){
+			mediump mat4 m = mat4(
+				texelFetch( mtltex, ivec2( 0, mi), 0), 
+				texelFetch( mtltex, ivec2( 1, mi), 0), 
+				texelFetch( mtltex, ivec2( 2, mi), 0), 
+				texelFetch( mtltex, ivec2( 3, mi), 0)
+			);
+			$(COLORTEX2){
+				highp vec3 uvr = mod( v_lp.zxy*2.0, m[3].xyz*255.0) + m[2].xyz*255.0;
+				mediump float sc = mix( 1.0, texture( ptntex, uvr*ptntexscale).x*8.0+0.21569, m[2].w*2.0);	// m[2].w*	color scale. m[3].w => contrast
+				pix.xyz = clamp( pix.xyz*sc, 0.0, 1.0);
+			}
+		}
+		fragcolor = vec4( toSRGB( tonemap( pix.xyz)), pix.w);
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	basic shader
+
+fs vox
+{
+	float grid(){
+		vec2 gv = vec2( dot( v_lp, fulist[v_f]), dot( v_lp, fvlist[v_f])) / 16.0;
+		vec2 dX = abs( dFdx( gv));
+		vec2 dY = abs( dFdy( gv));
+		gv = fract( gv);
+		//
+		vec2 rem = min( gv, 1.0-gv);
+		vec2 width = vec2( max( dY.x, dX.x), max( dY.y, dX.y)) * 2.0;
+		vec2 diff = clamp( (width-rem) / width, 0.0, 1.0);
+		return 1.0-max( diff.x, diff.y)*0.3;
+	}
+
+	void main(){
+		$(ALPHATEST) if( alpharef < bayer4( gl_FragCoord.xy)) discard;
+		$(COLORTEX3){
+			mediump vec4 pix = texture( paltex, vec2( v_rgbm.x*(255.1/256.0), 0.0));	//	palette index => R
+			lowp int mi = int( pix.w*255.0 + 0.1); pix.w = 1.0;
+		} : {
+			mediump vec4 pix = vec4( toLinear( v_rgbm.xyz), 1.0 );
+			lowp int mi = int( v_rgbm.w*255.0 + 0.1);
+		}
+		$(COLORMAT) pix = colormat * pix;
+		G g;
+		g.n = v_n;
+		$(COLORTEX1){
+			mediump mat4 m = mat4(
+				texelFetch( mtltex, ivec2( 0, mi), 0), 
+				texelFetch( mtltex, ivec2( 1, mi), 0), 
+				texelFetch( mtltex, ivec2( 2, mi), 0), 
+				texelFetch( mtltex, ivec2( 3, mi), 0)
+			);
+			$(COLORTEX2){
+				highp vec3 uvr = mod( v_lp.zxy*2.0, m[3].xyz*255.0) + m[2].xyz*255.0;
+				mediump float pc = texture( ptntex, uvr*ptntexscale).x*8.0+0.21569;
+				mediump float sc = mix( 1.0, pc, m[2].w*2.0);	// m[2].w*	color scale. m[3].w => contrast
+				pix.xyz = clamp( pix.xyz*sc, 0.0, 1.0);
+				// m[0].x = mix( m[0].x, 1.0, abs( 1.0-pc));
+				// m[1].z = 1.0-sc;
+			}
+			g.rough = m[0].x;
+			g.metal = m[0].y;
+			g.mtype = uint( m[0].w*255.1);
+			g.mparam = m[1];
+			g.gsel = p1.x;
+		} : {
+			g.rough = 0.9;
+			g.metal = 0.0;
+			g.mtype = 0u;
+			g.mparam = vec4( 1.0, 0.0, 0.0, 0.0);
+			g.gsel = p1.x;
+		}
+		g.col = pix;
+		//	grid......
+		$(DRAWGRID) g.col.xyz *= grid();
+		//
+		FRAGOUT
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	overlay shader
+
+param overlay
+{
+	uniform sampler2D gtex0 <id=GTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp vec2 gtex0scale <id=GTEX1_PIX>;
+
+	fragout lowp vec4 fragcolor;
+}
+
+fs overlay
+{
+	void main(){
+		mediump vec4 pix = vec4( 0.0);
+		//	overlay
+		mediump vec4 ovcol = overlayefx( v_wvp);
+		pix = ovcol;
+		//	outline
+		highp vec2 uv = gl_FragCoord.xy * gtex0scale;
+		float b = outline_gtex( gtex0, uv, gtex0scale, 200.0/255.0) * p1.y;
+		pix = mix( pix, envcol, b);
+		//	
+		fragcolor = pix;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	depth/shadow/select
+//////////////////////////////////////////////////////////////////////////////////////
+
+param depth
+{
+	fragout highp vec4 fragcolor;
+}
+
+fs depth
+{
+	void main(){
+		fragcolor = vec4( v_wvp.z);
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	tecs
+//////////////////////////////////////////////////////////////////////////////////////
+
+technique base
+{
+	apilevel = 30;
+	
+	//	pbr deferred pass
+	pass {
+		using transform, bayer, colorspace;
+		using g, packg, tonemapping;
+		using pbrout_deferred;
+		
+		passfilter = 1024;
+		visiblemask = 1;
+		param = vox;
+		vs = vox;
+		fs = vox;
+	}
+	
+	//	pbr forward pass
+	pass {
+		using transform, bayer, colorspace;
+		using g, tonemapping, pbrlighting;
+		using pbrout_forward, pbrout_forward_linear;
+		
+		passfilter = 512;
+		visiblemask = 3;
+		param = vox;
+		vs = vox;
+		fs = vox;
+	}
+	
+	//	forward+tonemap pass = direct pass (default)
+	pass {
+		using transform, bayer, colorspace;
+		using g, tonemapping, pbrlighting;
+		using pbrout_forward, pbrout_forward_srgb;
+		
+		passfilter = 256;
+		param = vox;
+		vs = vox;
+		fs = vox;
+	}
+
+	//	legacy pass
+	pass {
+		using transform, bayer, colorspace;
+		using tonemapping, legacy;
+		
+		passfilter = 255;
+		visiblemask = 4095;
+		param = vox;
+		vs = vox;
+		fs = legacy;
+	}
+
+	//	overlay pass
+	pass {
+		using transform;
+		using overlayefx;
+		using outline_gtex, overlay;
+		
+		BLEND = PMAMIX;
+		DEPTHMASK = OFF;
+		POLYGONOFFSET = -60;
+		
+		passfilter = 128;
+		visiblemask = 12288;
+		param = vox;
+		vs = vox;
+		fs = overlay;
+	}
+
+	//	mode shaders
+
+	pass(depth) {
+		using transform, depth;
+		BLEND = OFF;
+		
+		param = vox;
+		vs = vox;
+		fs = depth;
+	}
+	
+	pass(shadow) {
+		using transform, depth;
+		BLEND = OFF;
+		
+		param = vox;
+		vs = vox;
+		fs = depth;
+	}
+}
+
+//////////////////////////////////////////////////////////////////
+
+technique basic : base
+{
+	tag = "3d shading pbr";
+	using grid_off;
+}
+
+technique grid : base
+{
+	tag = "3d shading pbr";
+	using grid_on;
+}

@@ -1,0 +1,341 @@
+import ControlID;
+import GamepadButtonCode;
+import VirtualKeyCode;
+import ModifiersMask;
+import CollisionGroupID;
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	EventMoveAction.sk
+//	イベントの自動移動いろいろ。うろうろ、追尾、逃走その他
+//	うろうろ系
+//	・普通のうろうろ
+//	・
+//	追尾系
+//	・ひたすら追尾系。8方向を補正しつつずっと追う。裏に回ると一息つく。
+//	・溜めて突進を繰り返す。
+//	その他
+//	・逃走。一体範囲に入るとプレイヤーから逃れる方向に移動。
+//	・静止してるが、プレイヤーに近づくと向きなおして挨拶エモーション
+//	
+
+local rnd = Random();
+local v_0 = Vector3D(), v_1 = Vector3D(), v_2 = Vector3D(), v_3 = Vector3D(), m_1 = Matrix(), r_1 = Rect3D();
+
+class EventMoveAction
+{
+	rp3d = null;
+	
+	function updateAction( dt){
+	}
+
+	function standbyAction( dt){
+	}
+
+	//	セーブデータを保存するために現在の状況を返す。setSnapshotで復元
+	function getSnapshot(){
+		return null;
+	}
+
+	//	セーブデータを復元。
+	function setSnapshot( act){
+	}
+
+	//	イベント等でManualMoveActionに切り替わるときにこのアクションを復帰させる準備なんかをする
+	function setSuspended( b){
+	}
+}
+
+
+//	イベント配置場所の周りをうろうろするアクション。
+//	
+class RandomMoveAction extends EventMoveAction
+{
+	rp3d = null;			//	rpgstage.events[evid].rp3d
+	evdata = null;			//	イベントのデータ。パラメータも入ってる
+	evpos = null;			//	Vector3D : 
+	contfunc = null;		//	function : updateAction時に呼び出してfalseだったらこのアクションは消える。
+	
+	mvfunc = null;			//	function
+	
+	nexttime = 0;			//	
+
+	constructor( p){
+		rp3d = p;
+		evdata = p.event.data;
+		evpos = Vector3D( rp3d.event.data.pos);
+		//	
+		nexttime = 2000;
+	}
+
+	function updateAction( dt){
+		if( !rpgstage) return;
+		//	アクションが指定されていれば優先的に使用してその間コントロール移動は行わない。
+		local stopped = false;
+		if( mvfunc){
+			if( mvfunc = mvfunc( dt)) return;
+			stopped = true;
+		}
+		//	メインイベント中はランダム移動なし
+		if( rpgstage.mainevent) return;
+		//
+		updateActionBody( dt);
+		if( stopped && !mvfunc) rp3d.anime2( {id="stand"});	//	止まったうえで追加のmvfuncが来なかったらstand
+	}
+
+	function updateActionBody( dt){
+		if( (nexttime-=dt) > 0) return;
+		nexttime = 2000;
+		local tp = randomPoint();
+		if( tp){
+			rp3d.dir = aimdir( rp3d.pos, tp);
+			rp3d.anime2( {id="walk"});
+			mvfunc = rp3d.walkTo({
+				target = tp,
+				spd = evdata.movespd,
+			}) ( dt);	//	1回目の呼び出しも行う！
+		}
+	}
+	
+	//	ランダム位置を取得。イベントの設定位置から離れすぎない。到達可能な場所。4mくらい？
+	//	移動先が無い場合はnullを返す。
+	function randomPoint(){
+		local p0 = rp3d.pos;
+		for( local l = 0;l < 4;l ++){
+			local dir = rnd.nextf( 0.0, Math.PI2);
+			local len = rnd.nextf( 0.5, 1.5);
+			local p1 = v_0( 0, 0, len).rotate( dir, 0, 0).add( p0);
+			if( rp3d.walkTest( p0, p1)) return Vector3D( p1);
+		}
+		return null;
+	}
+	
+	
+	//	メインイベントが終了して通常のアクションに戻るときに最初に呼ぶ。
+	//	移動は実行中のものも中断。
+	function resetAction(){
+		nexttime = 2000;	//	すぐに動き出さない方がよい
+		mvfunc = null;
+	}
+	
+	//	メインイベントが開始してキャラの自動移動が入った際に、まずmanuactionがニュートラル状態になるまで待つ。
+	//	
+	function isNewtral(){
+		return rp3d.landed;
+	}
+}
+
+//	うろうろしつつ索敵範囲に入ったら追いかけてくるアクション。
+//	対象に触れたら一定時間静止。
+//	
+class ChaseMoveAction1 extends RandomMoveAction
+{
+	movespd0 = 3;			//	ランダム移動時の速度
+	searchrad = 5;			//	索敵半径
+	movespd1 = 5;			//	追跡時の速度
+	
+	chasing = -100;			//	>0の場合は追跡中。<0の場合は索敵中。
+	t0 = 0;
+
+	constructor( p){
+		super( p);
+		t0 = skGetTime();
+	}
+
+	function updateActionBody( dt){
+		local t = skGetTime(), rdt = Math.min( t-t0, 1500); t0 = t;	//	実際のdtを取得
+		local tgt = rpgstage.player3d;			//	ターゲットは常にplayer
+		local r = tgt.pos.hypot( rp3d.pos);
+		if( chasing > 0){	//	chasing時は索敵距離外に行ったら-dtする
+			chasing -= rdt * (r>5.0?5:1);
+			if( chasing <= 0){
+				chasing = -1000;
+			}else{
+				local tp = chasePoint( tgt);
+				if( tp){
+					rp3d.dir = aimdir( rp3d.pos, tp);
+					rp3d.anime2( #{id="dash"});
+					mvfunc = rp3d.walkTo({
+						target = tp,
+						spd = rp3d["event"]["page"]["movespd1"] || evdata["movespd1"] || 1,
+					}) ( dt);	//	1回目の呼び出しも行う！
+				}
+			}
+		}else{
+			local dd = ::deltadir( ::aimdir( rp3d.pos, tgt.pos), rp3d.dir);	//	ターゲットを視野に捉えている(+-90°)
+			if( r <= 5.0 && Math.abs( dd) <= Math.HPI){
+				chasing += rdt;
+				if( chasing >= 0){
+					chasing = 5000;	//	この値調整できるように
+				}
+			}else{
+				chasing = Math.max( chasing, -100);
+				//	索敵外の場合のみランダム移動判定。
+				super.updateActionBody( dt);
+			}
+		}
+	}
+	
+	//	tgtに向かうように位置取得。1m程度の距離で区切る。
+	function chasePoint( tgt){
+		local p0 = rp3d.pos;
+		local dir = aimdir( p0, tgt.pos);
+		local len = 1.0;
+		local p1 = v_0( 0, 0, len).rotate( dir, 0, 0).add( p0);
+		return Vector3D( p1);
+	}
+}
+
+class HideMoveAction extends EventMoveAction
+{
+	rp3d = null;
+	colmask = 0;
+	colide = false;
+	
+	constructor( p){
+		rp3d = p;
+		rp3d.visible = false;
+		colide = p.event.page["colide"] ?? p.event.data["colide"];
+		if( !colide){
+			colmask = rp3d.b3body.mask;
+			rp3d.b3body.setCollisionFilter( rp3d.b3body.group, G_EVENT);
+		}
+	}
+
+	function updateAction( dt){
+	}
+
+	function finish(){
+		rp3d.visible = true;
+		if( !colide){
+			rp3d.b3body.setCollisionFilter( rp3d.b3body.group, colmask);
+		}
+	}
+}
+
+//	マニュアルアクションを実行するイベントアクション。
+class ManualPlayAction extends EventMoveAction
+{
+	evdata = null;			//	イベントのデータ。パラメータも入ってる
+	evact = null;			//	
+	
+	manuaction = null;
+
+	constructor( p){
+		rp3d = p;
+		evdata = p.event.data;
+		manuaction = ManualMoveAction( p);
+		local ma = p.event.page["manuaction"] || evdata["manuaction"];
+		local d = evact = ma.event;
+		manuaction.act( @() playData( d, 0, p));
+	}
+
+	function updateAction( dt){
+		manuaction.updateAction( dt);
+		if( evact["loop"] && !manuaction.isActionRunning()){
+			local d = evact, p = rp3d;
+			manuaction.act( @() playData( d, 0, p));
+		}
+		//	ループするかチェック
+	}
+
+	function getSnapshot(){
+		return manuaction.curstat["phase"];
+	}
+
+	function setSnapshot( act){
+		if( act){
+			local d = evact, p = rp3d;
+			manuaction.clear();
+			manuaction.act( @() playData( d, act, p));
+		}
+	}
+}
+
+//////////////////////////
+
+//	静止アニメ
+local standaniprop = {
+	pid = "standani"
+	lbl = "$T.lbl_anime"
+	type = ANIME_POPUP
+	defval = null
+	nullable = true
+}
+
+//	移動速度
+local movespdprop = {
+	pid = "movespd"
+	lbl = "$T.lbl_movespd"
+	type = SCALAR
+	range = (0,7)
+	ui = "bar"
+	defval = 3
+}
+
+/////////////////// 登録
+
+RPGSystem.moveaction .. {
+	key = "stop"
+	name = "$T.anim_stand"
+	icon = "\ue1a2"
+	desc = ""
+	cls = null
+	props = [standaniprop]
+}
+
+RPGSystem.moveaction .. {
+	key = "random"
+	name = "$T.move_random"
+	icon = "\ue572"
+	desc = ""
+	cls = RandomMoveAction
+	props = [standaniprop, movespdprop]
+}
+
+RPGSystem.moveaction .. {
+	key = "chase1"
+	name = "$T.move_chase1"
+	icon = "\ueb9b"
+	desc = ""
+	cls = ChaseMoveAction1
+	props = [
+		{ ...movespdprop, lbl="$T.lbl_movespd($T.lbl_normal)", defval=2},
+		{ pid="searchrad", lbl="$T.lbl_searchrad", type=SCALAR, ui="bar", range = (0,20), defval=5, },
+		{ ...movespdprop, pid="movespd1", lbl="$T.lbl_movespd($T.lbl_chase)", defval=3},
+	]
+}
+
+RPGSystem.moveaction .. {
+	key = "hide"
+	name = "$T.move_hide"
+	icon = "\ue8f5"
+	desc = ""
+	cls = HideMoveAction
+	props = [
+		{ pid="colide", lbl="$T.lbl_collision", type=BOOL, defval=false, },
+	]
+}
+
+RPGSystem.moveaction .. {
+	key = "actiontool"
+	name = "$T.cmd_actiontool"
+	icon = "\ue912"
+	desc = ""
+	cls = ManualPlayAction
+	props = [
+		{ pid="manuaction", lbl="", type=CUSTOMBUTTON, defval={ event={actions=[],loop=true,basepos=0,stack=0}},
+			tostring = @() ~(compiletemplate_c( T.tmpl_open_v), {v="$T.cmd_actiontool"}),
+			edit = @( val){
+				local e = ::skstudio.editor;
+				local envdef = {
+					bw = e.bw, event = e.tool.selgz.data, evid = e.tool.selgz.id
+					eventmap = null, single = true,
+				};
+				return ManualActionDialog.run( envdef, val);
+			}
+		},
+	]
+}

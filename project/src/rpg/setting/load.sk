@@ -1,0 +1,15 @@
+//	
+runsk( "VarAccessors.sk");
+runsk( "BattleCommands.sk");
+runsk( "EventRoles.sk");
+runsk( "OptionTypes.sk");
+runsk( "EventCommands.sk");
+runsk( "SkillTypes.sk");
+//	
+runsk( "SettingProps.sk");
+runsk( "DictProps.sk");
+runsk( "TypeProps.sk");
+runsk( "CharaProps.sk");
+runsk( "EtcProps.sk");
+runsk( "Requirements.sk");
+//

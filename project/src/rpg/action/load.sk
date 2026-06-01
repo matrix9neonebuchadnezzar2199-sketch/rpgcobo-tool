@@ -1,0 +1,4 @@
+//	
+runsk( "PlayerMoveAction.sk");
+runsk( "EventMoveAction.sk");
+runsk( "ManualMoveAction.sk");

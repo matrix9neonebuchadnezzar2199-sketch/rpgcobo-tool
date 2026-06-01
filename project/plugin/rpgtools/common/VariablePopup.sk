@@ -1,0 +1,423 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+local srcdir = dirname( callee().getSourceName());
+
+//	ダミーのアクセッサ。VariableVarPopupでのみ使う。
+class EventVarAccessor
+{
+	name = "$T.var_event";
+	icon = "\uf809";
+
+	varbits = 3;
+
+	constructor( vb){
+		varbits = vb;
+	}
+
+	function list(){
+		local vb = varbits;
+		return ::RPGVarAccessor.evarinfos.filter( @( v) v.varbits&vb);
+	}
+
+	function info( key){
+		return ::RPGVarAccessor.evarinfos.find( @( v) v.key==key);
+	}
+}
+
+//	変数IDの指定用ポップアップ
+//	
+//	
+class VariableVarPopup extends Popup
+{
+	static POPUPUIPATH = srcdir .. "/ui/dataselectpopup.ui";	//	データID選択と同じポップアップui
+
+	varbits = 31;				//	ワーク、イベント、システム、グローバル、クエリー
+	varaccs = null;				//	VarAccsessor[]
+
+	typelist = null;			//	ListBehavior
+	datalist = null;			//	ListBehavior
+	pager = null;				//	PagerBehavior
+	searchedit = null;			//	GPUITextEdit
+
+	allitems = null;			//	全項目。100項目ごとにページに分かれる
+	page = 0;					//	
+	pagenum = 1;				//	
+	curtype = null;				//	0-n
+	searchitems = null;			//	searcheditの検索結果
+	
+	varkey = null;				//	結果の代入用var
+
+	static function run( e, varbits, var){
+		local p = VariableVarPopup( ::loadSKView( POPUPUIPATH), varbits, var);
+		p.show( null, e.src);
+		return p.ret ? p.varkey : null;
+	}
+
+	static function setvarview( la, v, i){
+		local lbl = v.findChild( "lbl"), icon = v.findChild( "icon"), sep = v.findChild( "sep");
+		v.setValue( "dataid", i.key);
+		if( i["icon"]){
+			v.setValue( "lbl", i.icon..i.name);
+		}else{
+			v.setValue( "lbl", i.name);
+		}
+		v.pickable = false;
+	}
+
+	//	
+	constructor( v, varbits, var){
+		super( v);
+		typelist = ListBehavior( v.findChild( "typelist"), []);
+		typelist.setviewfunc = DataSelectPopup.settypeview;
+		typelist.listview.addEventListener( ITEM_EVENT, typeevent);
+		datalist = ListBehavior( v.findChild( "datalist"), []);
+		datalist.setviewfunc = setvarview;
+		datalist.listview.addEventListener( ITEM_EVENT, dataevent);
+		datalist.listview.addEventListener( ACTION_EVENT, dataevent);
+		pager = PagerBehavior( v.findChild( "pager"));
+		searchedit = view.findChild( "searchedit");
+		searchedit.addEventListener( TEXT_EVENT, searchevent);
+		view.findChild( "btn_rem").setVisible( false);
+		//
+		local eva = EventVarAccessor( varbits);
+		varaccs = [];
+		if( varbits&1) varaccs .. {lbl=eva.name,icon="",va=eva};	//	eva.icon
+		foreach( va in RPGSystem.varaccs){
+			varaccs .. {
+				lbl=va.name, icon="", va=va, disable = !(va.varbits & varbits),	//	va.icon
+			};
+		}
+		typelist.setListItems( varaccs);
+		typelist.setSelectedIndex( 0);
+		if( var){
+			local type = varaccs.find( @( v) v.va.info( var));
+			typelist.setSelectedItem( type);
+			setType( type);
+			local i = allitems.findi( @( v) v.key==var);
+			setPage( i/100);
+			datalist.setSelectedIndex( i%100);
+			datalist.scrollIndexToVisible( i%100);
+		}else{
+			setType( varaccs[0]);
+			setPage( 0);
+		}
+	}
+
+	function setType( t){
+		curtype = t;
+		if( t == "search"){
+			allitems = searchitems;
+		}else{
+			allitems = clone t.va.list();
+		}
+		pagenum = (length( allitems)+99) / 100;
+		pager.setPageNum( pagenum);
+		pager.setPage( 0);
+	}
+
+	function setPage( p){
+		if( !allitems) return;
+		page = p;
+		local items = allitems.slice( p*100, Math.min( p*100+100, length( allitems)));
+		datalist.setListItems( items);
+	}
+
+	function typeevent( e){
+		e.consume();
+		switch( e.id){
+		case ITEM_SELECTED:
+			local v = e.actioncmd;
+			if( v["type"] != "*"){
+				setType( v);
+				setPage( 0);
+			}
+			break;
+		}
+	}
+
+	function dataevent( e){
+		e.consume();
+		switch( e.id){
+		case ITEM_SELECTED:
+			varkey = e.actioncmd.key;
+			break;
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON1_MASK)){
+				ret = 1;
+				close();
+			}
+			break;
+		}
+	}
+
+	function searchevent( e){
+	}
+	
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "pager":
+			e.consume();
+			break;
+		default:
+			return super.actionevent( e);
+		}
+	}
+
+	function enterClose(){
+		return super.enterClose();
+	}
+}
+
+//	
+//	
+class VariableBehavior
+{
+	view = null;
+
+	constbits = 15;				//	
+	varbits = 63;				//	
+	nullable = 0;				//	
+	datatype = null;			//	
+	datafilter = null;			//	
+	
+	typeicon = null;			//	SKLabelView
+	varlbl = null;				//	SKLabelView
+	g = null;					//	SKView[4]
+	varbtn = null;
+	offbtn = null;
+	onbtn = null;
+	numval = null;
+	textedit = null;
+	scpedit = null;
+	scpchk = null;				//	scpeditで入力されたテキストがコンパイルを通るかチェック
+	fpchk = null;
+
+	var = null;					//	結果の代入用var
+
+	constructor( v, prop){
+		view = v;
+		constbits = prop["constbits"] || 0;
+		varbits = prop["varbits"] || 0;
+		datatype = prop["datatype"] || null;
+		datafilter = prop["filter"] || null;
+		nullable = prop["nullable"] || 0;
+		//
+		typeicon = v.findChild( "typeicon");
+		varlbl = v.findChild( "varlbl");
+		g = [];
+		for( local l = 0;l < 4;l ++) g .. v.findChild( "g"..l);
+		varbtn = v.findChild( "varbtn");
+		offbtn = v.findChild( "offbtn");
+		onbtn = v.findChild( "onbtn");
+		numval = createNumInputBehavior( v.findChild( "numval"));
+		textedit = v.findChild( "textedit");
+		scpedit = v.findChild( "scpedit");
+		fpchk = v.findChild( "fpchk");
+		view.addEventListener( ACTION_EVENT, actionevent);
+	}
+
+	function setVar( v){
+		var = v;
+		switch( typeof( var)){
+		case SS_NULL:
+			setTab( -1);
+			varlbl.setText( "$T.lbl_notset");
+			typeicon.setText( "\ue15d");
+			break;
+		case SS_INTEGER: case SS_FLOAT:
+			setTab( 1);
+			setNumType( typeof( var));
+			numval.setValue( var);
+			typeicon.setText( "\ue0bc");
+			break;
+		case SS_STRING:	//	\tXXXX ならスクリプト、 'XXXX なら文字列、 .XXXX ならデータID
+			if( var[0] == '\t'){
+				setTab( 3); scpedit.setText( var.substring( 1)); checkScript();
+				typeicon.setText( "\ueb8e");
+			}else
+			if( var[0] == '\''){
+				setTab( 2); textedit.setText( var.substring( 1));
+				typeicon.setText( "\ue167");
+			}else
+			if( var[0] == '.'){
+				setTab( -1);
+				local dataid = var.substring( 1), data = rpgdata[dataid];
+				local s = sprintf( "[C][b]{ %S }\n[O][i][#def][-2]%S", dataid, data.name);
+				local rt = RichText( s);
+				varlbl.setText( rt);
+				typeicon.setText( data["icon"] || "\uf120");
+			}else{
+				setTab( -1);
+				local vi = ::RPGVarAccessor.getVarInfo( var);
+				local n = length( vi.key)>=3 ? "\n":" ";
+				local s = sprintf( "[C][b]{ %S }%S[O][i][#def][-2]%S", vi.key, n, vi.name);
+				local rt = RichText( s);
+				varlbl.setText( rt);
+				typeicon.setText( vi["icon"] ||"\ue322");
+			}
+			break;
+		case SS_BOOL:
+		default:				//	他のタイプの場合はboolにしちゃったらいいかな
+			setTab( 0);
+			(var?onbtn:offbtn).setSelected( true);
+			(!var?onbtn:offbtn).setSelected( false);
+			typeicon.setText( "\ue9f6");
+			break;
+		}
+	}
+
+	static function setVarView( var, varlbl, typeicon){
+		switch( typeof( var)){
+		case SS_INTEGER: case SS_FLOAT:
+			numval.setValue( var);
+			typeicon?.setText( "\ue0bc");
+			break;
+		case SS_STRING:	//	\tXXXX ならスクリプト、 'XXXX なら文字列、 .XXXX ならデータID
+			if( var[0] == '\t'){
+				varlbl.setText( var.substring( 1));
+				typeicon?.setText( "\ueb8e");
+			}else
+			if( var[0] == '\''){
+				varlbl.setText( var.substring( 1));
+				typeicon?.setText( "\ue167");
+			}else
+			if( var[0] == '.'){
+				local dataid = var.substring( 1), data = rpgdata[dataid];
+				local s = sprintf( "[C][b]%S\n[O][i][#def][-2]%S", dataid, data.name);
+				local rt = RichText( s);
+				varlbl.setText( rt);
+				typeicon?.setText( data["icon"] || "\uf120");
+			}else{
+				local vi = ::RPGVarAccessor.getVarInfo( var);
+				local n = length( vi.key)>=3 ? "\n":" ";
+				local s = sprintf( "[C][b]%S%S[O][i][#def][-2]%S", vi.key, n, vi.name);
+				local rt = RichText( s);
+				varlbl.setText( rt);
+				typeicon?.setText( vi["icon"] ||"\ue322");
+			}
+			break;
+		case SS_BOOL:
+		default:				//	他のタイプの場合はboolにしちゃったらいいかな
+			// (var?onbtn:offbtn).setSelected( true);
+			// (!var?onbtn:offbtn).setSelected( false);
+			typeicon?.setText( "\ue9f6");
+			break;
+		}
+	}
+
+	function setTab( t){
+		foreach( i,v in g){
+			if( i==t) v.layerflags |= 1; else v.layerflags &= ~1;
+		}
+		if( t==-1){
+			varbtn.layerflags |= 1;
+			varbtn.enabled = true;
+		}else{
+			varbtn.layerflags &= ~1;
+			varbtn.enabled = false;
+		}
+		view.repaint();
+	}
+
+	function setNumType( t){	//	0:int 1:float
+		if( t){
+			numval.setRange( -999999.0, 999999.0, 100);
+			fpchk.setSelected( true);
+		}else{
+			numval.setRange( -99999999, 99999999, 1);
+			fpchk.setSelected( false);
+		}
+	}
+
+	function checkScript(){
+
+	}
+	
+	function actionevent( e){
+		if( e.src == view) return;
+		//
+		switch( e.src["name"]){
+		case "typemenu":
+			e.consume();
+			if( selectType( e)){
+				view.postActionEvent( var);
+			}
+			break;
+		case "varbtn":
+			e.consume();
+			local v;
+			if( var == null) break;
+			if( var[0] == '.'){
+				v = DataSelectPopup.run( e, { datatype=datatype, filter=datafilter});
+				if( v) v = "."..v;
+			}else{
+				v = VariableVarPopup.run( e, varbits, var);
+			}
+			if( v && v!=var){
+				setVar( v);
+				view.postActionEvent( var);
+			}
+			break;
+		case "offbtn":
+		case "onbtn":
+			e.consume();
+			setVar( e.src.name=="onbtn");
+			view.postActionEvent( var);
+			return;
+		case "numval":
+			e.consume();
+			var = numval.getValue();
+			view.postActionEvent( var);
+			return;
+		case "textedit":
+			e.consume();
+			var = "'" .. e.src.getText();
+			view.postActionEvent( var);
+			return;
+		case "scpedit":
+			e.consume();
+			var = "\t" .. e.src.getText();
+			view.postActionEvent( var);
+			return;
+		case "fpchk":
+			e.consume();
+			setNumType( fpchk.isSelected()?1:0);
+			numval.setValue( numval.getValue());
+			var = numval.getValue();
+			view.postActionEvent( var);
+			return;
+		}
+	}
+
+	function selectType( e){
+		local bits = constbits | (varbits?16:0) | (datatype?32:0) | (nullable?64:0);
+		local menudata = [
+			{ val=0, lbl="$T.lbl_input_bool", icon="\ue9f6"},
+			{ val=1, lbl="$T.lbl_input_number", icon="\ue0bc"},
+			{ val=2, lbl="$T.lbl_input_string", icon="\ue167"},
+			{ val=3, lbl="$T.lbl_input_script", icon="\ueb8e"},
+			{ val=4, lbl="$T.lbl_input_var", icon="\ue322"},
+			{ val=5, lbl="$T.lbl_input_dataid", icon="\uf120"},
+			{ val=6, lbl="$T.lbl_notset", icon="\ue15d"},
+		].filter( @( v) (1<<v.val) & bits );
+		local ret = e? MenuPopup.pulldown( menudata, varbtn) : MenuPopup.run( menudata);
+		switch( ret["val"]){
+		case 0: setVar( true); return true;
+		case 1: setVar( 1); return true;
+		case 2: setVar( "'ABC"); return true;
+		case 3: setVar( "\tW"); return true;
+		case 4: 
+			local v = (varbits&1) ? "W" : (varbits&2) ? "G000" : "MONEY";
+			v = VariableVarPopup.run( e, varbits, v);
+			if( v){ setVar( v); return true; }
+			break;
+		case 5:
+			local v = DataSelectPopup.run( e, { datatype=datatype, filter=datafilter}, "I000");
+			if( v){ setVar( "."..v); return true; }
+			break;
+		case 6: setVar( null); return true;
+		}
+		return false;
+	}
+}

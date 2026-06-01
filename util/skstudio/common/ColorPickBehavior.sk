@@ -1,0 +1,406 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+//	ボタンにカラーピックの機能を加える。
+//	
+class ColorPickBehavior
+{
+	view = null;			//	SKView : 
+	color = 0xff00ffff;		//	
+	
+	constructor( v){
+		view = v;
+		v.addEventListener( ACTION_EVENT, actionevent);
+	}
+
+	function setColor( c){
+		color = c;
+		view.findChild( "col")?.setColor( c);
+		view.repaint();
+	}
+
+	function getColor(){
+		return color;
+	}
+
+	function actionevent( e){
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( e.src == view && e.actioncmd == null){
+				e.consume();
+				local r = ColorPopup.run( view, color);
+				if( r){
+					view.postActionEvent( r, e.count, e.modifiers);
+					setColor( r);
+				}
+			}
+			break;
+		}
+	}
+}
+
+class ColorPopup extends Popup
+{
+	POPUPUIPATH = "/skstudio/ui/dialog/colorpopup.ui"
+
+	colpanel = null;
+	modalpicking = false;
+
+	function init( v){
+		super.init( v);
+		colpanel = ColorPanelBehavior( v);
+	}
+
+	function setColor( c){
+		colpanel.setColor( c);
+	}
+
+	function modalevent( e){
+		switch( e.id){
+		case MODAL_MOUSE_PRESSED:
+			if( modalpicking && e.isAltDown()){ ret = 1; }
+			if( colpanel.color!=colpanel.color0){ ret = 1; }
+			// if( tabs[0].isSelected() && color!=color0){ ret = 1; }
+			close();
+			break;
+		case MODAL_MOUSE_MOVED:
+			if( e.id == MODAL_MOUSE_MOVED && e.isAltDown()){
+				local c = colpanel.pickScreenColor( e.x, e.y) | 0xff;
+				colpanel.setColor( c);
+				modalpicking = true;
+			}else
+			if( modalpicking){
+				colpanel.resetColor();
+				modalpicking = false;
+			}
+			break;
+		}
+	}
+
+	function actionevent( e){
+		super.actionevent( e);
+		if( e.src == view){
+			ret = 1;
+			if( e.actioncmd == "close") close();
+		}
+	}
+
+	static function run( cv, col){
+		local pop = ColorPopup( ::loadSKView( POPUPUIPATH));
+		cv = cv || ::getMousePos( 0);
+		pop.setColor( col);
+		pop.show( null, cv);
+		return pop.ret ? pop.colpanel.color : null;
+	}
+}
+
+class ColorPanelBehavior
+{
+	view = null;
+	cinput = null;		//	TextEdit
+	
+	color0 = null;
+	color = 0;
+	csp = null;
+	tabs = null;
+
+	pal = null;
+
+	//	3モード
+	valuemode = null;
+	palemode = null;
+	favomode = null;
+
+	static lasttab = 0;
+
+	constructor( v){
+		view = v;
+		csp = v.findChild( "col");
+		cinput = v.findChild( "cinput");
+		tabs = (
+			v.findChild( "tab0"),
+			v.findChild( "tab1"),
+			v.findChild( "tab2"),
+		);
+		v.addEventListener( KEY_EVENT, keyevent);
+		(pal=v.findChild( "pal")).addEventListener( MOUSE_EVENT, palmouseevent);
+		v.addEventListener( TEXT_EVENT, ctextevent);
+		valuemode = ValueBars( this, v.findChild( "val"));
+		setTab( lasttab);
+		v.addEventListener( ACTION_EVENT, actionevent);
+	}
+	
+	function setColor( c, numset=true){
+		if( color0 == null) color0 = c;
+		color = c;
+		csp.setColor( c);
+		cinput.setText( sprintf( "%02x%02x%02x", (c>>>24), (c>>>16)&255, (c>>>8)&255).toUpperCase());
+		view.repaint();
+		valuemode.updateBarColors( numset);
+	}
+
+	function setTab( idx){
+		foreach( i, tab in tabs) tab.setSelected( i==idx);
+		switch( idx){
+		case 0: pal.setVisible( false); valuemode.view.setVisible( true); break;
+		case 1: pal.setVisible( true); valuemode.view.setVisible( false); break;
+		case 2: 
+		}
+		ColorPanelBehavior.lasttab <- idx;
+	}
+	
+	function resetColor(){
+		setColor( color0);
+	}
+	
+	function palmouseevent( e){
+		e.computeLocal( e.src.getInvMatrix());
+		local mousein = (e.lx>=0 && e.ly>=0 && e.lx<e.src.bnd.w && e.ly<e.src.bnd.h);
+		switch( e.id){
+		case MOUSE_RELEASED:
+			if( mousein){
+				view.postActionEvent( "close");
+			}
+			break;
+		case MOUSE_MOVED:
+		case MOUSE_DRAGGED:
+			if( mousein){
+				local c = pickScreenColor( e.x, e.y) | 0xff;
+				setColor( c);
+			}else{
+				resetColor();
+			}
+			break;
+		case MOUSE_EXITED:
+			resetColor();
+			break;
+		}
+		e.consume();
+	}
+
+	function ctextevent( e){
+		e.consume();
+		local t = cinput.getText();
+		if( length( t) == 6){
+			local i = int( t, 16);
+			color = (i<<8) | 255;
+			csp.setColor( color);
+			view.repaint();
+			view.postIDEvent( VALUE_CHANGED);
+		}
+	}
+
+	//	ctrl+c, ctrl+v
+	function keyevent( e){
+		if( !e.isCommandDown()) return;
+		e.consume();
+		local key = e.keycode;
+		switch( key) {
+		case 'C' :
+		case 'X' :
+			local t = "#"..cinput.getText();
+			skPutClipboardData( t);
+			break;
+		case 'V' :
+			if( skCheckClipboardType( ClipboardType.CLIPBOARD_TEXT)) {
+				local t = skGetClipboardData( ClipboardType.CLIPBOARD_TEXT);
+				if( t.startsWith( "#")) t = t.substring( 1);
+				if( length( t) == 6){
+					local i = int( t, 16);
+					setColor( (i<<8) | 255);
+					view.postIDEvent( VALUE_CHANGED);
+				}
+			}
+			break;
+		}
+	}
+	
+	static function pickScreenColor( gx, gy){
+		local img = #RGBAImage( 8, 8);
+		local s = skGetScreenSize( #(0,0,0,0));
+		if( gx < 0 || gx >= s[0] || gy < 0 || gy >= s[1]) return 0;
+		local buf = null;//::rootview.buf;
+		local old = skSetRenderTarget( buf);
+		skReadPixels( gx|0, s[1]-(gy|0)-1, 8, 8, img);
+		img.swapEndian();
+		skSetRenderTarget( old);
+		return img[0];
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "tab0": case "tab1": case "tab2":
+			setTab( e.src.name[3]-'0');
+			break;
+		}
+	}
+}
+
+class ColorPanelBehavior.ValueBars
+{
+	cp = null;		//	ColorPicker
+
+	hsv = true;		//	
+	
+	view = null;
+	bar0 = null;		//	SliderBehavior
+	bar1 = null;		//	SliderBehavior
+	bar2 = null;		//	SliderBehavior
+	num0 = null;		//	NumInputBehavior
+	num1 = null;		//	NumInputBehavior
+	num2 = null;		//	NumInputBehavior
+
+	b0 = null;	//	ImageView
+	b1 = null;	//	ImageView
+	b2 = null;	//	ImageView
+	t0 = null;
+	t1 = null;
+	t2 = null;
+
+	constructor( p, v){
+		cp = p;
+		view = v;
+		bar0 = SliderBehavior( v.findChild( "bar0"));
+		bar1 = SliderBehavior( v.findChild( "bar1"));
+		bar2 = SliderBehavior( v.findChild( "bar2"));
+		b0 = bar0.view.findChild( "b");
+		b1 = bar1.view.findChild( "b");
+		b2 = bar2.view.findChild( "b");
+		t0 = Texture();
+		t1 = Texture();
+		t2 = Texture();
+		num0 = createNumInputBehavior( v.findChild( "num0"));
+		num1 = createNumInputBehavior( v.findChild( "num1"));
+		num2 = createNumInputBehavior( v.findChild( "num2"));
+		num0.setRange( 0, 255, 1);
+		num1.setRange( 0, 255, 1);
+		num2.setRange( 0, 255, 1);
+		v.addEventListener( VALUE_EVENT, valueevent);
+		v.addEventListener( ACTION_EVENT, valueevent);
+	}
+
+	function updateBarColors( numset=true){
+		local c = cp.color;
+		if( hsv){
+			local hsv = rgbtohsv( c);
+			if( numset){
+				num0.setValue( hsv[0]*255.0/360.0);
+				num1.setValue( hsv[1]);
+				num2.setValue( hsv[2]);
+			}else{	//	入力されたhsvを優先する
+				hsv[0] = num0.getValue()/255.0*360.0;
+				hsv[1] = num1.getValue();
+				hsv[2] = num1.getValue();
+			}
+			b0.setSprite( Sprite( htex( t0)));
+			local s1 = hsvtorgb( (hsv[0],255.0,255.0)), v1 = hsvtorgb( (hsv[0],hsv[1],255.0));
+			b1.setSprite( Sprite( gradtex( t1, 0xffffffff, s1)));
+			b2.setSprite( Sprite( gradtex( t2, 0xff, v1)));
+		}else{
+			local rm = 0x00ffffff, gm = 0xff00ffff, bm = 0xffff00ff;
+			b0.setSprite( Sprite( gradtex( t0, c&rm, (c&rm)|~rm)));
+			b1.setSprite( Sprite( gradtex( t1, c&gm, (c&gm)|~gm)));
+			b2.setSprite( Sprite( gradtex( t2, c&bm, (c&bm)|~bm)));
+			if( numset){
+				num0.setValue( c>>>24);
+				num1.setValue( (c>>>16)&255);
+				num2.setValue( (c>>>8)&255);
+			}
+		}
+		bar0.setValue( num0.getValue() / 255.0);
+		bar1.setValue( num1.getValue() / 255.0);
+		bar2.setValue( num2.getValue() / 255.0);
+	}
+
+	static function rgbtohsv( c){
+		local r = (c>>>24), g = (c>>>16)&255, b = (c>>>8)&255;
+		local ma = Math.max( r, Math.max( g, b))+0.0;
+		local mi = Math.min( r, Math.min( g, b))+0.0;
+		local h,s,v;
+		if( ma <= 0.0) return (0,0,0);
+		//	h
+		local d = ma-mi+0.0;
+		if( !d) h = 0.0;
+		else if( r == ma) h = 60.0*(g-b)/d;
+		else if( g == ma) h = 60.0*(b-r)/d+120.0;
+		else h = 60.0*(r-g)/d+240.0;
+		while( h < 0) h += 360;
+		h %= 360;
+		//	s
+		s = 255*d/ma;
+		//	v
+		v = ma*1.0;
+		return (h,s,v);
+	}
+
+	static function hsvtorgb( hsv){
+		local h = hsv[0]+0.0, s = hsv[1]+0.0, v = hsv[2]+0.0;
+		local ma = v;
+		local mi = ma-ma*s/255.0;
+		local r = 0, g = 0, b = 0, d = ma-mi;
+		if( h >= 0 && h < 60){
+			r = ma;
+			g = mi+d*(h/60);
+			b = mi;
+		}else if( h >= 60 && h < 120){
+			r = mi+d*((120-h)/60);
+			g = ma;
+			b = mi;
+		}else if( h >= 120 && h < 180){
+			r = mi;
+			g = ma;
+			b = mi+d*((h-120)/60);
+		}else if( h >= 180 && h < 240){
+			r = mi;
+			g = mi+d*((240-h)/60);
+			b = ma;
+		}else if( h >= 240 && h < 300){
+			r = mi+d*((h-240)/60);
+			g = mi;
+			b = ma;
+		}else{
+			r = ma;
+			g = mi;
+			b = mi+d*((360-h)/60);
+		}
+		return ((int( r)&255)<<24)|((int( g)&255)<<16)|((int( b)&255)<<8)|0xff;
+	}
+
+	function gradtex( t, c0, c1){
+		local i = #RGBAImage( 128, 4);
+		for( local l = 0;l < 128;l ++){
+			local c = Math.lerpcolor( c0, c1, l/127.0);
+			i[l] = i[l+128] = i[l+256] = i[l+384] = c;
+		}
+		i.swapEndian();
+		t.load( i); t.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_LINEAR, SK_LINEAR));
+		return t;
+	}
+
+	function htex( t){
+		local i = RGBAImage( 128, 4), hsv = (0.0, 255.0, 255.0);
+		for( local l = 0;l < 128;l ++){
+			hsv[0] = l/127.0 * 360.0;
+			i[l] = i[l+128] = i[l+256] = i[l+384] = hsvtorgb( hsv);
+		}
+		i.swapEndian();
+		t.load( i); t.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_LINEAR, SK_LINEAR));
+		return t;
+	}
+
+	function updateColor(){
+		local hsv = (num0.getValue()/255.0*360.0, num1.getValue(), num2.getValue());
+		cp.setColor( hsvtorgb( hsv), false);
+	}
+	
+	function valueevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "bar0":case "bar1":case "bar2":
+			local i = e.src.name[3]-'0';
+			this["num"..i].setValue( this[e.src.name].getValue()*255.0);
+			break;
+		}
+		updateColor();
+	}
+}

@@ -1,0 +1,204 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+
+local mtlcol = [ 0xff0040ff, 0xff4dff4d, 0xffd9d900, 0xbf00ffff];
+
+function getMaterialTex( i){
+	local cache = #{};
+	if( cache[i]) return cache[i];
+	local imgpreview = #BlockImagePreview( 128, 128);
+	local vd = #VoxelData( 16, 16, 16);
+	vd.clear( 0x999999 | (i<<24));
+	suspend();
+	return cache[i] <- imgpreview.getVoxelDataImage( vd);
+}
+
+local srcdir = dirname( callee().getSourceName());
+
+class MaterialSelectPopup extends Popup
+{
+	static UI_PATH = srcdir.."/ui/mtlpopup.ui";
+	list = null;
+	mtlviews = null;
+	colcnt = 1;
+
+	constructor( v, idx){
+		super( v);
+		//
+		list = v.findChild( "LIST");
+		local a = [];
+		local voxmtls = ::conf._resource.renderset.voxmtls;
+		foreach( i in Table.keys( voxmtls).sort()){
+			local v = voxmtls[i];
+			if( !v["hide"]) a .. (i,v);
+		}
+		colcnt = length( list.rowedata.children);
+		local rowcnt = (length( a)+colcnt-1)/colcnt;
+		local n = colcnt * rowcnt;
+		list.setRowCount( rowcnt);
+		mtlviews = [];
+		local selmtl = null;
+		for( local l = 0;l < n;l ++){
+			local r = list.rows[l/colcnt].findChild( "i"..(l%colcnt));
+			local v = a[l];
+			if( v){
+				if( idx==v[0]){ r.setSelected( true); selmtl = r; }
+				r.ref = v;
+				mtlviews .. r;
+			}else{
+				r.setVisible( false);
+			}
+		}
+		if( selmtl){
+			setTimeout( @(){
+				list.gpui.scrollViewToVisible( selmtl, 0);
+			}.bindenv( this), 30);	//	.....
+		}
+		newthread().start( loadicons, this);
+	}
+
+	function actionevent( e){
+		if( e.src["ref"] && typeof( e.src.ref) == SS_ARRAY){
+			mtlSelected( e.src.ref, e);
+			e.consume();
+			return;
+		}
+		super.actionevent( e);
+	}
+
+	function mtlSelected( mtl, e){	//	[i,v]
+		ret = mtl;
+		close();
+	}
+
+	//	別スレッド
+	function loadicons(){
+		foreach( v in mtlviews){
+			local tex = getMaterialTex( v.ref[0]);
+			v.findChild( "icon").setSprite( Sprite( tex));
+			v.setValue( "lbl", sprintf( "%d: %S", v.ref[0] ::lang( v.ref[1].name)));
+		}
+	}
+	
+	static function run( e, idx){
+		local pop = ::MaterialSelectPopup( loadSKView( UI_PATH), idx);
+		pop.show( null, e.src);
+		return pop.ret;
+	}
+}
+
+class ColorMaterialSelectPopup extends MaterialSelectPopup
+{
+	static UI_PATH = srcdir.."/ui/colmtlpopup.ui";
+	
+	collist = null;		//	ListBehavior
+	cols = null;		//	int[]
+
+	chkall = null;
+
+	modalclose = 2;
+
+	static function colmtlsetview( la, v, i){
+		local colbtn = v.findChild( "colbtn");
+		if( !colbtn.ref) colbtn.ref = ColorPickBehavior( colbtn);
+		local c = i.col; c = (c<<24)|((c&0xff00)<<8)|((c&0xff0000)>>8)|0xff;
+		colbtn.ref.setColor( c);
+		//
+		local mi = i.col>>>24;
+		local voxmtl = ::conf._resource.renderset.voxmtls[mi];
+		v.setValue( "lbl", sprintf( "%S %S", mi, ::lang( voxmtl.name)));
+		v.pickable = false;
+	}
+
+	constructor( v, idx, ca){
+		super( v, idx);
+		cols = ca.map( @( v){ return {col=v} });
+		collist = ListBehavior( view.findChild( "collist"));
+		collist.multisel = true;
+		collist.setviewfunc = colmtlsetview;
+		collist.setListItems( cols);
+		collist.selectAll();
+		collist.listview.addEventListener( ITEM_EVENT, collistevent);
+		collist.listview.addEventListener( ACTION_EVENT, collistevent);
+		//
+		chkall = view.findChild( "chkall");
+		chkall.setSelected( true);
+	}
+
+	function updateCheckAll(){
+		local b = length( collist.selects) == length( cols);
+		if( b != chkall.isSelected()){
+			chkall.setSelected( b);
+		}
+	}
+
+	function selectMaterial( idx, scroll=true){
+		local n = colcnt * length( list.rows);
+		local selmtl = null;
+		for( local l = 0;l < n;l ++){
+			local r = list.rows[l/colcnt].findChild( "i"..(l%colcnt));
+			local v = r.ref;
+			if( idx==v[0]){
+				r.setSelected( true);
+				selmtl = r;
+			}else{
+				r.setSelected( false);
+			}
+		}
+		if( scroll && selmtl){
+			list.gpui.scrollViewToVisible( selmtl);
+		}
+	}
+
+	function collistevent( e){
+		updateCheckAll();
+		switch( e.id){
+		case ITEM_SELECTED:
+			local mi = e.actioncmd.col >>> 24;
+			selectMaterial( mi);
+			break;
+		case ACTION_PERFORMED:
+			local cmd = e.actioncmd;
+			if( cmd["src"]["name"] == "colbtn"){
+				local c = cmd.src.ref.getColor(); c = (c>>>24)|((c&0xff00)<<8)|((c&0xff0000)>>8);
+				cmd.item.col = c | (cmd.item.col&0xff000000);
+			}
+			break;
+		}
+	}
+
+	function mtlSelected( mtl, e){	//	[i,v]
+		foreach( v, _ in collist.selects){
+			v.col = (v.col&0xffffff) | (mtl[0]<<24);
+		}
+		collist.refreshItems();
+		selectMaterial( mtl[0], false);
+		if( e.count == 2){
+			ret = 1;
+			close();
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "chkall":
+			if( chkall.isSelected()){
+				collist.selectAll();
+			}else{
+				collist.deselectAll();
+			}
+			e.consume();
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	static function run( e, ca){
+		local pop = ::ColorMaterialSelectPopup( loadSKView( UI_PATH), ca[0]>>>24, ca);
+		pop.show( null, e.src);
+		if( pop.ret){
+			return pop.cols.map( @( v) v.col);
+		}
+	}
+}

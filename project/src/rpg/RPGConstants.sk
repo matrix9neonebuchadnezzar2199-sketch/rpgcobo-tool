@@ -1,0 +1,227 @@
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	
+//	
+
+const ON = true;
+const OFF = false;
+const FLOORANGLE = 0.68;
+
+//	ゲームごとになるべく変化の無いように。。。
+enum CollisionGroupID
+{
+	//	collision group/mask
+	G_VIEW			= 0x7F;
+
+	G_CHARA			= 0x100;
+	G_OBJECT		= 0x200;
+	G_EVENT			= 0x400;	//	実体のない衝突判定はこれを
+	G_STAGE			= 0x800;
+	G_WATER			= 0x1000;
+	
+	G_GIZMO			= 0x8000;	//	ツール用。
+}
+
+enum ControlID
+{
+	//	control chara
+	CTRL_STOP			= 1;
+	CTRL_MOVE			= 2;
+	CTRL_DASH			= 3;
+	CTRL_JUMP			= 4;
+	CTRL_SEARCH			= 5;
+	CTRL_MENU			= 6;
+	
+	//	control camera
+	CAM_ROTATE			= 100;
+	CAM_ROLL			= 102;
+	CAM_ZOOM			= 103;
+	CAM_TARGET			= 104;
+	CAM_RESET			= 107;
+	CAM_POV             = 108;
+}
+
+enum RPGPropertyType
+{
+	NAME_ICON = 1001,
+	LIST_SCALAR = 1002,
+	DATAID = 1003,
+	DATAIDS = 1004,
+	RESID = 1005,
+	RESID_PREVIEW = 1006,
+	VARIABLE = 1007,
+	REQUIREMENTS = 1008,
+	EXPCURVE = 1009,
+	CUSTOMPROP = 1010, 
+	EMOJI = 1011,
+	PORTAL = 1012,
+	GRAPHIC = 1013,			//	vox, pic, efx
+	VOXEL_PARTS = 1014,		//	VoxelContainer.parts
+	PALETTEMAP = 1015,
+	MESSAGE = 1016,			//	message command
+	ENEMYGROUP = 1017,	
+	GAMETITLE = 1018,	
+	UIPOSITION = 1019,
+	ANIME_INLINE = 1020,	//	
+	ANIME_POPUP = 1021,	//	
+	ANIMEMAP = 1023,
+	PLACEASSET = 1024,		//	
+}
+
+
+//	イベント変数のタイプ
+enum VarType
+{
+	VAR_NONE = 0,			//	未使用。
+	VAR_BOOL = 1,
+	VAR_INT = 2,
+	VAR_FLOAT = 3,
+	VAR_STRING = 4,
+	VAR_ANY = 5,			//	table, arrayも入る。が、シリアライズできないオブジェクトは無理
+}
+
+//	イベントのトリガー条件。有効条件
+enum EventTriggerType
+{
+	TRG_NONE = 0,		//	トリガーしない。
+	TRG_AUTO = 1,		//	自動でトリガー。マクロなら常駐、ステージなら入場時に開始。
+	TRG_REACH = 2,		//	プレイヤー範囲内に入った。
+	TRG_SEARCH = 3,		//	プレイヤー範囲内に入って調べる（話す）ボタン。
+	TRG_INSIDE = 4,		//	プレイヤーが範囲内に完全に入った。
+}
+
+//	DamageContextの結果。これにより演出や後の処理につなぐ
+enum DamageResultType
+{
+	DMG_NONE = 0,		//	成功。攻撃行動が無かった。これは成功となり追加効果オプションは発動する。
+	DMG_HIT = 1,		//	成功
+	DMG_HEAL = 2,		//	成功
+	DMG_CRITICAL = 3,	//	成功 --- ↓は失敗
+	DMG_SKIP = 4,		//	失敗
+	DMG_MISS = 5,		//	失敗
+	DMG_SHIELD = 6,		//	失敗。追加効果オプションは発動しない。が、ダメージが入る場合もある。
+}
+
+//	※グループ指定はコマンドで敵指定した時点で他のターゲットも配列に入れちゃう？
+enum CommandTargetType
+{
+	TGT_NONE = 0,					//	ターゲット指定なし
+	TGT_ENEMY_SINGLE = 1,			//	敵単体
+	TGT_ENEMY_RANDOM = 2,			//	敵ランダム単体
+	TGT_ENEMY_R3 = 3,				//	指定した敵から半径3m以内の敵グループ
+	TGT_ENEMY_R6 = 4,				//	指定した敵から半径6m以内の敵グループ
+	TGT_ENEMY_LINE = 5,				//	指定した敵から横ラインの敵グループ
+	TGT_ENEMY_COLUMN = 6,			//	指定した敵から縦ラインの敵グループ
+	TGT_ENEMY_ALL = 7,				//	敵全体
+	TGT_PARTY_SINGLE = 8,			//	味方単体
+	TGT_PARTY_SINGLE_NOTME = 9,		//	味方単体(自分以外)
+	TGT_PARTY_COLUMN = 10,			//	指定した見方から縦ラインの味方グループ
+	TGT_PARTY_ALL = 11,				//	
+	TGT_PARTY_ALL_NOTME = 12,		//	味方単体(自分以外)
+	TGT_MYSELF = 13,				//	
+	TGT_ANY_SINGLE = 14,			//	敵味方単体
+	TGT_ANY_RANDOM = 15,			//	敵味方単体ランダム
+	TGT_ANY_ALL = 16,				//	敵味方全員
+}
+
+enum DamageType
+{
+	NO_DAMAGE = 0,
+	HP_DAMAGE = 1,
+	HP_HEAL = 2,
+	MP_DAMAGE = 3,
+	MP_HEAL = 4,
+	TP_DAMAGE = 5,
+	TP_HEAL = 6,
+}
+
+enum SkillFlag
+{
+	FLAG_NORMAL_SKILL = 0,
+	FLAG_TARGET_ALT = 1,
+	FLAG_AVOIDABLE = 2,
+	FLAG_SHIELDABLE = 3,
+	FLAG_REFLECTABLE = 4,
+	FLAG_DRAINABLE = 5,
+	FLAG_COUNTERABLE = 6,
+	FLAG_BACKUPABLE = 7,
+	FLAG_NOOP_BOSS = 8,
+	FLAG_NOOP_ALIVE = 9,
+}
+
+DamageTypePID <- ["HP","HP","HP","MP","MP","TP","TP"];
+
+enum AnimationPart
+{
+	ST_EN = 0,
+	ST_MD = 1,
+	MD_EN = 2,
+	EN_ST = 3,
+	ST = 4,
+	MD = 5,
+	EN = 6,
+}
+
+
+import PropertyType;
+import RPGPropertyType;
+import AnimationPart;
+
+//	一般的に使われるプロパティの定義。ツール使用ではあるが、ゲーム内からも参照される。lblはツールでしか見られない。
+//	
+::RPGProperties <-
+{
+	nameprop = {
+		pid="name", lbl="$T.lbl_name", type=STRING, defval="",
+	}
+	nameiconprop = {
+		pid = "nameicon"
+		lbl = "$T.lbl_name"
+		type = NAME_ICON
+		defval = ["",""]
+		get = @( prop, data) [data.name,data["icon"]]
+		set = @( prop, data, val)( data.name<-val[0], data.icon<-val[1])
+	},
+	descprop = {
+		pid="desc", lbl="$T.lbl_desc", type=STRING, multiline=5, defval="",
+	},
+	memoprop = {
+		pid = "memo"
+		lbl = "$T.lbl_memo"
+		type = STRING
+		multiline = 6
+	},
+	uivisiblelist = [
+		{ lbl="$T.uivisible0", val = 0, },
+		{ lbl="$T.uivisible1", val = 1, },
+		{ lbl="$T.uivisible2", val = 2, },
+		{ lbl="$T.uivisible3", val = 3, },
+	]
+	uicloselist = [
+		{ lbl="$T.uiclose0", val = 0, },
+		{ lbl="$T.uiclose1", val = 1, },
+		{ lbl="$T.uiclose2", val = 2, },
+	]
+	animepartlist = [
+		{ lbl="$T.animepart0", val = ST_EN, },
+		{ lbl="$T.animepart1", val = ST_MD, },
+		{ lbl="$T.animepart2", val = MD_EN, },
+		{ lbl="$T.animepart3", val = EN_ST, },
+		{ lbl="$T.animepart4", val = ST, },
+		{ lbl="$T.animepart5", val = MD, },
+		{ lbl="$T.animepart6", val = EN, },
+	]
+
+	function battlecmdlist(){
+		local a = [{ lbl="$T.lbl_none", }, ];
+		foreach( v in ::RPGSystem.battlecmd._list){
+			a .. { lbl=(v["toolname"]||v.name), submenu=fget( v, "submenu"), val=v.key};
+		}
+		return a;
+	}
+}
+
+::SystemSoundMap <- {
+	"ui_move" = "SE000"
+};

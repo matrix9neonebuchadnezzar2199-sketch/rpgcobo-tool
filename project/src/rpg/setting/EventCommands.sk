@@ -1,0 +1,2433 @@
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	EventCommands.sk
+//	イベントのコマンド定義
+//	
+
+import PropertyType;
+import RPGPropertyType;
+import CommandTargetType;
+
+local eventcmd = RPGSystem.eventcmd;
+
+/////////////////// 共通パラメータ、関数
+
+local color0 = (0x00A3D9ff, 0x73DCFFff)
+local color1 = (0xFF9326ff, 0xFFB973ff)
+local color2 = (0x00D9D9ff, 0x99FFFFff)
+local color3 = (0xCCA4FFff, 0xDFBFFFff)
+local color4 = (0xD9D900ff, 0xFFFF99ff)
+local color5 = (0x00B285ff, 0x99FFE5ff)
+local color6 = (0xFF6D6Dff, 0xFFBFBFff)
+
+//	計算操作
+local compoplist = [
+	{ lbl="＝", val="=" }
+	{ lbl="＋", val="+=" }
+	{ lbl="ー", val="-=" }
+	{ lbl="×", val="*=" }
+	{ lbl="÷", val="/=" }
+	{ lbl="％", val="%=" }
+]
+
+//	whoの値 : "player", "event", "selchara", "ui", "screen", evid, 
+//	使ってない！
+// local wholist = [
+// 	{ lbl="$T.who_none", val=0 }
+// 	{ lbl="$T.who_player", val=1 }
+// 	{ lbl="$T.who_event", val=2 }
+// 	{ lbl="$T.who_specify", val=3 }
+// ]
+
+//	プレイヤー、イベント、選択キャラ(バトル時)
+local who2list = [
+	{ lbl="$T.who_player", val=1 }
+	{ lbl="$T.who_event", val=2 }
+]
+
+//	
+local erroplist = [
+	{ lbl="エラーを回避して続行", val=0 }
+	{ lbl="エラーを無視して続行", val=1 }
+	{ lbl="エラーを表示して中断", val=2 }
+];
+
+//	条件プロパティ
+local reqsprop = { pid = "reqs", lbl = "$T.lbl_reqs", type = REQUIREMENTS, cnt="cnt6v.ui" }
+
+//	勝敗処理
+local losefuncprop = {
+	pid = "losefunc", lbl = "敗北時の処理", type = LIST, list = [
+		{ lbl="敗北マクロ(X002)", val=0, },
+		{ lbl="回復して続行", val=1, },
+		{ lbl="そのまま続行", val=2, },
+	],
+}
+
+//	ユーティリティ
+local defmapid(){
+	local mapid = ::skstudio.editor["mapid"];
+	if( !mapid){
+		for( local l = 1;l < 900;l ++){
+			local mid = "M%03d" % l;
+			if( ::conf.map[mid]){ mapid = mid; break;}
+		}
+	}
+	return mapid;
+}
+
+local proplbl( props, pid){
+	return props.find( @( v) v.pid==pid)["lbl"] || "";
+}
+
+//	
+local propstr( props, cmd, pid){
+	if( cmd["_var"][pid]) return varstr( cmd._var[pid]);
+	local prop = props.find( @( v) v.pid==pid);
+	return getPropertyText( prop, cmd);
+}
+
+local geteventlist( cv){
+	while( cv){
+		if( cv.ref instanceof EventCommandList) return cv.ref;
+		cv = cv.parent;
+	}
+}
+
+
+
+////////////////// コマンド定義開始
+
+///////////////////////////////////////////////////////////////////////////////////
+//	一般処理
+
+//	cmd_wait : 指定した秒数（スクリプト可）ウェイトを入れる。〇
+//	
+eventcmd .. {
+	category = 0
+	key = "cmd_wait"
+	name = "$T.cmd_wait"
+	icon = "\ue034"	//	e1a2, e0ea
+	color = color0
+
+	props = [
+		{ pid="time", lbl="$T.lbl_time", type=SCALAR, range=(0,100000), ui="bar", barrange=(0,3000,20), variable=1, },
+	]
+
+	// edit = @( cv, cmd){
+	// }
+	
+	cmdinfo = @( cmd)({
+		info = varstr( cmd.time),
+	})
+	
+	defval = { time = 1000 }
+
+	exec = @( runner, cmd){
+		sleep( cmd.time);
+	}
+}
+
+//	cmd_ret : この処理を終了し一つ前の処理に戻る。※cmd_retの戻り値はイベントでは使用されない〇
+//	
+eventcmd .. {
+	category = 0
+	key = "cmd_ret"
+	name = "$T.cmd_ret"
+	icon = "\ue9ba"
+	color = color0
+	
+	defval = {}
+	
+	props = []
+
+	parsecode = @( cmd){
+		push( "retval" in cmd ? sprintf( "return (%S);", cmd.retval) : "return;").lf();
+	}
+}
+
+//	cmd_if : 条件分岐。〇
+//	
+eventcmd .. {
+	category = 0
+	key = "cmd_if"
+	name = "$T.cmd_if"
+	icon = "\ueb26"
+	color = color0
+	subblocks = true
+
+	props = [
+		reqsprop
+		{
+			pid="else", lbl="$T.cmd_if_else", type=BOOL,
+			get = @( prop, data) length( data.cmdblocks)==2,
+			set = @( prop, data, val){
+				if( val){ if( !data.cmdblocks[1]){data.cmdblocks[1] <- []; }}
+				else delete data.cmdblocks[1];
+				return val;
+			}
+		}
+	]
+	
+	defval = { reqs = [{ lvar="A", op="=", rvar=true, }], cmdblocks = [[]] }
+	
+	cmdinfo = @( cmd)({
+		info = eventRequirementText( cmd.reqs),
+		blknames = length( cmd.cmdblocks)>1 ? ["$T.cmd_if_else"] : null,
+	})
+
+	parsecode = @( cmd){
+		push( "if( "); parsereqs( cmd.reqs); push( ")");
+		parseblock( cmd.cmdblocks[0]);		//	then
+		if( cmd.cmdblocks[1]){		//	else
+			push( "else");
+			parseblock( cmd.cmdblocks[1]);
+		}
+		lf();
+	}
+}
+
+//	cmd_loop : ループ処理。〇
+//	ハードループ指定をするとループ時にウェイトを入れない（危険）。ソフトループはsleep(4)が入り、60fpsだと4ループ。
+eventcmd .. {
+	category = 0
+	key = "cmd_loop"
+	name = "$T.cmd_loop"
+	icon = "\ue9d6"
+	color = color0
+	subblocks = true
+	
+	props = [reqsprop]
+
+	defval = { reqs = [{ lvar="A", op="=", rvar=true, }], cmdblocks = [[]] }
+	
+	cmdinfo = @( cmd)({
+		info = eventRequirementText( cmd.reqs),
+	})
+
+	parsecode = @( cmd){
+		push( "while( "); parsereqs( cmd.reqs); push( "){").indent( 1).lf();
+		parseblock( cmd.cmdblocks[0], false);
+		push( "sleep( 4);").lf();		//	ソフトループ
+		indent( -1).push( "}").lf();
+	}
+}
+
+//	cmd_script : 任意のスクリプト実行。〇
+//	
+eventcmd .. {
+	category = 0
+	key = "cmd_script"
+	name = "$T.cmd_script"
+	icon = "\ueb8e"
+	color = color0
+	
+	props = [
+		{ pid="code", lbl="$T.lbl_script", type=SCRIPT, multiline=8, cnt="cnt6v.ui" }
+	]
+
+	cmdinfo = @( cmd){
+		local c = cmd.code, i = c.indexOf( "\n");
+		return { info = i<0 ? c : c.substring( 0, i)};
+	}
+
+	defval = { desc = "SCRIPT", code = "" }
+
+	//	parsecodeで
+	exec = @( runner, cmd){
+		local fn = ::compilescript( cmd.code);
+		~( fn, runner);	//	RPGEventRunnerをthisにして実行
+	}
+}
+
+//	cmd_macro : マクロ実行。〇
+//	
+eventcmd .. {
+	category = 0
+	key = "cmd_macro"
+	name = "$T.cmd_macro"
+	icon = "\ueb8e"
+	color = color0
+	
+	props = [
+		{ pid="macroid", lbl="$T.lbl_macro", type=DATAID, datatype = ["macro"] }
+		{ pid="retvar", lbl="$T.cmd_macro_retvar", type=VARIABLE, varbits=1|2, constbits=0, nullable=1 },
+	]
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local info = sprintf( "%S:%S", cmd.macroid, ::conf.macro[cmd.macroid]["name"]||"???");
+		if( cmd.retvar) info = info .. " ⇒ " .. propstr( cmddef.props, cmd, "retvar");
+		return {
+			info = info,
+		}
+	}
+
+	defval = { macroid = "X000", retvar = null }
+
+	exec = @( runner, cmd){
+		runner.callMacro( cmd);
+	}
+}
+
+//	cmd_iterate : 反復処理
+//	配列変数、バトル時プレイヤー一覧、バトル時エネミー一覧、イベント一覧、
+//	
+eventcmd .. {
+	category = 0
+	key = "cmd_iterate"
+	name = "$T.cmd_iterate"
+	icon = "\ue240"
+	color = color0
+	subblocks = true
+	
+	props = [
+		{ pid="itervar", lbl="$T.cmd_iterate_itervar", type=VARIABLE, varbits=31, constbits=0, },
+		{ pid="valset", lbl="$T.cmd_iterate_valset", type=VARIABLE, varbits=1|2|4, constbits=0, nullable=1 },
+		{ pid="keyset", lbl="$T.cmd_iterate_keyset", type=VARIABLE, varbits=1|2|4, constbits=0, nullable=1 },
+		{ pid="skipnull", lbl="$T.cmd_iterate_skipnull", type=BOOL, },
+	];
+
+	defval = { itervar="A", valset="W", keyset=null, cmdblocks = [[]], skipnull=true }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], props = fget( cmddef, "props", cmddef, cmd);
+		local info = sprintf( "%S => ", propstr( props, cmd, "itervar"));
+		if( cmd["valset"]) info = info .. sprintf( " $T.lbl_value: %S", propstr( props, cmd, "valset"));
+		if( cmd["keyset"]) info = info .. sprintf( " $T.lbl_key: %S", propstr( props, cmd, "keyset"));
+		return {
+			info = info,
+		}
+	}
+
+	parsecode = @( cmd){
+		push( "foreach( i, v in ::getvar( \"%S\", this)){" % cmd.itervar).indent( 1).lf();
+		if( cmd["skipnull"]) push( "if( v==null||v==undefined) continue;").lf();
+		if( cmd["valset"]) push( "%S = v;" % cmd.valset).lf();
+		if( cmd["keyset"]) push( "%S = i;" % cmd.keyset).lf();
+		parseblock( cmd.cmdblocks[0], false);
+		indent( -1).push( "}").lf();
+	}
+}
+
+//	cmd_label : この場所にジャンプできるラベルを配置する〇
+//	
+eventcmd .. {
+	category = 0
+	key = "cmd_label"
+	name = "$T.cmd_label"
+	icon = "\ue937"
+	color = (0xeeeeeeff,0xeeeeeeff)
+
+	props = [
+		{ pid="label", lbl="$T.lbl_name" type=STRING }
+	]
+
+	cmdinfo = @( cmd)({
+		info = cmd.label,
+	})
+
+	defval = { label="LABEL" }
+
+	parsecode = @( cmd){
+		addLabel( cmd.label);
+		push( "%S:" % cmd.label).lf();
+	}
+}
+
+local collectlabels( cmds, a){
+	foreach( cmd in cmds){
+		if( cmd.cmd == "cmd_label") a .. cmd.label;
+		if( cmd["cmdblocks"]){
+			foreach( cb in cmd.cmdblocks){
+				collectlabels( cb, a);
+			}
+		}
+	}
+	return a;
+}
+
+//	cmd_jump : ラベルで指定した場所に処理をジャンプする〇
+//	
+eventcmd .. {
+	category = 0
+	key = "cmd_jump"
+	name = "$T.cmd_jump"
+	icon = "\ue01f"
+	color = color0
+
+	props = [
+		// reqsprop,
+		{ pid="label", lbl="$T.cmd_label" type=LIST, list=@( pl){
+			//	※編集中のコマンドリストが取れないとラベルのリストは作れない。。。
+			local e = ::skstudio.editor;
+			local cmdlist = e.findChild( "cmdlist");
+			if( !cmdlist) return #[];
+			return collectlabels( cmdlist.ref.rootblkview.cmdblock, ["_START_"]).map( @(v)({ lbl=v, val=v, }));
+		}, }
+	]
+
+	cmdinfo = @( cmd){
+		local info = cmd.label;
+		// if( length( cmd["reqs"])) info = sprintf( "(%S)? %S", eventRequirementText( cmd.reqs), info);
+		return { info = info, }
+	}
+
+	defval = { label="_START_" }
+
+	parsecode = @( cmd){
+		push( "goto %S;" % cmd.label).lf();
+	}
+}
+
+//	cmd_pagejump : 指定したページに処理をジャンプする
+//	※存在しないページにジャンプは無視される。
+//	※ワーク変数は現在のものを引きつぐ。
+//	※ページはイベント実行中は固定される。イベント後に再度ページ選択処理が起きたタイミングで変化する。
+//	※マクロでは使用不能。命令は無視される。
+eventcmd .. {
+	category = 0
+	key = "cmd_pagejump"
+	name = "$T.cmd_pagejump"
+	icon = "\ue01f"
+	color = color0
+
+	props = [
+		{ pid="page", lbl="$T.cmd_page" type=LIST, list=@( pl){
+			local e = pl.ref, pa = e.data.page;	//	CustomEventEditor
+			local n = Math.max( 8, length( pa));
+			local a = [];
+			for( local l = 0;l < n;l ++){
+				local p = pa[l];
+				a .. { icon=char(0xf124+l), lbl=p?(length(p["memo"])?p.memo:"ページ"..(l+1)):"---", val=l};
+			}
+			return a;
+		}, }
+	]
+
+	cmdinfo = @( cmd){
+		local info = "$T.page "..(cmd.page+1);
+		return { info = info, }
+	}
+
+	defval = { page=0 }
+
+	exec = @( runner, cmd){
+		runner.pageJump( cmd);
+	}
+}
+
+//	cmd_comment : コメントを挿入する。処理は全く行われない〇
+//	
+eventcmd .. {
+	category = 0
+	key = "cmd_comment"
+	name = "$T.cmd_comment"
+	icon = "\ue88f"
+	color = (0xccccccff,0xbbbbbbff)
+	
+	props = [
+		{ pid="rem", lbl="$T.lbl_comment" type=STRING, multiline=4, cnt="cnt6v.ui" }	//	翻訳対象外
+	]
+
+	defval = { rem="comment..." }
+	
+	cmdinfo = @( cmd)({
+		extra = cmd["rem"],
+	})
+
+	parsecode = @( cmd){
+		push( "/* "); push( rem); push( " */").lf();
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////////
+//	変数処理
+
+//	cmd_compute : 計算を行い結果を変数に格納〇
+//	
+eventcmd .. {
+	category = 1
+	key = "cmd_compute"
+	name = "$T.cmd_compute"
+	icon = "\uea5f"
+	color = color1
+
+	props = [
+		{ pid="lvar", lbl="$T.lbl_lvar", type=VARIABLE, varbits=1|2|4, constbits=0 }		//	代入可能な左辺値＝ワーク、イベント、グローバル
+		{ pid="op",   lbl="$T.lbl_arithop", type=LIST, list=compoplist }		//	
+		{ pid="rvar", lbl="$T.lbl_rvar", type=VARIABLE, varbits=31, constbits=15, datatype="all" }		//	全て
+	]
+
+	defval = { lvar="W", op="=", rvar=0 }
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		return {
+			info = sprintf( "%S %S %S", propstr( cmddef.props, cmd, "lvar"), propstr( cmddef.props, cmd, "op"), propstr( cmddef.props, cmd, "rvar")),
+		}
+	}
+	
+	parsecode = @( cmd){
+		push( sprintf( "%S %S ::getvar( %S, this);", cmd.lvar, cmd.op, encodeJSON( cmd.rvar))).lf();
+	}
+}
+
+//	cmd_arrayop : 配列の操作〇
+//	
+eventcmd .. {
+	category = 1
+	key = "cmd_arrayop"
+	name = "$T.cmd_arrayop"
+	icon = "\uead1"
+	color = color1
+
+	width = 600
+
+	props = @( cmd){
+		local a = [];
+		a .. { pid="avar", lbl="$T.lbl_targetvar", type=VARIABLE, varbits=1|2|4, constbits=0 }		//	代入可能な左辺値＝ワーク、イベント、グローバル
+		a .. { pid="op",   lbl="$T.lbl_arithop", refresh=1, type=LIST, list=[
+			{ lbl="$T.lbl_create", val="new", },
+			{ lbl="$T.lbl_get", val="get", },
+			{ lbl="$T.lbl_add", val="add", },
+			{ lbl="$T.lbl_insert", val="ins", },
+			{ lbl="$T.lbl_update", val="set", },
+			{ lbl="$T.lbl_remove", val="rem", },
+			{ lbl="$T.lbl_combine", val="com", },
+			{ lbl="$T.lbl_getlength", val="len", },
+		]};
+		if( !(#("new","add","len")).contains( cmd.op)){
+			a .. { pid="idx", lbl="$T.lbl_index", type=SCALAR, range=(0,1000), variable=1, }
+		}
+		if( (#("add","ins","set")).contains( cmd.op) ){
+			a .. { pid="rvar", lbl="$T.lbl_rvar", type=VARIABLE, varbits=31, constbits=15, datatype="all" }		//	全て
+		}
+		if( (#("get","len")).contains( cmd.op) ){
+			a .. { pid="tvar", lbl="$T.cmd_macro_retvar", type=VARIABLE, varbits=1|2|4, constbits=0 }
+		}
+		if( cmd.op == "com"){
+			a .. { pid="rvar", lbl="$T.lbl_rvar", type=VARIABLE, varbits=31, constbits=8 }
+		}
+		return a;
+	}
+
+	defval = { avar="W", op="new", idx=0, tvar="X", rvar=true }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], props = fget( cmddef, "props", cmddef, cmd);
+		local var = propstr( props, cmd, "avar");
+		local idx = propstr( props, cmd, "idx");
+		local op = propstr( props, cmd, "op");
+		local rvar = propstr( props, cmd, "rvar");
+		local tvar = propstr( props, cmd, "tvar");
+		local info = sprintf( "%S%S %S %S%S", var, idx!=null?("[%S]"%idx):"" , op, rvar||"", tvar?" =>"..tvar : "");
+		return {
+			info = info,
+		}
+	}
+
+	exec = @( runner, cmd){
+		try{
+			switch( cmd.op){
+			case "new": runner[cmd.avar] = []; break;
+			case "get": runner[cmd.tvar] = cmd.avar[cmd.idx]; break;
+			case "add": runner[cmd.avar] .. ::getvar( cmd.rvar, runner); break;
+			case "ins": runner[cmd.avar].insert( cmd.idx, ::getvar( cmd.rvar, runner)); break;
+			case "set": runner[cmd.avar].replace( cmd.idx, ::getvar( cmd.rvar, runner)); break;
+			case "rem": runner[cmd.avar].remove( cmd.idx); break;
+			case "len": runner[cmd.tvar] = length( cmd.avar); break;
+			}
+		}catch( ex){
+			throw ex;
+		}
+	}
+}
+
+//	cmd_tableop : テーブルの操作
+//	
+eventcmd .. {
+	category = 1
+	key = "cmd_tableop"
+	name = "$T.cmd_tableop"
+	icon = "\uead3"
+	color = color1
+
+	props = @( cmd){
+		local a = [];
+		a .. { pid="avar", lbl="$T.lbl_targetvar", type=VARIABLE, varbits=1|2|4, constbits=0 }		//	代入可能な左辺値＝ワーク、イベント、グローバル
+		a .. { pid="op",   lbl="$T.lbl_arithop", refresh=1, type=LIST, list=[
+			{ lbl="$T.lbl_create", val="new", },
+			{ lbl="$T.lbl_get", val="get", },
+			{ lbl="$T.lbl_insert", val="ins", },
+			{ lbl="$T.lbl_remove", val="rem", },
+		]};
+		if( cmd.op != "new"){
+			a .. { pid="key", lbl="$T.lbl_key", type=STRING, variable=1, }
+		}
+		if( cmd.op == "ins"){
+			a .. { pid="rvar", lbl="$T.lbl_rvar", type=VARIABLE, varbits=31, constbits=15, datatype="all" }		//	全て
+		}
+		if( cmd.op == "get" ){
+			a .. { pid="tvar", lbl="$T.cmd_macro_retvar", type=VARIABLE, varbits=1|2|4, constbits=0 }
+		}
+		return a;
+	}
+
+	defval = { avar="W", op="new", key="key", tvar="X", rvar=true }
+	
+	cmdinfo = @( cmd){
+		local cmddef =  RPGSystem.eventcmd[cmd.cmd], info = "";
+		local props = fget( cmddef, "props", cmddef, cmd);
+		switch( cmd.op){
+		case "new": info = sprintf( "%S = {}", propstr( props, cmd, "avar")); break;
+		case "get": info = sprintf( "%S = %S[%S]", propstr( props, cmd, "tvar"), propstr( props, cmd, "avar"),  propstr( props, cmd, "key")); break;
+		case "ins": info = sprintf( "%S[%S] = %S", propstr( props, cmd, "avar"), propstr( props, cmd, "key"),  propstr( props, cmd, "rvar")); break;
+		case "rem": info = sprintf( "delete %S[%S]", propstr( props, cmd, "avar"), propstr( props, cmd, "key")); break;
+		}
+		return { info = info };
+	}
+
+	exec = @( runner, cmd){
+		try{
+			switch( cmd.op){
+			case "new": runner[cmd.avar] = {}; break;
+			case "get": runner[cmd.tvar] = cmd.avar[cmd.key]; break;
+			case "ins": runner[cmd.avar][cmd.key] <- ::getvar( cmd.rvar, this); break;
+			case "rem": delete runner[cmd.avar][cmd.key]; break;
+			}
+		}catch( ex){
+			throw ex;
+		}
+	}
+}
+
+//	
+local settingprops( cmd, props, defmap){
+	local prop = clone props.find( @( v) v.pid==cmd.pid);
+	prop.pid = "val";
+	return [
+		{
+			lbl="$T.lbl_settingitem", pid="pid", refresh=1, type=LIST,
+			list = @(){
+				return props.map( @( v) ({ lbl=v.lbl, val=v.pid }));
+			},
+			set = @( prop, data, val){
+				data[prop.pid] <- val;
+				local v = defmap[val];
+				if( !v){
+					local d = {}, vprop = props.find( @( v) v.pid==val);
+					setDefaultProperties( [vprop], d);
+					v = d[vprop.pid];
+				}
+				data.val ??= deepclone( v);	//	新しいpidのグローバル設定のデフォルト値を入れる
+			}
+			refresh=true,	//	set時にプロパティリストをリフレッシュ
+		},
+		prop
+	];
+}
+
+local settinginfo( cmd, props){
+	local prop = clone props.find( @( v) v.pid==cmd.pid);
+	local lbl = fget( prop, "lbl") ?? cmd.pid;
+	prop.pid = "val";
+	local val = getPropertyText( prop, cmd);
+	return {
+		info = sprintf( "%S = %S", lbl, encodeESC( string( val)));
+	}
+}
+
+//	cmd_globalset : グローバル設定の変更
+eventcmd .. {
+	category = 1
+	key = "cmd_globalset"
+	name = "$T.cmd_globalset"
+	icon = "\ue8b8"
+	color = color1
+	
+	props = @( cmd) settingprops( cmd, RPGSystem.settingprops.filter( @( v) v["proptype"]=="status"), ::conf.setting)
+	cmdinfo = @( cmd) settinginfo( cmd, RPGSystem.settingprops)
+
+	defval = { pid="menu_item", val=3 }
+
+	exec = @( runner, cmd){
+		runner.setGlobalSetting( cmd);
+	}
+}
+
+//	cmd_stageset : ステージ設定の変更
+eventcmd .. {
+	category = 1
+	key = "cmd_stageset"
+	name = "$T.cmd_stageset"
+	icon = "\ue8b8"
+	color = color1
+	
+	props = @( cmd) settingprops( cmd, RPGSystem.stageprops, null)
+	cmdinfo = @( cmd) settinginfo( cmd, RPGSystem.stageprops)
+
+	defval = { pid="encntrate", val=0 }
+
+	exec = @( runner, cmd){
+		runner.stage.setStageSetting( cmd.pid, cmd.val);
+	}
+}
+
+//	cmd_settingget : 設定の取得
+eventcmd .. {
+	category = 1
+	key = "cmd_settingget"
+	name = "$T.cmd_settingget"
+	icon = "\uf05e"
+	color = color1
+	
+	props = [
+		{ lbl="$T.lbl_settingitem", pid="pid", type=LIST, list=@() RPGSystem.settingprops.map( @( v){
+			if( v["proptype"]!="status") return undefined;
+			return { lbl=v.lbl, val=v.pid };
+		}) .. "-" ... RPGSystem.stageprops.map( @( v) +{ lbl=v.lbl, val=v.pid})},
+		{ pid="retvar", lbl="$T.cmd_macro_retvar", type=VARIABLE, varbits=1|2|4, constbits=0, },
+	]
+	cmdinfo = @( cmd){
+		local props = fget( this, "props", this, cmd);
+		local pi = propstr( props, cmd, "pid");
+		local info = sprintf( "%S ⇒ %S", pi, cmd.retvar);
+		return {
+			info = info,
+		}
+	}
+
+	defval = { pid="menu_item", retvar="W" }
+
+	exec = @( runner, cmd){
+		runner.getSetting( cmd);
+	}
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////
+//	プレイヤー・パーティ処理
+
+local hpmptgtlist = [
+	{ lbl="$T.cmdtgt8", val=TGT_PARTY_SINGLE, }
+	{ lbl="$T.cmdtgt11", val=TGT_PARTY_ALL, }
+];
+
+local hpmppidlist = [
+	{ lbl="$T.HP", val="HP", }
+	{ lbl="$T.MP", val="MP", }
+	{ lbl="$T.TP", val="TP", }
+];
+
+local hpmpprop = {
+	pid = "op"
+	lbl = "$T.lbl_op"
+	type = LIST
+	list = [
+		{ lbl="＝", fmt="＝ %S", val=0},
+		{ lbl="＝(％)", fmt="＝ %S％", val=1},
+		{ lbl="＋", fmt="＋ %S", val=2},
+		{ lbl="＋(％)", fmt="＋ %S％", val=3},
+	],
+};
+
+
+//	cmd_hpmp : HP,MP操作。バトル中の場合、敵も対象にできる(その場合variableから指定)。
+//	・HP,MP,TP
+//	・＝直値、＝％、＋直値、＋％
+//	・数値
+eventcmd .. {
+	category = 2
+	key = "cmd_hpmp"
+	name = "$T.cmd_hpmp"
+	icon = "\ue91f"
+	color = color2
+
+	props = [
+		{ pid="cmdtgt", lbl="$T.cmdtgt", type=LIST, list=hpmptgtlist, variable=1, }		//	対象範囲。個人、パーティ、全て
+		{ pid="charaid", lbl="$T.side_dbview_player", type=DATAID, datatype="player", variable=1, hide=@( pl) pl.getParam( "cmdtgt")!=TGT_PARTY_SINGLE }	//	↑で個人の場合の対象プレイヤー。データIDもしくはワーク、イベント、グローバル変数
+		{ pid="pid", lbl="HP $T.lbl_op", type=LIST, list=hpmppidlist, }
+		hpmpprop
+		{ pid="val", lbl="$T.lbl_var", type=VARIABLE, varbits=1|2|4|8|16, constbits=1|8 },
+		{ pid="hp1", lbl="$T.lbl_hp1", type=BOOL, variable=1, hide=@( pl) pl.getParam( "pid")!="HP"}
+	]
+
+	defval = { cmdtgt=TGT_PARTY_ALL, charaid="P000", pid="HP", op=1, val=100, hp1=true }
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local pi = cmd.cmdtgt==TGT_PARTY_SINGLE ? (conf.player[cmd.charaid]["name"]||cmd.charaid) : propstr( cmddef.props, cmd, "cmdtgt");
+		local pid = propstr( cmddef.props, cmd, "pid");
+		local val = propstr( cmddef.props, cmd, "val");
+		local opval = hpmpprop.list[cmd.op].fmt % val;
+		local info = sprintf( "%S  %S %S", pi, pid, opval);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.changeHPMP( cmd);
+	}
+}
+
+//	cmd_moneyop : お金の増減操作
+//	
+eventcmd .. {
+	category = 2
+	key = "cmd_moneyop"
+	name = "$T.cmd_moneyop"
+	icon = "\uf17e"
+	color = color2
+
+	props = [
+		{ pid="op", lbl="$T.lbl_op", type=LIST, list=[{lbl="＋",val=0},{lbl="ー",val=1},{lbl="＝",val=2},], },
+		{ pid="amount", lbl="$T.lbl_amount", type=SCALAR, range=(1,99999999), variable=true },
+	]
+	
+	defval = { op=0, amount=100 }
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local oi = propstr( cmddef.props, cmd, "op");
+		local ni = propstr( cmddef.props, cmd, "amount");
+		local info = sprintf( "%S %S", oi, ni);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.moneyOp( cmd);
+	}
+}
+
+//	cmd_expop : 経験値又はジョブ経験値の獲得。基本的にマイナスはされない。
+//	
+eventcmd .. {
+	category = 2
+	key = "cmd_expop"
+	name = "$T.cmd_expop"
+	icon = "\ue8d0"
+	color = color2
+	
+	props = [
+		{ pid="cmdtgt", lbl="$T.cmdtgt", type=LIST, list=hpmptgtlist, variable=1, }		//	対象範囲。個人、パーティ、全て
+		{ pid="playerid", lbl="$T.side_dbview_player", type=DATAID, datatype="player", variable=1, hide=@( pl) pl.getParam( "cmdtgt")!=TGT_PARTY_SINGLE }	//	↑で個人の場合の対象プレイヤー。データIDもしくはワーク、イベント、グローバル変数
+		{ pid="pid", lbl="$T.lbl_param", type=LIST, list=[{lbl="$T.EXP",val="exp"},{lbl="$T.JXP",val="jxp"},], },
+		{ pid="amount", lbl="$T.lbl_amount", type=SCALAR, range=(1,99999999), variable=true },
+		{ pid="ui", lbl="$T.lbl_showui", type=BOOL, variable=true, },
+	]
+
+	defval = { cmdtgt=TGT_PARTY_ALL, pid="exp", who=0, playerid=null, amount=100, ui=true }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local pi = cmd.cmdtgt==TGT_PARTY_SINGLE ? (conf.player[cmd.playerid]["name"]||cmd.playerid) : propstr( cmddef.props, cmd, "cmdtgt");
+		local p = propstr( cmddef.props, cmd, "pid");
+		local a = propstr( cmddef.props, cmd, "amount");
+		local info = sprintf( "%S  %S +%S", pi, p, a);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.expOp( cmd);
+	}
+}
+
+//	cmd_itemop : アイテムの増減操作
+//	
+eventcmd .. {
+	category = 2
+	key = "cmd_itemop"
+	name = "$T.cmd_itemop"
+	icon = "\uf109"
+	color = color2
+
+	props = [
+		{ pid="itemid", lbl="$T.lbl_item", type=DATAID, datatype=["item","weapon","armor"], variable=true },
+		{ pid="op", lbl="$T.lbl_op", type=LIST, list=[{lbl="＋",val=0},{lbl="ー",val=1},{lbl="＝",val=2},], },
+		{ pid="num", lbl="$T.lbl_num", type=SCALAR, range=(1,99), variable=true },
+	]
+
+	defval = { itemid="I000", op=0, num=1 }
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local ii = propstr( cmddef.props, cmd, "itemid");
+		local oi = propstr( cmddef.props, cmd, "op");
+		local ni = propstr( cmddef.props, cmd, "num");
+		local info = sprintf( "%S %S %S", ii, oi, ni);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.itemOp( cmd);
+	}
+}
+
+//	cmd_equipop : 装備の設定
+//	
+eventcmd .. {
+	category = 2
+	key = "cmd_equipop"
+	name = "$T.cmd_equipop"
+	icon = "\uf11a"
+	color = color2
+
+	props = [
+		{ pid="playerid", lbl="$T.side_dbview_player", type=DATAID, datatype=["player"], variable=true },
+		{ pid="slot", lbl="$T.lbl_slot", type=LIST, list=@(){
+			local a = [
+				{ lbl="$T.lbl_anyslot", val=-1 },
+				...::conf.type.eqslot.map( @( v, i)({ lbl=v.name, icon=v.icon, val=i })),
+			];
+			return a;
+		}, hide=@( pl) pl.getParam( "op") },
+		{ pid="itemid", lbl="$T.lbl_item", type=DATAID, datatype=["weapon","armor"], variable=true },
+		{ pid="equipmyown", lbl="$T.lbl_equipmyown", type=BOOL, variable=true },
+	]
+
+	defval = { playerid="P000", itemid="W000", slot=-1, equipmyown=false}
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local pi = propstr( cmddef.props, cmd, "playerid");
+		local ii = propstr( cmddef.props, cmd, "itemid");
+		local info = sprintf( "%S %S", pi, ii);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.equipOp( cmd);
+	}
+}
+
+//	cmd_memberop : メンバーの交代
+//	
+eventcmd .. {
+	category = 2
+	key = "cmd_memberop"
+	name = "$T.cmd_memberop"
+	icon = "\ue7ef"
+	color = color2
+
+	props = [
+		{ pid="playerid", lbl="$T.side_dbview_player", type=DATAID, datatype=["player"], variable=true },
+		{ pid="slot", lbl="$T.lbl_slot", type=LIST, list=@(){
+			local a = [
+				{ lbl="$T.lbl_anyslot", val=-1 },
+				...array( ::conf.setting.maxmembers).map( @( v, i)({ lbl="${T.lbl_slot}"..i, val=i })),
+				{ lbl="$T.lbl_leave", val=null },
+			];
+			return a;
+		}, hide=@( pl) pl.getParam( "op") },
+	]
+
+	defval = { playerid="P000", op=0, slot=-1, }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local pi = propstr( cmddef.props, cmd, "playerid");
+		local oi = cmd.slot==null? "$T.lbl_leave" : ("$T.lbl_slot: %S" % (cmd.slot<0?"$T.lbl_any":cmd.slot));
+		local info = sprintf( "%S %S", pi, oi);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.memberOp( cmd);
+	}
+}
+
+//	cmd_jobop : ジョブの操作
+//	
+eventcmd .. {
+	category = 2
+	key = "cmd_jobop"
+	name = "$T.cmd_jobop"
+	icon = "\ue7af"
+	color = color2
+
+	props = [
+		{ pid="playerid", lbl="$T.side_dbview_player", type=DATAID, datatype=["player"], variable=true },
+		{ pid="op", lbl="$T.lbl_op", type=LIST, list=[{lbl="$T.lbl_add",val=0},{lbl="$T.lbl_remove",val=1},],  },
+		{ pid="jobid", lbl="$T.side_dbview_job", type=DATAID, datatype=["job"], variable=true },
+		{ pid="slot", lbl="$T.lbl_slot", type=LIST, list=@(){
+			local a = [
+				{ lbl="$T.lbl_anyslot", val=-1 },
+				... ::conf.type.jobslot.map( @( v, i)({ lbl=v.name, val=i })),
+				{ lbl="$T.lbl_none", val=null }	//	ジョブは使用可能になるがセットはされない。ジョブ画面等でセット可能に
+			];
+			return a;
+		}, hide=@( pl) pl.getParam( "op") },
+	]
+
+	defval = { playerid="P000", jobid="J000", slot=-1, op=0 }
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local pi = propstr( cmddef.props, cmd, "playerid");
+		local ji = propstr( cmddef.props, cmd, "jobid");
+		local info = sprintf( "%S %S %S", pi, cmd.op?"-":"+" ,ji);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.jobOp( cmd);
+	}
+}
+
+function condbitsstr( bits){
+	local a = datalist( "cond");
+	local sb = StringBuffer();
+	foreach( i, v in a){
+		i ??= v["idx"];
+		if( bitget( bits, i)){
+			local icon = (length(v["icon"]) ? v["icon"]:char( 0xf123+i));
+			sb .. icon;
+		}
+	}
+	return string( sb);
+}
+
+//	cmd_condop : コンディションの操作
+//	
+eventcmd .. {
+	category = 2
+	key = "cmd_condop"
+	name = "$T.cmd_condop"
+	icon = "\uebd5"
+	color = color2
+
+	props = [
+		{ pid="cmdtgt", lbl="$T.cmdtgt", type=LIST, list=hpmptgtlist, variable=1, }		//	対象範囲。個人、パーティ、全て
+		{ pid="charaid", lbl="$T.side_dbview_player", type=DATAID, datatype="player", variable=1, hide=@( pl) pl.getParam( "cmdtgt")!=TGT_PARTY_SINGLE }	//	↑で個人の場合の対象プレイヤー。データIDもしくはワーク、イベント、グローバル変数
+		{ pid="op", lbl="$T.lbl_op", type=LIST, list=[
+			{lbl="＋",val=0},
+			{lbl="ー",val=1},
+			{lbl="$T.lbl_clearall",val=2}
+		],},
+		{
+			pid = "condbits"
+			lbl = "$T.side_dbview_cond"
+			type = CHECKBITS,
+			list = @( pl) datalist( "cond")
+			variable = 1,
+			hide=@( pl) pl.getParam( "op")>=2
+		},
+		{ pid="ignoredead", lbl="$T.lbl_ignoredead", type=BOOL, variable=true },
+		{ pid="showpop", lbl="$T.lbl_showpop", type=BOOL, variable=true },
+	]
+	
+	defval = { cmdtgt=TGT_PARTY_ALL, charaid="P000", op=0, condbits=1, ignoredead=true, showpop=false, }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local pi = cmd.cmdtgt==8 ? (conf.player[cmd.charaid]["name"]||cmd.charaid) : propstr( cmddef.props, cmd, "cmdtgt");
+		local oi = propstr( cmddef.props, cmd, "op");
+		local ji = condbitsstr( cmd.condbits);// propstr( cmddef.props, cmd, "condbits");
+		local info = sprintf( "%S  %S %S", pi, oi, cmd.op>=2?"":ji);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.condOp( cmd);
+	}
+}
+
+
+//	cmd_charainfo : キャラ情報取得
+//	
+eventcmd .. {
+	category = 2
+	key = "cmd_charainfo"
+	name = "キャラ情報取得"
+	icon = "\ue851"
+	color = color2
+
+	props = @( cmd){
+		local a = [
+			{ pid="charaid", lbl="$T.side_dbview_player", type=DATAID, datatype=["player","enemy"], variable=1, },
+			{ pid="key", lbl="$T.lbl_info", type=LIST, list=@() RPGSystem.charainfodef._list.map( @(v) +{ lbl=v.lbl, val=v.key}), refresh=1,
+				set = @( prop, data, val){
+					local cidef = RPGSystem.charainfodef[val];
+					data.key <- val;
+					if( cidef["props"]) setDefaultProperties( cidef.props, data);
+				},
+			},
+		];
+		local cidef = RPGSystem.charainfodef[cmd["key"]];
+		if( cidef["props"]) a ... cidef.props;
+		a .. { pid="retvar", lbl="$T.cmd_macro_retvar", type=VARIABLE, varbits=1|2|4, constbits=0, };
+		return a;
+	}
+	
+	defval = { charaid="P000", key="dead", retvar="W", }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], props = fget( cmddef, "props", cmddef, cmd);
+		local cidef = RPGSystem.charainfodef[cmd["key"]];
+		local pi = propstr( props, cmd, "charaid");
+		local ii = propstr( props, cmd, "key");
+		local ci = cidef["info"] && cidef.info( cmd);
+		local info = sprintf( "%S.%S ⇒ %S", pi, ci||ii,cmd.retvar);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		return runner.getCharaInfo( cmd);
+	}
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////
+//	画面表示・入力処理
+
+//	cmd_showmsg : メッセージを表示する。
+//	※このコマンドは単にcmd_showuiの中のメッセージ表示を抜き出して分かりやすいように配置しただけのもの。
+//	
+eventcmd .. {
+	category = 3
+	key = "cmd_showmsg"
+	name = "$T.cmd_showmsg"
+	icon = "\ue0b7"
+	color = color3
+
+	width = 600
+	
+	props = @( cmd){
+		local a = [];
+		a .. { pid="key", lbl="$T.lbl_ui", type=LIST, refresh=true, list=@() RPGSystem.ui._list.map( @( v){	//	"message"タイプの登録uiキー
+				return v["type"]=="message" ? { lbl=v.lbl, val=v.key } : undefined;
+			}), set = @( prop, data, val){
+				Table.clear( data);		//	全てのデータを一度さっぱりと消去
+				data.cmd <- "cmd_showmsg";	//	消えちゃいけないデータもある。。。
+				data[prop.pid] <- val;
+				local defval = deepclone( fget( RPGSystem.ui[val], "defval"));	//	デフォルトデータ
+				data ... defval;
+			}
+		};
+		local uidef = RPGSystem.ui[cmd["key"]];
+		local props = fget( uidef, "props", uidef, cmd).filter( @( v) v.pid!="op");		//	opは常に表示
+		a ... props;
+		return a;
+	}
+	
+	defval = { key = "message_talk", text = "*message*", name = "", uiclose = 2, }
+
+	cmdinfo = @( cmd){
+		local info = ::RPGSystem.ui[cmd.key].lbl;
+		if( cmd["name"]) info = info.." - "..cmd.name;
+		return {
+			info = info,
+			extra = cmd["_var"]["text"]? varstr( cmd._var.text) : cmd.text,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.showMessage( cmd);
+	}
+}
+
+//	cmd_choices : 選択肢を表示してその数だけ分岐を入れる
+//	
+eventcmd .. {
+	category = 3
+	key = "cmd_choices"
+	name = "$T.cmd_choices"
+	icon = "\ue9bd"
+	color = color3
+	
+	props = @( cmd){
+		local a = [
+			{
+				pid="num", lbl=tmpl( T.tmpl_num_v, {v="$T.lbl_choices"}), type=SCALAR, range=(1,8), refresh=1,
+				get = @( prop, data) length( data.cmdblocks),
+				set = @( prop, data, val){
+					data.cmdblocks.resize( val);
+					foreach( i,v in data.cmdblocks){
+						if( !v) data.cmdblocks[i] = [];
+					}
+					return val;
+				}
+			}
+		];
+		foreach( i, v in cmd.cmdblocks){
+			a .. { pid="text"..i, lbl="${T.lbl_choice}"..i, type=STRING, };
+		}
+		a .. { pid="backenable", lbl="$T.lbl_backenable", type=BOOL, };
+		return a;
+	}
+	
+	defval = {
+		text0 = "$T.yes"
+		text1 = "$T.no"
+		backenable = false
+		cmdblocks = [[],[]]
+	}	//	エディターで辞書解決してしまうので$TでOK
+	
+	cmdinfo = @( cmd){
+		local t = {topblkname = sprintf( "%d: %S", 1, cmd.text0)};
+		if( length( cmd.cmdblocks)>1){
+			t.blknames <- [];
+			for( local l = 1; l < length( cmd.cmdblocks); l ++){
+				t.blknames .. sprintf( "%d: %S", l+1, cmd["text"..l]);
+			}
+		}
+		return t;
+	};
+
+	//	選択肢配列をswitch文コードに変換する。
+	parsecode = @( cmd){
+		//	switch( ~~~)の部分
+		push( "switch( showChoices( locals[%S])){" % newlocal( cmd)).lf();
+		foreach( i, cmdblock in cmd.cmdblocks){
+			push( "case %S:" % i);
+			parseblock( cmdblock);
+			lf().push( "break;").lf();
+		}
+		push( "}").lf();
+	}
+}
+
+local picactionlist = [
+	{ lbl="$T.lbl_show", val=0, }	//	表示
+	{ lbl="$T.lbl_delete", val=1, }	//	消去
+];
+
+//	cmd_shopwpic : ピクチャ表示操作
+//	
+eventcmd .. {
+	category = 3
+	key = "cmd_showpic"
+	name = "$T.cmd_showpic"
+	icon = "\ue416"
+	color = color3
+	
+	props = @( cmd){
+		local pc = ::conf._resource.event_pic[cmd["picid"]]
+		local a = [
+			{ pid="idx", lbl="$T.lbl_picture $T.lbl_index", type=SCALAR, range=[0,99], variable=1 },
+			{ pid="op", lbl="$T.lbl_operation", type=LIST, list=picactionlist, refresh=1 },
+		];
+		if( cmd.op==0){
+			a ... [
+				{ pid="picid", lbl="$T.side_res_event_pic", type=RESID, restype=["event_pic"], nullable=1, variable=1 },
+				{ pid="aniid", lbl="$T.lbl_anime", type=LIST, variable=1,
+					list = pc["animap"]?.map( @( v) ({ lbl=v.id, val=v.id})) || [], 
+					hide = !length( pc["animap"]),
+				},
+				{ pid="pos", lbl="$T.lbl_position", type=VEC2, range=[-1280,2560], variable=1 },
+				{ pid="scale", lbl="$T.lbl_scale", type=SCALAR, range=[0,1000], variable=1 },
+				{ pid="rot", lbl="$T.lbl_rotation", type=SCALAR, range=[-720,720], variable=1 },
+			];
+		}
+		a .. { pid="fade", lbl="$T.lbl_fadetime", type=SCALAR, range=[0,3000], variable=1 };
+		a .. { pid="wait", lbl="$T.lbl_waitfade", type=BOOL, variable=1, hide=@( pl) pl.getParam( "fade")<=0 };
+		return a;
+	}
+	
+	defval = {
+		idx=0, picid="PC000", pos=[640,360], scale=100, rot=0, op=0, fade=0, wait=true,
+	}
+	
+	cmdinfo = @( cmd){
+		local pic = ::conf._resource.event_pic[cmd.picid];
+		local info = sprintf( " %d  %S", cmd.idx, cmd.picid);
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.showUI( cmd);
+	}
+
+	edit = @( cv, cmd){
+		local props = clone fget( cv.cmddef, "props", cv.cmddef, cv.cmd);
+		if( !length( props)) return;
+		local cmddef = ::RPGSystem.eventcmd[cv.cmd.cmd];
+		local newcmd = PicPropertyEditPopupV.run( cv, cmddef, cv.cmd);
+		return newcmd;
+	}
+}
+
+//	cmd_showui : UI表示操作。色々なUIを汎用的に表示する
+//	
+eventcmd .. {
+	category = 3
+	key = "cmd_showui"
+	name = "$T.cmd_showui"
+	icon = "\ue1bd"
+	color = color3
+	
+	props = @( cmd){
+		local a = [];
+		a .. {
+			lbl="$T.lbl_ui", pid="key", refresh=1, type=LIST, cnt = "cnt8.ui"
+			list=@(){
+				return RPGSystem.ui._list.map( @( v, i) v["hide"]?undefined : { lbl=v.lbl, val=v.key, icon=v["icon"]});
+			},
+			set = @( prop, data, val){
+				Table.clear( data);		//	全てのデータを一度さっぱりと消去
+				data.cmd <- "cmd_showui";	//	消えちゃいけないデータもある。。。
+				data[prop.pid] <- val;
+				local defval = deepclone( fget( RPGSystem.ui[val], "defval"));	//	デフォルトデータ
+				data ... defval;
+			}
+			refresh=true,	//	set時にプロパティリストをリフレッシュ
+		}
+		local uidef = RPGSystem.ui[cmd["key"]];
+		local props = fget( uidef, "props", uidef, cmd);
+		a ... props;
+		return a;
+	}
+	
+	defval = {
+		key = "info_top"
+		text = "*INFO..."
+		time = 2000
+	}
+	
+	cmdinfo = @( cmd){
+		local uidef = RPGSystem.ui[cmd.key];
+		local info = uidef["lbl"] || "???";
+		if( "op" in cmd){
+			local props = fget( uidef, "props", uidef, cmd);
+			info = sprintf( "%S → %S", info, propstr( props, cmd, "op"));
+		}
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.showUI( cmd);
+	}
+}
+
+local customui_oplist = [
+	{ lbl="$T.uiop_show", val="show", }
+	{ lbl="$T.uiop_hide", val="kill", }
+	{ lbl="$T.uiop_action", val="action", }
+	{ lbl="$T.uiop_value", val="value", }
+];
+
+local customui_layerlist = [
+	{ lbl="info $T.lbl_layer", val="info", }
+	{ lbl="menu $T.lbl_layer", val="menu", }
+	{ lbl="message $T.lbl_layer", val="message", }
+];
+
+local customui_defmap = {
+	"show" = { pos = { x=640, y=360 }, uipath = "", layer = "menu", action = "show", wait = true },
+	"kill" = { action = "hide", wait = true },
+	"action" = { action = "action", wait = true },
+	"value" = { target = "", valtype = 0, val = "TEXT"},
+}
+
+//	cmd_customui : カスタムUI操作
+//	op : 表示、消去、値設定、アクション、
+//	
+eventcmd .. {
+	category = 3
+	key = "cmd_customui"
+	name = "$T.cmd_customui"
+	icon = "\ue1bd"
+	color = color3
+	
+	props = @( cmd){
+		local a = [
+			{ pid="idx", lbl="$T.lbl_ui $T.lbl_index", type=SCALAR, range=[0,99], variable=1 },
+			{ pid="op", lbl="$T.lbl_op", type=LIST, refresh = 1, list = customui_oplist,
+				set = @( prop, data, val){
+					local idx = data["idx"];
+					Table.clear( data) ... customui_defmap[val];
+					data.cmd <- "cmd_customui"; data.idx <- idx; data.op <- val;
+				}
+			},
+		];
+		switch( cmd["op"]){
+		case "show":
+			a .. { pid="uipath", lbl="$T.lbl_uipath", type=PATH, variable=true }
+			a .. { pid="layer", lbl="$T.lbl_layer", type=LIST, variable=true, list=customui_layerlist }
+			a .. { pid="pos", lbl="$T.lbl_position", type=UIPOSITION, variable=true }
+			a .. { pid="action", lbl="$T.lbl_action", type=STRING, variable=1 }
+			a .. { pid="wait", lbl="$T.lbl_waitaction", type=BOOL, variable=1 }
+			break;
+		case "kill":
+			a .. { pid="action", lbl="$T.lbl_action", type=STRING, variable=1 }
+			a .. { pid="wait", lbl="$T.lbl_waitaction", type=BOOL, variable=1 }
+			break;
+		case "action":
+			a .. { pid="action", lbl="$T.lbl_action", type=STRING, variable=1 }
+			a .. { pid="wait", lbl="$T.lbl_waitaction", type=BOOL, variable=1 }
+			break;
+		case "value":
+			a .. { lbl="$T.lbl_viewname", pid="target", type=STRING, variable=1, };
+			a .. {
+				lbl="$T.lbl_type", pid="valtype", refresh=1, type=LIST,
+				list = [{lbl="$T.lbl_text", val=0, }, {lbl="$T.lbl_imgpath", val=1, }, {lbl="$T.lbl_etc", val=2, }],
+				set = @( prop, data, val){
+					data.valtype = val;
+					delete data["text"]; delete data["path"]; delete data["rvar"];
+					local maps = #[{text="TEXT"},{path="/resource/event_pic/"},{rvar="\tW"}];
+					data ... maps[val];
+				}
+			};
+			switch( cmd["valtype"]){
+			case 0: a .. { lbl="$T.lbl_text", pid="text", type=MESSAGE, }; break;
+			case 1: a .. { lbl="$T.lbl_imgpath", pid="path", type=PATH, }; break;
+			case 2: a .. { lbl="$T.lbl_var", pid="rvar", type=VARIABLE, varbits=1|2|4|8|16, constbits=8 }; break;
+			}
+			break;
+		}
+		return a;
+	}
+	
+	defval = { idx = 0, op = "show", ...customui_defmap.show }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], props = fget( cmddef, "props", cmddef, cmd);
+		local idx = propstr( props, cmd, "idx");
+		local op = propstr( props, cmd, "op");
+		local info = sprintf( "[%S] %S", idx, op);
+		local w = cmd["wait"] ? "⌛" : "";
+		switch( cmd["op"]){
+		case "show": info = info .. sprintf( " %S %S", cmd["uipath"], w); break;
+		case "value": info = info .. sprintf( " %S ⇐ %S", cmd["target"], cmd["text"] || cmd["path"] || propstr( props, cmd, "rvar")); break;
+		case "action": info = info .. sprintf( " %S %S", cmd["action"], w); break;
+		}
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.customUI( cmd);
+	}
+}
+
+//	UIイベントの入力。入力を待つために1フレームのウェイトが入る。
+//	ただし、キューにイベントが複数溜まっている場合は吐き出しきるまでsuspendは行われない。
+//	
+eventcmd .. {
+	category = 3
+	key = "cmd_inputui"
+	name = "$T.cmd_inputui"
+	icon = "\ue323"
+	color = color3
+	
+	props = [
+		{ pid="typeset", lbl="$T.cmd_inputui_typeset", type=VARIABLE, varbits=1|2|4, constbits=0, nullable=1 },
+		{ pid="nameset", lbl="$T.cmd_inputui_nameset", type=VARIABLE, varbits=1|2|4, constbits=0, nullable=1 },
+		{ pid="valset", lbl="$T.cmd_inputui_valset", type=VARIABLE, varbits=1|2|4, constbits=0, nullable=1 },
+	]
+	defval = { typeset="W", nameset="X", valset=null }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], props = fget( cmddef, "props", cmddef, cmd);
+		local info = "";
+		if( cmd["typeset"]) info = info .. sprintf( "$T.lbl_type => %S", propstr( props, cmd, "typeset"));
+		if( cmd["nameset"]) info = info .. sprintf( " $T.lbl_name => %S", propstr( props, cmd, "nameset"));
+		return {
+			info = info,
+		}
+	}
+
+	exec = @( runner, cmd){
+		runner.inputUI( cmd);
+	}
+}
+
+//	
+//	
+eventcmd .. {
+	category = 3
+	key = "cmd_focusui"
+	name = "$T.cmd_focusui"
+	icon = "\uebb9"
+	color = color3
+	
+	props = [
+		{ pid="focusto", lbl="$T.lbl_focusto", type=STRING, variable=1 },
+		{ pid="wait", lbl="$T.lbl_waitaction", type=BOOL, variable=1 }, 
+	]
+	defval = { focusto="btn", wait=true }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], props = fget( cmddef, "props", cmddef, cmd);
+		local info = propstr( props, cmd, "focusto");
+		return {
+			info = info,
+		}
+	}
+
+	exec = @( runner, cmd){
+		runner.focusUI( cmd);
+	}
+}
+
+eventcmd .. {
+	category = 3
+	key = "cmd_lockui"
+	name = "$T.cmd_lockui"
+	icon = "\ue500"
+	color = color3
+	
+	props = [
+		{ pid="lock", lbl="$T.lbl_lock", type=BOOL, variable=1 }, 
+		// { pid="restore", lbl="$T.lbl_restoreonend", type=BOOL, variable=1, hide=@( pl) !pl.getParam( "lock") }
+	]
+	defval = { lock=false, /*restore=true*/ }
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local info = propstr( cmddef.props, cmd, "lock");
+		return {
+			info = info,
+		}
+	}
+
+	exec = @( runner, cmd){
+		runner.lockUI( cmd);
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////////
+//	シーンの遷移・制御
+
+//	cmd_mapmove : マップの移動
+//	
+eventcmd .. {
+	category = 4
+	key = "cmd_mapmove"
+	name = "$T.cmd_mapmove"
+	icon = "\ue539"
+	color = color4
+	
+	props = [
+		{ pid="dest", lbl = "$T.cmd_mapmove_dest", type=PORTAL, cnt="cnt6v.ui", variable=true }
+		{ pid="wipe", lbl="$T.wipe", type=LIST, list=@()::mapwipelist.map( @( v, i) +{ lbl=v.lbl, val=i}), variable=true }	//	トランジション
+		{ pid="remap", lbl="$T.lbl_remap", type=BOOL, variable=true },
+	]
+	
+	defval = @(){
+		local mapid = defmapid();
+		return { dest={ mapid=mapid, pos=(0,null,0,0), }, wipe=1, remap=true }
+	}
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local info = propstr( cmddef.props, cmd, "dest");
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.moveMap( cmd);
+	}
+}
+
+//	cmd_mapasset : マップアセットの配置
+//	配置番号、マップアセットの配置は専用UIを用意する！マクロの時には無理。今のところはマクロの事は考えない。
+//	
+eventcmd .. {
+	category = 4
+	key = "cmd_mapasset"
+	name = "$T.cmd_mapasset"
+	icon = "\ue8a7"
+	color = color4
+
+	width = 600
+	
+	props = [
+		{ pid="idx", lbl="$T.lbl_place $T.lbl_index", type=SCALAR, range=[0,99], variable=1 },
+		{ pid="asset", lbl="$T.lbl_placeasset", type=PLACEASSET, variable=1, cnt="cnt6.ui"}
+		{ pid="parma", lbl="$T.lbl_placeparma", type=BOOL, variable=1 },
+	]
+	
+	defval = @(){
+		local ce = ::skstudio.editor["modaledit"];
+		local pos = clone ce.data.pos;	//	現在編集中のイベントの配置位置。
+		pos[3] = 0;	//	dirは0しとく
+		return { asset={ resid="MA000", pos=clone pos, blend=1}, idx=0, parma=false }
+	}
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local ii = propstr( props, cmd, "idx");
+		local asd = ::conf._resource.map_asset[cmd.asset.resid];
+		local info = sprintf( "%S ⇒ %S:%S", ii, cmd.asset.resid, lang( asd["name"]||"???"));
+		return {
+			info = info,
+		}
+	}
+
+	edit = @( cv, cmd){
+		local cmddef = ::RPGSystem.eventcmd[cmd.cmd];
+		local props = fget( cmddef, "props", cmddef, cmd);
+		::skstudio.freezeEditorView( true);
+		local newcmd = PropertyEditPopupV.run( cv, cmddef, cmd);
+		::skstudio.freezeEditorView( false);
+		return newcmd;
+	}
+	
+	exec = @( runner, cmd){
+		runner.placeMapAsset( cmd);
+	}
+}
+
+//	cmd_remasset : マップアセットの消去
+//	
+eventcmd .. {
+	category = 4
+	key = "cmd_remasset"
+	name = "$T.cmd_remasset"
+	icon = "\uf022"
+	color = color4
+
+	props = [
+		{ pid="idx", lbl="$T.lbl_place $T.lbl_index", type=SCALAR, range=[0,99], variable=1 },
+	]
+
+	defval = @(){
+		return { idx=0 }
+	}
+
+	cmdinfo = @( cmd){
+		local props = fget( this, "props", this, cmd);
+		return {
+			info = propstr( props, cmd, "idx"),
+		}
+	}
+
+	exec = @( runner, cmd){
+		runner.removeMapAsset( cmd);
+	}
+}
+
+local encountg( mapid){
+	local e = ::skstudio.editor;
+	return ( mapid == e["mapid"]) ? e.data["encount"] : ::conf.map[mapid]["encount"];
+}
+
+//	cmd_battle1 : バトル(グループ指定)
+//	
+eventcmd .. {
+	category = 4
+	key = "cmd_battle1"
+	name = "$T.cmd_battle1"
+	icon = "\uea2c"
+	color = color4
+	
+	props = @( cmd){
+		local e = ::skstudio.editor;
+		local gidprop;
+		if( cmd["_var"]["mapid"]){
+			gidprop = { pid="gid", lbl="$T.lbl_group", type=SCALAR, range=(1,255), variable=true };
+		}else{
+			local ga = (encountg( cmd.mapid) || []).map( @( v, i){
+				return { lbl=enemyGroupString( v["enemies"]), val=v.gid};
+			});
+			gidprop = { pid="gid", lbl="$T.lbl_group", type=LIST, list = ga, variable=true };
+		}
+		return [
+			{ pid="mapid", lbl="$T.lbl_map", type=DATAID, datatype=["map"], variable=true }
+			gidprop
+			{ pid="bgmid", lbl="$T.lbl_bgm", type=RESID, restype = ["bgm"], nullable=true },
+			{ pid="keeprset", lbl="$T.lbl_keeprset", type=BOOL},
+			losefuncprop
+		]
+	}
+	
+	defval = @(){
+		local mapid = defmapid();
+		return { mapid=mapid, gid=1, losefunc=0, bgmid=null, keeprset=false }
+	}
+	
+	cmdinfo = @( cmd){
+		if( cmd["_var"]["mapid"]){
+			return {
+				info = sprintf( "%S - %S  ", varstr( cmd._var.mapid), cmd._var["gid"] ? varstr( cmd._var.gid) : cmd.gid);
+			}
+		}else{
+			local map = ::conf.map[cmd.mapid];
+			local ga = encountg( cmd.mapid);
+			local enc = ga?.find( @( v) v.gid==cmd.gid);
+			return {
+				info = sprintf( "%S - %S  ", map["name"], enemyGroupString( enc["enemies"]));
+			}
+		}
+	}
+
+	exec = @( runner, cmd){
+		runner.enterBattle( cmd);
+	}
+}
+
+//	cmd_battle2 : バトル(詳細設定)
+//	
+eventcmd .. {
+	category = 4
+	key = "cmd_battle2"
+	name = "$T.cmd_battle2"
+	icon = "\uea2c"
+	color = color4
+	
+	props = @( cmd){
+		local e = ::skstudio.editor;
+		return [
+			{ pid="mapid", lbl="$T.lbl_battlemap", type=DATAID, datatype = ["map"] },
+			{ pid="enemies", lbl="$T.lbl_enemies", type=ENEMYGROUP, cnt="cnt6.ui", notrk=1},
+			{ pid="escape", lbl="$T.lbl_escapable", type=BOOL, defval = true, },
+			{ pid="bgmid", lbl="$T.lbl_bgm", type=RESID, restype = ["bgm"] },
+			{ pid="keeprset", lbl="$T.lbl_keeprset", type=BOOL},
+			losefuncprop
+		]
+	}
+	
+	defval = @(){
+		local mapid = "M800";
+		return { mapid=mapid, gid=1, losefunc=0, bgmid=null, keeprset=false, enemies=[{id="E000",x=0.0,z=0.0}],}
+	}
+	
+	cmdinfo = @( cmd){
+		local sb = (#StringBuffer()).clear();
+		foreach( i,v in cmd["enemies"]){
+			if( i) sb .. ", "
+			local e = ::conf.enemy[v["id"]];
+			sb .. (e?e.name : v["id"]);
+		}
+		return {info=string( sb),};
+	}
+
+	exec = @( runner, cmd){
+		runner.enterBattle( cmd);
+	}
+}
+
+
+
+//	cmd_timescale : タイムスケール
+//	
+eventcmd .. {
+	category = 4
+	key = "cmd_timescale"
+	name = "$T.cmd_timescale"
+	icon = "\ue068"
+	color = color4
+	
+	props = [{ pid="timescale", lbl="$T.cmd_timescale", type=SCALAR, range=(0,1000), ui="bar", barrange=(0,200,10), variable=1 }, ]
+	
+	defval = { timescale=100 }
+	
+	cmdinfo = @( cmd){
+		return {info="%d％"%(cmd.timescale), };
+	}
+
+	exec = @( runner, cmd){
+		runner.timeScale( cmd);
+	}
+}
+
+
+//	cmd_gotitle : タイトルに戻る
+//	安全な方法としてはskRestartしちゃうってのも良いかも？
+//	
+eventcmd .. {
+	category = 4
+	key = "cmd_gotitle"
+	name = "$T.cmd_gotitle"
+	icon = "\ue88a"
+	color = color4
+	
+	// props = [{ pid="timescale", lbl="$T.cmd_timescale", type=SCALAR, range=(0,1000), variable=1 }, ]
+	props = []
+	
+	defval = { }
+	
+	// cmdinfo = @( cmd){
+	// 	return {info="%d％"%(cmd.timescale), };
+	// }
+
+	exec = @( runner, cmd){
+		local m0 = ::conf.setting.titlemap;
+		runner.moveMap({
+			dest = { mapid=m0, },
+			remap = true, 
+			isload = true,
+			loadfunc=@(){
+				(::rpgstat = RPGState()).newGame();
+			},
+		});
+	}
+}
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////////
+//	操作・演出処理
+
+//	cmd_anime : アニメーションの再生
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_anime"
+	name = "$T.cmd_anime"
+	icon = "\ueae9"
+	color = color5
+	
+	props = [
+		{ pid="who", lbl="$T.lbl_who", type=LIST, list=who2list, variable=true, refresh=true, varbits=1|2|4|8 }
+		{ pid="ani", lbl="$T.lbl_anime", type=ANIME_INLINE, variable=true, cnt="cnt6v.ui", 
+			mdlid = @( pl){
+				if( pl.getParam( "who") == 2){
+					local ce = ::skstudio.editor["modaledit"];
+					if( ce){
+						return ce.data.mdlid;
+					}
+				}
+				return "CV000";
+			}
+		}
+	]
+
+	edit = @( cv, cmd){
+		if( cmd.who == 2){	//	このイベントのモデルに差し替え
+			local ecmd = geteventlist( cv)["ref"]["cmd"];
+			if( ecmd["mdlid"]){
+				cmd = deepclone( cmd);
+				cmd.ani.mdlid = ecmd.mdlid;
+			}
+		}
+		return PropertyEditPopupV.run( cv, this, cmd);
+	}
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local w = propstr( cmddef.props, cmd, "who");
+		local a = propstr( cmddef.props, cmd, "ani");
+		return {
+			info = sprintf( "%S - %S", w, a);
+		}
+	}
+	
+	defval = { who = 1, ani = {mdlid="CV000", id="stand", spd=1.0, part=0} }
+
+	exec = @( runner, cmd){
+		runner.startAnime( cmd);
+	}
+}
+
+local whoefxlist = [
+	...who2list,
+	{ lbl="$T.coord_marker", val=3 },
+	{ lbl="$T.coord_screen", val=4 },
+	{ lbl="$T.coord_world", val=5 },
+];
+
+//	cmd_efx : エフェクトの発生
+//	プレイヤー、イベント、選択キャラ、スクリーン座標、ワールド座標
+eventcmd .. {
+	category = 5
+	key = "cmd_efx"
+	name = "$T.cmd_efx"
+	icon = "\uef55"
+	color = color5
+	
+	props = [
+		{ pid="who", lbl="$T.lbl_who", type=LIST, list=whoefxlist, refresh=true, variable=1 }
+		{ pid="pos", lbl="$T.lbl_position", type=VEC3, range=(-1000,1000), q=100, variable=1 }
+		{ pid="efxid", lbl="$T.lbl_effect", type=RESID_PREVIEW, restype="efx", cnt="cnt6.ui", variable=1 }
+		{ pid="wait", lbl="$T.lbl_waitaction", type=BOOL, variable=1 }
+	]
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local ws = propstr( cmddef.props, cmd, "who");
+		local es = propstr( cmddef.props, cmd, "efxid");
+		local w = cmd["wait"] ? "⌛" : "";
+		local info = sprintf( "%S %S %S", ws, es, w);
+		return {
+			info = info,
+		}
+	}
+	
+	defval = { who = 1, efxid="FX000", pos=[0.0,0.0,0.0], wait=true }
+
+	exec = @( runner, cmd){
+		runner.showEffect( cmd);
+	}
+}
+
+//	cmd_facetoface : 向き合う。簡易演出。
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_facetoface"
+	name = "$T.cmd_facetoface"
+	icon = "\uea66"
+	color = color5
+
+	props = [
+		{ pid="who", lbl="$T.lbl_who", type=LIST, list=[
+			{ lbl="$T.who_player", val=1 }
+			{ lbl="$T.who_event", val=2 }
+			{ lbl="$T.who_each", val=4 }
+		] }
+	]
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local info = propstr( cmddef.props, cmd, "who");
+		return {
+			info = info,
+		}
+	}
+
+	defval = { who = 4 }
+
+	exec = @( runner, cmd){
+		runner.faceToFace( cmd);
+	}
+}
+
+//	cmd_camwork : カメラワークの切り替え
+//	type : 0=対象カメラ, 1=固定カメラ 
+//	
+local cameramarkers(){
+	local marker = ::skstudio.editor["data"]["marker"];
+	if( !marker) return null;
+	local list = [];
+	foreach( i, v in marker) if( v["type"]=="camera") list .. { lbl=v.name, val=i, };
+	return list;
+}
+
+local camtransprop = { pid="trans", lbl="$T.lbl_transition", type=LIST, list=[
+	{ lbl:"$T.speed_immediate", val=0, },
+	{ lbl:"$T.speed_quick", val=1, },
+	{ lbl:"$T.speed_normal", val=2, },
+	{ lbl:"$T.speed_slow", val=3, },
+], variable=1};
+
+local camrestoreprop = { pid="restore", lbl="$T.lbl_restoreonend", type=LIST, list=[
+	{ lbl:"$T.lbl_no", val=0, },
+	{ lbl:"$T.lbl_yes", val=1, },
+	{ lbl:"$T.lbl_transition", val=2, },
+], variable=1};
+
+local camvalmap = {
+	[0] = { type=0, target=0, trans=0, restore=0 },
+	[1] = { type=1, target=0, trans=0, zoom=0, pos=(0,0,0), hpb=(0,0,0), restore=0 },
+	[2] = { type=2, mkid=null, trans=0, zoom=0, pos=(0,0,0), hpb=(0,0,0), restore=0 },
+}
+
+eventcmd .. {
+	category = 5
+	key = "cmd_camwork"
+	name = "$T.cmd_camwork"
+	icon = "\ue41e"
+	color = color5
+
+	defval = { type=1, target=1, trans=0, zoom=0, pos=(0,0,0), hpb=(0,0,0), restore=0 }
+
+	props = @( cmd){
+		local mklist = cameramarkers();
+		local a = [{ pid="type", lbl="$T.lbl_type", type=LIST, refresh=true, list=[
+				{ lbl="$T.lbl_reset", val=0, },
+				{ lbl="$T.camwork_normal", val=1, },
+				{ lbl="$T.camwork_fixed", val=2, disable=!length( mklist)},
+			], set = @( prop, data, val){
+				Table.clear( data) ... deepclone( camvalmap[val]);
+				if( "mkid" in data) data.mkid ??= cameramarkers()[0]["val"];
+			},
+		}];
+		switch( cmd.type){
+		case 0:
+			a .. camtransprop;
+			break;
+		case 1:
+			a .. { pid="target", lbl="$T.lbl_target", type=LIST, list=who2list, variable=1 };
+			a .. { pid="zoom", lbl="$T.lbl_zoom", type=SCALAR, ui="bar", range=(-10.0,10.0), q=10, variable=1 };
+			a .. { pid="pos", lbl="$T.lbl_focuspos", type=VEC3, range=(-10.0,10.0), q=100, variable=1 };
+			a .. { pid="hpb", lbl="$T.lbl_rotation", type=VEC3, range=(-180,180), variable=1 };
+			a .. camtransprop;
+			a .. camrestoreprop;
+			break;
+		case 2:
+			if( mklist){
+				a .. { pid="mkid", lbl="$T.lbl_marker", type=LIST, list=mklist, variable=1 };
+			}else{
+				a .. { pid="mkid", lbl="$T.lbl_marker", type=STRING, variable=2 };
+			}
+			a .. { pid="zoom", lbl="$T.lbl_zoom", type=SCALAR, ui="bar", range=(-10.0,10.0), q=10, variable=1 };
+			a .. camtransprop;
+			a .. camrestoreprop;
+			break;
+		}
+		return a;
+	}
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], props = fget( cmddef, "props", cmddef, cmd);
+		local info = propstr( props, cmd, "type");
+		switch( cmd["type"]){
+		case 2: info = info .. sprintf( " %S", propstr( props, cmd, "mkid"));
+		}
+		return {
+			info = info,
+		}
+	}
+
+	exec = @( runner, cmd){
+		runner.setCamerawork( cmd);
+	}
+}
+
+//	cmd_cammot : カメラにモーションを設定
+//	※現在のカメラワークに対してのモーション設定。カメラワークが切り替わったらモーションも切り替わる。
+//	※モーションは追加されていき、消えることは無い。何十個と追加されると多少重くなる可能性はあるが、カメラワークを切り替えれば全てリセットされる。
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_cammot"
+	name = "$T.cmd_cammot"
+	icon = "\uefeb"
+	color = color5
+	
+	defval = { type=1, zoom=0, pos=(0,0,0), hpb=(0,0,0), playtype=0, time=3000, easing=0 }
+
+	props = @( cmd){
+		local a = [];
+		local a = [{ pid="type", lbl="$T.lbl_type", type=LIST, refresh=true, list=[
+				{ lbl="$T.lbl_reset", val=0, },
+				{ lbl="$T.cammot_focus", val=1, },
+				{ lbl="$T.cammot_eye", val=2, },
+			], set = @( prop, data, val){
+				data.type = val;
+				if( val==0) data.playtype = 0;
+			},
+		}];
+		a .. { pid="time", lbl="$T.lbl_time", type=SCALAR, range=(1,30000), q=1, ui="bar" };
+		if( cmd.type != 0){
+			a .. { pid="zoom", lbl="$T.lbl_zoom", type=SCALAR, ui="bar", range=(-10.0,10.0), q=10 };
+			a .. { pid="pos", lbl="$T.lbl_position", type=VEC3, range=(-10.0,10.0), q=100 };
+			a .. { pid="hpb", lbl="$T.lbl_rotation", type=VEC3, range=(-360,360), };
+			a .. { pid="playtype", lbl="$T.lbl_playtype", type=LIST, list=[
+				{ lbl="$T.lbl_normal", val=0, }
+				{ lbl="$T.lbl_reverse", val=1, }
+				{ lbl="$T.lbl_repeat", val=2, }
+			]};
+			a .. { pid="easing", lbl="$T.lbl_easing", type=LIST, list=[
+				{ lbl="Linear", val=0, }
+				{ lbl="Ease in", val=1, }
+				{ lbl="Ease out", val=2, }
+				{ lbl="Ease in-out", val=3, }
+			]}
+		};
+		return a;
+	}
+
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], props = fget( cmddef, "props", cmddef, cmd);
+		local info = propstr( props, cmd, "type");
+		return {
+			info = info,
+		}
+	}
+	
+	exec = @( runner, cmd){
+		runner.addCameraMotion( cmd);
+	}
+}
+
+//	cmd_actiontool : マニュアルアクション実行コマンド。移動、エモーション、サウンド、エフェクト等をスケジュールできる。
+//	専用のエディタが必要なぐらい大規模になりそう。。。
+//	アクションエディットダイアログみたいな
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_actiontool"
+	name = "$T.cmd_actiontool"
+	icon = "\ue912"
+	color = color5
+	
+	defval = { event={actions=[],loop=false,wait=true,basepos=0,stack=0}, player={ actions=[],loop=false,wait=true,basepos=2},  }
+
+	exec = @( runner, cmd){
+		runner.startAction( cmd);
+	}
+	
+	edit = @( cv, cmd){
+		//	マップエディターのカスタムイベントの編集画面上でのみ実行可能。。。
+		local e = ::skstudio.editor;
+		local envdef = {
+			bw = e.bw, event = e.modaledit.data, evid = e.tool.selgz.id, //	pageの情報はいらんかなー
+			eventmap = e.data.event,	//	
+		};
+		return ManualActionDialog.run( envdef, cmd);
+	}
+
+	exec = @( runner, cmd){
+		runner.playManualAction( cmd);
+	}
+}
+
+//	cmd_snd : 効果音
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_snd"
+	name = "$T.cmd_snd"
+	icon = "\ue7f4"
+	color = color5
+	
+	props = [
+		{ pid="who", lbl="$T.lbl_who", type=LIST, list=[
+			{ lbl="$T.who_ui", val=0 }
+			{ lbl="$T.who_player", val=1 }
+			{ lbl="$T.who_event", val=2 }
+		], variable=true, varbits=1|2|4|8 },
+		{ pid="sndid", lbl="$T.lbl_sound", type=RESID, restype = ["snd"], variable=true },
+		{ pid="vol", lbl="$T.lbl_gain", type=SCALAR, range=(0,200), ui="bar", variable=true }
+		{ pid="ch", lbl="$T.lbl_channel", type=SCALAR, range=(0,15), ui="bar", variable=true }
+	]
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local info = propstr( cmddef.props, cmd, "sndid");
+		return {
+			info = info,
+		}
+	}
+	
+	defval = { sndid="SE000", vol=100, who=0, ch=0 }
+	
+	exec = @( runner, cmd){
+		runner.playSound( cmd);
+	}
+}
+
+//	cmd_light : ライト点灯
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_light"
+	name = "$T.cmd_light"
+	icon = "\uf02a"
+	color = color5
+	
+	props = @( cmd){
+		local a = [
+			{ pid="who", lbl="$T.lbl_who", type=LIST, list=[
+				{ lbl="$T.lbl_camera", val=0 }
+				{ lbl="$T.who_player", val=1 }
+				{ lbl="$T.who_event", val=2 }
+			], variable=1, varbits=1|2|4|8 },
+			{ pid="op", lbl="$T.lbl_op", refresh=1, type=LIST, list=[{ lbl="ON", val=0, }, { lbl="OFF", val=1, }, ]},
+			{ pid="fadetime", lbl="$T.lbl_fadetime", type=SCALAR, range=(0,3000), q=1, ui="bar", barrange=(0,3000,100), variable=1 }
+		];
+		if( !cmd["op"]){
+			a ... [
+				{ pid="G1", lbl="", type=HEADER, cnt="header0.ui"},
+				{ pid="lcol", lbl="$T.lbl_color", type=RGBA, defval=0xffffcc66, variable=1, }
+				{ pid="lr", lbl="$T.lbl_size", type=SCALAR, range=(0.1,99.9), q=10, defval=10.0, variable=1, }
+				{ pid="lpos", lbl="$T.lbl_position", type=VEC3, range=(-8.0,8.0), q=100, defval=(0.0,0.0,0.0), variable=1, }
+				{ pid="lhpb", lbl="$T.lbl_direction", type=VEC2, range=(-180,180), defval=(0,0), variable=1, }
+				{ pid="lspot", lbl="$T.lbl_litspot", type=VEC2, range=((0,180),(0,100)), defval=(180,10), ui="r", rlbl0="#", variable=1, }
+				{ pid="flicker", lbl="$T.lbl_filcker", type=LIST, list=::lightflickerlist, defval=0, variable=1, }
+			];
+		}
+		return a;
+	}
+	
+	cmdinfo = @( cmd){
+		local props = fget( this, "props", this, cmd);
+		local wi = propstr( props, cmd, "who");
+		local oi = propstr( props, cmd, "op");
+		local info = `$wi ⇒ $oi`;
+		return {
+			info = info,
+		}
+	}
+	
+	defval = { who=0, op=0, fadetime=0, lcol=0xffffcc66, lpos=[0,0,0], lhpb=[0,0], lspot=(180,10), flicker=0 }
+	
+	exec = @( runner, cmd){
+		runner.setLight( cmd);
+	}
+}
+
+//	cmd_bgm : BGMの再生
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_bgm"
+	name = "$T.cmd_bgm"
+	icon = "\ue521"
+	color = color5
+	
+	props = [
+		{ pid="bgmid", lbl="BGM", type=RESID, restype = ["bgm"], variable=1 },
+		{ pid="fadetime", lbl="$T.lbl_fadetime", type=SCALAR, range=(0,3000), q=1, ui="bar", barrange=(0,3000,100), variable=1 }
+		{ pid="restore", lbl="$T.lbl_restoreonend", type=BOOL, variable=1 }
+	]
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local info = propstr( cmddef.props, cmd, "bgmid");
+		return {
+			info = info,
+		}
+	}
+	
+	defval = { bgmid="MU000", fadetime=0, restore=false }
+	
+	exec = @( runner, cmd){
+		runner.playBGM( cmd);
+	}
+}
+
+local sfxoplist = [
+	{ lbl="$T.lbl_show", val=0 },
+	{ lbl="$T.lbl_delete", val=1 },
+];
+
+local sfxbitlist = [
+	{ lbl="$T.sfxbit_0", val=0 },	//	icon="\ue40a", 
+	{ lbl="$T.sfxbit_1", val=1 },	//	icon="\ue3a3", 
+	{ lbl="$T.sfxbit_2", val=2 },	//	icon="\ue62d", 
+]
+
+//	cmd_screenfxon : 画面効果の表示
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_screenfxon"
+	name = "$T.cmd_screenfxon"
+	icon = "\ue43a"
+	color = color5
+	
+	props = @( cmd){
+		local a = [
+			{ pid="sfxid", lbl="$T.lbl_effect", type=LIST, list=@() ScreenEffect.sfxlist.map( @( v)({ lbl=v.name, val=v.id, icon=v.icon })), refresh=true,
+				set = @( prop, data, val){
+					data[prop.pid] = val;
+					local sfx = ScreenEffect.sfxmap[val];
+					foreach( prop in sfx.props){
+						if( "defval" in prop) data[prop.pid] <- prop.defval;
+					}
+				}
+			}
+		];
+		if( !cmd["op"]){
+			local sfx = ScreenEffect.sfxmap[cmd["sfxid"]];
+			local sfxprops = sfx["props"];
+			foreach( sp in sfxprops) a .. sp;
+		}
+		return a;
+	}
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], info;
+		local props = fget( cmddef, "props", cmddef, cmd);
+		local sfx = ScreenEffect.sfxmap[cmd["sfxid"]];
+		info = "%S $T.lbl_time:%d" % (sfx.name, cmd.time);
+		return {
+			info = info,
+		}
+	}
+	
+	defval = { sfxid="flash0", time=400, color=0xffffffff, num=1 }
+	
+	exec = @( runner, cmd){
+		runner.screenEffectOn( cmd);
+	}
+}
+
+
+//	cmd_screenfxoff : 画面効果の消去
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_screenfxoff"
+	name = "$T.cmd_screenfxoff"
+	icon = "\ue404"
+	color = color5
+	
+	props = [
+		{ pid="sfxbits", lbl="$T.lbl_effect", type=CHECKBITS, list=sfxbitlist, variable=1, }
+		{ pid="time", lbl="$T.lbl_time", type=SCALAR, range=(0,2000), ui="bar", barrange=(0,2000,100), variable=1, }
+	]
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], info;
+		local sfxs = propstr( cmddef.props, cmd, "sfxbits");
+		info = "$T.lbl_delete %S $T.lbl_time:%d" % (sfxs, cmd.time);
+		return {
+			info = info,
+		}
+	}
+	
+	defval = { sfxbits=7, time=400, }
+	
+	exec = @( runner, cmd){
+		runner.screenEffectOff( cmd);
+	}
+}
+
+
+
+
+
+//	cmd_move : キャラ移動
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_move"
+	name = "$T.cmd_move"
+	icon = "\ue021"
+	color = color5
+	
+	props = [
+		{ pid="who", lbl="$T.lbl_who", type=LIST, list=who2list, variable=true, refresh=true, }
+		{ pid="pos", lbl="$T.lbl_position", type=VEC2, range=(-128,128), q=10, variable=1, },
+		{ pid="movetype", lbl="$T.movetype", type=LIST, list=[
+			{ lbl="$T.movetype_walk", val="walk", }
+			{ lbl="$T.movetype_dash", val="dash", }
+			{ lbl="$T.movetype_jump", val="jump", }
+			{ lbl="$T.movetype_warp", val="warp", }
+		], },	//	walk, dash, jump, warp
+		{ pid="movespd", lbl="$T.lbl_movespd", type=SCALAR, range = (0,10), q=10, ui="bar", variable=1, },
+		{ pid="playani", lbl="$T.lbl_playani", type=BOOL, variable=1, },
+		{ pid="wait", lbl="$T.lbl_waitaction", type=BOOL, variable=1 },
+	]
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd], props = fget( cmddef, "props", cmddef, cmd);
+		local who = propstr( props, cmd, "who");
+		local pos = sprintf( "[%d %d]", cmd.pos[0]||0, cmd.pos[1]||0);
+		local w = cmd["wait"] ? "⌛" : "";
+		local info = sprintf( "%S %S %S\n", who, pos, w);
+		return { info = info, }
+	}
+	
+	defval = { who=2, pos=[0,0], movespd=3, playani=true, wait=true, movetype="walk" }
+	
+	exec = @( runner, cmd){
+		runner.moveChara( cmd);
+	}
+}
+
+
+//	cmd_freeze : フリーズ
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_freeze"
+	name = "$T.cmd_freeze"
+	icon = "\ueb3b"
+	color = color5
+	
+	props = [
+		{ pid="who", lbl="$T.lbl_who", type=LIST, list=who2list, variable=1, }
+		{ pid="time", lbl="$T.lbl_time", type=SCALAR, range=(0,2000), ui="bar", variable=1},
+	]
+	
+	cmdinfo = @( cmd){
+		return {
+			info = varstr( cmd.time),
+		}
+	}
+	
+	defval = { time=400, who=2, }
+	
+	exec = @( runner, cmd){
+		runner.freezeEvent( cmd);
+	}
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////
+//	バトル処理
+
+//	cmd_battleend : バトルを終了
+//	
+eventcmd .. {
+	category = 6
+	key = "cmd_battleend"
+	name = "$T.cmd_battleend"
+	icon = "\uf06e"
+	color = color6
+	
+	props = [
+		{ pid="result", lbl="$T.lbl_result", type=LIST, list=[
+			{ lbl="$T.lbl_victory", val=1 }
+			{ lbl="$T.lbl_draw", val=0 }
+			{ lbl="$T.lbl_lose", val=-1 }
+		], variable=true }
+	]
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local info = propstr( cmddef.props, cmd, "result");
+		return {
+			info = info,
+		}
+	}
+	
+	defval = { result=1, }
+	
+	exec = @( runner, cmd){
+		runner.battleEnd( cmd);
+	}
+}
+
+//	cmd_battlecmd : バトルコマンド実行
+//	誰が、誰に、何のコマンドを使うか。dataidでアイテムかスキル選ばせた方が良いかも。
+//	
+eventcmd .. {
+	category = 6
+	key = "cmd_battlecmd"
+	name = "$T.cmd_battlecmd"
+	icon = "\ueae9"
+	color = color6
+	
+	props = [
+		{ pid="who", lbl="$T.lbl_who", type=STRING, variable=2 }
+		{ pid="battlecmd", lbl="$T.lbl_command", type=DATAID, datatype=["item","skill"], variable=1, }
+		{ pid="whom", lbl="$T.lbl_whom", type=STRING, variable=2 }
+	]
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];
+		local info = propstr( cmddef.props, cmd, "result");
+		return {
+			info = info,
+		}
+	}
+	
+	defval = { result=1, battlecmd="", _var={ who="ATKCHR", whom="DEFCHR"} }
+
+	exec = @( runner, cmd){
+		runner.battleEnd( cmd);
+	}
+}

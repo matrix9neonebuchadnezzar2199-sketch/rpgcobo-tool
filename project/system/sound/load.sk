@@ -1,0 +1,25 @@
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	Sakana System classes / functions
+//	
+
+::isNoSound <- function(){
+	try{ return !SoundContext; }catch( e){ return true; }
+}
+
+if( !::isNoSound()){
+	runsk("SoundManager.sk");
+	runsk("SK3DSoundManager.sk");
+}else{
+	// Dummy functions
+	::preloadSoundConf <- function(){}
+	::playSound <- function( sid, params=null){}
+	::stopSound <- function( g){ return true; }
+	::stopAllSounds <- function(){}
+	::playBGM <- function( param){ return null; }
+	::fadeBGM <- function( param, fadetime=800){ return null; }
+	::fadeoutBGM <- function( fadetime=1400){ return null; }
+	::stopBGM <- function(){ return null; }
+	::pauseBGM <- function( b){}
+}

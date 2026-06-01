@@ -1,0 +1,488 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditor : リソース編集の共通部分。アイコン、UI、サウンド系以外はこれを継承する。
+//	
+//	実装状況
+//	chara_vox   : 9 ほぼほぼ
+//	equip_vox   : 8 弓のアニメ対応。
+//	obj_vox     : ----- iru?
+//	event_pic   : 5 アニメのプレビュー
+//	enemy_pic   : 8 アニメもできた
+//	enemy_pm    : ----- 後回し
+//	efx         : 6 オーバーレイFXまで編集可能に。オーバーレイにライトも？ライトはptdのほうかな？
+//	icon        : 7 まあ基本機能としてはOK。範囲選択したいかな
+//	map_vox     : 8 ランプも表示はOK。一応全機能？ランプの明滅指定とか。。。
+//	map_asset   : 7 最低限出来てる
+//	ui          : 6 うまい具合に出来てる感じ
+//	bgm         : 8 OK? 
+//	snd         : 8 3Dサウンド対応はまあまあOK
+//	voice       : 5 TTSの機能は結構できた。音声追加も。
+//	
+
+//	パスからDBのタイプを取得。無いならnull
+function getrestype( path){
+	local r = getResource( path);
+	if( r instanceof ::GameResourceResource) return r.name;
+	if( r instanceof ::MapAssetResource) return r.name;
+	return null;
+}
+
+class ResEditor extends EditorViewBase
+{
+	static RESSLOTUI = "/ui/resslot4.ui";
+	static titlelbl = "$T.lbl_resedit : $T.side_res_map_vox";
+
+	res = null;				//	Resource : 
+	data = null;			//	::conf.res.chara_vox等のコピー。
+	allitems = null;		//	[] : data内の全アイテム。ページで
+	selitem = null;
+
+	resdirpath = null;		//	project/resource/...
+	
+	//	view
+	previewlist = null;		//	ResourcePreviewList
+	proplist = null;		//	PropertyListBehavior : 
+	pager = null;
+	capsmenu = null;
+	
+	preview = null;			//	ResPreview
+
+	//	
+	static function createEditor( path){
+		local restype = getrestype( path);
+		if( !restype) return null;
+		local ed;
+		switch( restype){
+		case "chara_vox": ed = ::loadSKView( srcdir.."/ui/reseditor.ui", ::ResEditorCharaVox); break;
+		case "equip_vox": ed = ::loadSKView( srcdir.."/ui/reseditor.ui", ::ResEditorEquipVox); break;
+		case "enemy_pic": ed = ::loadSKView( srcdir.."/ui/reseditor.ui", ::ResEditorEnemyPic); break;
+		case "event_pic": ed = ::loadSKView( srcdir.."/ui/reseditor.ui", ::ResEditorEventPic); break;
+		case "efx": ed = ::loadSKView( srcdir.."/ui/efxeditor.ui", ::ResEditorEfx); break;
+		case "map_vox": ed = ::loadSKView( srcdir.."/ui/mapvoxeditor.ui", ::ResEditorMapVox); break;
+		case "map_asset": ed = ::loadSKView( srcdir.."/ui/asseteditor.ui", ::ResEditorMapAsset); break;
+		case "icon": ed = ::loadSKView( srcdir.."/ui/iconeditor.ui", ::ResEditorIcon); break;
+		case "snd": ed = ::loadSKView( srcdir.."/ui/sndeditor.ui", ::ResEditorSnd); break;
+		case "bgm": ed = ::loadSKView( srcdir.."/ui/bgmeditor.ui", ::ResEditorBGM); break;
+		case "voice": ed = ::loadSKView( srcdir.."/ui/voiceeditor.ui", ::ResEditorVoice); break;
+		case "uimap": ed = ::loadSKView( srcdir.."/ui/uimapeditor.ui", ::ResEditorUI); break;
+		}
+		ed?.init( path);
+		return ed;
+	}
+
+	function init( path){
+		op = OperationStack();
+		//
+		setValue( "titlelbl", titlelbl);
+		local lv = findChild( "itemlist");
+		local uipath = srcdir..RESSLOTUI
+		lv.setRowPath( uipath);
+		previewlist = ResourcePreviewList( lv);
+		previewlist.dndfunc = 3;
+		lv.addEventListener( ITEM_EVENT, sortevent);
+		lv.addEventListener( ACTION_EVENT, listevent);
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.ref = this;
+		pager = PagerBehavior( findChild( "pager"));
+		preview = ResPreview( findChild( "preview"), this);
+		//	
+		res = ::getResource( path);	//	.bw resource
+		res.userdata = null;
+		data = deepclone( res.table());	//	getContent()だとmap_assetが読み込めないんでtable()にする。。。。。
+		//	
+		allitems = [];
+		local caps = data._meta.caps;
+		local pre = Table.indexOf( RPGResource.typemap, res.name);
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "%S%03d", pre, l);
+			allitems .. {id=id, data=data[id]};
+		}
+		capsmenu = findChild( "capsmenu");
+		updateCapsView( data._meta.caps);
+		pager.setPageNum( caps / 100);
+		pager.setPage( 0);
+		setPage( 0);
+		addEventListener( ACTION_EVENT, actionevent)
+	}
+
+	function updateCapsView( caps){
+		pager.setPageNum( caps / 100);
+		capsmenu.setValue( "lbl", "×"..(caps));
+	}
+
+	function changeCaps( caps){
+		data._meta.caps = caps;
+		allitems.resize( caps);
+		local pre = Table.indexOf( RPGResource.typemap, res.name);
+		for( local l = 0;l < caps;l ++){
+			if( !allitems[l]){
+				local id = sprintf( "%S%03d", pre, l);
+				allitems[l] = {id=id, data=data[id]};
+			}
+		}
+		//	TODO はみ出したやつ消せてないけどいいかな？？？？？？
+		updateCapsView( caps);
+	}
+
+	//	幅によって3,4個
+	function setPage( p){
+		local items = allitems.slice( p*100, Math.min( p*100+100, length( allitems)));
+		previewlist.setItemList( items);
+		selectID( items[0]["id"]);
+	}
+
+	function refreshItems(){
+		allitems = [];
+		local caps = data._meta.caps;
+		local pre = Table.indexOf( RPGResource.typemap, res.name);
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "%S%03d", pre, l);
+			allitems .. {id=id, data=data[id]};
+		}
+		//
+		local p = pager.page, idx = previewlist.items.indexOf( selitem);
+		local items = allitems.slice( p*100, Math.min( p*100+100, length( allitems)));
+		previewlist.setItemList( items);
+		selectID( items[idx]["id"]);
+	}
+
+	//	※refreshではアイテムのプレビューは変化させない。100個の表示を再初期化することになるので、、、
+	function refresh(){
+		setValue( "itemlbl", sprintf( "$T.lbl_property : %S - %S", selitem["id"], ::lang( selitem["data"]["name"])));
+		itemSelected( selitem);
+	}
+
+	function itemSelected( v){
+	}
+
+	function selectID( id){
+		local item = previewlist.getItem( id);
+		if( item){
+			selitem = item;
+			previewlist.selectItem( id);
+			itemSelected( item);
+		}
+	}
+
+	function updateItemView( resid, d){
+		previewlist.updateItemView( resid, d);
+	}
+	
+	function rootevent( e){
+		switch( e.id){
+		case SCREEN_RESIZED:
+			break;
+		}
+	}
+
+	function sortevent( e){
+		if( e.id == ITEM_SORT){
+			local cmd = e.actioncmd;
+			local self = this;
+			local data = this.data;
+			local id0 = cmd.from.mdlid, d0 = data[id0];
+			local id1 = cmd.to.mdlid, d1 = data[id1];
+			if( !d1){ d1 = data[id1] <- {}; allitems.find( @(v) v.id==id1).data = d1; }
+			d0 = deepclone( d0);
+			d1 = deepclone( d1);
+			local redo = [@(){
+				Table.clear( data[id0]) ... d1;
+				Table.clear( data[id1]) ... d0;
+				self.updateItemView( id0, d1);
+				self.updateItemView( id1, d0);
+				self.refresh();
+			}];
+			local undo = [@(){
+				Table.clear( data[id0]) ... d0;
+				Table.clear( data[id1]) ... d1;
+				self.updateItemView( id0, d0);
+				self.updateItemView( id1, d1);
+				self.refresh();
+			}];
+			submitOp( redo, undo, null);
+			refresh();
+		}
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			local _data = filterValidData( data);
+			res.save( _data);	//	セーブ時にフィルター
+			return true;
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_copy":
+			copy();
+			return true;
+		case "menu_edit_paste":
+			paste( getClipboard( "resitem"));
+			return true;
+		}
+		return false;
+	}
+
+	//	名前の無いもの、voxの無いもの、などデータとして成立していないものは消しちゃう！
+	function filterValidData( data){
+		local _data = clone data;
+		foreach( i, v in _data){
+			if( i.startsWith( "_")) continue;
+			if( !isValidData( v)) removei;
+		}
+		return _data;
+	}
+
+	function isValidData( d){
+		return true;// !!length( d["name"]);
+	}
+
+	function listevent( e){
+		switch( e.id){
+		case ACTION_PERFORMED:
+			selitem = e.actioncmd;
+			refresh();
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showItemContextMenu( e);
+			}else
+			if( e.count == 2){
+				itemAction( e);
+			}
+			break;
+		}
+	}
+	
+	function itemAction( e){
+	}
+
+	function showItemContextMenu( e){
+		local cbdata = getClipboard( "resitem");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!isPastable( cbdata)},
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=!isValidData( selitem["data"])},
+			"-",
+			{ id="sort", lbl="$T.lbl_idsort", icon="\ue240"},
+			...(resdirpath && [{ id="dir", lbl="$T.lbl_openresdir", icon="\ue89e"}]),
+		];
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "copy": return copy();
+		case "paste": return paste( cbdata);
+		case "delete": return deleteItem( selitem);
+		case "sort": return showIDSortDialog();
+		case "dir": return skOpenURL( "dir://"..resdirpath);
+		}
+	}
+
+	function showIDSortDialog(){
+		local restype = ::getrestype( res.path);
+		local idmap = DBSortDialog.run( restype);
+		if( idmap){
+			local self = this;
+			local olddata = clone data, newdata = clone data, d = data;
+			foreach( id0, id1 in idmap){
+				if( olddata[id1]){ newdata[id0] <- olddata[id1]; } else delete newdata[id0];
+			}
+			local redo = [@(){
+				Table.clear( d) ... newdata;
+				self.refreshItems();
+			}];
+			local undo = [@(){
+				Table.clear( d) ... olddata;
+				self.refreshItems();
+			}];
+			submitOp( redo, undo, null);
+		}
+	}
+	
+	function copy(){
+		if( !selitem) return;
+		local d = { ...selitem, restype=getrestype( res.path)};
+		putClipboard( "resitem", d);
+		printf( "COPY....... %S\n", encodeJSON( d, 1));
+	}
+
+	function isPastable( cbdata){
+		return (cbdata && cbdata["restype"] == getrestype( res.path));
+	}
+
+	function paste( cbdata){
+		if( isPastable( cbdata)){
+			local resid = selitem.id, d = data[resid], oldd = deepclone( d), self = this;
+			local newd = cbdata.data;
+			local redo = [@(){
+				Table.clear( d);
+				Table.merge( d, newd);
+				self.updateItemView( resid, d);	//	catg変更時に関係ないのがupdateされる場合あるけど問題は起きないはず。。。。
+			}];
+			local undo = [@(){
+				Table.clear( d);
+				Table.merge( d, oldd);
+				self.updateItemView( resid, d);
+			}];
+			submitOp( redo, undo, null);	//	trk無し
+			refresh();
+		}
+	}
+
+	function deleteItem( item){
+		local resid = item.id, oldd = item.data, self = this;
+		local redo = [@(){
+			item.data = null;
+			self.updateItemView( resid, null);	//	catg変更時に関係ないのがupdateされる場合あるけど問題は起きないはず。。。。
+		}];
+		local undo = [@(){
+			item.data = oldd;
+			self.updateItemView( resid, oldd);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+		refresh();
+	}
+
+	function propevent( e){
+	}
+
+	//	
+	function setParamOp( resid, prop, val, updateview=true){
+		local self = this;
+		local data = this.data[resid];
+		local oldval = ::getProperty( prop, data);
+		local redo = [@(){
+			::setProperty( prop, data, val);
+			if( updateview) self.updateItemView( resid, data);
+		}];
+		local undo = [@(){
+			::setProperty( prop, data, oldval);
+			if( updateview) self.updateItemView( resid, data);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "capsmenu":
+			showChangeCaps( e);
+			break;
+		case "pager":
+			setPage( pager.page);
+			break;
+		}
+	}
+	
+	function showChangeCaps( e){
+		local menulist = [], pagenum = pager.pagenum;
+		for( local l = 1;l < 10;l ++){
+			menulist .. { lbl:"$T.lbl_caps: "..(l*100), val:l, icon:(pagenum==l)?"\ue5ca":null};
+		}
+		local ret = MenuPopup.run( menulist);
+		if( ret && ret.val != pagenum){
+			local self = this;
+			local caps = ret.val*100, oldcaps = data._meta.caps;
+			local redo = [@(){
+				self.changeCaps( caps);
+				if( self.pager.page >= self.pager.pagenum){
+					self.pager.setPage( self.pager.pagenum-1);
+					self.setPage( self.pager.page);
+				}
+			}];
+			local undo = [@(){
+				self.changeCaps( oldcaps);
+			}];
+			submitOp( redo, undo, null);
+		}
+	}
+}
+
+class ResEditor.ResPreview extends ResourcePreviewCanvas
+{
+	editor = null;
+
+	view3d = null;		//	SK3DView
+	envmenu = null;		//	MenuBehavior
+	animenu = null;		//	MenuBehavior
+	datamenu = null;
+	playbtn = null;		//	GPUIButton
+	rbtn = null;
+	lbtn = null;
+	loopchk = null;
+	pntchk = null;
+	anig = null;
+
+	envlist = null;
+
+	constructor( v, e){
+		super( v, true);
+		editor = e;
+		view3d = v.findChild( "3d");
+		envmenu = MenuBehavior( v.findChild( "envmenu"), envlist=getRenderSettingMenuList( false), false);	//	no sync
+		envmenu.selectItem( getEnvItem( view3d.renderer.env.id));
+		animenu = MenuBehavior( v.findChild( "animenu"));
+		datamenu = v.findChild( "datamenu");
+		playbtn = v.findChild( "playbtn");
+		loopchk = v.findChild( "loopchk");
+		rbtn = v.findChild( "rbtn");
+		lbtn = v.findChild( "lbtn");
+		pntchk = v.findChild( "pntchk");
+		anig = v.findChild( "anig");
+		datamenu.setVisible( false);
+		anig.setVisible( false);
+		view.addEventListener( ACTION_EVENT, actionevent);
+		wheelenabled = true;
+	}
+
+	function getEnvItem( rsetid){
+		return envlist.find( @( v) v["id"]==rsetid);
+	}
+
+	function setRenderSettingID( rsetid){
+		local v = getEnvItem( rsetid);
+		envmenu.selectItem( @( v) v["id"]==rsetid);
+		view3d.renderer.setEnvironment( ::RenderSettings.getEnvironment( rsetid));
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "envmenu":
+			local rsetid = e.actioncmd["id"];
+			if( rsetid){
+				setRenderSettingID( rsetid);
+			}
+			break;
+		}
+	}
+}
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+with( skstudio){
+	registerMenu( { uid="editor_db_menu_edit_delete", parentid="menu_edit", block="*2", lbl="$T.lbl_delete", icon="\ue872" where=["editor_res"], defkey="Delete", });
+	
+	registerEditor( {
+		uid = "editor_res",
+		matches = @( path) !!getrestype( path),
+		createEditor = ResEditor.createEditor,
+		sideview = "side_resource",
+	});
+}

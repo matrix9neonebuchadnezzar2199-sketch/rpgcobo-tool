@@ -1,0 +1,769 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+import SoundID;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorVoice : ボイス
+//	
+//	Google AI Studio - Generate speechを使用してボイス作成。 Gemini API keyは各自で入力の必要あり。
+//	※テキスト自動翻訳の対象外。
+//	
+//	
+//	ボイスの実体は/resource/voice_tts/xxx.oggに作られる。xxxはlang、ttsmodel、style、textのハッシュから作られる。
+//	例えば、"ja-Kore-37124fee.ogg"
+//	一時的に未使用のファイルが大量にできる。voice.conf保存後にツールの終了処理で未使用ファイルを全て消去する。.sakana.wsに要消去フラグを入れる。
+//	また、TTSを使わずに直接oggを指定することもできる。※これSTTでテキスト逆変換してもいいかも。Gemini使うなら。余計か
+//	
+/*
+	"VA000" : {
+		"name" : {
+			"ja" : "ヒーロー1"
+		},
+		"ja" : {
+			"model" : "Kore", 
+			"list" : [
+				{
+					"key":"BTL_DIE",
+					"text":"神と人の違いが力の差だけならば、神の存在など不要だ！",
+					"style":"尊大で声高々に宣言してください",
+				},
+				{
+					"key":"BTL_DIE",
+					"ogg":"/resource/voice/dheudjhh.ogg",
+					"st":0,
+					"en":31274123,
+				}
+			]
+		}
+	}
+*/
+
+
+//	Gemini APIでボイスを生成。24000Hz, 16LE, 1ch
+//	
+local geminigen( va, vo, tts, lc){
+	local apikey = ::account["apikeymap"]["gemini"];	//	GeminiのAPIキーはアカウントデータの中
+	if( !length( apikey)){
+		if( Dialogs.confirm( {msg="ボイス生成のためにGeminiのAPI Keyの設定が必要です。設定を開きますか？"})){
+			PreferenceDialog.run( "apikey");
+		}
+		return null;
+	}
+	local model = "gemini-2.5-flash-preview-tts";	//	proだとstyleも込みで発声してしまう場合が多い。。。
+	local url = "https://generativelanguage.googleapis.com/v1beta/models/%S:generateContent" % model;
+	local mergedtxt = length( vo.style) ? ("%S:\n\"%S\"" % (vo.style, vo.text)) : vo.text;
+	local body = {
+		"model": model,
+		"contents": [{
+			"parts":[{
+				"text": mergedtxt,
+			}]
+		}],
+		"generationConfig": {
+			"responseModalities": ["AUDIO"],
+			"speechConfig": {
+				"voiceConfig": {
+					"prebuiltVoiceConfig": {
+						"voiceName": tts.model,
+					}
+				}
+			}
+		},
+	};
+	local http = HTTPClient();
+	http.verbose = true;
+	http.addHeader( "x-goog-api-key", apikey);
+	http.addHeader( "Content-Type", "application/json");
+	local bb = http.request( url, "POST", encodeJSON( body), null);
+	local res = decodeJSON( bb);
+	printf( "res? %S\n", encodeJSON( res, 5));
+	/*	↓エラー？
+        "candidates":[
+                {"finishReason":"OTHER","index":0}
+        ],
+        "modelVersion":"gemini-2.5-flash-preview-tts",
+        "responseId":"HwaraMnkG9WvqtsP8c7q6Qo",
+        "usageMetadata":{
+                "promptTokenCount":1,
+                "promptTokensDetails":[
+                        {"modality":"TEXT","tokenCount":1}
+                ],
+                "totalTokenCount":1
+        }	*/
+	//	
+	local data64 = res.candidates[0]["content"]["parts"][0]["inlineData"]["data"];
+	if( !data64) throw Exception( "generation failure....");
+	local data = decodeBASE64( data64, ByteBuffer());
+	return { freq = 24000, ch=1, bits=16, data=data };
+}
+
+local sexes = [{icon="\ue58e",col="#6cf"},{icon="\ue590",col="#f7c"}]
+
+local geminivo( name, desc, si){
+	return { val=name, lbl="%S - %S"%(name,desc), icon=sexes[si].icon, genfunc=geminigen, model=name }
+}
+
+//	
+local ttsmodellist = [
+	geminivo( "Zephyr", "Bright", 1), geminivo( "Puck", "Upbeat", 0), geminivo( "Charon", "Informative", 0),
+	geminivo( "Kore", "Firm", 1), geminivo( "Fenrir", "Excitable", 0), geminivo( "Leda", "Youthful", 1),
+	
+	geminivo( "Orus", "Firm", 0), geminivo( "Aoede", "Breezy", 1), geminivo( "Callirrhoe", "Easy-going", 1),
+	geminivo( "Autonoe", "Bright", 1), geminivo( "Enceladus", "Breathy", 0), geminivo( "Iapetus", "Clear", 0),
+
+	geminivo( "Umbriel", "Easy-going", 0), geminivo( "Algieba", "Smooth", 0), geminivo( "Despina", "Smooth", 1),
+	geminivo( "Erinome", "Clear", 1), geminivo( "Algenib", "Gravelly", 0), geminivo( "Rasalgethi", "Informative", 0), 
+
+	geminivo( "Laomedeia", "Upbeat", 1), geminivo( "Achernar", "Soft", 1), geminivo( "Alnilam", "Firm", 0),
+	geminivo( "Schedar", "Even", 0), geminivo( "Gacrux", "Mature", 1), geminivo( "Pulcherrima", "Forward", 0),
+
+	geminivo( "Achird", "Friendly", 0), geminivo( "Zubenelgenubi", "Casual", 0), geminivo( "Vindemiatrix", "Gentle", 1),
+	geminivo( "Sadachbia", "Lively", 0), geminivo( "Sadaltager", "Knowledgeable", 0), geminivo( "Sulafat", "Warm", 1),
+];
+
+
+
+
+//	ボイスのリソースパスを取得。ttsボイスと普通ボイスどっちも？
+function getVoiceFile( va, vo, lang){
+	local model = va[lang].model;
+	local bb = #ByteBuffer(); bb.clear();
+	bb.putt( vo.text);
+	bb.putt( vo.style);
+	bb.pos = 0;
+	local h = bb.hashcode( 9818998);	//	32bitでえーかなー
+	return sprintf( "%S-%S-%08x.ogg", lang, model, h);
+}
+
+function getVoicePath( va, vo, lang){
+	return "/resource/voice_tts/" .. getVoiceFile( va, vo, lang);
+}
+
+::voiceconf_changed <- false;		//	ボイスが編集されて保存された時にtrue
+
+
+class ResEditorVoice extends EditorViewBase
+{
+	//	アクタープロパティ。実際には選択された言語のプロパティ
+	static actorprops = [
+		{ pid="name", lbl="$T.lbl_name", type=STRING,
+			get=@( prop, data, e) e.selitem["data"]["name"][e.sellang] || "",
+			set=@( prop, data, val, e) {
+				e.selitem["data"]["name"][e.sellang] = val;
+			}
+		},
+		{ pid="model", lbl="$T.lbl_voicemodel", type=LIST, list=ttsmodellist, defval="Zephyr",
+			get=@( prop, data, e) data[e.sellang][prop.pid],
+			set=@( prop, data, val, e) data[e.sellang][prop.pid] = val;
+		},
+	];
+	
+	//	TTSボイスのプロパティ
+	static ttspropdef = {
+		name = "$T.lbl_voice",
+		props = [
+			{ pid="key", lbl="$T.lbl_key", type=STRING, },
+			{ pid="style", lbl="$T.lbl_talkstyle", type=STRING, cnt="cnt6.ui"},
+			{ pid="text", lbl="$T.lbl_text", type=STRING, multiline=3, cnt="cnt6.ui"},
+		]
+	};
+
+	//	ノーマルボイスのプロパティ　は後回し！
+	
+	res = null;				//	Resource : 
+	data = null;			//	::conf.res.chara_vox等のコピー。
+	allitems = null;		//	[] : data内の全アイテム。ページで
+	selitem = null;			//	
+	ovdatamap = null;		//	{path:ovdata} : 
+
+	sellang = null;			//	"ja" : タブで選択された言語
+
+	//	view
+	itemlist = null;		//	ListBehavior : 
+	proplist = null;		//	PropertyListBehavior : 
+	voicelist = null;		//	ListBehavior : 
+	langtabs = null;		//	TabsBehavior : 
+	pager = null;
+	
+	//	snd
+	ctx = null;
+	mixer2d = null;
+	playing = null;			//	thread : ResEditorVoiceは同時に一つのみ再生！
+
+	//	
+	static function makeempty(){
+		local c = ::lang.code;
+		return {
+			name = { [c]="", },
+			[c] = { model="Zephyr", list=[], }
+		};
+	}
+	
+	static function setitemviewfunc( la, v, i){
+		local d = i.data;
+		v.setValue( "id", i.id || "");
+		v.setValue( "lbl", lang( d["name"]) || "");
+		local sb = (#StringBuffer()).clear();
+		foreach( v in ::sakana.languagelist){
+			if( length( d[v.code]["list"])) sb .. v.icon;
+		}
+		v.setValue( "langs", string( sb));
+		v.pickable = false;
+	}
+
+	static function setvoiceviewfunc( la, v, i){
+		local ed = la.ref;
+		v.setValue( "key", i.key);
+		v.setValue( "text", i["text"] || (d["wav"]?d.wav.substring( d.wav.lastIndexOf( "/")+1):""));
+		local lc = la.ref.sellang;	//	選択言語
+		local va = la.ref.selitem.data;	//	ボイスアクター
+		local path = getVoicePath( va, i, lc), ovdata = ed.getTTSVoiceData( path);
+		if( ovdata){
+			v.setValue( "wavtime", rtf( "\ue050"));
+		}else{
+			v.setValue( "wavtime", rtf( "[G]\ue04f"));
+		}
+		v.pickable = false;
+	}
+
+	function init( path){
+		op = OperationStack();
+		//	
+		res = ::getResource( path);	//	.bw resource
+		res.userdata = null;
+		data = deepclone( res.getContent());
+		//
+		itemlist = ListBehavior( findChild( "itemlist"), []);
+		itemlist.setviewfunc = setitemviewfunc;
+		itemlist.listview.addEventListener( ITEM_EVENT, itemevent);
+		itemlist.listview.addEventListener( ACTION_EVENT, itemevent);
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.ref = this;
+		voicelist = ListBehavior( findChild( "voicelist"), []);
+		voicelist.setviewfunc = setvoiceviewfunc;
+		voicelist.listview.addEventListener( ITEM_EVENT, voiceevent);
+		voicelist.listview.addEventListener( ACTION_EVENT, voiceevent);
+		voicelist.dndfunc = 3;
+		voicelist.ref = this;
+		pager = PagerBehavior( findChild( "pager"));
+		langtabs = TabsBehavior( findChild( "langtabs"), []);
+		langtabs.listview.addEventListener( ACTION_EVENT, tabevent);
+		addEventListener( ACTION_EVENT, actionevent);
+		//
+		::soundmanager.checkctx();
+		ctx = ::soundmanager.ctx;
+		mixer2d = ctx.createMixer();
+		mixer2d[SK_SND_SEND] = 0;
+		mixer2d.connect();
+		//
+		ovdatamap = {};
+		allitems = [];
+		local caps = data._meta.caps;
+		local pre = "VA";
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "%S%03d", pre, l);
+			allitems .. {id=id, data=data[id]};
+		}
+		pager.setPageNum( caps / 100);
+		pager.setPage( 0);
+		setPage( 0);
+	}
+
+	function setActive( b){
+		super.setActive( b);
+		if( !b){
+			if( playing){
+				playing.thread.wakeupThrow( "interrupt");
+				playing = null;
+			}
+		}
+	}
+
+	function setPage( p){
+		local items = allitems.slice( p*100, Math.min( p*100+100, length( allitems)));
+		itemlist.setListItems( items);
+		selectID( items[0]["id"]);
+	}
+
+	function refresh(){
+		if( selitem){
+			proplist.setParameters( selitem.data);
+		}
+	}
+
+	function refreshItem( item){
+		local i = itemlist.items.indexOf( item);
+		if( i >= 0) itemlist.refreshItem( i);
+	}
+	
+	function itemSelected( item){
+		if( item){
+			updateLangTabs();
+			if( item.data[sellang]){
+				local i = langtabs.tabitems.findi( @( v) v.code==sellang);
+				langtabs.selectTab( i);
+			}else{
+				langtabs.selectTab( 0);
+				sellang = langtabs.tabitems[0].code;
+			}
+			proplist.bindProperties( actorprops);
+			proplist.setParameters( item.data);
+			updateVoiceList();
+		}
+	}
+
+	function selectID( id){
+		local item = itemlist.items.find( @( v) v.id==id);
+		if( item){
+			selitem = item;
+			itemlist.setSelectedItem( item);
+			local d = item.data;
+			if( !d) d = item.data = data[item.id] <- makeempty();
+			itemSelected( selitem);
+			itemlist.listview.updateMatrixAll();
+			itemlist.scrollItemToVisible( item);
+		}
+	}
+
+	//	selitemで使用可能な言語タブをうんたら
+	function updateLangTabs(){
+		local tabs = [];
+		foreach( v in ::sakana.languagelist){
+			if( selitem.data[v.code]){
+				tabs .. { lbl=v.icon, code=v.code, val=v };
+			}
+		}
+		langtabs.setTabs( tabs);
+	}
+
+	function updateVoiceList(){
+		voicelist.setListItems( selitem["data"][sellang]["list"]);
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			local _data = filterValidData( data);	//	セーブ時にフィルター
+			save( _data);
+			voiceconf_changed = true;
+			return true;
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_copy":
+			copy();
+			return true;
+		case "menu_edit_paste":
+			paste( getClipboard( "voice"));
+			return true;
+		}
+		return false;
+	}
+
+	function save( d){
+		res.save( d);
+		foreach( path, ovdata in ovdatamap){
+			local f = FileRef( ::resroot.file.path .. path);
+			ovdata.pos = 0;
+			f.save( ovdata);
+			ovdata.pos = 0;
+			printf( "ov saved  %S %S\n", f.path, ovdata.size);
+		}
+	}
+
+	//	名前の無いもの、voxの無いもの、などデータとして成立していないものは消しちゃう！
+	function filterValidData( data){
+		local _data = clone data;
+		foreach( i, v in _data){
+			if( i.startsWith( "_")) continue;
+			if( !isValidData( v)) removei;
+		}
+		return _data;
+	}
+
+	function isValidData( d){
+		//	何れかの言語でボイスが一個でも登録されてればOK
+		foreach( v in d){
+			if( length( v["list"])) return true;
+		}
+		return false;
+	}
+	
+	function itemevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ACTION_PERFORMED:
+			selitem = e.actioncmd;
+			itemlist.setSelectedItem( selitem);
+			itemSelected( selitem);
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showItemContextMenu( e);
+			}
+			break;
+		case ITEM_SELECTED:
+			selitem = cmd;
+			local d = cmd.data;
+			if( !d) d = cmd.data = data[cmd.id] <- makeempty();
+			foreach( p in actorprops){
+				if( !(p.pid in d) && ("defval" in p)){
+					d[p.pid] <- deepclone( p.defval);
+				}
+			}
+			itemSelected( selitem);
+			break;
+		}
+	}
+
+	function showItemContextMenu( e){
+		local cbdata = getClipboard( "voice");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "copy": return copy();
+		case "paste": return paste( cbdata);
+		}
+	}
+
+	function copy(){
+		putClipboard( "voice", selitem);
+	}
+
+	function paste( cbdata){
+		if( cbdata){
+			local item = selitem, resid = selitem.id, d = data[resid], oldd = deepclone( d), self = this;
+			local newd = cbdata.data;
+			local redo = [@(){
+				Table.clear( d);
+				Table.merge( d, newd);
+				self.itemlist.refreshItems();
+				self.refreshItem( item);
+			}];
+			local undo = [@(){
+				Table.clear( d);
+				Table.merge( d, oldd);
+				self.itemlist.refreshItems();
+				self.refreshItem( item);
+			}];
+			submitOp( redo, undo, null);	//	trk無し
+			refresh();
+		}
+	}
+	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd.cmd != "prop") return;
+		local pid = cmd.prop.pid, val = cmd.val;
+		switch( pid){
+		default:
+			setParamOp( selitem.id, cmd.prop, val);
+			break;
+		}
+	}
+
+	//	
+	function voiceevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( cmd["src"]["name"]){
+				if( cmd.src.name == "playbtn"){
+					playVoice( cmd.src, cmd.item);
+				}
+			}else
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showVoiceContextMenu( e);
+			}else{
+				local src = voicelist.getItemView( cmd);
+				local ret = VoicePropertyEditPopup.run2( src, ttspropdef, cmd);
+				if( ret && (ret.data<>cmd || ret.ovdata<>getTTSVoiceData( ret.path))){
+					local self = this;
+					local oldov = getTTSVoiceData( ret.oldpath);
+					local data = selitem.data, list = data[sellang].list;
+					local i = list.indexOf( cmd);
+					local redo = [@(){
+						list[i] = ret.data;
+						if( ret.ovdata) self.ovdatamap[ret.path] <- ret.ovdata;
+						self.updateVoiceList();
+					}];
+					local undo = [@(){
+						list[i] = cmd;
+						if( oldov) self.ovdatamap[ret.oldpath] <- oldov;
+						self.updateVoiceList();
+					}];
+					submitOp( redo, undo, null);
+				}
+			}
+			break;
+		case ITEM_SELECTED:
+			break;
+		}
+	}
+
+	//	ボイスが選択されてない場合は追加のみ
+	function showVoiceContextMenu( e){
+		local menudata = [
+			{ id="add_tts", lbl="$T.lbl_addttsvoice", icon="\ue91f" },
+			{ id="add_wav", lbl="$T.lbl_addsndvoice", icon="\ue029" },
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "add_tts":
+			addTTSVoiceOp( selitem.id, sellang);
+			break;
+		case "add_wav":
+			break;
+		}
+	}
+
+	//	
+	function showLangContextMenu( e){
+		local d = selitem.data;
+		local addlangmenu = ::sakana.languagelist.map( @( v){
+			local disable = !!d[v.code];
+			return { id="add", icon=v.icon, lbl=rtf( disable?"[#666]"..v.name : v.name), lang=v, disable=disable };
+		});
+		local menudata = [
+			{ lbl="言語を追加", submenu = addlangmenu },
+			"-",
+			{ lbl="言語を削除", id="del"}
+		];
+		local self = this;
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "add":
+			local c = ret.lang.code, item = selitem;
+			local newt = { model = d[sellang].model, list=[], } ;
+			local redo = [@(){ d[c] <- newt; self.itemSelected( item); self.itemlist.refreshItems(); }];
+			local undo = [@(){ delete d[c]; self.itemSelected( item); self.itemlist.refreshItems(); }];
+			submitOp( redo, undo, null);	//	trk無し
+			break;
+		case "del":
+			break;
+		}
+	}
+
+	function tabevent( e){
+		if( e.isMouseDown( BUTTON2_MASK)){
+			showLangContextMenu( e);
+		}else
+		if( e.isMouseDown( BUTTON1_MASK)){
+			local lang = langtabs.tabitems[e.actioncmd]["code"];
+			sellang ??= lang;
+			itemSelected( selitem);
+		}
+	}
+	
+	//	
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "voicemenu":
+			showVoiceContextMenu( e);
+			break;
+		case "langmenu":
+			showLangContextMenu( e);
+			break;
+		}
+	}
+
+	//	
+	function setParamOp( resid, prop, val){
+		local self = this;
+		local data = this.data[resid];
+		local oldval = ::getProperty( prop, data, this);
+		local redo = [@(){
+			::setProperty( prop, data, val, self);
+			self.updateListItemView( resid);
+		}];
+		local undo = [@(){
+			::setProperty( prop, data, oldval, self);
+			self.updateListItemView( resid);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+		refresh();
+	}
+
+	//	
+	function addTTSVoiceOp( resid, lc){
+		local self = this;
+		local data = this.data[resid], list = data[lc].list;
+		local vo = { key="VOICE", style="", text="こんにちは" };
+		local redo = [@(){
+			list .. vo;
+			self.updateVoiceList();
+			self.itemlist.refreshItems();
+		}];
+		local undo = [@(){
+			list.removeValue( vo);
+			self.updateVoiceList();
+			self.itemlist.refreshItems();
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+	}
+
+	//	
+	function updateListItemView( resid){
+		local i = itemlist.items.findi( @( v) v.id==resid);
+		if( i >= 0) itemlist.refreshIndex( i);
+	}
+
+	//	
+	function playVoice( view, vo){
+		local va = selitem.data;
+		local lc = sellang;
+		local path = getVoicePath( va, vo, lc);
+		local ovdata = getTTSVoiceData( path);
+		if( ovdata){
+			local wav = VorbisDecoder.decodeAll( ovdata);
+			local ss = ctx.createWaveSoundSource( wav);
+			ss.play( mixer2d);
+		}
+	}
+
+	//	
+	function getTTSVoiceData( path){
+		if( ovdatamap[path]) return ovdatamap[path];
+		return ::getResourceContent( path);
+	}
+}
+
+//	
+class VoicePropertyEditPopup extends PropertyEditPopup
+{
+	static POPUPUIPATH = srcdir .. "/ui/voiceproppopup.ui";
+
+	btn_gen = null;
+	btn_play = null;
+	//
+	ovdatamap = null;
+	
+	function updateButtons(){
+		local ed = ::skstudio.editor;
+		local va = ed.selitem.data;
+		local lc = ed.sellang;
+		local path = getVoicePath( va, data, lc);
+		local r = ovdatamap[path] || ed.getTTSVoiceData( path);
+		// btn_gen.anime( r?5:0);
+		// btn_gen.enabled = !r;
+		btn_play.anime( r?0:5);
+		btn_play.enabled = !!r;
+	}
+
+	function shown(){
+		ovdatamap = {};
+		btn_gen = view.findChild( "btn_gen");
+		btn_play = view.findChild( "btn_play");
+		//	
+		updateButtons();
+		super.shown();
+	}
+
+	function actionevent( e){
+		local ed = ::skstudio.editor;
+		local va = ed.selitem.data;
+		local lc = ed.sellang;
+		switch( e.src["name"]){
+		case "btn_gen":
+			try{
+				generateTTSVoice( va, data, lc);
+			}catch( ex){
+				printexception( ex);
+				return;
+			}
+			updateButtons();
+			// break;
+		case "btn_play":
+			local mixer = ed.mixer2d;
+			local path = getPath();
+			local ovdata = ovdatamap[path] || ed.getTTSVoiceData( path);
+			local wav = VorbisDecoder.decodeAll( ovdata);
+			local ss = mixer.ctx.createWaveSoundSource( wav);
+			ss.play( mixer);
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	function propevent( e){
+		super.propevent( e);
+		updateButtons();
+	}
+	
+	function getPath(){
+		local ed = ::skstudio.editor;
+		local va = ed.selitem.data;
+		local lc = ed.sellang;
+		return getVoicePath( va, data, lc);
+	}
+
+	function generateTTSVoice( va, vo, lc){
+		local model = va[lc].model, tts = ttsmodellist.find( @( v) v.val==model);
+		local genfunc = tts.genfunc;
+		local vt = genfunc( va, vo, tts, lc);
+		if( vt){
+			local path = getVoicePath( va, data, lc);
+			ovdatamap[path] <- VorbisEncoder.encode( vt.data, vt.ch, vt.freq, 0.3);
+		}
+	}
+
+	static function run2( cv, propdef, data){
+		local p = this( ::loadSKView( POPUPUIPATH), propdef, data, this);
+		cv = cv || ::getMousePos( 0);
+		local oldpath = p.getPath();
+		p.show( null, cv);
+		if( p.ret){
+			return {
+				data = p.data,
+				oldpath = oldpath,
+				path = p.getPath(),
+				ovdata = p.ovdatamap[p.getPath()],
+			}
+		}
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+//	ツール終了時にTTSの不要なファイルを消去するフック
+
+local cleanupTTSFiles(){
+	if( voiceconf_changed){	//	ボイスが保存された時のみ実行。
+		local ttsdir = FileRef( ::resroot.file, "resource/voice_tts");
+		local ttslist = ttsdir.getList( "*.ogg");
+		local ttsmap = ttslist.reduce( @( v, t){ t[v.name]<-v; return t}, {});
+		foreach( va in ::conf._resource.voice){
+			foreach( lang, langvo in va){
+				if( !langvo["model"]) continue;	//	voデータじゃない(name,_metaとか)
+				foreach( vo in langvo["list"]){
+					local fn = getVoiceFile( va, vo, lang);
+					delete ttsmap[fn];
+				}
+			}
+		}
+		//	残ったttsmapのファイルは消去して良し
+		printf( "TTSMAP UNUSED!!!!!!!!!!!!!!!!! %S\n", encodeJSON( ttsmap, 5));
+	}
+}
+
+module.hookAction( "editor_closing", cleanupTTSFiles, 1111);

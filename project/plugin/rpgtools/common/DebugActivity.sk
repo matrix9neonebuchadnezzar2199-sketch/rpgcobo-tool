@@ -1,0 +1,119 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	デバッグオプション
+//	・全アイテムの所持、お金MAX
+//	・全スキル、全ジョブ使用可
+//	・キャラのレベル強制(1~99)
+//	・壁すり抜け
+//	・不死身モード
+//	・言語の選択
+//	
+//	言語以外はデバッグ中のデバッグメニューからも使える。
+//	
+//	あと、マップエディタからのデバッグ起動で、指定したマップからの開始も出来る。更に指定したイベントの即時実行。キャラはそのイベントの真ん前に移動。
+//	
+
+local showDebugMenu( btn){
+	local st = ::skstudio;
+	local menudata = [
+		st.getMenu( "menu_debug_start"),
+		"-",
+		st.getMenu( "menu_debug_selectslot"),
+		st.getMenu( "menu_debug_setting"),
+	]
+	local m = MenuPopup.run( menudata, btn);
+	if( m){
+		st.execMenu( m);
+	}
+}
+
+//	setting activity
+local activity = {
+	uid="act_debug",
+	place="bottom",
+	order=70,
+	icon="\uf06a",
+	badge=null,
+	tips="$T.act_debug"
+	slbl="$T.lbl_debug"
+	
+	func = showDebugMenu,
+}
+
+//	セーブ場所は固定
+local _savedir = FileRef( skGetCurrentDir().."/savedata"); _savedir.mkdirs();
+if( !("saveslotidx" in ::workspace)) ::workspace.saveslotidx <- -1;
+
+local selectSaveSlotMenu( m){
+	::workspace.saveslotidx <- m.saveslot;
+}
+
+local clearSaveData( m){
+	if( Dialogs.confirm( {msg="$T.confirm_clearsavedata"})){
+	}
+}
+
+//	デバッグを開始。タイトルから、選択したセーブから、
+function startDebugMenu( m){
+	local args;
+	switch( m["uid"]){
+	case "menu_debug_start":
+		args = ["-slot", ::workspace.saveslotidx, "-recfx"];	//	-recfx:使用したシェーダーを記録。
+		break;
+	case "menu_debug_here":
+		args = ["-slot", ::workspace.saveslotidx, "-map", m.mapid,  encodeJSON( m.pos)];
+		break;
+	case "menu_debug_battle":
+		args = ["-slot", ::workspace.saveslotidx, "-battle", m.mapid, m.gid];
+		if( m["skillid"]) args .. "-skill" .. m.skillid;
+		break;
+	}
+	if( m["bwpath"]) args ... ["-bw", m.bwpath];
+	if( m["confpath"]) args ... ["-conf", m.confpath];
+	local exe = FileRef( "rpgcobo.exe");
+	local p = popen_s(), li;
+	p.open( exe, ["-testplay", ...args], 0x100);
+	while( p.isrunning()){
+		while( li = p.readLine()){
+			printf( "::: %S\n", li.trim());
+		}
+		suspend();
+	}
+	while( li = p.readLine()){
+		printf( "::: %S\n", li.trim());
+	}
+	p.close();
+}
+
+
+with( ::skstudio){
+	registerActivity( activity);
+	registerMenu( { uid="menu_debug", lbl="$T.menu_debug", isdir=true, submenu=[]});
+	registerMenu( { uid="menu_debug_start", parentid="menu_debug", lbl="$T.menu_debug_start", icon="\uf06a", defkey="F5", func=startDebugMenu });
+	registerMenu( { parentid="menu_debug", separator="*1"});
+	registerMenu( { uid="menu_debug_selectslot", parentid="menu_debug", lbl="$T.menu_debug_selectslot", submenu=@(){
+		return (_savedir.getList( "save???.bin").map( @( f){
+			local selidx = ::workspace["saveslotidx"];
+			local idx = int( f.name.substring( 4, 7));
+			return { lbl="${T.lbl_slot}"..idx, saveslot=idx, icon=(idx==selidx?"\ue5ca":""), func=selectSaveSlotMenu };
+		}) .. {
+			lbl="$T.newgame", saveslot=-1, icon=(-1==::workspace["saveslotidx"]?"\ue5ca":""), func=selectSaveSlotMenu
+		} .. {
+			lbl="$T.menu_debug_title", saveslot=-2, icon=(-2==::workspace["saveslotidx"]?"\ue5ca":""), func=selectSaveSlotMenu
+		}).sort( @( v) v.saveslot) .. "-" .. {
+			lbl="$T.menu_debug_clearsavedata", icon="\ue0b8", func=clearSaveData, 
+		};
+	}});
+	registerMenu( { uid="menu_debug_setting", parentid="menu_debug", lbl="$T.menu_debug_setting", icon="\ue8b8", func = @( m){ PreferenceDialog.run( "debug"); } });
+
+	//	ここでヘルプ追加しちゃお
+	registerMenu( { uid="menu_help", lbl="$T.menu_help", isdir=true, submenu=[]});
+	registerMenu( { uid="menu_help_guide", parentid="menu_help", lbl="RPG-Cobo ガイド", icon="\ue051", func=@( m){
+		skOpenURL( "https://rpg-cobo.com/guides/start");
+	}});
+	// registerMenu( { parentid="menu_help", separator="*1"});
+	// registerMenu( { uid="menu_help_editor", parentid="menu_help", lbl="UIエディタ のマニュアル", icon="\uf1c0", defkey="F1" });
+}

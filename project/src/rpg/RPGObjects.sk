@@ -1,0 +1,1351 @@
+import RPGPropertyType
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	・ゲーム開始時には、confからのDATAと読み込まれたSTATを元にゲームで使用するRPGObjectを一気に
+//	　セットアップする。
+//	
+//	セーブデータ保存時には、party,charas,items,gvars,staticsが書き出される。
+//	charasはプレイヤーのみ書き出される。
+//	さらに、現在マップのスナップショットを追加で書き出す。実行中のマクロや表示UIなどの状態は書き出されない。
+//	
+//	
+
+class RPGObject extends Serializable
+{
+	static AutoSerialUID = true;
+	static clsmap = {};
+	<ser_o> dataid = null;			//	dataid。
+	data = null;					//	idと対応するDATAオブジェクト。dataid,dataはnullであるケースは無い
+
+	function _cloned( org){}		//	deepclone時にdata含めて全てcloneしないように
+
+	function setDataID( did){
+		dataid = did;
+		data = ::rpgdata[dataid];
+	}
+
+	//	ロード完了時。setDataIDはやらない。
+	function serloaded(){
+		data = ::rpgdata[dataid];
+	}
+
+	function iconname(){
+		local n = this["name"] || data.name;
+		return data["icon"] ? (data.icon..n) : n;
+	}
+
+	function getIndex(){
+		return int( dataid.substring( 1));
+	}
+	
+	//	指定したdataidのオブジェクトを生成する。
+	//	
+	static function create( dataid){
+		local o = clsmap[dataid[0]] ();		//	'C', 'S', 'Q'等が取れる。clsmapは{ ['Q']: RPGQuest, ... }
+		local i = dataid.indexOf( ','), num = 1;
+		if( i >= 0){
+			num = int( dataid.substring( i+1));
+			dataid = dataid.substring( 0, 8);
+		}
+		o.setDataID( dataid);
+		if( num > 1) o.num = num;		//	numはアイテム、ポイントのみ
+		return o;
+	}
+
+	//	プロパティタイプでvalを変換する。
+	static function convertPropertyValue( val, type){
+		switch( type){
+		case DATAID: return create( val);
+		case DATAIDS: return val.map( @( v) v && create( v));
+		}
+		return val;
+	}
+}
+
+//	アイテムの実体。インベントリに入ったり、装備したり。使用時にはdataはskillとしてセットされる
+//	
+class RPGItem extends RPGObject
+{
+	<ser_i> num = 1;				//	スタック数。通常アイテムはスタックすることが多い。装備はしない。
+	<ser_i> LV = 1;					//	装備用の強化レベル。レベルに応じたオプションが付く
+	<ser_o> ownoptions = null;		//	[RPGOption] : アイテム固有で付与されたオプション。名前に+1,-1みたくつく
+	<ser_o> etc = null;				//	{}色々なパラメータ
+	
+	function _cloned( org){
+		ownoptions = deepclone( ownoptions);
+		etc = deepclone( etc);
+	}
+
+	function setDataID( did){
+		super.setDataID( did);
+	}
+	
+	//	装備したときの能力値を返す。装備画面などの情報表示用。
+	//	強化で威力アップは数字どうすればいいか。オプション見たほうが良いかもしれん
+	function getPower(){
+		local v = 0;
+		foreach( prop in ::RPGSystem.playerprops){
+			if( prop.proptype=="score" && prop.pid in data){
+				v = Math.max( v, data[prop.pid]);
+			}
+		}
+		return v;
+	}
+}
+
+//	キャラにセットされて実体化したジョブ。
+//	ジョブレベル、経験値などを状態として持つ。
+//	デフォルト実装は、キャラの持つジョブ経験値を使ってジョブのLVを上げると、オプションが解放される。
+//	
+class RPGJob extends RPGObject
+{
+	<ser_i> JOBLV = 1;				//	jxpを消費してレベルアップ！手動でも自動でも。
+	<ser_i> jxp = 0;				//	溜まってく形式のジョブ経験値にも対応。
+	<ser_b> enabled = 1;			//	装着可能か。イベントコマンド等で入れられる
+	<ser_o> etc = null;				//	{}色々なパラメータ
+	
+	function _cloned( org){
+		etc = deepclone( etc);
+	}
+}
+
+//	※RPGOptionのみ、RPGObjectのサブクラスではない！！！！！！！
+//	opttypeがキーになり、データ内に配置されていないため。
+//	
+class RPGOption extends Serializable
+{
+	<ser_o> opd = null;				//	
+	opt = null;						//	RPGSystem.option定義
+	owner = null;					//	このオプションの持ち主。cond,skill,item,job,...
+
+	function _cloned( org){
+		opd = deepclone( opd);
+	}
+
+	constructor( d=null){
+		if( d){
+			opd = d;
+			opt = RPGSystem.option[d.opttype];
+		}
+	}
+
+	function serloaded(){
+		opt = RPGSystem.option[data["opttype"]];
+	}
+
+	function modifyscore( key, cval){
+		local fn = opt["modifyscore"];
+		if( fn) fn( opd, key, cval);
+	}
+
+	function modifyaction( key, act){
+		local fn = opt["modifyaction"];
+		return fn ? fn( opd, key, act) : 0;
+	}
+}
+
+//	
+class RPGCondition extends RPGObject
+{
+	<ser_i> step = 0;				//	歩数。カウントダウン式のほうが良いかも
+	<ser_i> turn = 0;				//	経過ターン。
+	<ser_i> steps = 0;				//	経過歩数。
+	<ser_i> count = 0;				//	成功回数。
+	<ser_i> LV = 1;					//	段階バフのレベル。他では未使用
+	<ser_o> etc = null;				//	{}色々なパラメータ
+	
+	function _cloned( org){
+		etc = deepclone( etc);
+	}
+
+	//	オプション取得。段階バフのレベルも考慮する。
+	function getOptions(){
+		local a = data.option.map( @( opd) LV>=opd["LV"] ? RPGOption( opd) : undefined );
+		return a;
+	}
+}
+
+//	キャラステータスの拡張を行うならここを拡張
+//	バトル時などキャラの状態を変化させるときにはこれのメソッドから行う
+//	
+class RPGCharaBase extends RPGObject
+{
+	//	フィールドプロパティ : 保存される
+	<ser_o> name = null;			//	大体data.nameが入るが、名前変更機能を付けるなら必要
+	<ser_i> HP = 1;
+	<ser_i> MP = 0;
+	<ser_i> TP = 0;
+	<ser_i> LV = 1;
+	<ser_o> ownoptions = null;		//	[RPGOption]イベント等で恒久付与されたオプション。力の種とかも。ジョブによって習得したオプションもここに入るかな？
+	<ser_o> conds = null;			//	[RPGCondition] : 付与されているコンディション。ごく一時的なものも（スキルなど）
+	<ser_i> flags = 0;				//	加入フラグ等。オート、
+	<ser_o> etc = null;				//	なんでもテーブル
+
+	//	スコアプロパティ : 算出されるので保存しない
+	scoremap = null;				//	{MAXHP,ATK,DEF,...} : レベル、オプションなどを総合したプロパティのスナップショット。
+	options = null;					//	装備、コンディション、レベル、などで変化するオプションのスナップショット。
+	limits = null;					//	{MAXHP,MAXMP,...} : カンスト値。プレイヤーとエネミーでは違う。
+
+	//	
+	standani = null;				//	立ち状態のアニメーション指定。
+
+	//	戦闘時用 : 保存しない
+	skill = null;					//	戦闘時に設定されるスキル。オプションが更新される。※戦闘外ではnullが入っていないといけない！
+	cmdgauge = 0.0;					//	アクティブバトルで使用。1.0になったらコマンド入力可能に。発動中は2.0とかそういう数値
+	battleflags = 0;				//	戦闘中に一度しか発動しないような機能の状態をビットで管理。下16ビットはターンでリセット。1=dying
+	aipage = -1;					//	選択されたBattleAIのページ
+	aiturn = 0;						//	aipageが選択されたターン
+	selected = false;				//	UI用。コマンド選択時にこのキャラが選択されていることを示す。
+	escaped = false;				//	逃走などで戦闘を離脱。主にエネミー用。プレイヤー側も個別に逃走する場合はこれを使えば良し
+	turn = 1;						//	ターン
+	
+	constructor(){
+		conds = [];
+		etc = {};
+	}
+
+	//	MAXHP, ATK等のスコアプロパティを直接参照できる。
+	function _get( key){
+		return scoremap[key];
+	}
+
+	//	データ読み込み完了時に呼ばれる。
+	function serloaded(){
+		super.serloaded();
+		updateOptions();
+		updateScoreMap();
+		if( !conds) conds = [];
+	}
+	
+	//	ベースプロパティにオプションのプロパティ変化を適用して現在のparamsを計算する。
+	function updateScoreMap(){
+		local bp = getBaseScoreMap();
+		//	全プロパティにオプションの適用
+		scoremap = deepclone( bp);
+		foreach( i,p in scoremap){
+			if( typeof( p) >= SS_TABLE){	//	EDR等。1段階までは掘り下げる。それ以上は知らん
+				foreach( ii, pp in p){
+					local v = compval( pp), k = sprintf( "%S.%S", i, ii);
+					foreach( opt in options){
+						opt.modifyscore( k, v);
+					}
+					p[ii] = v.fix();
+				}
+			}else
+			if( typeof( p) <= SS_FLOAT){
+				local v = compval( p);
+				foreach( opt in options){
+					opt.modifyscore( i, v);
+				}
+				scoremap[i] = v.fix();
+			}
+		}
+		foreach( id, lim in limits){
+			if( id in scoremap) scoremap[id] = Math.min( scoremap[id], lim);
+		}
+	}
+	
+	function updateOptions(){
+		local oldopt = options;
+		local a = options = [ ...getBaseOptions(), ...ownoptions];
+		foreach( cond in conds){		//	コンディションの持つオプション
+			a ... cond.getOptions();
+		}
+		if( skill){
+			foreach( opd in skill.option) a .. RPGOption( opd);
+		}
+		a.sort( @( v) float( fget( v, "order", v.opd)));	//	floatにしちゃう
+		return oldopt <> options;
+	}
+	
+	//	スキルを設定する。オプションを更新し、それによりスコアも更新する。戦闘時に使用する。
+	//	※オプションが切り替わるので、戦闘後はnullをセットする
+	//	skl : conf.skill[i] | conf.item[i]
+	function setSkill( skl){
+		if( skill != skl){
+			skill = skl;
+			if( updateOptions()) updateScoreMap();
+		}
+	}
+
+	//	このキャラの装備している武器のRPGItemを返す。プレイヤーでオーバーライド。
+	function getWeapon(){
+		return null;
+	}
+
+	function getShield(){
+		return null;
+	}
+	
+	//	攻撃コマンドのデフォルトのスキルを返す。※IDではなくskill本体。
+	function getAttackSkill(){
+		return ::conf.skill[data["defskillid"]] || ::conf.skill["S000"];
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	ステータス更新
+
+	//	死亡状態を更新する。HPが0になってもこれが呼ばれてない限りは死亡状態は付与されない。
+	//	
+	function updateDead(){
+		if( HP == 0) {
+			putCondition( "K000");
+		} else {
+			removeCondition( "K000");
+		}
+	}
+	
+	//	ターンを経過させる。ターン経過で外れるコンディションがこのタイミングで消去される。
+	//	ターン経過で消去されたコンディションの配列を返す。
+	function spendTurn(){
+		++turn;
+		++aiturn;
+		battleflags = battleflags&0xffff0000;
+		if( isDead()) return null;	//	死んでる場合は何もしない
+		local rems;
+		foreach( cond in conds){
+			local n = ++cond.turn;	//	ターン解除しないコンディションも一応turnは追加しておく
+			local t = cond.data.rem_turn;
+			if( t[0] || t[1]){	//	[0,0]の場合はターンで解除無し
+				if( n>=t[1] || (n>=t[0]&&rnd.nextf()>=0.5)){
+					if( rems) rems .. cond; else rems = [cond];
+				}
+			}
+		}
+		return rems;
+	}
+
+	function spendSteps( c){
+		if( isDead()) return null;	//	死んでる場合は何もしない
+		foreach( cond in conds){
+			local n = (cond.steps+=c);	//	歩行解除しないコンディションも一応stepsは追加しておく
+			local t = cond.data.rem_walk;
+			if( t[0] || t[1]){	//	[0,0]の歩行はターンで解除無し
+				if( n>=t[1] || (n>=t[0]&&rnd.nextf()>=0.3)){
+					removei;	//	こっちはすぐに削除
+				}
+			}
+		}
+	}
+
+	//	バトル開始時に初期化されるフィールド名のリスト
+	static battlefields = ["skill","cmdgauge","battleflags","aipage","aiturn","selected","escaped","turn"];
+
+	//	バトル開始。バトルに使用するフィールドを初期化する。
+	function startBattle(){
+		local cls = getclass( this);
+		foreach( i in battlefields){
+			this[i] ??= cls[i];
+		}
+		if( updateOptions()) updateScoreMap();
+	}
+	
+	//	バトルが終了したら呼ぶ。バトル終了で消えるコンディションや、システム設定により死亡者を復活させたり。
+	function endBattle(){
+		skill = null;
+		local changed = false;
+		foreach( cond in conds){
+			if( cond.data.rem_battle){
+				changed = true;
+				removei;
+			}
+		}
+		if( !isDead() && HP <= 0) HP = 1;	//	自動復活の発動直前とかにバトルが終わるとこの状況になる
+		if( updateOptions()) updateScoreMap();
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	ステータス
+
+	//	
+	function setPoint( pid, val){
+		this[pid] = Math.clamp( val, 0, this["MAX"..pid]);
+	}
+
+	//	HP,MP,TPのキーを指定して値を加算する
+	function addPoint( pid, val){
+		this[pid] = Math.clamp( int( this[pid]+val), 0, this["MAX"..pid]);
+	}
+	
+	function getPoint( pid){
+		return this[pid];
+	}
+
+	function hprate(){
+		return HP*100 / MAXHP;
+	}
+	
+	function mprate(){
+		return MP*100 / MAXMP;
+	}
+	
+	function getPointRate( pid){
+		switch( pid){
+		case "HP": return HP*100 / MAXHP;
+		case "MP": return MP*100 / MAXMP;
+		case "TP": return TP*100 / MAXTP;
+		}
+		return 0;
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	コンディション
+	
+	//	死亡しているかはついているコンディションのdeadtype==2(死亡)かで判断。
+	//	HP=0の時以外に、石化、麻痺が含まれる。が、麻痺は敵側の場合は全滅にならないし、石化は敵だと即死か。。。
+	//	死亡状態では全てのスキルが無効になる。例外的に、復活用のスキルアクションを用意する。
+	//	戻り値は、死亡と判定されたコンディションのビット列
+	function isDead(){
+		return !!conds.reduce( @( v, x) v.data.deadtype==2 ? ::bitset( x, v.getIndex()) : x, 0);
+	}
+
+	//	死亡又は死亡ではないが全滅判定かどうかを返す。
+	function isDefeated(){
+		return escaped || !!conds.find( @( v) v.data.deadtype>=1);
+	}
+
+	//	ピンチ状態か。HPが25%以下の場合にtrue。
+	function isPinch(){
+		return hprate()<=25 && !isDefeated();
+	}
+
+	//	指定したコンディションが付いているか返す。RPGCondition自体を返す
+	function hasCondition( condid){
+		return conds.find( @( v) v.dataid==condid);
+	}
+
+	//	現在掛かっているコンディションをビットで返す
+	function getConditionBits(){
+		return conds.reduce( @( v, x){
+			local idx = int( v.dataid.substring( 1));
+			return ::bitset( x, idx);
+		}, 0);
+	}
+
+	//	コンディションのレベルを返す
+	function getConditionLV( condid){
+		return int( conds.find( @( v) v.dataid==condid)["LV"]);
+	}
+
+	//	指定したコンディションを付与することができるかを返す。
+	function canPutCondition( condid){
+		if( ::conf.cond[condid]["rem_die"] && isDead()) return false;	//	死亡時に死亡で解除する状態は付けられない
+		local idx = int( condid.substring( 1));	//	K001から1を取得
+		foreach( cond in conds){
+			if( bitget( cond.data.xcondbits, idx)) return false;	//	現在掛かってる状態からブロックされた
+			if( cond.dataid == condid){	//	同じ状態がかかっている。段階バフじゃない場合はまずfalse
+				if( cond.LV >= cond.data.MAXLV) return false;
+			}
+			if( cond.data["revcondid"] == condid){	//	レベルが相反するコンディションが掛ってる。相殺できるのでtrueを返す
+				return true;
+			}
+		}
+		return true;
+	}
+
+	//	指定したコンディションを解除することができるかを返す。
+	function canRemoveCondition( condid){
+		local cond = conds.find( @( v) v.dataid==condid);
+		if( !cond || isDead() && cond.data["deadtype"]!=2) return false;	//	死亡時は死亡タイプのコンディションのみ解除可能
+		return true;
+	}
+	
+	//	指定したコンディションを加える。
+	//	※段階バフの場合は0になることでコンディションが消去されるケースもある。
+	//	※死亡状態の追加ではHP=0を入れる。
+	function putCondition( condid){
+		local cond = conds.find( @( v) v.dataid==condid), isnew = false;
+		if( !cond){
+			//	相殺バフがあったらそれのレベルを下げ、0以下で消去。
+			local revcond = conds.find( @( v) v.data["revcondid"]==condid);
+			if( revcond){
+				if( --revcond.LV<=0) conds.removeValue( revcond);
+				if( updateOptions()) updateScoreMap();
+				return;
+			}
+			cond = RPGObject.create( condid);
+			isnew = true;
+		}else{
+			cond.turn = 0;	//	既にある場合ターンだけリセット
+			if( cond.LV < cond.data.MAXLV) ++cond.LV;	//	重複掛けでレベルアップ
+		}
+		//	死亡状態が追加されたらHPは直ちに0にする
+		if( condid == "K000"){
+			HP = 0;
+			skill = null;
+			conds = conds.filter( @( v) !v["data"]["rem_die"] );
+		}
+		//	解除コンディションを削除
+		local rembits = cond.data.remcondbits;
+		if( rembits){
+			conds = conds.filter( @( v){
+				local ci = int( v.dataid.substring( 1));
+				return !bitget( rembits, ci);	//	消去ビットが立ってたら消す
+			});
+		}
+		if( isnew) conds .. cond;
+		if( updateOptions()) updateScoreMap();
+	}
+
+	//	指定したコンディションを消去。hasConditionで掛ってるかチェックしてから呼ぶ
+	function removeCondition( condid){
+		local i = conds.findi( @( v) v.dataid==condid);
+		if( i >= 0){
+			delete conds[i];
+		}
+		//	死亡状態が解除されたらHPは一応最低限1にしとく
+		if( condid == "K000"){
+			HP = Math.max( HP, 1);
+		}
+		if( updateOptions()) updateScoreMap();
+	}
+
+	//	全てのコンディションをクリア。死亡者はHP1で復活。
+	function clearConditions(){
+		conds.clear();
+		HP = Math.max( HP, 1);
+		if( updateOptions()) updateScoreMap();
+	}
+
+	//	指定したコンディションを解除することができるかを返す。
+	function canPutAnyCondition( bits){
+		if( !bits) return false;
+		foreach( c in conds){
+			local i = int( c.dataid.substring( 1));
+			if( ::bitget( bits, i) && canPutCondition( c.dataid)) return true;
+		}
+		return false;
+	}
+
+	//	指定したビット列のコンディションのいずれかを解除可能かを返す。
+	function canRemoveAnyCondition( bits){
+		if( !bits) return false;
+		foreach( c in conds){
+			local i = int( c.dataid.substring( 1));
+			if( ::bitget( bits, i) && canRemoveCondition( c.dataid)) return true;
+		}
+		return false;
+	}
+	
+	//	コマンド可能か。falseの場合はバトル中にスキルの選択が出来ずにS000:何もしないを強制的に選択。
+	//	死亡、眠りや混乱、魅了みたいのもfalse。混乱でもコマンド可能なものを作れる。
+	function isCommandable(){
+		return !conds.find( @( v) v.data["uncommandable"]);
+	}
+
+	//	スキルの消費を実行。アイテム使用もスキルなのでこれが呼ばれる。
+	//	※アイテムについては今のところrpgstat.items内の個数ありのアイテムしか使えない
+	function consumeForSkill( skill){
+		return true;
+	}
+
+	//	スキルの消費を実行。アイテム使用もスキルなのでこれが呼ばれる。
+	//	※アイテムについては今のところrpgstat.items内の個数ありのアイテムしか使えない
+	function canConsumeForSkill( skill){
+		return true;
+	}
+	
+	//	スキルが封印されているかを返す。IDで指定。
+	//	※毎フレームスキルリストの全要素に呼ばれるとしたら重いかも。。。重いならskillbitsの計算時に一緒に計算する
+	function isSkillSealed( id){
+		local idx = int( id.substring( 1));
+		return !!options.find( @( v) v.opd.opttype=="opt_skillseal" && ::bitget( v.opd.skillbits, idx));
+	}
+
+	function isSkillUseable( id){
+		local skill = ::conf.skill[id];
+		local wtype = getWeapon()["data"]["eqtype"]|0;
+		return (skill.eqtypebits & (1<<wtype)) && canConsumeForSkill( skill) && !isSkillSealed( id);
+	}
+	
+	//	スキルフラグが封印されているか
+	function isSkillFlagSealed( bits){	//	SkillFlag
+		if( isDead()) return true;	//	死んでる場合はどれも無効
+		return !!options.find( @( v) v.opd.opttype=="opt_skillflagseal" && (v.opd.flagbits & bits));
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	オプション
+
+	function getOption( opttype){
+		return options.find( @( v) v.opd.opttype==opttype);
+	}
+
+	//	指定したオプションの値を合計する。データ内にはvalフィールドが存在すること。
+	//	取得経験値上昇とかの効果を取得するための関数。
+	function sumOption( opttype){
+		return options.reduce( @( v, x) v.opd.opttype==opttype ? x+int( v["val"]) : x, 0);
+	}
+	
+	//	このキャラがボスタイプを持つかどうかを返す。
+	function isBoss(){
+		return getOption( "mod_bossflag");
+	}
+}
+
+//	このクラスのみではステージやバトルに登場することはできない。RPGCharaからSK3DCharaを生成する。
+//	プレイヤーのみこのクラスで実体化される。他のモブキャラ、エネミーキャラはイベントとしてのみ実体化される。
+//	ゲーム実行時は常に実体化している。
+//	
+class RPGPlayer extends RPGCharaBase
+{
+	<ser_i> exp = 0;				//	最大999,999,999(10億-1)
+	<ser_i> jxp = 0;				//	ジョブレベルを上げるためのジョブ経験値。setting.jxptype=1(手動)の場合にここに追加される
+	<ser_o> equips = null;			//	[RPGItem * スロット数] ※生成時、読み込み時に適切な数にresizeする！
+	<ser_i> eqlockbits = 0;			//	equipsの装備変更をロックするビット
+	<ser_o> jobs = null;			//	[RPGJob * スロット数]
+	<ser_o> ownjobs = null;			//	RPGJob[] : 装着していないものも含め全てのジョブが入る。参照はjobsと共有されてる。
+	<ser_i> formation = 0;			//	0:前列、1:後列。TGRを変化させる
+	
+	<ser_o> etc = null;				//	{}色々なパラメータ。例えばコマンド位置の保存など
+
+	//	保存されない
+	battlecmds = null;				//	バトルコマンドID[8]。スキルIDや、ストアのスキルグループIDがそのまま入る場合もある。nullもある。
+	skillbits = 0;					//	使用可能なスキルのビット列。オプションのmod_addskillで
+	
+	constructor(){
+	}
+
+	function setDataID( did){
+		super.setDataID( did);
+		//	デフォルトステータスの設定
+		//	初期LV、初期装備、初期ジョブ等
+		name = data.name;
+		equips = [];
+		jobs = [];
+		etc = {};
+		foreach( prop in ::RPGSystem.playerprops){
+			if( prop["proptype"] != "status") continue;	//	登録タイプがstatusのパラメータ以外は無視
+			local pid = prop.pid;
+			local val = convertPropertyValue( data[pid], prop.type);	//	DATAID, DATAIDS等を変換する。
+			::setField( this, pid, val);	//	"jobs.0"というフィールド名の時、jobs[0]=valとなる
+		}
+		equips.resize( length( ::conf.type.eqslot));	//	装備部位数のタイプ設定に数を合わせる
+		jobs.resize( length( ::conf.type.jobslot));		//	ジョブ装着数のタイプ設定に数を合わせる
+		ownjobs = jobs.filter( @( v) v);
+		updateOptions();
+		updateScoreMap();
+		HP = scoremap.MAXHP;	//	ここら辺決め打ち。
+		MP = scoremap.MAXMP;
+		TP = 0;//scoremap.MAXTP;
+		exp = ::RPGSystem.getExpByLV( LV, data.expcurv);
+		//	※プラグインで拡張
+	}
+	
+	//	レベルを設定する。レベルを下げることもできる。逆にexp=0でも戦闘後にLV1に下がることはない。
+	function setLV( lv){
+		LV = lv;
+		exp = ::RPGSystem.getExpByLV( LV, data.expcurv);
+	}
+
+	//	経験値を追加する。レベルが上がったらオプション、ステータスを更新する。
+	function addExp( val){
+		exp += val;
+		return updateLV();
+	}
+
+	//	現在のexpからLVを更新する。LVが変化したらオプション、ステータスを更新する。
+	function updateLV(){
+		local lv = ::RPGSystem.getLVByExp( exp, data.expcurv);
+		// printf( "LV %S EXP %S / %S =>   %S\n", LV, exp, RPGSystem.getExpByLV( LV+1, data.expcurv), lv);
+		if( lv != LV){
+			LV = lv;
+			updateOptions();
+			updateScoreMap();
+			return true;
+		}
+	}
+
+	//	ジョブ経験値を追加する。
+	function addJobExp( val){
+		if( ::conf.setting.jxptype == 1){	//	手動分配の場合は自分のjxpに追加するだけ
+			jxp += val;
+		}else{
+			foreach( job in jobs){
+				if( !job) continue;
+				job.jxp += val;
+				local jlv = ::RPGSystem.getLVByExp( job.jxp, job.data.expcurv);
+				if( jlv >= job.JOBLV){
+					job.JOBLV = jlv;
+					updateOptions();
+					updateScoreMap();
+					return true;
+				}
+			}
+		}
+	}
+	
+	function getBaseScoreMap(){
+		local bp = {};
+		//	キャラのレベルに応じたスコアパラメータ
+		foreach( prop in ::RPGSystem.playerprops){
+			if( prop["proptype"] != "score") continue;	//	登録タイプがscoreのパラメータ以外は無視
+			local pid = prop.pid;
+			local curv = data["lvcurve"][pid];
+			local val = curv? curv[Math.clamp( LV, 1, length( curv)-1)] : data[pid];
+			if( val == undefined) val = clone fget( prop, "defval");	//	配列とかも入ってくる
+			::putField( bp, pid, val);
+		}
+		if( formation){ bp.TGR *= 0.5; }
+		return bp;
+	}
+
+	function getBaseOptions(){
+		local opts = [];
+		//	キャラのオプション
+		foreach( opd in data.lvoption){
+			if( LV >= opd.LV) opts .. RPGOption( opd);
+		}
+		//	ジョブのオプション
+		foreach( job in ownjobs){
+			if( !job["enabled"]) continue;
+			if( jobs.contains( job)){
+				foreach( opd in job.data.option) opts .. RPGOption( opd);
+				foreach( opd in job.data.lvoption) if( job.JOBLV >= opd.LV) opts .. RPGOption( opd);
+			}else{	//	装着していないジョブでも永久取得のオプションは追加
+				foreach( opd in job.data.lvoption) if( job.data["perma"] && job.LV >= opd.LV) opts .. RPGOption( opd);
+			}
+		}
+		//	装備のオプション
+		foreach( eq in equips){
+			if( !eq) continue;
+			opts .. RPGOption( eq.data);	//	supplyを追加するオプション。。。。。。。。。。。
+			foreach( opd in eq.data.option) opts .. RPGOption( opd);
+			opts ... eq.ownoptions;
+		}
+		return opts;
+	}
+
+	function updateOptions(){
+		local b = super.updateOptions();
+		if( b) udpateOwnLists();
+		return b;
+	}
+
+	//	所持リストを更新する⇒battlecmds, skillbits
+	//	割と頻繁に呼ばれるけどそんなに重くないはず
+	function udpateOwnLists(){
+		battlecmds = [];
+		for( local l = 0;l < 8;l ++) battlecmds .. ::conf.setting["battlecmd"..l];	//	システム設定の基本バトルコマンド
+		skillbits = 0;	//	[-1,-1,-1,-1,-1,-1,-1,-1,-1] : 全スキルデバッグ
+		//	全オプションをチェックして追加していく
+		foreach( op in options){
+			local opd = op.opd;
+			switch( opd.opttype){
+			case "opt_battlecmd":
+				//	todo コマンドを検索して置き換え
+				if( opd.slot in battlecmds){
+					battlecmds[opd.slot] = opd.battlecmd;
+				}else{
+					local i = battlecmds.findi( @( v) !v);	//	i<0の場合はスロットがまんぱんでコマンドセット不能。。。
+					if( i >= 0) battlecmds[i] = opd.battlecmd;
+				}
+				break;
+			case "opt_getskill": 
+				skillbits = bitset( skillbits, int( opd.skillid.substring( 1)));
+				break;
+			}
+		}
+	}
+
+	//	clone pcじゃなくてこっちでクローンする。。。これは比較のためのクローンであり、
+	//	全てのケースでクローンに必要な要件を満たすものではないため。
+	function cloneForCompare(){
+		local pc = clone this;
+		pc.equips = clone equips;
+		pc.jobs = deepclone( jobs);		//	ジョブ経験値なんかが更新されるのでdeepclone
+		pc.conds = [];					//	比較用に全状態クリア
+		pc.updateOptions();
+		pc.updateScoreMap();
+		return pc;
+	}
+
+	//	指定したスロットのジョブを設定する。
+	function setJob( slotidx, job){
+		jobs[slotidx] = job;
+		updateOptions();
+		updateScoreMap();
+	}
+	
+	//	指定したスロットの装備を設定する。
+	function setEquip( slotidx, item){	//	int, RPGItem
+		equips[slotidx] = item;
+		updateOptions();
+		updateScoreMap();
+	}
+
+	//	このキャラの装備している武器のRPGItemを返す。
+	function getWeapon(){
+		return equips.find( @( v) isWeapon( v["data"]["eqtype"]));
+	}
+
+	function getShield(){
+		return equips.find( @( v) isShield( v["data"]["eqtype"]));
+	}
+	
+	//	攻撃コマンドのデフォルトのスキルを返す。※IDではなくskill本体。
+	function getAttackSkill(){
+		local w = getWeapon()["data"];
+		return ::conf.skill[w["skillid"]] || super.getAttackSkill();
+	}
+
+	//	指定したIDのスキルを所持しているかを返す。
+	function hasSkill( id){
+		local idx = int( id.substring( 1));
+		return ::bitget( skillbits, idx);
+	}
+
+	//	スキルの消費を実行。アイテム使用もスキルなのでこれが呼ばれる。
+	//	※アイテムについては今のところrpgstat.items内の個数ありのアイテムしか使えない
+	function consumeForSkill( skill){
+		return _consumefunc( skill, true);
+	}
+
+	//	スキルの消費を実行。アイテム使用もスキルなのでこれが呼ばれる。
+	//	※アイテムについては今のところrpgstat.items内の個数ありのアイテムしか使えない
+	function canConsumeForSkill( skill){
+		return _consumefunc( skill, false);
+	}
+	
+	function _consumefunc( skill, doit){
+		local c = skill["consume"];		//	arrayの場合はパラメータ消費、intの場合はアイテム消費
+		if( typeof( c)==SS_ARRAY){	//	消費HP,MP,TP
+			local v = int( c[1]);
+			switch( c[0]){
+			case 3: v = MP*v/MAXMP; case 0: return MP-v>=0 && (doit ? (MP-=v)|1 : true);
+			case 4: v = TP*v/MAXTP; case 1: return TP-v>=0 && (doit ? (TP-=v)|1 : true);
+			case 5: v = HP*v/MAXHP; case 2: return HP-v> 0 && (doit ? HP-=v : true);
+			}
+			return false;
+		}else{	//	アイテム消費。skillがconf.item[xxx]内の参照なので
+			local itemid = Table.indexOf( conf.item, skill);
+			if( !itemid) return true;	//	アイテムじゃない。消費しようが無いのでtrue返しておく
+			if( doit){
+				//	消費確率チェック。
+				return ::rpgstat.reduceItemID( itemid, 1);
+			}else{
+				return ::rpgstat.countItems( itemid);
+			}
+		}
+	}
+	
+	//	装備フラグを集計してビットマスクにして返す。
+	function getEquipFlagBits(){
+		local b = 0;
+		foreach( op in options){
+			local opd = op.opd;
+			if( opd.opttype=="mod_eqflag") b |= 1<<opd.eqflag;
+		}
+		return 0;
+	}
+
+	//	装備できるアイテムを返す。itemsを指定しなければrpgstatに所有する武器防具から検索する。
+	function getEquipableItems( slotidx, items=null){
+		local eqflagbits = getEquipFlagBits();	//	装備フラグビットは毎回計算
+		local eqtypebits = data.eqtypebits;
+		local slottypebits = ::conf.type.eqslot[slotidx].eqtypebits;
+		return (items||[...rpgstat.weapons, ...rpgstat.armors]).filter( @( v){
+			if( !v) return false;
+			local d = v.data;
+			if( !(slottypebits & (1<<d.eqtype))) return false;
+			if( d.eqflag >= 0 && !(eqflagbits & (1<<d.eqflag))) return false;
+			if( !(eqtypebits & (1<<d.eqtype))) return false;
+			return true;
+		});
+	}
+
+	//	この装備アイテムを装備できるスロット番号を返す
+	function getEquipableSlot( itemid){
+		local d = ::rpgdata[itemid];
+		local eqflagbits = getEquipFlagBits();	//	装備フラグビットは毎回計算
+		local eqtypebits = data.eqtypebits;
+		if( !(eqtypebits & (1<<d.eqtype))) return -1;
+		if( d.eqflag >= 0 && !(eqflagbits & (1<<d.eqflag))) return -1;
+		return ::conf.type.eqslot.findi( @( v) (v.eqtypebits & (1<<d.eqtype)));
+	}
+
+	//	選択可能なジョブを取得する。以下の条件でownjobsをフィルター。
+	//	・スロットに入るか
+	//	・現在装着中のジョブか
+	//	・専用ジョブフラグを持ってるか
+	function getSelectableJobs( slotidx){
+		local jobs = this.jobs, opts = options, slotbit = 1<<slotidx;
+		return ownjobs.filter( @( v){
+			if( !(v.data.jobslotbits & slotbit)) return false;
+			if( jobs.contains( v)) return false;
+			local f = v.data.jobflag;
+			if( f >= 0){	//	ジョブフラグチェック
+				if( !opts.find( @( v) v.opd.opttype=="opt_jobflag" && v.opd.jobflag==f)) return false;
+			}
+			return true;
+		});
+	}
+
+	//	バトルコマンドを情報込みで返す
+	function getBattleCommandList(){
+		local sysbc = RPGSystem.battlecmd;
+		local a = [];
+		foreach( i, bc in battlecmds){
+			local t;
+			// local v = ::conf.type.battlecmd[bc];	//	タイプ設定 {"key":"attack","name":"攻撃"}
+			if( bc[0] == 'S'){	//	単一のスキル
+				local skill = ::conf.skill[bc];
+				t = { cmddef=sysbc.skill, lbl=skill.name, bcmd={skillid=bc}};
+			}else
+			if( bc[1] == 'R'){	//	単一のスキルグループ
+				local skillg = ::conf.store[bc];
+				if( skillg["type"] == 1){	//	設定エラー対策
+					t = { cmddef=sysbc.skillg, lbl=skillg.name, bcmd={skillgbits=bitset( 0, int( bc.substring( 1)))}};
+				}
+			}else{
+				local v = sysbc[bc];
+				if( v) t = { cmddef=v, lbl=v.name, bcmd=v };
+			}
+			a .. { _name="bcmd"..i, lbl="", cmddef=null, bcmd=null, ...t};
+		}
+		return a;
+	}
+}
+
+//	RPGCharaの亜種的な使われ方で、戦闘のパラメータも同一だが、以下の違いがある。
+//	・ステージには直接登場しない。バトル時のみ実体化。そのため保存されることは無い。
+//	・行動パターンを詳しく定義可能
+//	・ビューをvoxel,picture,...から選べる。これはRPGCharaでも選べていいが、シーンの構成上。
+//	※保存されるものではないが、RPGState内や変数などに一時的に入ったものがセーブされる場合がある。なので、Serializeが問題なくできる必要がある。
+//	
+class RPGEnemy extends RPGCharaBase
+{
+	<ser_i> objid = 0;				//	個体識別用。エネミーは同じステージに複数体出現するため。
+	
+	basescoremap = null;			//	生成時に固定で生成する。
+	baseoptions = null;					//	生成時に固定で生成する。
+	
+	function setDataID( did){
+		super.setDataID( did);
+		objid = rnd.nexti();		//	ここでobjid割り振り。初期化時のいつでもいいが
+		name = data.name;
+		local bp = basescoremap = {};
+		foreach( prop in ::RPGSystem.enemyprops){
+			if( prop["proptype"] != "score") continue;	//	登録タイプがscoreのパラメータ以外は無視
+			local pid = prop.pid, val;
+			val = data[pid];
+			if( val == undefined) val = clone prop.defval;	//	配列とかも入ってくる
+			::putField( bp, pid, val);
+		}
+		options = data.option.map( @( v) RPGOption( v));		//	ランダムあってもいいかも
+		updateScoreMap();
+		HP = scoremap.MAXHP;	//	DQみたいにランダムしてもいい
+		// MP = scoremap.MAXMP;
+		// TP = scoremap.MAXTP;
+	}
+	
+	function getBaseScoreMap(){
+		return basescoremap;
+	}
+	
+	function getBaseOptions(){
+		return baseoptions;
+	}
+}
+
+//	クエストの状態。
+//	
+class RPGQuest extends RPGObject
+{
+	<ser_i> arisecnt = 0;
+	<ser_i> completecnt = 0;
+	<ser_i> state = 0;
+	<ser_i> step = 0;
+	<ser_i> arisetime = 0;
+	<ser_i> accepttime = 0;
+	<ser_i> endtime = 0;
+	<ser_i> watchtime = 0;
+	//	進行時情報
+	<ser_o> homeloc = null;
+	<ser_o> targetloc = null;
+	<ser_i> localnum = 0;
+	<ser_o> ref = null;
+}
+
+
+/////////////////// クラス登録 skill,storeは登録不要
+
+RPGObject.clsmap['J'] <- RPGJob;
+RPGObject.clsmap['P'] <- RPGPlayer;
+RPGObject.clsmap['I'] <- RPGItem;
+RPGObject.clsmap['W'] <- RPGItem;
+RPGObject.clsmap['A'] <- RPGItem;
+RPGObject.clsmap['E'] <- RPGEnemy;
+RPGObject.clsmap['K'] <- RPGCondition;
+RPGObject.clsmap['Q'] <- RPGQuest;
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+//
+
+//	ステージ状態のスナップショット。セーブするときにステージの状態を集める。
+//	また、ロード時にはこのスナップショットを元にステージを再構成する。
+//	復元の手順は、最初に全てのイベントを初期化、配置して、プレイヤーの初期座標も入れた状態でsnapshotをロードし、
+//	変化のあるイベントのみ置き換えていく。
+//	
+class RPGStageState extends Serializable
+{
+	static SerialUID = 49;
+
+	<ser_o> mapid = null;			//	dataid
+	<ser_o> player = null;			//	プレイヤースナップショット。
+	<ser_o> camwork = null;			//	カメラワーク。
+	<ser_o> evarmap = null;			//	イベントとevarのマップ
+	<ser_o> estatmap = null;		//	イベント状態マップ。出現場所等。REMAPIDの更新で丸ごと破棄される
+	<ser_o> mapbmp = null;			//	Bitmap : オートマッピング時に埋まっていく。4ブロック1ピクセルぐらいかな
+	<ser_o> statmap = null;			//	stagepropsの情報を保存
+	<ser_o> etc = null;				//	{}色々なパラメータ
+	<ser_i> remapid = 0;			//	リストアID。enter時にこれが変化してたらマップリストアを行う。
+	<ser_o> dynassets = null;		//	動的アセット配置
+	<ser_o> reserved2 = null;
+	<ser_o> reserved3 = null;
+	<ser_o> reserved4 = null;
+	
+	//	ステージに入った初期状態を作る。保存されたRPGStageStateに改めて呼び出すこともある。
+	//	player : portalで指定された場所に設置。セーブ時は必ず静止状態。
+	//	camwork : カメラワーク。固定なら場所も。
+	//	eventmap : nullで良し。
+	//	env    : rsetid, weather, bgmid, など。
+	//	マップリストアが起きた場合、evarmapを除いて全ての値がマップ初期値に戻る。その他ではプレイヤー座標だけが指定の場所に移動する。
+	//	
+	function enter( mapid, portal, remapid){
+		this.mapid = mapid;
+		local map = ::conf.map[mapid];
+		local pp = getPortalPos( portal);
+		player = { pos = pp, };				//	x,(y),z,dir : yはnull指定可能。
+		if( remapid!=this.remapid || !camwork){
+			this.remapid = remapid;
+			camwork = map.camwork;		//	
+			statmap = {};
+			foreach( prop in ::RPGSystem.stageprops){
+				local v = ( prop.pid in map) ? map[prop.pid] : prop["defval"];
+				if( v != undefined) statmap[prop.pid] <- v;
+			}
+			estatmap = null;	//	イベント状態をリセット
+			foreach( v in dynassets){	//	動的アセットをリセット。parmaなものは残す
+				if( !v["parma"]) removei;
+			}
+			dynassets = null;
+		}
+	}
+	
+	//	portal : { mapid:M000, pos:(x,y,z,r), evid:100001 }
+	//	※pos直値指定の場合は実座標、evidが入っている場合はそのev.posはブロック座標(x2)。ややこしい。。。
+	static function getPortalPos( po){
+		local map = ::conf.map[po.mapid];
+		if( po["evid"]){
+			local ev = map.event[po.evid];
+			if( ev){	//	ポータルの向きに進んだ位置
+				local h = ev.pos[3]*Math.PI*0.5;
+				local pos = Vector3D( ev.pos).scale( 0.5);
+				local vec = Vector3D( 0, 0, ev.mdl.r[1]*0.5+0.5).rotate( Quaternion.fromHPB( h, 0, 0));
+				pos.add( vec);
+				return (pos.x,pos.y,pos.z,h);
+			}
+		}else
+		if( po["pos"]){
+			return po.pos;
+		}
+		//	ポータル未指定か指定したポータルが無かったらここに来る。ど真ん中、手前向き。
+		return (map.size[0]*0.25,null,map.size[2]*0.25,Math.PI);
+	}
+}
+
+//	変数に代入可能。この値でwhoの対象を選択可能。また、データを取得も可能。
+//	
+class RPGObjectRef
+{
+	<ser_o> type = null;		//	"player","enemy","event",...
+	<ser_o> id = null;			//	"P000", "E000", 10000001
+	<ser_o> objid = null;		//	エネミーの場合は同じIDが複数存在するのでこれで個体を識別
+	<ser_o> mapid = null;		//	type="event"の時に入る
+
+	function _get( key){
+		switch( key){
+		case "data":
+			if( type=="event"){
+				return ::conf.map[mapid]["event"][id];
+			}else{
+				return ::rpgdata[id];
+			}
+			return null;
+		case "rp3d":
+			switch( type){
+			case "event":
+				if( mapid != ::rpgstage.mapid) return null;	//	マップが違う！
+				return ::rpgstage.getEvent( id)["rp3d"];	//	イベントあってもrp3dがnullの場合もある
+			case "player":	//	player, enemyのrp3dは基本的にバトル時でのみ取得可能。
+				local rp3d = ::rpgstage.battle?.getChara3D( ::rpgstat.playermap[id]);
+				if( rp3d) return rp3d;
+				//	バトルで見つからなくてもplayerでパーティ内ならplayer3dを返す！
+				return ::rpgstat.members.find( @( v) v["id"]==id) ? player3d : null;
+			case "enemy":	//	player, enemyのrp3dは基本的にバトル時でのみ取得可能。
+				local obj = ::rpgstage.battle["enemies"]?.find( @( v) v.objid==objid);
+				return obj && ::rpgstage.battle.getChara3D( obj);
+			}
+			return null;
+		case "event":
+			return type=="event" ? ::rpgstage.getEvent( id) : null;
+		case "player":
+			return type=="player" ? ::rpgstat.playermap[id] : null;
+		case "enemy":
+			return type=="enemy" ? ::rpgstage.battle["enemies"]?.find( @( v) v.objid==objid) : null;
+		case "chr":
+			switch( type){
+			case "player":
+				return ::rpgstat.playermap[id];
+			case "enemy":	//	RPGEnemyは基本的にバトル時でのみ取得可能。
+				return ::rpgstage.battle["enemies"]?.find( @( v) v.objid==objid);
+			}
+			return null;
+		}
+		return undefined;
+	}
+}
+
+
+//	
+//	
+class RPGState extends Serializable
+{
+	static SerialUID = 48;
+
+	<ser_i> version = 0;			//	int : セーブデータのゲームバージョン。
+	<ser_o> mapid = "M000";			//	string : 現在のマップID
+	<ser_o> playermap = null;		//	{dataid:RPGPlayer} : ゲームに登場する全プレイヤーの状態を保存
+	<ser_o> gvarmap = null;			//	{gvarid:val} : 
+	<ser_o> mvarmap = null;			//	{dataid:{A,B,C,D}} : マクロイベントのイベント変数を保存する。
+	<ser_o> svarmap = null;			//	{svarid:val} : システム変数。
+	<ser_o> settingmap = null;		//	変更可能なシステム設定。
+	<ser_o> questmap = null;		//	{dataid,RPGQuest} : 
+	<ser_o> stagemap = null;		//	{dataid,RPGStageState} : ステージごとの保存。イベント変数なども。
+	<ser_o> etc = null;				//	{} : 色々なデータを保存できる。
+	<ser_o> reserved1 = null;
+	<ser_o> reserved2 = null;
+	<ser_o> reserved3 = null;
+	<ser_o> reserved4 = null;
+	
+	//	current
+	<ser_o> srcchara = null;		//	RPGChara : 選択キャラ。マクロやイベント、メニューなどでキャラ選択時に変更される。RPGEnemyが入る場合もある。
+	<ser_o> reserved5 = null;		
+
+	//	party
+	<ser_i> money = 0;
+	<ser_o> members = null;			//	[RPGChara * setting.partynum)] : イベントで拡張可能だが、戦闘には先頭からpartynumまで使用
+	<ser_o> items = null;			//	[RPGItem * スロット数] : スロット数は無限じゃないと色々面倒ではあるなーーー
+	<ser_o> weapons = null;			//	[RPGItem * スロット数] : スロット数は無限じゃないと色々面倒ではあるなーーー
+	<ser_o> armors = null;			//	[RPGItem * スロット数] : スロット数は無限じゃないと色々面倒ではあるなーーー
+	<ser_o> keyitems = null;		//	[RPGItem,...] : 貴重品はここに追加される。小さなメダルみたいなのは個数も入ったり。
+	<ser_o> storage = null;			//	[RPGItem] : 倉庫的な。
+	<ser_o> reserved6 = null;
+	<ser_o> reserved7 = null;
+	<ser_o> reserved8 = null;
+	<ser_o> reserved9 = null;
+
+	//	保存されない
+	saveslot = 0;					//	int : セーブスロット番号。FileRefからつける
+	savetime = long( 0);			//	long : セーブされた時間。FileRefからつける
+
+	function newGame(){
+		playermap = {};
+		gvarmap = {};
+		mvarmap = {};
+		svarmap = {};
+		settingmap = {};
+		questmap = {};
+		stagemap = {};
+		etc = {};
+		//	プレイヤー追加。これロード時にもしたらアップデートにも対応できる
+		foreach( dataid, _ in ::conf.player){
+			if( !dataid.startsWith( "_")){
+				local p = RPGPlayer(); p.setDataID( dataid);
+				playermap[dataid] <- p
+			}
+		}
+		//	パーティー編成
+		local set = clone ::conf.setting;
+		setDefaultProperties( RPGSystem.settingprops, set);		//	値の入ってない設定があるかもしれない
+		members = array( set.partynum);	//	イベントなどで拡張可能
+		money = set.inimoney;
+		items = array( 3);
+		weapons = array( 3);
+		armors = array( 3);
+		keyitems = array( 3);
+		storage = array( 3);
+		foreach( i, dataid in set.inimembers){
+			members[i] = dataid && playermap[dataid];
+		}
+		//	初期システム状態
+		foreach( p in ::RPGSystem.settingprops){
+			if( p["proptype"] == "status"){
+				local pid = p.pid;
+				settingmap[pid] <- ::conf.setting[pid] ?? p.defval;
+			}
+		}
+		//	初期ステージ。タイトルステージもか
+		mapid = set.inimap.mapid;
+		local ss = RPGStageState();
+		ss.enter( mapid, set.inimap, rpgvar.REMAPID);
+		stagemap = { [mapid]=ss};
+	}
+
+	//	デバッグ用に全てのアイテムを追加
+	function addAllItems(){
+		foreach( i, v in ::conf.item){
+			if( i[0]=='_') continue;
+			addItemID( i, v.stacknum / 2+1);
+		}
+		foreach( i, v in ::conf.weapon){
+			if( i[0]=='_') continue;
+			addItemID( i);
+		}
+		foreach( i, v in ::conf.armor){
+			if( i[0]=='_') continue;
+			addItemID( i);
+		}
+		local fn = @( v) v["dataid"] || "Z999";
+		items.sort( fn);
+		weapons.sort( fn);
+		armors.sort( fn);
+		money = 10000000;	//	お金も
+	}
+
+	//	ロード完了時。
+	function serloaded(){
+		resizeItemList( items);
+		resizeItemList( weapons);
+		resizeItemList( armors);
+		resizeItemList( keyitems);
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	パーティー情報取得、更新
+
+	function itemlistOf( itemid){
+		switch( itemid[0]){
+		case 'I': return ::conf.item[itemid]["itemtype"]==1? keyitems : items;
+		case 'W': return weapons;
+		case 'A': return armors;
+		}
+	}
+
+	static function _countItems( a, itemid){
+		return a ? a.reduce( @( v, x) v["dataid"]==itemid ? x+v.num : x, 0) : 0;
+	}
+
+	//	所持しているアイテム数を取得する。パーティーメンバーの装備品もカウント可能。
+	function countItems( itemid, counteq=true){
+		local n = _countItems( itemlistOf( itemid), itemid);
+		if( counteq) foreach( p in members) n += _countItems( p["equips"], itemid);
+		return n;
+	}
+
+	//	指定したリストのサイズを3の倍数になるように切り上げ、切り下げする。
+	function resizeItemList( list){
+		while( length( list) && !list.last()) list.pop();
+		list.resize( (length( list)+5)/3*3);
+	}
+
+	//	指定したアイテムを追加する。
+	//	※スタック数付きのものはそれ以上は持てないで、はみ出た分は破棄される。
+	//	※ポイントを追加可能。N000~
+	//	
+	function addItemID( itemid, n=1){
+		if( n <= 0) return null;
+		if( itemid[0] == 'N'){
+			return addPointID( itemid, n);
+		}
+		local a_add( list, item){
+			local i = list.findi( @( v) !v);
+			if( i >= 0) list[i] = item; else list .. item;
+		}
+		local list = itemlistOf( itemid);
+		local item = RPGObject.create( itemid);
+		if( item.data["stacknum"]){
+			item.num = n;
+			local _item = list.find( @( v) v["dataid"]==itemid);
+			if( _item){
+				_item.num = Math.min( _item.num + item.num, item.data.stacknum);
+				return _item;
+			}
+			a_add( list, item);
+		}else{
+			for( local l = 0;l < n;l ++){
+				a_add( list, item);
+				item = clone item;	//	ownoptions, etcも
+			}
+		}
+		resizeItemList( list);
+		return item;
+	}
+
+	//	お金、経験値、ジョブ経験値などのポイントを追加。HP,MP,TPと呼称が被ってるな～～～
+	function addPointID( pointid, n){
+		switch( pointid){
+		case "N000": 	//	お金
+			money = Math.clamp( money+n, 0, 99999999);
+			break;
+		case "N001":	//	経験値。全員に等しく
+			break;
+		case "N002":	//	ジョブ経験値。全員に等しく
+			break;
+		}
+		return null;
+	}
+
+	//	指定したアイテムIDを消費する。成功したらtrue、失敗したらfalseを返す。
+	//	@ret : bool 
+	function reduceItemID( itemid, n=1){
+		if( n <= 0) return false;
+		if( countItems( itemid, false) < n) return false;		//	数持ってるかチェック
+		local list = itemlistOf( itemid);
+		if( (rpgdata[itemid]["stacknum"]??1) > 1){
+			local i = list.findi( @( v) v["dataid"]==itemid);
+			if( i >= 0){
+				if( (list[i].num -= n) <= 0) list[i] = null;	//	個数が0になったら消去
+			}
+		}else{
+			foreach( i, v in list){
+				if( v.dataid == itemid){
+					list[i] = null;
+					if( --n <= 0) break;
+				}
+			}
+		}
+		// resizeItemList( list);
+		return true;
+	}
+
+	//	指定したアイテムを消費する。所持アイテムリスト内にない場合は無視する？
+	function reduceItem( item, n=10000){
+		local list = itemlistOf( item.dataid);
+		local i = list.indexOf( item);
+		if( i >= 0){
+			if( (list[i].num-=n) <= 0) list[i] = null;
+			return true;
+		}
+		return false;
+	}
+
+	//	olditemとnewitemを入れ替える。
+	//	なお、newitemはリストに入ってなくてもOK。その場合はnewitemが新たにリストに入って、olditemは消える。
+	//	olditem==nullの場合は、空きにnewitemを入れるという操作になる。
+	//	
+	function swapItem( olditem, newitem){
+		local list = itemlistOf( (olditem||newitem).dataid);	//	※olditem,newitemの入るリストは同一じゃないといけない！
+		local i0 = list.indexOf( olditem);
+		local i1 = newitem ? list.indexOf( newitem) : -1;
+		if( i0 >= 0) list[i0] = newitem;
+		if( i1 >= 0) list[i1] = olditem;
+		resizeItemList( list);
+		return true;
+	}
+}

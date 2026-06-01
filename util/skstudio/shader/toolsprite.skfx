@@ -1,0 +1,121 @@
+declare toolsprite;
+
+//	ツール用スプライト描画
+//	def : 普通に描画(sprite.defと同じ)
+//	cubeex : cubemap展開
+
+param common
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	attribute lowp vec4 in_col <id=COLOR1>;
+	
+	uniform sampler2D coltex1 <id=COLORTEX1>;
+	uniform sampler2D coltex2 <id=COLORTEX2>;
+	
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform mediump mat4 miscmat <id=MISC1MAT>;
+	
+	varying mediump vec4 v_uv;
+	varying lowp vec4 v_col;
+	
+	fragout lowp vec4 fragcolor;
+}
+
+vs def
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv;
+		v_col = in_col;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	default sprite shader
+
+fs def
+{
+	void main(){
+		lowp vec4 pix = $(COLORTEX1) { texture2D( coltex1 , v_uv.xy) * v_col; } : { v_col; }
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.zw);
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique def
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = def;
+	}
+}
+
+param cubeex
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	attribute lowp vec4 in_col <id=COLOR1>;
+	
+	uniform mediump samplerCube coltex1 <id=COLORTEX1>;
+	
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform mediump mat4 miscmat <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	varying mediump vec4 v_col;
+	
+	fragout mediump vec4 fragcolor;
+}
+
+//////////////////////////////////////////////////////////////////////
+//	default sprite shader
+
+fs cubeex
+{
+	vec3 cubecoord( int f, highp vec2 c){
+		c = (c * 2.0 - 1.0) * vec2( 1.0, -1.0);
+		highp vec3 co;
+		switch( f){
+        case 0: co = vec3( 1.0, c.y,-c.x); break;
+        case 1: co = vec3(-1.0, c.y, c.x); break;
+        case 2: co = vec3( c.x, 1.0,-c.y); break;
+        case 3: co = vec3( c.x,-1.0, c.y); break;
+        case 4: co = vec3( c.x, c.y, 1.0); break;
+        case 5: co = vec3(-c.x, c.y,-1.0); break;
+		}
+		return normalize( co);
+	}
+
+	mediump vec4 toSRGB( mediump vec4 p){
+		mediump vec3 c = p.xyz;
+		return vec4( mix( c * 12.92, 1.055 * pow( c, vec3( 1.0/2.4)) - 0.055, step( 0.0031308, c)), p.w);
+	}
+
+	void main(){
+		const highp float D = 1.0/3.0;
+		highp vec2 uv = (v_uv.xy-vec2(0.0,0.5/3.0)) * 3.0;
+		int uf = int( floor( uv.x)), vf = int( floor( uv.y));
+		bool ok = (uf>=0&&uf<3&&vf>=0&&vf<2);
+		lowp vec4 pix = (ok) ? toSRGB( texture( coltex1 , cubecoord( uf*2+vf, fract( uv)))) * v_col : vec4( 0.0);
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique cubeex
+{
+	apilevel = 30;
+	
+	pass {
+		CULLFACE = OFF;
+		
+		param = cubeex;
+		vs = def;
+		fs = cubeex;
+	}
+}

@@ -1,0 +1,723 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import GamepadButtonCode;
+import GamepadStateID;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	RPGMain
+//	
+//	RPGの全ての機能をメソッドに備える。
+//	・初期化
+//	・セーブ／ロード／ニューゲーム
+//	・タイトルシーン、ステージシーン、バトルシーン等の切り替え
+//	・メッセージウィンドウ、タイマーウィンドウ、その他汎用UIの表示
+//	
+//	・基本機能のバインド。オブジェクト、オプション、システム変数、クエリ変数、等
+//	◎プラグインロード
+//	・conf読み込み
+//	・RPGの定義データの展開、配置
+//	・マクロ、グローバルのバインド
+//	・RPGのオブジェクトのロードもしくはニューゲーム
+//	
+
+//	ゲームでデータやリソース、デーブデータを利用するためのグローバル変数。
+//	※ツールではsetupData(), setupUI()などは呼び出さない。デバッグ時には別プロセスを立ち上げて呼び出す。
+//	
+::rpgstat <- null;		//	RPGState : そのままserialize可能。RPG.newGame等で初期化
+::rpgstage <- null;		//	RPGStage : 現在のステージ
+
+//	ゲームのメインの処理を
+//	
+::RPGMain <-
+{
+	uistack = [];
+	picmap = {};
+	
+	//////////////////////////////////////////////////////////////////////////////
+	//	ゲーム初期化。
+	
+	//	シェーダーロードだけが重い。デバッグ起動時にはpreloadはしない
+	function loadSetting(){
+		// preloaShaders();
+		// preloadEffects();
+		::soundmanager.loadConf();
+		foreach( i, v in ::SystemSoundMap) ::soundmanager.addAlias( i, v);
+	}
+
+	function setupUI(){
+		//	元々作られている場合はそれを使い続ける。
+		local root = ::rootview || (::rootview = ::loadSKView( "/resource/ui/rpgroot.ui", SKRootView));
+		root.resizemode = 2;
+		if( skGetOSName() == "Windows"){	//	Windowsのみ。タイトルバー作る
+			RPGTitleLayer( root.findChild( "titlelayer"));
+		}
+		::virtualpad = VirtualPad( root.findChild( "virtualpad"));	//	バーチャルパッドを作る
+		if( !::["gpui"]) GPUI();
+		//	UIループ用のリスナー
+		root.addPostEventListener( GPUI_EVENT, uiloopevent);
+		root.addPostEventListener( ACTION_EVENT, uiloopevent);
+		root.addPostEventListener( MOUSE_EVENT, uiloopevent);
+		root.addPostEventListener( GPUI_EVENT, gamepadevent);
+		//	
+		local bkmap = { ...ClientConfig.def_keybtnmap, ...clientconf["keyboard"]};
+		::gpui.setButtonKeyMap( bkmap);
+		::gpui.enableGPUI( true);
+	}
+
+	//	メインループ。
+	function mainloop(){
+		local t0 = skGetTime();
+		while( !rootview.quit){
+			local dt = skGetTime( t0); t0 += dt;
+			update( dt);
+			suspend();
+		}
+	}
+	
+	//	ゲームループを1フレーム処理する。
+	function update( dt){
+		if( rpgstage) rpgstage.updateStage( dt);
+		rootview.updateEvents( dt);
+		rootview.updateViews( dt);
+		local doflip = rootview.renderViews();
+		if( doflip){
+			skFlipScreen();
+		}else{
+			skSkipFlipScreen();
+		}
+		if( ::rpgstat){ ::rpgvar.PTIME += dt; }
+	}
+
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	//	セーブデータ操作
+
+	function _savefile( slot){
+		return FileRef( ::savedir, sprintf( "save%03d.bin", slot));
+	}
+
+	//	ゲームをロードしてステージ移動まで行う。
+	function loadGame( slot, loadfn=null){
+		local f = _savefile( slot);
+		local ns = ObjectInput.decode( f.load());
+		ns.saveslot = slot;
+		ns.savetime = f.lastmodified;
+		return moveMap({
+			dest = { mapid=ns.mapid, pos=ns.stagemap[ns.mapid].player.pos},
+			isload = true,
+			loadfunc=@(){
+				::rpgstat = ns;
+				foreach( i, v in rpgstat.stagemap){
+					printf( "loadGame SNAPSHOT!!!!!!!! %S %S\n", i, encodeJSON( {evarmap=v.evarmap, estatmap=v.estatmap, statmap=v.statmap, player=v.player}, 5));
+				}
+				if( loadfn) loadfn();
+			},
+		});
+	}
+	
+	//	現在のゲーム状態のスナップショットを取る。
+	//	基本的にrpgstatはそのまま保存できるが、ステージ内のイベント位置、カメラの状態などはスナップショットしないといけない。
+	function saveGame( slot){
+		local st = ::rpgstage;
+		::rpgstat.stagemap[st.mapid] <- st.getSnapshot();
+		::rpgstat.saveslot = slot;
+		::rpgstat.savetime = Date.currentTime();
+		local bb = ObjectOutput.encode( ::rpgstat);
+		_savefile( slot).save( bb);
+	}
+
+	//	
+	function removeSaveSlot( slot){
+		local f = _savefile( slot);
+		return f.exists() && f.deleteFile();
+	}
+
+	//	
+	function copySaveSlot( srcslot, dstslot){
+		local f = _savefile( srcslot);
+		return f.exists() && f.copyTo( _savefile( dstslot));
+	}
+
+	//	セーブデータのリストを返す
+	function listSaveData(){
+		local a = [];
+		foreach( f in ::savedir.getList( "save???.bin")){	//	※mapしちゃうとf.loadでWebGLでException
+			try{
+				local s = ObjectInput.decode( f.load());	//	セーブデータ全読みしちゃうけどまあ問題ないかなーー
+				local idx = int( f.name.substring( 4, 7));
+				s.saveslot = idx;	//	スロットIDは後からつける
+				s.savetime = f.lastmodified;	//	long
+				a .. s;
+			}catch( ex){
+				printexception( ex);	//	読み込みエラー
+			}
+		}
+		return a.sort( @( v) v.saveslot);
+	}
+
+	//	セーブデータが何かしらあるか返す
+	function hasAnySaveData(){
+		return !!length( ::savedir.getList( "save???.bin"));
+	}
+
+	function getLatestSaveSlot(){
+		local a =::savedir.getList( "save???.bin");
+		if( !length( a)) return 0;
+		a.sort( @( f) f.lastmodified[0]);
+		local f = a.last();
+		local idx = int( f.name.substring( 4, 7));
+		return idx;
+	}
+
+	//	タイトル画面に移動する。
+	//	ニューゲームデータを作って、タイトルステージに飛ばす。
+	function goTitle(){
+		(::rpgstat = RPGState()).newGame();
+		::rpgstat.saveslot = getLatestSaveSlot();
+		//	タイトルステージ
+		RPGMain.showUI( { key="wipe", show="show0"});
+		local m0 = ::conf.setting.titlemap;
+		local sstat = ::rpgstat.stagemap[m0] <- RPGStageState();
+		sstat.enter( m0, { mapid=m0 }, rpgvar.REMAPID);
+		local stg = RPGStage( m0);
+		stg.launch( { wipe=1});
+	}
+	
+	//////////////////////////////////////////////////////////////////////////////
+	//	ステージ
+
+	function changeActiveStage( stage){
+		::rpgstage = stage;
+		local lyr = ::rootview.findChild( "stage");
+		lyr.clearChildren();		//	1個しか追加してないはずだけどクリア
+		stage.view.stretchSize( lyr.bnd.w, lyr.bnd.h);
+		lyr.addChild( stage.view);
+	}
+	
+	//	次に再生されるBGMのIDを取得する。
+	function _nextbgmid( cmd){
+		if( "bgmid" in cmd) return cmd["bgmid"] || ::getBGMID();	//	コマンドにbgmidが指定。nullの場合は現在のBGM。
+		local mapid = cmd.dest.mapid;	//	行先のマップ
+		local sstat = ::rpgstat.stagemap[mapid];
+		return (!cmd["remap"] && sstat["env"]["bgmid"]) || ::conf.map[mapid].bgmid;	//	remapされるなら
+	}
+
+	//	マップ間移動を行う。また、マップ内移動はRPGStageを切り替えることなく行う。
+	//	※メインイベントじゃない場合は呼んではいけない。
+	//	{ dest:{mapid,loc|evid}, wipe, }
+	function moveMap( cmd){
+		local mapid = cmd.dest.mapid, map = ::conf.map[mapid];
+		//	未設定項目をマップの設定にする
+		cmd = clone cmd;
+		//	
+		local doneptr = cmd["doneptr"] || ptr( false);	//	終了したらtrueになる。cmdに埋め込むことも可能
+		local fn = @(){
+			lockUI( true);
+			//	BGMの切り替えがある場合はこのタイミングでフェードアウトさせていく。
+			local nextbgmid = _nextbgmid( cmd);
+			if( nextbgmid != ::getBGMID()) ::fadeoutBGM();	//	BGMをフェードアウトする設定。
+			//	ワイプ＆ポーズ
+			RPGMain.wipein( cmd["wipe"]);
+			local st = ::rpgstage;
+			if( st){	//	現ステージが存在しない場合あり。立ち上げ時の最初のみ。
+				st.setPaused( true);
+				//	現在のマップ状況を保存。※バトルマップやタイトルマップではやらない。って限る必要も無いか。
+				if( !cmd["isload"]){	//	isload指定だと保存しない。
+					local sstat = st.getSnapshot();
+					::rpgstat.stagemap[st.mapid] = sstat;
+				}
+			}
+			//	remapフラグが立ってたらマップリストアをする。Relocate Map
+			if( cmd["remap"]) rpgvar.REMAPID += 1;	//	マップリストア！！
+			//	暗転時に呼び出すfunction。ニューゲーム、ロード等はここに挟みこむ
+			if( cmd["loadfunc"]) ~(cmd.loadfunc, st);
+			//	消すべきUIを消す。
+			cleanupLayers();
+			//	同じマップ内の移動で、マップリストアしないならRPGStageは同じで済む。ただこの場合はイベント位置などは初期化されない。
+			if( !cmd["remap"] && st["mapid"]==mapid && !cmd["isload"]){	//	isload指定では新規ステージを立てる。
+				//	位置の更新をして、ボクセルレンダリングの終了まで待つ。
+				local pp = RPGStageState.getPortalPos( cmd.dest);
+				st.setPlayerPosition( pp);
+				st.camwork.recover( st);	//	カメラワークのリセット
+				while( st.loadInCameraMesh( 150)) suspend();
+				st.setPaused( false);
+				RPGMain.wipeout( cmd["wipe"]);
+				if( nextbgmid != ::getBGMID()) ::playBGMID( nextbgmid);	//	BGMは変わる場合あり？
+			}else{
+				//	新しいステージを作ってそれを起動。現在のステージはpauseのまま
+				local sstat = ::rpgstat.stagemap[mapid];
+				if( !sstat) sstat = ::rpgstat.stagemap[mapid] <- RPGStageState();
+				sstat.enter( mapid, cmd.dest, rpgvar.REMAPID);
+				sstat.statmap.bgmid = nextbgmid;
+				st = RPGStage( mapid);
+				st.launch( cmd);	//	launch内でワイプアウトは行われる
+			}
+			doneptr << true;
+			lockUI( false);
+		}
+		newthread().start( fn, this);	//	別スレッドで処理を実行
+		return doneptr;
+	}
+
+	//	指定したRPGStageに復帰する。主にバトルマップからの復帰用。
+	function returnMap( cmd){
+		local doneptr = cmd["doneptr"] || ptr( false);	//	終了したらtrueになる。cmdに埋め込むことも可能
+		local fn = @(){
+			local st = ::rpgstage;
+			//	ワイプ＆ポーズ
+			RPGMain.showUI( { key="wipe", wait=true});
+			st.setPaused( true);
+			cleanupLayers();
+			//	現在のマップ状況を保存。※バトルマップやタイトルマップではやらない。
+			local sstat = st.getSnapshot();
+			::rpgstat.stagemap[st.mapid] = sstat;
+			if( cmd["loadfunc"]) ~(cmd.loadfunc, st);
+			//	復帰先のRPGStageに切り替え
+			st = cmd.stage;
+			st.camwork.recover( st);	//	カメラワークのリセット
+			st.setPaused( true);		//	念のためポーズ
+			RPGMain.changeActiveStage( st);
+			//	元のステージでなっていたBGMを途中から復帰させる。無い場合は今のBGMが継続していく。
+			if( cmd["bgmsnap"] && ::soundmanager.currentbgm!=cmd.bgmsnap){
+				::fadeoutBGM( 2000);
+				::soundmanager.currentbgm = cmd.bgmsnap;
+				cmd.bgmsnap.resumein( 2000);
+			}
+			//	※メッシュロード
+			//	ここでワイプアウト。
+			st.setPaused( false);
+			RPGMain.showUI( { key="wipe", op="hide", wait=false});	//	ワイプアウト。ウェイトはしない。
+			doneptr << true;
+		}
+		newthread().start( fn, this);	//	別スレッドで処理を実行
+		return doneptr;
+	}
+
+	//	バトル開始。バトルマップに移動し、バトルが終了したらこのイベントをそのまま続行する。（敗北時は別）
+	//	バトル処理のstagerunnerを同時に走らせる以外はマップ間の移動と同じ。あと移動方法がバトル用。
+	function enterBattle( cmd){
+		local doneptr = ptr( false);
+		local thisstage = ::rpgstage;		//	このステージに戻ってくれば良い
+		if( "gid" in cmd){		//	エンカウントグループ指定のコマンドならcmdを置き換える
+			local mapid = cmd["mapid"] || ::rpgstage.mapid;		//	cmdにmapidが指定されていない場合は現在マップから
+			cmd = ::conf.map[mapid].encount?.find( @( v) v.gid==cmd.gid);
+			if( !cmd){	//	エンカウントデータ無し。しょうがないから勝利扱い
+				rpgvar.RESULT = 1;
+				doneptr<<true;
+				return doneptr;
+			}
+		}
+		local bgmsnap = ::soundmanager.currentbgm;	//	再生中のBGMを保存
+		//	コマンドを拡張してマップ移動をバトルにする
+		local cmd_ = {
+			wipe = 1,
+			...cmd,	//	enemies, escape, bgm など必要な情報のために展開しておく
+			//	マップ移動先指定
+			dest = { mapid=cmd.mapid, pos=(8,null,8), },
+			//	以下バトル起動用の関数類。
+			startfunc = @( st, opt){	//	opt==cmd_自身
+				st.battle = TurnBattleRunner( st, opt);
+				st.battle.start( st);
+			},
+			//	バトル終了時のコールバック
+			endfunc = @( bt){
+				rpgvar.RESULT = bt.result;
+				if( bt.result < 0){
+					//	バトル敗北マクロ。バトル中のマップで実行される
+					::rpgstage.startMacro( "X002", true);
+					doneptr << true;	//	元のRPGStageには戻ってこないので不要だけど一応
+					return;
+				}
+				//	バトルステージからこのステージに戻る。ワイプ指定は無くていいかな？
+				::RPGMain.returnMap({
+					stage = thisstage, doneptr = doneptr, bgmsnap = bgmsnap
+					loadfunc = @(){
+						foreach( pc in bt.charas){
+							pc.endBattle();
+						}
+					}
+				});
+			},
+		};
+		::RPGMain.moveMap( cmd_);
+		return doneptr;
+	}
+
+	function wipein( id){
+		local w = mapwipelist[id] || mapwipelist[0];
+		w.wipein();
+	}
+
+	function wipeout( id){
+		local w = mapwipelist[id] || mapwipelist[0];
+		w.wipeout();
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////////////
+	//	Picture
+
+	//	cmd_showpicから呼ばれる。pictureレイヤー上で管理
+	//	フェードはpos,scale,rot,colが対象。出現時にフェードがある場合はcolのαをフェード
+	//	
+	function pictureOp( pc){
+		local lyr = ::rootview.findChild( "picture");
+		local pic0 = picmap[pc.picidx], pic1;
+		if( pic0 && pc.picid==pic0.picid){	//	元のpicを使いまわせる
+		}
+	}
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	//	UI
+
+	//	マップ移動時などで現在のUI表示で消去すべきものを消去する。
+	//	メッセージ、メニュー等の操作が必要なレイヤーのみ消去。
+	//	また、uiLoopのスタックもクリアする。マップ移動で残さないといけないことは無いはず、、、
+	function cleanupLayers(){
+		foreach( ln in ["message","menu",]){
+			local layer = ::rootview.findChild( ln);
+			layer.clearChildren();
+		}
+		uistack.clear();
+	}
+
+	//	RPGSystem.uiに登録されたUIを表示する。入力処理があるUIの場合はそのまま入力処理に移り、終わるまで
+	//	このスレッドはブロックされる。
+	function showUI( t){
+		local ui = ::RPGSystem.ui[t.key], ti, oldti, bh, oldbh;
+		try{
+			if( !t["op"]){
+				ti = fget( ui, "topinfo", ui, t);
+				bh = fget( ui, "btnhelp", ui, t);
+			}
+			if( ti) oldti = pushTopInfo( ti);
+			if( bh) oldbh = buttonhelp( bh);
+			local ret = ui.uifunc( t);	//	tをそのまま引数として渡す
+			if( ti) popTopInfo( oldti);
+			if( bh) buttonhelp( oldbh);
+			return ret;
+		}catch( ex){
+			if( ti) popTopInfo( oldti);
+			throw ex;
+		}
+	}
+
+	//	
+	function pushTopInfo( ti){
+		local oldti = ::rootview.findChild( "info_top")["ref"];
+		showUI( { key="info_top", text=ti, });
+		return oldti;
+	}
+
+	//	
+	function popTopInfo( oldti){
+		local curti = ::rootview.findChild( "info_top");
+		if( curti){	//	既に消されてる場合はpopしない。イベント等で起こる
+			showUI( oldti ? oldti : { key="info_top", op="hide", });
+		}
+	}
+
+	//	conf.uimapを全検索してuipathがベースUIのデータを取得。毎回やるのは重いのでキャッシュする
+	function _mapui( r){
+		local uipath = r.path;
+		local lc = ::lang.code;
+		foreach( v in ::conf._resource.uimap){
+			foreach( i, d in v){
+				if( d["baseui"] == uipath){
+					local ld = ::lang( d);
+					local p = d.uilist[ld.useidx];
+					return p ? ::getResource( p) : r;
+				}
+			}
+		}
+		return r;
+	}
+	
+	uimapcache = {};	//	{uipath, Resource}
+
+	function getUIResource( uipath){
+		local r;
+		if( uipath in uimapcache){
+			r = uimapcache[uipath];
+		}else{	//	uimapを行う
+			r = ::getResource( "/resource/ui").getResource( uipath);
+			r = _mapui( r);
+			uimapcache[uipath] <- r;
+		}
+		return r;
+	}
+	
+	//	UIのレイアウトは1280x720をベースで行う。大体のスマホは横長なので、左右に隙間が出来る。
+	//	タブレットのみ縦に隙間が出来る。
+	//	隙間を作るか作らないかは、追加されるレイヤーによる。
+	//	
+	function showView( t){
+		local _getview( v) v && (v instanceof SKView ? v : ::rootview.findChild( v));
+		local lyr = _getview( t.layer);
+		local r = getUIResource( t.uipath);
+		local v = ::loadSKView( r);
+		v.name ??= t["name"];
+		//	レイアウト
+		local plc = _getview( t["place"]) || lyr;	//	レイアウトの基準ビュー。lyrの子である必要は無し
+		local lw = plc.bnd.w, lh = plc.bnd.h, cx = lw>>1, cy = lh>>1;
+		local pos = t["pos"];
+		local vr = v.bnd, x0, x1, y0, y1;
+		switch( (("left" in pos)*1) | (("right" in pos)*2)){
+		case 0: x0 = (pos["x"]??cx) - vr.w*0.5; x1 = x0 + vr.w; break;
+		case 1: x0 = pos.left; x1 = x0 + vr.w; break;
+		case 2: x1 = lw - pos.right; x0 = x1 - vr.w; break;
+		case 3: x0 = pos.left; x1 = lw - pos.right; break;
+		}
+		switch( (("top" in pos)*1) | (("bottom" in pos)*2)){
+		case 0: y0 = (pos["y"]??cy) - vr.h*0.5; y1 = y0 + vr.h; break;
+		case 1: y0 = pos.top; y1 = y0 + vr.h; break;
+		case 2: y1 = lh - pos.bottom; y0 = y1 - vr.h; break;
+		case 3: y0 = pos.top; y1 = lh - pos.bottom; break;
+		}
+		v.stretchSize( x1-x0, y1-y0);
+		v.pos( (x0-vr.x)|0, (y0-vr.y)|0, 0.0);
+		if( plc != lyr){	//	位置だけで良いはず
+			v.pos.transform( plc.mat).transform( lyr.getInvMatrix());
+			//	rootview全体からはみ出さないように調整
+		}
+		v.modal = t["modal"]||false;
+		lyr.addChild( v);	//	挿入位置も設定できるといいかも
+		//	値の設定
+		if( t["binds"]){
+			v.bindValues( t.binds);
+		}
+		//	フォーカスの指定。これをするなら表示actionを待ってからにしないといけない。表示のみのviewには指定しない。
+		if( t["focus"]){
+			::gpui.lockCursorChange( true); v.enabled = false;
+			local f = v.findChild( t.focus)["gpui"];
+			if( f){	//	リストなら先にスクロールだけさせる
+				local g = f.getGPUIGroup();
+				if( g.scrollable){
+					v.updateMatrixAll();
+					g.scrollTargetToVisible( f, 0);
+				}
+			}
+			if( t["action"]){
+				v.action( t.action)?.waitAction();		//	ここで待つ。。。
+			}
+			::gpui.lockCursorChange( false); v.enabled = true;
+			::gpui.updateGPUIMap();
+			::gpui.moveCursorTo( f, true);
+		}else{
+			//	フォーカスが無い場合はノンブロックでアクションを再生開始しておしまい
+			if( t["action"]){
+				v.action( t.action);
+			}
+		}
+		v.ref = t;
+		return v;
+	}
+	
+	//	指定した名前のUIを消去する。同じ名前がある場合は全て消去する。
+	//	hideアクションでアニメーションさせながら消去。アニメーションは待つ？
+	function removeView( name){
+		for( ;;){
+			local v = ::rootview.findChild( name);
+			if( !v) break;
+			v.name = null;	//	この後nameでの検索を不能に
+			v.actionAndDie( "hide");
+		}
+	}
+	
+	//	
+	function waitClick( time=0x7fffffff){
+		local t0 = skGetTime(), mo = ::rootview.mouses[0], skiptime = 400;
+		return uiLoop( {
+			click = @() true
+			back = @() true
+			tab = @() true
+			idle = @(){
+				if( skGetTime( t0)>=time) return false;
+				if( mo.isPressing( skiptime)) return true;	//	マウス押しっぱなしでスキップ
+			}
+		});
+	}
+
+	locklayer = null;
+
+	function lockUI( b){
+		if( b){
+			if( !locklayer){
+				locklayer = SKView();
+				locklayer.setRect( 0, 0, rootview.bnd.w, rootview.bnd.h);
+				rootview.addChild( locklayer);
+			}
+		}else{
+			if( locklayer){
+				locklayer.removeFromParent();
+				locklayer = null;
+			}
+		}
+	}
+	
+	//	UIループを開始する。ループの終了までブロックする。
+	//	各funcは戻り値を返すことでループを抜ける。
+	function uiLoop( funcmap){
+		local retptr = ptr(), uistack = this.uistack;
+		local uifunc( name, e){
+			if( funcmap[name]){
+				local r = funcmap[name]( e);
+				if( r!=null && r!=undefined){
+					retptr << r;	//	戻り値を保存
+					uistack.removeValue( uifunc);	//	即時に削除。削除が遅れるとバッファされたイベントがまたここに来る
+				}
+			}
+		}
+		uistack .. uifunc;	//	最後に呼ばれたuiLoopのみが常にイベントを受け取る、、、
+		//	イベントスレッドの場合はモーダルループを回さないといけない。メインスレッドの場合はそもそも呼び出してはいけない！
+		if( currentthread() == ::rootview.eventthread){
+			local breakfunc(){
+				if( uistack.last()==uifunc) uifunc( "idle", null);
+				return !uistack.contains( uifunc);
+			}
+			::rootview.eventloop( breakfunc);
+		}else{
+			do{
+				suspend();		//	処理はuiLoopListenerからuifuncに送られる。
+				if( !::rootview.dispatchlock && uistack.last()==uifunc) uifunc( "idle", null);
+			}while( uistack.contains( uifunc));		//	もうちょい良い判定できないか
+		}
+		return ~retptr;
+	}
+	
+	//	UIループに割り込みをかける。スタックの一番上から順に"interrupt"イベントを実行し、trueを返すまでpopする
+	function interruptUI( e){
+		local uifunc;
+		while( uifunc = uifuncs.last()){
+			if( !uifunc( "interrupt", e)){	//	真値を返せばそこでストップ
+				uifuncs.pop();
+			}else{
+				break;
+			}
+		}
+	}
+
+	btneventmap = {
+		[BTN_LB] = { id="page", keycode=BTN_LB, count=-1 },
+		[BTN_RB] = { id="page", keycode=BTN_RB, count=1 },
+		[BTN_B] = { id="back", keycode=BTN_B },
+		[BTN_X] = { id="option", keycode=BTN_X },
+		[BTN_START] = { id="start", keycode=BTN_START },
+		[BTN_A] = { id="click", keycode=BTN_A },
+		[BTN_LEFT] = { id="curs", keycode=BTN_LEFT },
+		[BTN_RIGHT] = { id="curs", keycode=BTN_RIGHT },
+		[BTN_UP] = { id="curs", keycode=BTN_UP },
+		[BTN_DOWN] = { id="curs", keycode=BTN_DOWN },
+	}
+
+	function _srcref( src){
+		return src["ref"] || src["parent"]["ref"];
+	}
+	
+	//	rooteventとしてリスナー登録される。GPUIEvent, ActionEvent, 
+	//	"select", "action", "option", "back", "menu", "page", 
+	//	Eventそのものを送るとあれなんで
+	function uiloopevent( e){
+		if( e.consumed == 1) return;	//	モーダルで吸われても
+		local uifunc = uistack.last();
+		if( !uifunc) return;
+		switch( e.id){
+		case GPUI_PRESSED:	//	ボタン入力があった。ACTION_PERFORMEDも同時に発生している場合あり
+		case GPUI_REPEATED:
+			local _e = btneventmap[e.keycode];
+			if( _e) uifunc( _e.id, { ..._e, item=_srcref( ::gpui.gpuitarget["view"])});
+			break;
+		case GPUI_SELECTED:		//	カーソル選択された。
+			local _e = { id="select", src=e.src, name=e.src["name"], item=_srcref( e.src), }
+			uifunc( "select", _e);
+			break;
+		case ACTION_PERFORMED:	//	アイテムが押された
+			local _e = { src=e.src, name=e.src["name"], item=_srcref( e.src), id=e.isMouseDown( BUTTON2_MASK) ? "option":"action"}
+			uifunc( _e.id, _e);
+			break;
+		case ACTION_CANCELED:	//	アクションのキャンセル。メニューの強制終了など。
+			local _e = { id="cancel", src=e.src, name=e.src["name"], arg=e.actioncmd, };
+			uifunc( "cancel", _e);
+			break;
+		case MOUSE_PRESSED: //	どこをクリックしても
+			if( !(e.modifiers & GPUI_MASK)){	//	GPUIから発生させたイベントは無視
+				e.computeLocal( e.src.getInvMatrix());
+				if( e.isMouseDown( BUTTON1_MASK) && e.src.name == "listcontent"){
+					//	リストクリックで特殊ケース有り。リストのエンベロープ外をクリックした場合にモーダルと同じ扱いに
+					local lv = e.src.parent.parent;	//	RPGListView
+					if( lv.isInModal() && lv.isOutOfEnvelope( e.x, e.y)){
+						local _e = { ...btneventmap[BTN_B], item=_srcref( ::gpui.gpuitarget["view"]), ismouse=true, };
+						uifunc( "back", _e);
+					}
+				}
+				local btn = e.isMouseDown( BUTTON1_MASK) ? BTN_A : e.isMouseDown( BUTTON2_MASK) ? BTN_B : BTN_X;
+				uifunc( "click", { ...btneventmap[btn], src=e.src, lx=e.lx, ly=e.ly, ismouse=true, });
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( e.isMouseDown( BUTTON1_MASK)){
+				e.computeLocal( e.src.getInvMatrix());
+				uifunc( "drag", { ...btneventmap[BTN_A], src=e.src, lx=e.lx, ly=e.ly, });
+			}
+			break;
+		case MODAL_MOUSE_PRESSED:	//	モーダル表示ありの場合はview外をクリックするとback扱い
+			if( e.isMouseDown( BUTTON1_MASK) && !(e.modifiers & GPUI_MASK)){	//	GPUIから発生させたイベントは無視
+				local _e = { ...btneventmap[BTN_B], item=_srcref( ::gpui.gpuitarget["view"]), ismouse=true, };
+				uifunc( "back", _e);
+			}
+			break;
+		}
+	}
+	
+	//	Gamepad message
+	function gamepadevent( e){
+		switch( e.id){
+		case GPUI_GAMEPAD_CHANGED:
+			switch( e.keycode){
+			case GAMEPAD_ENABLED:
+				RPGMain.showUI( { key="message_log", text=`\uf831 $T.gamepad_on`});
+				buttonhelp( _btnhelp);
+				break;
+			case GAMEPAD_NOTCONNECTED:
+			case GAMEPAD_DISCONNECTED:
+				RPGMain.showUI( { key="message_log", text=`\uf830 $T.gamepad_off`});
+				buttonhelp( _btnhelp);
+				break;
+			}
+			break;
+		case GPUI_GAMEPAD_NOTICE:
+			RPGMain.showUI( { key="message_log", text=`\uf830 $T.gamepad_x`});
+			buttonhelp( _btnhelp);
+			break;
+		}
+	}
+
+	btnhelpmap = {
+		title = [ [BTN_CURSOR,"$T.btn_cursor"], [BTN_A,"$T.btn_apply"], [BTN_B,"$T.btn_back"] ],
+		stage = [ [BTN_CURSOR,"$T.btn_move"], [BTN_A,"$T.btn_search"], [BTN_B,"$T.btn_jump"], [BTN_X,"$T.btn_menu"] ],
+		battle = [ [BTN_CURSOR,"$T.btn_cursor"], [BTN_A,"$T.btn_apply"], [BTN_B,"$T.btn_back"], [BTN_Y,"$T.btn_auto"] ],
+		menu = [ [BTN_CURSOR,"$T.btn_cursor"], [BTN_A,"$T.btn_apply"], [BTN_B,"$T.btn_back"] ],
+		menu_s = [ [BTN_CURSOR,"$T.btn_cursor"], [BTN_A,"$T.btn_apply"], [BTN_B,"$T.btn_back"], [BTN_Y,"$T.btn_sort"] ],
+		menu_p = [ [BTN_CURSOR,"$T.btn_cursor"], [BTN_A,"$T.btn_apply"], [BTN_B,"$T.btn_back"], [BTN_LR,"$T.btn_page"] ],
+		menu_sp = [ [BTN_CURSOR,"$T.btn_cursor"], [BTN_A,"$T.btn_apply"], [BTN_B,"$T.btn_back"], [BTN_Y,"$T.btn_sort"], [BTN_LR,"$T.btn_page"] ],
+	};
+	
+	_btnhelp = null;
+
+	//	ボタンマップの説明を変更する。
+	//	[ [BTN_A,"$T.btn_apply"], [BTN_B,"$T.btn_aaaa"] ]
+	function buttonhelp( kma){
+		if( typeof( kma) == SS_STRING) kma = btnhelpmap[kma];	//	stringキー
+		local ret = _btnhelp;
+		_btnhelp = kma;
+		local sb = (StringBuffer()).clear();
+		if( _btnhelp){
+			foreach( km in kma){
+				local v = km[1], c = km[0];
+				sb .. buttonicon( c) .. " " .. v .. "    ";
+			}
+		}
+		::rootview.setValue( "btninfolbl", string( sb));
+		return ret;
+	}
+}

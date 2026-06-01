@@ -1,0 +1,1979 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import SoundID;
+
+//	
+class PropertyListBehavior
+{
+	propcntui = "cnt.ui"
+	immediate = false;		//	
+	
+	listview = null;		//	GPUIListView : 
+	propitems = null;		//	PropertyBehavior | PropertyHeader
+
+	expands = null;			//	グループ伸張。
+	defaultexp = true;		//	デフォルトで展開状態か
+	ref = null;
+	
+	tipskey = null;			//	tips埋め込み用。nullの場合はエディタ、サイドビュー、ダイアログ、ポップアップ
+
+	constructor( lv, plist=null, cntui=null){
+		listview = lv;
+		if( cntui) propcntui = cntui;
+		if( plist) bindProperties( plist);
+		expands = {};
+		lv.ref = this;
+	}
+
+	function _extractProps( proplist, olds){
+		local list = [];
+		foreach( prop in proplist){
+			if( typeof( prop) == SS_ARRAY){
+				list ... _extractProps( prop, olds);
+			}else{
+				local pi = olds?.find( @( v) v.prop==prop);	//	このチェックをちゃんと、、、
+				if( pi){	//	同じもの！
+					pi.reinit();
+				}else{
+					pi = ::PropertyBehavior.create( this, prop, propcntui);
+				}
+				if( pi) list .. pi;
+			}
+		}
+		return list;
+	}
+
+	//	プロパティ定義をバインドしてリストの構造を決定する。
+	//	この後いつでもsetParametersを呼ぶことでパラメータをマップすることができる。
+	function bindProperties( proplist){
+		propitems = _extractProps( proplist, propitems);
+		foreach( pi in propitems){
+			if( pi instanceof PropertyHeader){
+				if( expands[pi.prop.pid]==undefined){
+					local b = pi.prop["expanded"] ?? defaultexp;
+					expands[pi.prop.pid] <- b;	//	デフォルト展開状態を指定する。もしくはpropに入ってると良いか
+				}
+				pi.exp?.setSelected( expands[pi.prop.pid]);
+			}
+		}
+		updateLayout();
+	}
+
+	function getProperties(){
+		return propitems.map( @( v) v.prop);
+	}
+
+	//	グループ伸張
+	function updateLayout(){
+		listview.clearRows();
+		local expanded = true;
+		foreach( pi in propitems){
+			if( pi instanceof PropertyHeader){
+				expanded = expands[pi.prop.pid];
+				listview.addRow( pi.cnt);
+			}else{
+				if( expanded) listview.addRow( pi.cnt);
+			}
+		}
+		listview.updateLayout();
+	}
+
+	//	
+	function setExpand( pi, b){
+		expands[pi.prop.pid] = b;
+		updateLayout();
+		listview.postIDEvent( 599, {cmd="expand", });	//	ポップアップなどでリストのサイズ検知
+		//	アニメーションさす
+		// local s = propitems.indexOf( pi)+1, e = s;
+		// for( ; propitems[e]; e++){
+		// 	if( propitems[e] instanceof PropertyHeader) break;
+		// }
+		// //	
+	}
+
+	//	ヘッダ内にぶら下がってるプロパティを返す
+	function getItemsInHeader( pid){
+		local i0 = propitems.findi( @( v) v.prop.pid==pid);
+		if( i0 < 0) return null;
+		local a = [];
+		for( local l = i0+1; l < length( propitems); l ++){
+			local pi = propitems[l];
+			if( pi instanceof PropertyHeader) break;
+			a .. pi;
+		}
+		return a;
+	}
+
+	//	バインドされた定義に対してパラメータを設定する。
+	//	※propitemsにhide属性がある場合はチェックして非表示に。layervisibleでスキップできるように？
+	function setParameters( data){
+		foreach( pi in propitems){
+			local v = ::getProperty( pi.prop, data, ref);
+			if( v != undefined){
+				pi.setParam( v);
+			}
+		}
+		updateHideness();
+	}
+
+	function setParam( pid, val){
+		foreach( pi in propitems){
+			if( pi["prop"]["pid"] == pid){
+				pi.setParam( val);
+				break;
+			}
+		}
+		updateHideness();
+	}
+
+	function getParam( pid){
+		foreach( pi in propitems){
+			if( pi["prop"]["pid"] == pid) return pi.getParam();
+		}
+	}
+
+	function updateHideness(){
+		local hashide = false;
+		foreach( pi in propitems){
+			local prop = pi.prop;
+			if( "hide" in prop){	//	hide属性があればupdateLayoutが必要。
+				hashide = true;
+				if( fget( prop, "hide", prop, this)) pi.cnt.layerflags &= ~1;
+				else pi.cnt.layerflags |= 1;
+			}
+		}
+		if( hashide){
+			listview.updateLayout();
+		}
+	}
+
+	function propChanged( prop){
+		foreach( pi in propitems){
+			pi.refresh();
+		}
+		updateHideness();
+	}
+
+	//	Tweenキーを別個で設定する。プロパティにanime定義があるもののみ使われる。
+	//	
+	function setTweenKeys( tweenkeymap){
+		foreach( pi in propitems){
+			local prop = pi.prop;
+			if( pi["tweenkey"]) pi.setTweenKey( tweenkeymap[prop.pid]);
+		}
+	}
+}
+
+//	ヘッダーはクリックで次のヘッダーまでの伸縮を行う。
+//	
+class PropertyHeader
+{
+	proplist = null;		//	PropertyListBehavior
+	prop = null;
+	cnt = null;
+	exp = null;
+	// menu = null;
+
+	constructor( pl, p, c){
+		proplist = pl;
+		prop = p;
+		cnt = c;
+		cnt.setValue( "lbl", prop.lbl);
+		c.addEventListener( ACTION_EVENT, actionevent);
+		exp = cnt.findChild( "exp");
+		local mv = c.findChild( "menu");
+		if( p["menu"]){
+			// menu = MenuBehavior( mv, p.menu);
+		}else{
+			mv?.setVisible( false);
+		}
+		exp?.setSelected( true);
+	}
+
+	function init(){
+	}
+
+	function reinit(){
+	}
+
+	function refresh(){
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "menu":
+			e.consume();
+			local ret = MenuPopup.run( prop.menu);
+			if( ret){
+				cnt.postActionEvent( {prop=prop, val=ret, cmd="menu", cmdarg=null, tween=false});
+			}
+			break;
+		case "exp":
+			e.consume();
+			proplist.setExpand( this, exp.isSelected());
+			break;
+		}
+	}
+
+	function setParam( v){}
+	function getParam(){ return undefined; }
+}
+
+
+::PropertyBehaviors <- {};
+
+//	プロパティ
+//	
+class PropertyBehavior
+{
+	static propuibase = "/skstudio/ui/prop"
+	static uipath = "";		//	propuibase/uipathのSKViewがこのPropertyListItemのviewとなる
+
+	proplist = null;		//	PropertyListBehavior
+	prop = null;
+	cnt = null;				//	
+	view = null;			//	
+	tweenkey = null;		//	GPUIButton : コンテナに含まれる場合、かつprop.animeが有効な時のみ存在する
+	tweenval = -1;			//	tweenkeyの値
+
+	static function getUIPath( prop){
+		return uipath;
+	}
+
+	constructor( pl, p, c, v){
+		proplist = pl;
+		prop = p;
+		cnt = c;
+		view = v;
+		cnt.ref = this;
+		cnt.setValue( "lbl", prop.lbl);
+		local tk = cnt.findChild( "tweenkey");
+		if( tk){
+			tk.setVisible( !!prop["anime"]);
+			if( prop["anime"]){
+				tweenkey = tk;
+				tweenkey.addEventListener( ACTION_EVENT, tkevent);
+			}
+		}
+		//	※これはここに書きたくないが、、、
+		local vc = cnt.findChild( "varchk");
+		if( vc){
+			vc.setVisible( !!prop["variable"]);
+			if( prop["variable"]){
+				vc.setSelected( !!prop["varchk"]);
+				vc.addEventListener( ACTION_EVENT, vcevent);
+			}
+		}
+		v.addEventListener( ACTION_EVENT, _paramevent);
+		v.addEventListener( ITEM_EVENT, _paramevent);	//VALUE_EVENT mo
+		//	menu
+		local mv = c.findChild( "menu");
+		if( mv){
+			if( !this["menuitems"] && !prop["menu"]){
+				mv.setVisible( false);
+			}else{
+				mv.addEventListener( ACTION_EVENT, _menuevent);
+			}
+		}
+		init();
+	}
+
+	//	cntからのイベント以外はconsumeしてからparameventに渡す
+	function _paramevent( e){
+		if( e.src != cnt) e.consume( e);
+		paramevent( e);
+	}
+
+	function _menuevent( e){
+		e.consume();
+		local ret = MenuPopup.run( this["menuitems"] || prop["menu"], e.src);
+		if( ret){
+			// cnt.postActionEvent( {prop=prop, val=ret, cmd="menu", cmdarg=null, tween=false});
+			menuSelected( e, ret);
+		}
+	}
+
+	function menuSelected( e, mi){
+		cnt.postActionEvent( {prop=prop, val=mi, cmd="menu", cmdarg=null, tween=false});
+	}
+
+	///////////////////////////////////////////
+	//	以下オーバーライド
+	function init(){
+	}
+
+	function reinit(){
+	}
+
+	function refresh(){
+	}
+
+	function getParam(){
+	}
+
+	function setParam( v){
+	}
+
+	//	パラメータイベント。オーバーライドして処理
+	function paramevent( e){
+	}
+
+	///////////////////////////////////////////
+
+	//	tweenkeyの設定イベント処理。基本オーバーライドは不要
+	function tkevent( e){
+		e.consume();
+		local k = tweenkey.isSelected() ? -1 : prop.anime-1;
+		if( e.isMouseDown( BUTTON2_MASK)){
+			if( prop.anime <= 1) return;	//	anime=2しか選択できない
+			//	tween選択ポップアップ
+			local tp = TweenListPopup( ::loadSKView( "/skstudio/ui/prop/tweenkeypopup.ui"));
+			tp.show( null, e.src);
+			if( !tp.ret) return;
+			k = tp.ret.key;
+		}
+		setTweenKey( k);
+		postActionEvent( false, "key", k);
+	}
+
+	//	varchkのイベント。RPG-Coboのイベントコマンドで使う。。。。
+	function vcevent( e){
+		e.consume();
+		postActionEvent( false, "varchk", null);
+	}
+
+	//	tweenkeyはpropcntui内に配置されている。無い場合はtweenkey自体の設定が無効となる
+	//	k : -1=無し, 0~=tween id
+	function setTweenKey( k){
+		if( !tweenkey) return;
+		if( k == undefined) k = -1;
+		tweenkey.setSelected( k>=0);
+		tweenval = k;
+		if( k>=0){
+			local sp = k>0 ? Sprite( TweenTexture.get( k, 24)) : ::getSprite( "/skstudio/img/ui/tweenkey.png");
+			tweenkey.findChild( "icon").setSprite( sp);
+		}
+	}
+
+	//	
+	function postActionEvent( setkey, cmd="prop", cmdarg=null){
+		if( setkey && tweenkey && !tweenkey.isSelected()) setTweenKey( prop.anime-1);
+		cnt.postActionEvent( {prop=prop, val=getParam(), cmd=cmd, cmdarg=cmdarg, tween=tweenval, pb=this});
+		if( cmd=="prop" || cmd=="key"){
+			cnt.callInEventThread( @(){
+				proplist.propChanged( prop);
+			}, this);
+		}
+	}
+
+	//	PropertyBehaviors内を線形走査でクラスを見つける。。。
+	static function getTypeClass( type){
+		foreach( cls in ::PropertyBehaviors){
+			if( cls["proptype"] == type) return cls;
+		}
+		return null;
+	}
+
+	//	propのプロパティ情報からPropertyViewBehaviorを生成する。
+	//	
+	static function create( proplist, prop, propcntui="cnt.ui"){
+		if( prop.type == NOEDITOR) return null;
+		local pid = prop.pid;
+		local r = ::getResource( propuibase);
+		if( prop.type == HEADER){
+			local v = ::loadSKView( r.getResource( prop["cnt"] || "header.ui"));
+			return PropertyHeader( proplist, prop, v);
+		}
+		local cls = getTypeClass( prop.type);	//	プロパティタイプとクラスのマップ
+		if( !cls) throw Exception( prop.type .. " not found...");
+		local v = ::loadSKView( r.getResource( cls.getUIPath( prop)));
+		local cnt;
+		if( cls["integrated"]){	//	cnt一体型。レイアウト目いっぱい使うもの
+			cnt = v;
+		}else{
+			if( cls["cntui"]) propcntui = cls.cntui;
+			if( prop["cnt"]) propcntui = prop.cnt;
+			cnt = ::loadSKView( r.getResource( propcntui));	//	コンテナとパラメータのviewをロード
+			//	vとgのサイズによってリサイズしてadd
+			local g = cnt.findChild( "body");
+			local maxw = Math.max( v.bnd.w, g.bnd.w), maxh = Math.max( v.bnd.h, g.bnd.h);
+			local cw = cnt.bnd.w+maxw-g.bnd.w, ch = cnt.bnd.h+maxh-g.bnd.h;
+			v.bindrect = ((0,0),(g.bnd.w,g.bnd.h));	//	gの矩形で親にバインドする。親はgなので
+			cnt.stretchSize( cw, ch, true);
+			v.stretchSize( maxw, maxh, true);
+			g.addChild( v);
+		}
+		return cls( proplist, prop, cnt, v);
+	}
+}
+
+//	TweenTexture.get( twid, w)でキャッシュされたtweenのテクスチャを取得する。
+//	TODO : AA
+class TweenTexture
+{
+	e = null;				//	easing func
+	fillcolor = 0xffffffff;
+	clearcolor = 0xff000000;
+	w = 64;
+	h = 64;
+	img = null;
+	
+	constructor( _e, _w){ e = _e; w = h = _w; }
+	
+	function render(){
+		local sc = 1.0 / (w-1.0);
+		//	determine min/max
+		local minval = 0.0, maxval = 1.0;
+		for( local x = 0;x < w;x ++){
+			local v = e( x * sc);
+			minval = Math.min( minval, v);
+			maxval = Math.max( maxval, v);
+		}
+		//	draw
+		img = RGBAImage( w, h);
+		img.clear( clearcolor);
+		for( local x = 0;x < w;x ++){
+			local v = e( x * sc) * (maxval-minval) + minval;
+			local y0 = (h - v*h)|0;
+			local h0 = h - y0;
+			for( local y = 0; y < h0; y ++){ img[x+(y+y0)*w] = fillcolor; }
+		}
+		return img;
+	}
+
+	static function get( twid, w){
+		local h = twid|(w<<8);
+		local txmap = #{};
+		if( txmap[h]) return txmap[h];
+		local img = TweenTexture( ::Easing.presets[twid], w).render();
+		local tex = Texture();
+		tex.load( img);
+		tex.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_LINEAR, SK_LINEAR));
+		return txmap[h] <- tex;
+	}
+}
+
+class TweenListPopup extends Popup
+{
+	static tweennames = [
+		"CONST","LINEAR",
+		"SINE_EASEIN","SINE_EASEOUT","SINE_EASEINOUT",
+		"QUAD_EASEIN","QUAD_EASEOUT","QUAD_EASEINOUT",
+		"CUBIC_EASEIN","CUBIC_EASEOUT","CUBIC_EASEINOUT",
+		"EXPO_EASEIN","EXPO_EASEOUT","EXPO_EASEINOUT",
+		"ELASTIC_EASEIN","ELASTIC_EASEOUT","ELASTIC_EASEINOUT",
+		"BACK_EASEIN","BACK_EASEOUT","BACK_EASEINOUT",
+		"BOUNCE_EASEIN","BOUNCE_EASEOUT","BOUNCE_EASEINOUT",
+	];
+	list = null;		//	ListBehavior
+
+	function init( v){
+		super.init( v);
+		local tweenlist = [];
+		foreach( k, n in tweennames){
+			tweenlist .. {
+				lbl = n,
+				icon = k>0 ? Sprite( TweenTexture.get( k, 24)) : ::getSprite( "/skstudio/img/ui/tweenkey.png"),
+				key = k,
+			}
+		}
+		list = ListBehavior( v.findChild( "LIST"), tweenlist);
+		list.listview.addEventListener( ITEM_EVENT, itemevent);
+	}
+
+	function itemevent( e){
+		if( e.id == ITEM_SELECTED && e.actioncmd){
+			ret = e.actioncmd;
+			close();
+		}
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	以下プロパティタイプ別クラス
+//	
+/////////////////////////////////////////////////////////////////////////////////////////
+
+class PropertyBehaviors.String extends PropertyBehavior
+{
+	static proptype = STRING;
+	static uipath = "string.ui"
+
+	edit = null;	//	GPUITextEdit
+	changed = null;	//	SKView|null
+	val0 = null;
+
+	static function getUIPath( prop){
+		if( prop["multiline"]) return "longstr.ui";
+		return uipath;
+	}
+
+	function init(){
+		edit = view.findChild( "edit");
+		edit.setDefaultText( "");
+		changed = view.findChild( "changed");
+		local ml = prop["multiline"];
+		if( ml){
+			if( typeof( ml) == SS_INTEGER){
+				local lbl = edit.findChild( "editlabel");
+				local fh = lbl.fontattr.getFontMetrics().h * ml;
+				local dh = fh - lbl.bnd.h;
+				cnt.stretchSize( cnt.bnd.w, cnt.bnd.h+dh);
+				cnt.revalidate();
+			}
+		}
+		edit.addEventListener( TEXT_EVENT, textevent);
+		if( ml || proplist.immediate){
+			edit.revertmode = false;
+		}
+	}
+
+	function getParam(){
+		return edit.getText();
+	}
+
+	function setParam( v){
+		if( v==null || v==undefined) v = "";
+		if( prop["format"]) v = prop.format( v);
+		edit.setText( val0 = string( v));
+		//	def
+		local deflbl = fget( prop, "deflbl", prop, proplist);
+		edit.setDefaultText( deflbl||"");
+		changed?.setVisible( false);
+	}
+
+	//	外部プロパティが変化した時に呼ばれる。deflblを入れ替え
+	function refresh(){
+		local deflbl = fget( prop, "deflbl", prop, proplist);
+		edit.setDefaultText( deflbl||"");
+	}
+	
+	function paramevent( e){
+		if( e.src==edit){
+			if( e.id == ACTION_PERFORMED && !proplist.immediate){
+				local v0 = edit.getText(), v = v0;
+				if( prop["format"]) v = prop.format( v);
+				if( v0 != v) edit.setText( v);
+				if( val0 != v){
+					val0 = v;
+					postActionEvent( true);
+				}
+			}
+			changed?.setVisible( false);
+		}
+	}
+
+	function textevent( e){
+		local ml = prop["multiline"];
+		if( ml || proplist.immediate){
+			if( prop["format"]){
+				local v = edit.getText(), v1 = prop.format( v);
+				if( v1 != v) edit.setText( val0 = string( v1));
+			}
+			postActionEvent( true);
+		}else{
+			changed?.setVisible( val0 != edit.getText());
+		}
+	}
+}
+
+class PropertyBehaviors.Path extends PropertyBehaviors.String
+{
+	static proptype = PATH;
+	static uipath = "path.ui"
+	dropimg = null;
+
+	entered = false;
+	preview = null;
+
+	function init(){
+		super.init();
+		
+		local dop = Sprite();
+		dop.color = 0x303010ff;
+		dop.blend = SK_ADD;
+		dropimg = SKImageView( dop);
+		dropimg.setRect( 100, 0, 308, 32);
+		
+		view.addEventListener( DROPTARGET_EVENT, dropevent);
+		view.dragsource = this;
+
+		view.addEventListener( MOUSE_EVENT, mouseevent);
+	}
+
+	function paramevent( e){
+		if( e.src["name"] == "pathmenu"){
+			showContextMenu( e);
+		}else{
+			super.paramevent( e);
+		}
+	}
+
+	function showContextMenu( e){
+		local path =  edit.getText();
+		if( !path.startsWith( "/")){
+			if( proplist.ref["res"]) path = proplist.ref.res.pres.path .. "/" .. path;
+		}
+		local menudata = [
+			{ id="filer", lbl="$T.filetabs_ctxmenu_fileview"},
+			{ id="explor", lbl="$T.filetabs_ctxmenu_explor"},
+			"-",
+			{ id="browse", lbl="$T.lbl_browse"},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "filer":
+			skstudio.fileview.setCurrentPath( path);
+			skstudio.openSideView( "side_fileview");
+			break;
+		case "explor":
+			skstudio.explor( path);
+			break;
+		case "browse":
+			local dir = ::getResource( path) || resroot;
+			local newpath = skstudio.showFileOpen( { dirpath=dir.path, });
+			if( newpath){
+				edit.setText( newpath);
+				postActionEvent( true);
+			}
+			break;
+		}
+	}
+
+	function mouseevent( e){
+		switch( e.id){
+		case MOUSE_ENTERED:
+			local b = view.contains( e.src);
+			if( !entered && b){
+				entered = true;
+				setMouseonFile( edit.getText(), e);
+			}
+			break;
+		case MOUSE_EXITED:
+			local b = view.contains( e.dst);
+			if( entered && !b){
+				entered = false;
+				preview?.removeFromParent();
+				preview = null;
+			}
+			break;
+		}
+	}
+
+	function setMouseonFile( path, e){
+		if( preview){
+			preview.removeFromParent();
+			preview = null;
+		}
+		if( path){
+			if( !path.startsWith( "/")){
+				if( proplist.ref["res"]) path = proplist.ref.res.pres.path .. "/" .. path;
+			}
+			if( !::getResource( path)) return;
+			preview = ::skstudio.createPreview( path);
+			if( preview){
+				local iv = cnt, root = ::rootview;
+				local p = Vector3D( 4-preview.bnd.w, (cnt.bnd.h>>1)-(preview.bnd.h>>1), 0).transform( iv.mat).transform( root.getInvMatrix());
+				if( p.x-preview.bnd.w < 0){
+					p = Vector3D( iv.bnd.w-4, (cnt.bnd.h>>1)-(preview.bnd.h>>1), 0).transform( iv.mat).transform( root.getInvMatrix());
+				}
+				preview.pos << p;
+				::rootview.addChild( preview);
+				preview.enabled = false;
+			}
+		}
+	}
+
+	///////////////// dnd
+	
+	function acceptDrag( e){
+		return false;
+	}
+
+	function acceptDrop( ds, x, y){
+		if( ds instanceof ListBehavior){
+			local item = ds.getSelectedItems()[0];
+			if( item["path"]) return true;	//	fileview
+		}
+		return false;
+	}
+
+	function dropevent( e){
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+			dropimg.setRect( 0, 0, view.bnd.w, view.bnd.h);
+			view.addChild( dropimg);
+			view.repaint();
+			break;
+		case TARGET_DRAG_EXIT:
+			view.removeChild( dropimg);
+			break;
+		case TARGET_DROP:
+			view.removeChild( dropimg);
+			local ds = e.dragsrc;
+			if( ds instanceof ListBehavior){
+				local item = ds.getSelectedItems()[0];
+				if( item["path"]){
+					edit.setText( item.path);
+					postActionEvent( true);
+				}
+			}
+			break;
+		}
+	}
+}
+
+
+class PropertyBehaviors.FilePath extends PropertyBehaviors.String
+{
+	static proptype = FILEPATH;
+	static uipath = "path.ui"
+
+	function init(){
+		super.init();
+	}
+
+	function paramevent( e){
+		if( e.src["name"] == "pathmenu"){
+			showContextMenu( e);
+		}else{
+			super.paramevent( e);
+		}
+	}
+
+	function showContextMenu( e){
+		local path =  edit.getText();
+		if( !path.startsWith( "/")){
+			if( proplist.ref["res"]) path = proplist.ref.res.pres.path .. "/" .. path;
+		}
+		local menudata = [
+			{ id="explor", lbl="$T.filetabs_ctxmenu_explor"},
+			"-",
+			{ id="browse", lbl="$T.lbl_browse"},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "explor":
+			skOpenURL( "dir://" .. path);
+			break;
+		case "browse":
+			local dir = ::getResource( path) || resroot;
+			local newpath = skstudio.showFileOpen( { dirpath=dir.path, });
+			if( newpath){
+				edit.setText( newpath);
+				postActionEvent( true);
+			}
+			break;
+		}
+	}
+}
+
+
+//	単にフォント変え
+//	＋構文チェック。コンパイルを通してみて
+class PropertyBehaviors.Script extends PropertyBehaviors.String
+{
+	static proptype = SCRIPT;
+	static uipath = "script.ui"
+
+	edit = null;		//	GPUITextEdit
+	erricon = null;		//	
+	chkicon = null;		//	
+	
+	static function getUIPath( prop){
+		if( prop["multiline"]) return "longscp.ui";
+		return uipath;
+	}
+
+	function checkSyntax(){
+		local tb = edit.textedit.textbox;
+		local src = edit.getText();
+		try{
+			local fn = compilestring( src);
+			chkicon.setVisible( true);
+			erricon.setVisible( false);
+		}catch( ex){	//	コンパイルエラー
+			local wi0 = src.windexOf( ex.i0), wi1 = src.windexOf( ex.i1);	//	文字列の範囲
+			local pa = tb.getCharPos( wi0, []);
+			chkicon.setVisible( false);
+			erricon.setVisible( true);
+			erricon.pos.y = pa[1];
+			erricon.matdirty = true;
+		}
+		edit.repaint();
+	}
+
+	function clearResult(){
+		local tb = edit.textedit.textbox;
+		chkicon.setVisible( false);
+		erricon.setVisible( false);
+		edit.repaint();
+	}
+
+	function textevent( e){
+		if( e.id == TEXT_CHANGED){	//	TEXT_RESTARTは無視
+			postActionEvent( true);
+		}
+	}
+}
+
+class PropertyBehaviors.List extends PropertyBehavior
+{
+	static proptype = LIST;
+	static uipath = "list.ui"
+
+	menu = null;	//	MenuBehavior
+
+	function init(){
+		menu = MenuBehavior( view.findChild( "listmenu"), null);
+		if( typeof( prop["list"]) != SS_CLOSURE ) updateMenu( null);
+	}
+
+	function updateMenu( v){
+		local a = fget( prop, "list", prop, proplist, v);
+		local itemlist = (typeof( a[0])==SS_STRING) ? a.map( @( v, i) +{ lbl=v, val=i }) : a;
+		menu.setMenu( itemlist);
+	}
+
+	function getParam(){
+		// return Math.max( menu.menuitems.indexOf( menu.selitem), 0);	//	-1は無し
+		// local i = menu.menuitems.indexOf( menu.selitem);
+		// return menu.menuitems[i<0?0:i]["val"];
+		local m = menu.selitem;
+		return m["val"];
+	}
+	
+	function setParam( v){
+		if( typeof( prop["list"]) == SS_CLOSURE ) updateMenu( v);
+		// foreach( mi in menu.menuitems){
+		// 	if( mi.val == v) return menu.selectItem( mi);
+		// }
+		menu.selectItem( @( vv) vv["val"]==v);
+	}
+	
+	function paramevent( e){
+		if( e.src==menu.view){
+			postActionEvent( true);
+		}
+	}
+}
+
+class PropertyBehaviors.Bool extends PropertyBehavior
+{
+	static proptype = BOOL;
+	static uipath = "bool.ui"
+
+	offchk = null;	//	GPUIButton
+	onchk = null;	//	GPUIButton
+
+	function init(){
+		offchk = view.findChild( "offchk");
+		onchk = view.findChild( "onchk");
+		if( prop["boollbl"]){
+			offchk.setValue( "lbl", prop.boollbl[0]);
+			onchk.setValue( "lbl", prop.boollbl[1]);
+		}
+	}
+
+	function getParam(){
+		return !!onchk.isSelected();
+	}
+
+	function setParam( v){
+		offchk.setSelected( !v);
+		onchk.setSelected( !!v);
+	}
+	
+	function paramevent( e){
+		if( e.src==onchk || e.src==offchk){
+			setParam( e.src==onchk);
+			postActionEvent( true);
+		}
+	}
+}
+
+class PropertyBehaviors.Bool1 extends PropertyBehavior
+{
+	static proptype = BOOL1;
+	static uipath = "bool1.ui"
+
+	chk = null;	//	GPUIButton
+
+	function init(){
+		chk = view.findChild( "chk");
+		chk.setValue( "lbl", prop.lbl);
+	}
+
+	function getParam(){
+		return !!chk.isSelected();
+	}
+
+	function setParam( v){
+		chk.setSelected( !!v);
+	}
+	
+	function paramevent( e){
+		if( e.src==chk){
+			setParam( !chk.isSelected());
+			postActionEvent( true);
+		}
+	}
+}
+
+class PropertyBehaviors.Scalar extends PropertyBehavior
+{
+	static proptype = SCALAR;
+	static uipath = "scalar.ui"
+	
+	val0 = null;	//	NumInputBehavior : viewの形状でどのbehavior使うか変えないと、、、
+	trgid = ACTION_PERFORMED;	//	int : 変更を確定するイベントID
+
+	static function getUIPath( prop){
+		if( prop["ui"]=="bar") return prop["range"][0]<0 ? "scalar_bar2.ui" : "scalar_bar.ui";
+		return uipath;
+	}
+
+	function init(){
+		val0 = createNumInputBehavior( view.findChild( "val0"));
+		if( typeof( prop["range"]) != SS_CLOSURE){
+			local r = prop["range"]||#(0,100), q = prop["q"]||1;
+			val0.setRange( r[0], r[1], q)
+		}
+		if( prop["dynamic"]) trgid = VALUE_CHANGED;
+		if( prop["barrange"] && val0["setBarRange"]){
+			local r = prop["barrange"];
+			val0.setBarRange( r[0], r[1], r[2]);
+		}
+	}
+
+	function getParam(){
+		return val0.getValue();
+	}
+	
+	function setParam( v){
+		if( typeof( prop["range"]) == SS_CLOSURE){	//	rangeをclosureで指定してる場合はinit()だと早い
+			local r = fget( prop, "range", prop, proplist)||#(0,100), q = prop["q"]||1;
+			val0.setRange( r[0], r[1], q)
+		}
+		val0.setValue( v);
+	}
+	
+	function paramevent( e){
+		if( e.id==trgid && e.src==val0.view){
+			postActionEvent( true);	//	同じidに対する操作は常にまとめる？
+		}
+	}
+}
+
+//	vec2, vec3, pivotの元クラス
+local VecN = class extends PropertyBehavior
+{
+	dim = -1;
+	vals = null;	//	NumInputBehavior[dim] : viewの形状でどのbehavior使うか変えないと、、、
+	trgid = ACTION_PERFORMED;	//	int : 変更を確定するイベントID
+	
+	function init(){
+		vals = tuple( dim);
+		local range = fget( prop, "range", prop, proplist) ?? #(0,100), q = prop["q"]||1;
+		for( local l = 0;l < dim;l ++){
+			local r = typeof( range[l])==SS_ARRAY? range[l] : range;
+			vals[l] = createNumInputBehavior( view.findChild( "val"..l));
+			vals[l].setRange( r[0], r[1], q);
+			local rlbl = "rlbl"..l;
+			if( prop[rlbl]) view.setValue( rlbl, prop[rlbl]);
+		}
+		if( prop["dynamic"]) trgid = VALUE_CHANGED;
+	}
+
+	function getParam(){
+		local v = tuple( dim);
+		foreach( i, val in vals) v[i] = val.getValue();
+		return v;
+	}
+	
+	function setParam( v){
+		foreach( i, val in vals) val.setValue( v[i]||0);
+	}
+	
+	function paramevent( e){
+		if( e.id==trgid && e.src["name"]?.startsWith( "val")){
+			postActionEvent( true);	//	同じidに対する操作は常にまとめる？
+		}
+	}
+}
+
+class PropertyBehaviors.Vec2 extends VecN
+{
+	static proptype = VEC2;
+	static uipath = "vec2.ui"
+	
+	static function getUIPath( prop){
+		if( prop["ui"]=="r") return "vec2r.ui";
+		return uipath;
+	}
+
+	dim = 2;
+}
+
+class PropertyBehaviors.Vec3 extends VecN
+{
+	static proptype = VEC3;
+	static uipath = "vec3.ui"
+	
+	static function getUIPath( prop){
+		if( prop["ui"]=="bar"){
+			local r = prop["range"][0]; if( typeof( r)==SS_ARRAY) r = r[0];
+			return r<0 ? "vec3_bar2.ui" : "vec3_bar.ui";
+		}
+		return uipath;
+	}
+	
+	dim = 3;
+}
+
+class PropertyBehaviors.Pivot extends VecN
+{
+	static proptype = VEC2_PIVOT;
+	static uipath = "pivot.ui"
+	
+	dim = 2;
+
+	//	pivot設定ポップアップはパラメータ変更としてではなくコマンドとしてUIEditorに届く。
+	function paramevent( e){
+		if( e.src["name"] == "pivbtn"){
+			local p = Popup( ::loadSKView( "/skstudio/ui/prop/pivotpopup.ui"));
+			p.show( null, e.src);
+			if( p.ret){
+				postActionEvent( true, "pivot", int( p.ret));
+			}
+		}else{
+			super.paramevent( e);
+		}
+	}
+}
+
+class PropertyBehaviors.RGBA extends PropertyBehavior
+{
+	static proptype = RGBA;
+	static uipath = "rgba.ui"
+	
+	colorbox = null;	//	ColorPickBehavior
+	alphaval = null;	//	NumInputBehaviorV
+
+	function init(){
+		colorbox = ColorPickBehavior( view.findChild( "colorbox"));
+		alphaval = createNumInputBehavior( view.findChild( "alphaval"));
+		alphaval.setRange( 0, 255, 1);
+	}
+
+	function getParam(){
+		local rgba = (colorbox.color&0xffffff00)|(alphaval.getValue()&255);
+		return rgba;
+	}
+	
+	function setParam( v){
+		colorbox.setColor( v|0xff);
+		alphaval.setValue( v&0xff);
+	}
+	
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "copybtn":
+			//	#FFFFFFの形式。αはコピーしない
+			local t = sprintf( "#%06x", colorbox.color>>>8).toUpperCase();
+			skPutClipboardData( t);
+			break;
+		case "pastebtn":
+			if( skCheckClipboardType( ClipboardType.CLIPBOARD_TEXT)) {
+				local t = skGetClipboardData( ClipboardType.CLIPBOARD_TEXT);
+				if( t.startsWith( "#")) t = t.substring( 1);
+				if( length( t) == 6){
+					local i = int( t, 16);
+					colorbox.setColor( (i<<8) | 255);
+					postActionEvent( true);
+				}
+			}
+			break;
+		case "alphaval":
+			if( e.id == ACTION_PERFORMED) postActionEvent( true);
+			break;
+		case "colorbox":
+			postActionEvent( true);
+			break;
+		}
+	}
+}
+
+class PropertyBehaviors.RGB extends PropertyBehaviors.RGBA
+{
+	static proptype = RGB;
+
+	function init(){
+		super.init();
+		alphaval.view.setVisible( false);
+	}
+}
+
+class PropertyBehaviors.Stretch extends PropertyBehavior
+{
+	static proptype = STRETCH;
+	static uipath = "stretch.ui"
+
+	onchk = null;
+	vals = null;
+	punchchk = null;
+	stretchg = null;
+
+	function init(){
+		vals = [
+			_val( "sval0"),
+			_val( "sval1"),
+			_val( "sval2"),
+			_val( "sval3"),
+		];
+		stretchg = view.findChild( "stretchg");
+		onchk = view.findChild( "onchk")
+		punchchk = view.findChild( "punchchk")
+	}
+
+	function _val( v){
+		local val = createNumInputBehavior( view.findChild( v));
+		val.setRange( 0, 128, 1);
+		return val;
+	}
+
+	function getParam(){
+		return onchk.isSelected()?
+		[
+			vals[0].getValue()|0,
+			vals[1].getValue()|0,
+			vals[2].getValue()|0,
+			vals[3].getValue()|0,
+			punchchk.isSelected()?1:0
+		]
+		:null;
+	}
+
+	function setParam( v){
+		if( v){
+			onchk.setSelected( true);
+			stretchg.setEnabled( true);
+			vals[0].setValue( v[0]);
+			vals[1].setValue( v[1]);
+			vals[2].setValue( v[2]);
+			vals[3].setValue( v[3]);
+			punchchk.setSelected( !!v[4]);
+		}else{
+			onchk.setSelected( false);
+			stretchg.setEnabled( false);
+			foreach( v in vals) v.setValue( 0);
+			punchchk.setSelected( false);
+		}
+	}
+	
+	function paramevent( e){
+		if( e.id==VALUE_CHANGED) return;
+		setParam( getParam());
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.StretchAlign extends PropertyBehavior
+{
+	static proptype = ALIGN_STRETCH;
+	static uipath = "align.ui"
+
+	vals = null;
+
+	function init(){
+		vals = [
+			view.findChild( "lbtn"),
+			view.findChild( "ubtn"),
+			view.findChild( "rbtn"),
+			view.findChild( "dbtn"),
+			view.findChild( "sschk"),
+		];
+	}
+
+	function getParam(){
+		return (vals[0].isSelected() ? 1:0) |
+			(vals[1].isSelected() ? 2:0) |
+			(vals[2].isSelected() ? 4:0) |
+			(vals[3].isSelected() ? 8:0) | 
+			(vals[4].isSelected() ? 16:0);
+	}
+
+	function setParam( v){
+		vals[0].setSelected( v&1);
+		vals[1].setSelected( v&2);
+		vals[2].setSelected( v&4);
+		vals[3].setSelected( v&8);
+		vals[4].setSelected( v&16);
+		_updatelocks( v);
+	}
+
+	function _updatelocks( v){
+		local xlock = (v&5)==5, ylock = (v&10)==10;
+		vals[0].findChild( "dir").anime( xlock?1:0);
+		vals[1].findChild( "dir").anime( ylock?1:0);
+		vals[2].findChild( "dir").anime( xlock?1:0);
+		vals[3].findChild( "dir").anime( ylock?1:0);
+	}
+	
+	function paramevent( e){
+		_updatelocks( getParam());
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.TextStyle extends PropertyBehavior
+{
+	static proptype = TEXTSTYLE;
+	static uipath = "font.ui"
+
+	fontmap = null;
+
+	fonts = null;
+	fontsize = null;
+	boldchk = null;
+	itachk = null;
+	ulchk = null;
+	
+	strokecolor = null;
+	strokea = null;
+	strokesize = null;
+	strokex = null;
+	strokey = null;
+
+	function init(){
+		//	font list..........
+		local fs = ::Fonts.getFonts();
+		fs.sort( @( v) v.name);
+		fontmap = {};
+		local fa = [];
+		foreach( f in fs){
+			local rt = RichText( "[f%S]%S" % (f.name, f.lbl));
+			fa .. (fontmap[f.name]<-{ lbl=rt, val=f.name });
+		}
+		//
+		fonts = MenuBehavior( view.findChild( "fontmenu"), fa);
+		fontsize = createNumInputBehavior( view.findChild( "sizeval"));
+		fontsize.setRange( 4, 96, 1);
+		boldchk = view.findChild( "boldchk");
+		itachk = view.findChild( "itachk");
+		ulchk = view.findChild( "ulchk");
+		//
+		strokecolor = ColorPickBehavior( view.findChild( "colorbox"));
+		strokea = createNumInputBehavior( view.findChild( "salphaval"));
+		strokea.setRange( 0, 255, 1);
+		strokesize = createNumInputBehavior( view.findChild( "swval"));
+		strokesize.setRange( 0, 15, 1);
+		strokex = createNumInputBehavior( view.findChild( "sxval"));
+		strokex.setRange( -7, 7, 1);
+		strokey = createNumInputBehavior( view.findChild( "syval"));
+		strokey.setRange( -7, 7, 1);
+	}
+	
+	function getParam(){
+		return {
+			fontname = fonts.selitem["val"] || "ui",
+			fontsize = fontsize.getValue() | 0,
+			fontflags = ( (boldchk.isSelected()?SK_FONT_BOLD:0) | (itachk.isSelected()?SK_FONT_ITALIC:0) | (ulchk.isSelected()?SK_FONT_UNDELINE:0) );
+			fontcolor = 0xffffffff,
+			strokecolor = (strokecolor.getColor()&0xffffff00) | (strokea.getValue() | 0),
+			strokesize = strokesize.getValue() | 0,
+			strokex = strokex.getValue() | 0,
+			strokey = strokey.getValue() | 0,
+		};
+	}
+
+	function setParam( v){
+		fonts.selectItem( fontmap[v.fontname]);
+		fontsize.setValue( v.fontsize);
+		local f = v.fontflags;
+		boldchk.setSelected( !!(f & SK_FONT_BOLD));
+		itachk.setSelected( !!(f & SK_FONT_ITALIC));
+		ulchk.setSelected( !!(f & SK_FONT_UNDELINE));
+		local c = v["strokecolor"] || 0xff;
+		strokecolor.setColor( c);
+		strokea.setValue( c&255);
+		strokesize.setValue( v["strokesize"] || 0);
+		strokex.setValue( v["strokex"] || 0);
+		strokey.setValue( v["strokey"] || 0);
+	}
+	
+	function paramevent( e){
+		if( e.id==VALUE_CHANGED) return;
+		postActionEvent( true);
+	}
+}
+
+class PropertyBehaviors.PathList extends PropertyBehavior
+{
+	static proptype = PATHLIST;
+	static uipath = "pathlist.ui"
+	
+	nummenu = null;		//	MenuBehavior
+	listview = null;	//	GPUILIstView
+	dropimg = null;
+
+	function init(){
+		nummenu = MenuBehavior( view.findChild( "nummenu"),#[
+			{ lbl="2", num=2}, { lbl="3", num=3}, { lbl="4", num=4}, { lbl="5", num=5},
+			{ lbl="6", num=6}, { lbl="7", num=7}, { lbl="8", num=8},
+		]);
+		listview = view.findChild( "LIST");
+
+		local dop = Sprite();
+		dop.color = 0x303010ff;
+		dop.blend = SK_ADD;
+		dropimg = SKImageView( dop);
+		dropimg.setRect( 100, 0, 308, 32);
+		
+		view.addEventListener( DROPTARGET_EVENT, dropevent);
+		view.dragsource = this;
+	}
+
+	function getParam(){
+		local v = [];
+		foreach( p in listview.rows) v .. p.findChild( "edit").getText();
+		return v;
+	}
+	
+	function setParam( v){
+		local n = length( v);
+		nummenu.selectItem( nummenu.menuitems[n-2]);
+		listview.setRowCount( n);
+		foreach( i, p in listview.rows){
+			local e = p.findChild( "edit");
+			e.setText( v[i]);
+			e.ref = i;
+		}
+		local d = cnt.computeSizeDelta();
+		if( d.x != 0.0 || d.y != 0.0){
+			cnt.stretchSize( view.bnd.w+d.x, view.bnd.h+d.y);
+			cnt.revalidate();
+		}
+	}
+	
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "edit":
+			postActionEvent( true);
+			break;
+		case "nummenu":
+			local v = getParam();
+			local len0 = length( v), len1 = e.actioncmd.num;
+			v.resize( len1);
+			for( local l = len0;l < len1;l ++) v[l] = "";
+			setParam( v);
+			postActionEvent( true);
+			break;
+		case "colorbox":
+			postActionEvent( true);
+			break;
+		}
+	}
+
+
+	///////////////// dnd
+	
+	function acceptDrag( e){
+		return false;
+	}
+
+	function acceptDrop( ds, x, y){
+		if( ds instanceof ListBehavior){
+			local item = ds.getSelectedItems()[0];
+			if( item["path"]) return true;	//	fileview
+		}
+		return false;
+	}
+
+	function dropevent( e){
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+			dropimg.setRect( 0, 0, view.bnd.w, view.bnd.h);
+			view.addChild( dropimg);
+			view.repaint();
+			break;
+		case TARGET_DRAG_EXIT:
+			view.removeChild( dropimg);
+			break;
+		case TARGET_DROP:
+			view.removeChild( dropimg);
+			local ds = e.dragsrc;
+			if( ds instanceof ListBehavior){
+				local item = ds.getSelectedItems()[0];
+				if( item["path"]){
+					foreach( p in listview.rows){
+						e.computeLocal( p.getInvMatrix());
+						if( e.ly >= 0 && e.ly < p.bnd.h){
+							p.findChild( "edit").setText( item.path);
+							postActionEvent( true);
+							break;
+						}
+					}
+				}
+			}
+			break;
+		}
+	}
+}
+
+class PropertyBehaviors.Bit8 extends PropertyBehavior
+{
+	static proptype = BIT8;
+	static uipath = "bit8.ui"
+
+	bits = null;	//	GPUIButton[8]
+
+	function init(){
+		bits = [];
+		for( local l = 0;l < 8;l ++){
+			bits .. view.findChild( "chk"..l);
+		}
+	}
+
+	function getParam(){
+		local v = 0;
+		foreach( i, b in bits){
+			if( b.isSelected()) v |= (1<<i);
+		}
+		return v;
+	}
+
+	function setParam( v){
+		foreach( i, b in bits){
+			b.setSelected( !!(v&(1<<i)));
+		}
+	}
+	
+	function paramevent( e){
+		//	なんでもでいいか
+		postActionEvent( true);
+	}
+}
+
+//	32bitを超す値はint配列で表現。
+class PropertyBehaviors.CheckBits extends PropertyBehavior
+{
+	static proptype = CHECKBITS;
+	static uipath = "checklist.ui"
+
+	lbl = null;
+	bits = 0;			//	int | int[]
+	h0 = 1;
+
+	static function getbit( bits, i){
+		return (typeof( bits)==SS_ARRAY) ? ((bits[i>>>5]||0)>>>(i&31))&1 : (i<32)?(bits>>>i)&1 : 0;
+	}
+	
+	function init(){
+		lbl = view.findChild( "checklbl");
+		h0 = cnt.bnd.h;
+	}
+	
+	function getParam(){
+		return bits;
+	}
+
+	function setParam( v){
+		bits = (clone v) || 0;
+		local a = fget( prop, "list", prop, proplist);
+		local sb = StringBuffer();
+		foreach( i, v in a){
+			i ??= v["idx"];
+			if( getbit( bits, i)){
+				local icon = (length(v["icon"]) ? v["icon"]:char( 0xf123+i));
+				sb .. icon;
+			}
+		}
+		lbl.setText( string( sb));
+		//
+		// local self = this;
+		// setTimeout( @(){ self._stretchcnt();}, 1);
+		_stretchcnt();
+	}
+
+	function _stretchcnt(){
+		local d = cnt.computeSizeDelta();
+		if( d.x != 0.0 || d.y != 0.0){
+			cnt.stretchSize( cnt.bnd.w+d.x, Math.max( cnt.bnd.h+d.y, h0));
+			cnt.revalidate();
+		}
+	}
+	
+	function paramevent( e){
+		if( e.src["name"] == "listmenu"){
+			showPopup( e);
+		}
+	}
+	
+	function showPopup( e){
+		local p = Popup( ::loadSKView( "/skstudio/ui/dialog/checklistpopup.ui"));
+		local lv = p.view.findChild( "LIST");
+		local list = ListBehavior( lv);
+		list.multisel = true;
+		list.flipmode = true;
+		local prop = this.prop, bits = this.bits, getbit = getbit;
+		local a = fget( prop, "list", prop, proplist).map( @( v, i)({
+			idx = v["idx"] ?? i,
+			lbl = prop["hidelisticon"] ? (v["lbl"]||v["name"]) : sprintf( "%S %S", v["icon"]||"", v["lbl"]||v["name"]),
+			chk = getbit( bits, v["idx"] ?? i),
+			disable = v["disable"] || false,
+		}));
+		list.setListItems( a);
+		list.setSelectedItems( a.filter( @( v) v.chk));
+		list.listview.addEventListener( ACTION_EVENT, @( e){
+			if( e.id == ACTION_PERFORMED && e.isMouseDown( BUTTON2_MASK)){
+				local menudata = [
+					{ id="selall", lbl="$T.menu_edit_selall", icon="\ue162" },
+					{ id="unsel", lbl="$T.menu_edit_unsel", icon="\uebb6" },
+				]
+				switch( MenuPopup.run( menudata)["id"]){
+				case "selall": list.selectAll(); break;
+				case "unsel": list.deselectAll(); break;
+				}
+			}
+		});
+		p.show( null, e.src);
+		local b = [0];	//	配列化してからビット設定
+		foreach( v in a){
+			if( list.isItemSelected( v)){
+				local i = v.idx;
+				local ii = i>>5;
+				b.resize( ii+1, 0);
+				b[ii] |= 1<<(i&31);
+			}
+		}
+		while( length( b)>=2 && !b.last()) b.pop();
+		if( length( b)<=2 && !b[1]) b = b[0];
+		if( b <> bits){
+			setParam( b);
+			postActionEvent( true);
+		}
+	}
+}
+
+class PropertyBehaviors.CustomButton extends PropertyBehavior
+{
+	static proptype = CUSTOMBUTTON;
+	static uipath = "custombtn.ui"
+
+	val = null;
+
+	static function getUIPath( prop){
+		if( prop["ui"]=="1") return "custombtn1.ui";
+		return uipath;
+	}
+
+	function init(){
+	}
+
+	function getParam(){
+		return val;
+	}
+
+	function setParam( v){
+		val = v;
+		local lbl = fget( prop, "tostring", prop, v, proplist) ?? string( v);
+		view.setValue( "lbl", lbl);
+		local icon = fget( prop, "icon", prop, v, proplist);
+		if( icon) view.setValue( "icon", icon);
+	}
+	
+	function paramevent( e){
+		if( e.src["name"] == "btn"){
+			if( prop["edit"]){
+				local v = ~(prop.edit, this, val);
+				if( v!=null && v!=undefined && v<>val){
+					setParam( v);
+					postActionEvent( true);
+				}
+			}else{
+				cnt.postActionEvent( {prop=prop, val=val, cmd="menu", cmdarg=null, tween=false, src=e.src});
+			}
+		}
+	}
+}
+
+
+class PropertyBehaviors.PropertyList extends PropertyBehavior
+{
+	static proptype = PROPERTYLIST;
+	static uipath = "custombtn.ui"
+
+	val = null;
+
+	function init(){
+	}
+
+	function getParam(){
+		return deepclone( val);
+	}
+
+	function setParam( v){
+		val = deepclone( v);
+		local inpropdef = fget( prop, "propdef", prop, v);
+		local lbl = fget( inpropdef, "tostring", inpropdef, v, proplist) ?? string( v);
+		view.setValue( "lbl", lbl);
+	}
+	
+	function paramevent( e){
+		if( e.src["name"] == "btn"){
+			local inpropdef = fget( prop, "propdef", prop, val);
+			if( inpropdef["edit"]){
+				local ret = inpropdef.edit( val);
+				if( ret && ret<>val){
+					setParam( ret);
+					postActionEvent( true);
+				}
+			}else{
+				local ret = PropertyEditPopup.run( e.src, inpropdef, val);
+				if( ret && ret<>val){
+					setParam( ret);
+					postActionEvent( true);
+				}
+			}
+		}
+	}
+}
+
+
+class PropertyBehaviors.LangString extends PropertyBehavior
+{
+	static proptype = LANGSTRING;
+	static uipath = "langstring.ui"
+
+	edit = null;		//	GPUITextEdit
+	langmenu = null;	//	GPUIButton
+
+	sellang = null;		//	::language.code
+	strmap = null;		//	{ja:"",en:"",...}
+
+	function init(){
+		edit = view.findChild( "edit");
+		langmenu = view.findChild( "langmenu");
+		sellang = ::lang.code;
+		langmenu.setValue( "icon", ::lang.tb.icon);
+	}
+
+	function getParam(){
+		return clone strmap;
+	}
+
+	function setParam( v){
+		strmap = clone v;
+		local s = strmap[sellang];
+		if( s==null || s==undefined) s = "";
+		edit.setText( string( s));
+	}
+
+	function paramevent( e){
+		if( e.src==edit){
+			local v = edit.getText();
+			if( length( v)){
+				if( typeof( strmap)!=SS_TABLE) strmap = {};
+				strmap[sellang] <- v;
+			}else{
+				delete strmap[sellang];
+				if( !length( strmap)) strmap = null;
+			}
+			postActionEvent( true);
+		}else
+		if( e.src==langmenu){
+			local _strmap = strmap;
+			local menudata = ::sakana.languagelist.map( @(v){
+				return { lbl:v.name, code:v.code, icon:v.icon, rlbl:_strmap[v.code]};
+			});
+			local ret = MenuPopup.run( menudata);
+			if( ret){
+				langmenu.setValue( "icon", ret.icon);
+				sellang = ret.code;
+				local s = strmap[sellang];
+				if( s==null || s==undefined) s = "";
+				edit.setText( string( s));
+			}
+		}
+	}
+}
+
+class PropertyBehaviors.SoundID extends PropertyBehavior
+{
+	static proptype = SOUNDID;
+	static uipath = "soundid.ui"
+
+	val = null;
+
+	function getParam(){
+		return val;
+	}
+
+	function setParam( v){
+		val = v;
+		if( length( v)){
+			local sounds = ::soundmanager.getConf().sounds;
+			local d = sounds[v];
+			view.setValue( "lbl", sprintf( "%S: %S", v, ::lang( d["name"]||"???")));
+		}else{
+			view.setValue( "lbl", "$T.lbl_notset");
+		}
+	}
+	
+	function paramevent( e){
+		if( e.src["name"] == "menubtn"){
+			local ret = SoundSelectPopup.run( e, prop);
+			if( ret){
+				setParam( ret=="rem"?null:ret);
+				postActionEvent( true);
+			}
+		}
+	}
+}
+
+class SoundSelectPopup extends Popup
+{
+	static UIPATH = "/skstudio/ui/dialog/sndselectpopup.ui";
+
+	prop = null;
+	sndlist = null;
+	catglist = null;
+
+	mixer2d = null;
+	cursnd = null;
+
+	static function run( e, prop, sel=null){
+		local p = SoundSelectPopup( ::loadSKView( UIPATH), prop, sel);
+		p.show( null, e.src);
+		p.stopsnd();
+		if( p.ret){
+			local sel = p.sndlist.getSelectedItems()[0];
+			return sel ? sel.id : "rem";
+		}
+	}
+	
+	static function setsndview( la, v, i){
+		v.setValue( "resid", i.id);
+		v.setValue( "lbl", i.lbl);
+		v.pickable = false;
+	}
+
+	constructor( v, p, sel){
+		super( v);
+		prop = p;
+		sndlist = ListBehavior( view.findChild( "sndlist"));
+		sndlist.setviewfunc = setsndview;
+		//	
+		local tags = ::soundmanager.getConf().tags;
+		catglist = ListBehavior( view.findChild( "catglist"));
+		catglist.multisel = true;
+		catglist.setListItems( tags);
+		catglist.selectAll();
+		catglist.listview.addEventListener( ITEM_EVENT, catgevent);
+		updateSoundList();
+		//
+		local ctx = ::soundmanager.ctx;
+		mixer2d = ctx.createMixer();
+		mixer2d[SK_SND_SEND] = 0;
+		mixer2d.connect();
+
+		if( sel){
+			local i = sndlist.items.find( @( v) v.id==sel);
+			if( i){
+				sndlist.setSelectedItem( i);
+				sndlist.listview.updateMatrixAll();
+				sndlist.scrollItemToVisible( i);
+			}
+		}
+	}
+
+	function updateSoundList(){
+		local tagbits = 0;
+		foreach( i, v in catglist.items) tagbits |= (catglist.isItemSelected( v))<<i;
+		local sounds = ::soundmanager.getConf().sounds;
+		local a = [], filter = prop["filter"] || @( i, v) v["tags"] & tagbits;
+		foreach( i, d in sounds){
+			if( i.startsWith( "_")) continue;
+			if( !filter( i, d)) continue;
+			a .. { id=i, data=d, lbl=d.name};
+		}
+		a.sort( @( v) v.id);
+		sndlist.setListItems( a);
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_rem":
+		{
+			sndlist.deselectAll();
+			ret = 1;
+			close();
+			break;
+		}
+		case "sndlist":
+		{
+			local cmd = e.actioncmd;
+			if( cmd["src"]["name"] == "playbtn"){
+				playsnd( cmd.item);
+				sndlist.setSelectedItem( cmd.item);	//	一応選択もしておくか
+			}else{
+				ret = 1;
+				close();
+			}
+			break;
+		}
+		}
+		super.actionevent( e);
+	}
+
+	function catgevent( e){
+		switch( e.id){
+		case ITEM_SELECTED:
+		case ITEM_DESELECTED:
+		case ITEM_SELECTIONS:
+			updateSoundList();
+			break;
+		}
+	}
+
+	function playsnd( i){
+		if( cursnd){
+			local ok = stopsnd();
+			if( ok && cursnd.id == i.id) return;
+		}
+		cursnd = ::soundmanager.createSoundPlayable( i.data);
+		cursnd.id = i.id;
+		cursnd.play();
+	}
+
+	function stopsnd(){
+		return cursnd?.stop();
+	}
+}
+
+class PropertyBehaviors.Camera extends PropertyBehavior
+{
+	static proptype = CAMERA;
+	static uipath = "camera.ui"
+
+	static menuitems = [
+		{ lbl="$T.lbl_initialize", val="init" },
+		"---",
+		{ lbl="$T.menu_edit_copy", val="copy", icon="\ue14d" },
+		{ lbl="$T.menu_edit_paste", val="paste", icon="\ue14f" },
+		{ lbl="$T.lbl_delete", val="delete", icon="\ue872" },
+		// "---",
+		// { lbl="$T.lbl_favorites", val="favo", icon=("\ue838",0xA3D900ff) },
+	]
+	
+	xval = null; yval = null; zval = null;
+	hval = null; pval = null; bval = null;
+	zoomval = null;
+	fovyval = null;
+	nval = null; fval = null;
+
+	isnull = true;
+
+	function init(){
+		xval = makeval( "xval", -100.0, 100.0, 100);
+		yval = makeval( "yval", -100.0, 100.0, 100);
+		zval = makeval( "zval", -100.0, 100.0, 100);
+		hval = makeval( "hval", -180, 180, 1);
+		pval = makeval( "pval", -180, 180, 1);
+		bval = makeval( "bval", -180, 180, 1);
+		zoomval = makeval( "zoomval", 0.1, 99.9, 10);
+		fovyval = makeval( "fovyval", 0, 85, 1);
+		nval = makeval( "nval", 0.01, 1.0, 100);
+		fval = makeval( "fval", 10, 10000, 1);
+	}
+
+	function makeval( n, min, max, q){
+		local v = createNumInputBehavior( view.findChild( n));
+		v.setRange( min, max, q);
+		return v;
+	}
+
+	function getParam(){
+		if( isnull) return null;
+		local v = SK3DCameraData();
+		v.to.set( xval.getValue(), yval.getValue(), zval.getValue());
+		v.hpb.set( hval.getValue()*Math.DTOR, pval.getValue()*Math.DTOR, bval.getValue()*Math.DTOR);
+		v.zoom = zoomval.getValue();
+		v.fovy = fovyval.getValue();
+		v.znear = nval.getValue();
+		v.zfar = fval.getValue();
+		return v;
+	}
+	
+	function setParam( v){
+		isnull = !v;
+		if( !v){
+			view.anime( 1);
+			foreach( v in [xval,yval,zval,hval,pval,bval,zoomval,fovyval,nval,fval]) v.clearValue();
+		}else{
+			view.anime( 0);
+			xval.setValue( v.to.x); yval.setValue( v.to.y); zval.setValue( v.to.z);
+			hval.setValue( Math.round( v.hpb.x*Math.RTOD));
+			pval.setValue( Math.round( v.hpb.y*Math.RTOD));
+			bval.setValue( Math.round( v.hpb.z*Math.RTOD));
+			zoomval.setValue( v.zoom);
+			fovyval.setValue( v.fovy);
+			nval.setValue( v.znear);
+			fval.setValue( v.zfar);
+		}
+	}
+	
+	function menuSelected( e, mi){
+		switch( mi.val){
+		case "init":
+			setParam( SK3DCameraData());
+			postActionEvent( true);
+			break;
+		case "delete":
+			setParam( null);
+			postActionEvent( true);
+			break;
+		}
+	}
+	
+	function paramevent( e){
+		if( e.id==VALUE_CHANGED) return;
+		postActionEvent( true);
+	}
+}
+
+::proptextfuncmap <- {
+	[LIST] = @( prop, data){
+		local val = data[prop.pid];
+		local li = fget( prop, "list", prop, null).map( @( v, i) typeof( v)==SS_TABLE ? v : { lbl=v, val=i });
+		local str = li.find( @( v) v.val==val)["lbl"] || val;
+		if( typeof( str) == SS_CLOSURE) str = str();
+		return str;
+	},
+	[CHECKBITS] = @( prop, data){
+		local val = data[prop.pid];
+		local li = fget( prop, "list", prop, null);
+		local sb = StringBuffer();
+		foreach( i, v in li){
+			if( val&(1<<i)){
+				if( i) sb .. ",";
+				sb .. v["lbl"];
+			}
+		}
+		return string( sb);
+	}
+};
+
+function getPropertyText( prop, data){
+	if( !prop) return null;
+	local val = data[prop.pid];
+	local fn = proptextfuncmap[prop.type];
+	if( fn){
+		return fn( prop, data);
+	}
+	return encodeJSON( val);
+}

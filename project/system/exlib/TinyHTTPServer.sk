@@ -1,0 +1,555 @@
+
+local statusmsg = {
+	[100] = "Continue",
+	[101] = "Switching Protocols",
+	[103] = "Checkpoint",
+	[200] = "OK",
+	[201] = "Created",
+	[202] = "Accepted",
+	[203] = "Non-Authoritative Information",
+	[204] = "No Content",
+	[205] = "Reset Content",
+	[206] = "Partial Content",
+	[300] = "Multiple Choices",
+	[301] = "Moved Permanently",
+	[302] = "Found",
+	[303] = "See Other",
+	[304] = "Not Modified",
+	[306] = "Switch Proxy",
+	[307] = "Temporary Redirect",
+	[308] = "Resume Incomplete",
+	
+	[400] = "Bad Request",
+	[401] = "Unauthorized",
+	[402] = "Payment Required",
+	[403] = "Forbidden",
+	[404] = "Not Found",
+	[405] = "Method Not Allowed",
+	[406] = "Not Acceptable",
+	[407] = "Proxy Authentication Required",
+	[408] = "Request Timeout",
+	[409] = "Conflict",
+	[410] = "Gone",
+	[411] = "Length Required",
+	[412] = "Precondition Failed",
+	[413] = "Request Entity Too Large",
+	[414] = "Request-URI Too Long",
+	[415] = "Unsupported Media Type",
+	[416] = "Requested Range Not Satisfiable",
+	[417] = "Expectation Failed",
+	
+	[500] = "Internal Server Error",
+	[501] = "Not Implemented",
+	[502] = "Bad Gateway",
+	[503] = "Service Unavailable",
+	[504] = "Gateway Timeout",
+	[505] = "HTTP Version Not Supported",
+	[511] = "Network Authentication Required",
+}
+
+class TinyHTTPServer
+{
+	//	net情報
+	tcpserver = null;						//	TCPServer
+	ipaddr = null;							//	IPAddress
+	cons = null;							//	{ Connection }
+	
+	handlers = null;						//	TinyHTTPServer.Handler
+	
+	constructor(){
+		handlers = [Handler()];
+	}
+	
+	function bindServer( ia){
+		ipaddr = ia
+		tcpserver = TCPServer();
+		tcpserver.setListener( connectionAccepted);
+		local ret = tcpserver.bind( ia);
+		if( !ret) return false;
+		cons = {};
+		//
+		printf("TinyHTTPServer bindServer %S\n", ipaddr);
+		return true;
+	}
+	
+	function close(){
+		tcpserver.close();
+	}
+	
+	function connectionAccepted( id, c, src){
+		if( id != SOCKET_ACCEPTED) return;
+		//	c == tcpserver, src == con
+		local nc = Connection( this, src);
+		cons[ c] <- nc;
+		nc.start();
+		//printf("TinyHTTPServer connectionAccepted %S %S %S\n", id, c, src);
+		return true;
+	}
+	
+	function setHandlers( a){
+		handlers = a;
+	}
+	
+	function getResponse( c, res){
+		foreach( v in handlers){
+			local r = v.getResponse( c, res);
+			if( r) return r;
+		}
+		return undefined;
+	}
+}
+
+class TinyHTTPServer.Response
+{
+	statuscode = -1;
+	contenttype = "text/plain; charset=UTF-8"
+	contentlength = -1;
+	data = null;
+	headers = null;
+	
+	function getStatusMessage(){
+		return statusmsg[statuscode] || "Unknown Status";
+	}
+	
+	function setCookie( c){
+		if( !headers) headers = [];
+		local sb = StringBuffer();
+		local smc = false;
+		foreach( v in c){
+			if( smc) sb .. "; "; else smc = true;
+			sb .. string( v[0]) .. "=" .. string( v[1]);
+		}
+		headers .. { name="Set-Cookie", value=string( sb) };
+	}
+
+	function addHeader( name, value){
+		if( !headers) headers = [];
+		headers .. { name=name, value=value };
+	}
+	
+	function redirect( newurl, c=307){
+		if( !headers) headers = [];
+		statuscode = c;
+		headers .. { name="Location", value=newurl };
+		data = "null";
+		return this;
+	}
+}
+
+class TinyHTTPServer.Handler
+{
+	function getResponse( c, res){
+		return undefined;
+	}
+}
+
+local contenttypemap = {
+	esk = "text/html; charaset=UTF-8"
+	html = "text/html; charaset=UTF-8"
+	css = "text/css; charaset=UTF-8"
+	js = "text/javascript; charaset=UTF-8"
+	json = "text/plain; charaset=UTF-8"
+	txt = "text/plain; charaset=UTF-8"
+	jpeg = "image/jpeg"
+	jpg = "image/jpeg"
+	png = "image/png"
+	gif = "image/gif"
+	webp = "image/webp"
+	wasm = "application/wasm"
+}
+
+class TinyHTTPServer.StaticContentsHandler
+{
+	basedir = null;		//	FileRef
+	basepath = "/";		//	
+	cache = null;
+	cachetime = 30000;	//	30sec
+	func = null;		//	handler func
+	
+	constructor( dir, bp="/", fn=null){	//	FileRef, String
+		basedir = dir;
+		cache = {};
+		if( !bp.endsWith("/")) bp = bp .. "/";
+		basepath = bp;
+		func = fn;
+	}
+	
+	function getResponse( c, res){
+		local cd = cache[c.path];
+		if( cd && skGetTime( cd.expire) < 0){
+			return _responsedata( res, c.path, cd);
+		}else{
+			local path = c.path.substring( length( basepath));	//	"/"を取り除く
+			local f = FileRef( basedir, path);
+			if( f.exists()){
+				local exp = path.substring( path.lastIndexOf(".") + 1).toLowerCase();
+				local data = f.load();
+				local type = contenttypemap[exp] || "application/octet-stream";
+				return _responsedata( res, c.path, cache[c.path] <- {data=data, type=type, expire=skGetTime()+cachetime});
+			}
+		}
+		return undefined;
+	}
+	
+	function _responsedata( res, path, cd){
+		res.statuscode = 200;
+		res.contenttype = cd.type;
+		res.data = cd.data;
+		if( func) res = func( res, path, cd);
+		return res;
+	}
+}
+
+//	ゲーム内のリソース取得用
+class TinyHTTPServer.StaticResourceHandler extends TinyHTTPServer.StaticContentsHandler
+{
+	//	StaticContentsHandlerと違ってbasedirがStringなので注意
+	function getResponse( c, res){
+		local cd = cache[c.path];
+		if( cd && skGetTime() < cd.expire){
+			return _responsedata( res, c.path, cd);
+		}else{
+			local path = c.path.substring( length( basepath));	//	"/"を取り除く
+			local rs = ::getResource( basedir .. path);
+			if( rs){
+				local exp = path.substring( path.lastIndexOf(".") + 1).toLowerCase();
+				local data = rs.loadData();
+				local type = contenttypemap[exp] || "application/octet-stream";
+				return _responsedata( res, c.path, cache[c.path] <- {data=data, type=type, expire=skGetTime()+30000});
+			}
+		}
+		return undefined;
+	}
+}
+
+
+//	.esk template engine
+class TinyHTTPServer.ESKContentsHandler
+{
+	basedir = null;		//	FileRef
+	basepath = "/";		//	
+	cache = null;
+	tmpbb = ByteBuffer();
+	scope = null;
+	
+	constructor( dir, bp="/", s=null){
+		basedir = dir;
+		cache = {};
+		if( !bp.endsWith("/")) bp = bp .. "/";
+		basepath = bp;
+		scope = s || {};
+	}
+	
+	function _get( key){
+		return scope[key];
+	}
+	
+	function _set( key, val){
+		if( key in scope){
+			scope[key] = val;
+		}else{
+			return undefined;
+		}
+	}
+	
+	function _newslot( key, val){
+		scope[key] <- val;
+	}
+	
+	//	@param str .esk source text
+	//	@return [ByteBuffer|function,...]
+	function compileesk( str){
+		local sb = StringBuffer();
+		sb .. "local bb = vargv[0];\n";
+		sb .. "local con = vargv[1];\n";
+		sb .. "local res = vargv[2];\n";
+		sb .. "local w = function( ...){ if( vargc > 1){ bb.putText( sprintf( varguments())); }else{ bb.putText( string( vargv[0])); }}\n";
+		sb .. "local include = function( p){ local func = getESK( p).esk; func( bb, con, res); }\n";
+		local s = 0;
+		local i = str.indexOf( "<%");
+		while( i >= 0){
+			sb .. "w( " .. encodeJSON( str.substring( s, i)) .. ");\n";	//	encodeJSONで文字列エスケープ。。。
+			local e = str.indexOf( "%>", i+2)
+			if( e < 0) throw Exception( "esk compile error. missing %>");
+			sb .. str.substring( i+2, e) .. "\n";
+			s = e+2;
+			i = str.indexOf( "<%", s);
+		}
+		if( s < length( str)){
+			sb .. "w( " .. encodeJSON( str.substring( s)) .. ");";
+		}
+		local fn = compilestring( string( sb));		//	TODO : sb.compile()
+		return fn;
+	}
+	
+	function _responseesk( c, res, cd){
+		res.statuscode = 200;
+		res.contenttype = cd.type;
+		res.data = tmpbb;
+		tmpbb.resize( 0);
+		local func = cd.esk;
+		func( tmpbb, c, res);
+		tmpbb.pos = 0;
+		return res;
+	}
+	
+	function getESK( path){
+		local cd = cache[ path];
+		if( cd && skGetTime() < cd.expire){
+			return cd;
+		}else{
+			local path = path.substring( length( basepath));	//	"/"を取り除く
+			local f = FileRef( basedir, path);
+			if( f.exists()){
+				local exp = path.substring( path.lastIndexOf(".") + 1).toLowerCase();
+				switch( exp){
+				case "esk":
+					local esk = compileesk( f.load( ByteBuffer()).asText());
+					local type = "text/html; charaset=UTF-8";
+					return cache[path] <- {esk=esk, type=type, expire=skGetTime()+30000};
+				case "html":
+					return null;
+				}
+			}
+			return null;
+		}
+	}
+	
+	function getResponse( c, res){
+		if( c.path.endsWith(".esk")){
+			local cd = getESK( c.path);
+			if( !cd) return null;
+			return _responseesk( c, res, cd);
+		}
+		return undefined;
+	}
+}
+
+
+class TinyHTTPServer.Connection
+{
+	server = null;		//	TinyHTTPServer
+	
+	constate = SOCKET_CONNECTED;
+	con = null;			//	TCPConnection
+	phase = 0;			//	0: recv request, 1: send response
+	recvbuf = null;
+	verbose = true;
+	
+	//	request
+	method = null;
+	path = null;
+	queries = null;
+	headers = null;
+	
+	constructor( s, c){
+		server = s;
+		con = c;
+		recvbuf = ByteBuffer();
+		c.setOption( TCP_NODELAY, -1);
+		c.setListener( tcpStateChanged, this);
+		c.setReader( tcpReceived, this);
+	}
+	
+	//	TCPConnection callback
+	function tcpReceived( con, buf){
+		local pos = recvbuf.pos;
+		recvbuf.extendBuffer( buf);
+		recvbuf.pos = pos;
+	}
+
+	function tcpStateChanged( id, c, src){
+		if( c == con){
+			if( verbose) printf("HTTPServer tcpStateChanged from %d to %d con=%S\n", constate, c.getState(), c);
+			constate = c.getState();
+		}
+	}
+	
+	//	CRLFで区切った文字列を返す。
+	function recvLine( bbuf, timeout=5000){
+		local crlf = 0;
+		bbuf.resize( 0);
+		local tot = skGetTime() + timeout;
+		for( ;;){
+			while( !recvbuf.remain){
+				if( constate != SOCKET_CONNECTED) throw Exception("HTTPServer connection was closed : "..constate);
+				if( skGetTime() > tot) throw Exception("HTTPServer receive line timeout.");
+				sleep( 50);			//	バッファがたまるまで待つ
+			}
+			local c = recvbuf.getb() & 0xff;
+			if( c == '\r'){
+				crlf = 1;
+			}else
+			if( c == '\n'){
+				if( crlf == 1) break;	//	おしまい
+				break;		//	crlf janakutemo??
+			}else{
+				bbuf.putb( c);
+			}
+		}
+		recvbuf.trim();
+		bbuf.pos = 0;
+		return bbuf;
+	}
+	
+	//	
+	function close(){
+		delete server.cons[con];
+		con.close();
+	}
+	
+	function start(){
+		newthread().start( execute, this);
+	}
+	
+	//	receive send close
+	function execute(){
+		//
+		local bbuf = ByteBuffer();
+		//	parse method, path
+		try{
+			{
+				local h = recvLine( bbuf, 30000).asText();	//	最初だけ30秒待つ
+				local hlen = length( h);
+				local i = h.indexOf( " ");
+				method = h.substring( 0, i);
+				for( ++i; ; i++){	//	skip space
+					if( h[i] != " " && h[i] != "\t") break;
+				}
+				local e = h.indexOf( " ", i);
+				path = h.substring( i, e);
+				path = decodeURL( path);
+				//	parse queries
+				local qi = path.indexOf( "?");
+				if( qi >= 0){
+					local q = path.substring( qi+1);
+					local qlen = length( q);
+					path = path.substring( 0, qi);
+					queries = {};
+					qi = 0;
+					do{
+						local ei = q.indexOf( "=", qi);
+						if( ei < 0) throw Exception("HTTPServer illegal request. path = "..path..", peer = "..con.getPeer());
+						local si = q.indexOf( "&", ei+1); if( si<0) si=length( q);
+						queries[ q.substring( qi, ei)] <- q.substring( ei+1, si);
+						qi = si+1;
+					}while( qi < qlen);
+				}
+			}
+			//	parse headers
+			headers = {};
+			for( local h = recvLine( bbuf).asText(); (h!=""); ){
+				local i = h.indexOf( ":");
+				headers[h.substring( 0, i).trim().toLowerCase()] <- h.substring( i+1).trim();
+				h = recvLine( bbuf).asText();
+			}
+		}catch( ex){
+			printexception( ex);
+			printf( "HTTPServer recv request failure...\n");
+			close();
+			return;
+		}
+		//	get response
+		//
+		local res = TinyHTTPServer.Response();
+		try{
+			server.getResponse( this, res);
+			if( res.statuscode < 0){
+				nothandled( res);
+			}
+		}catch( exx){
+			printexception( exx);
+			printf( "Handler.getResponse error.\n");
+			servererror( res, exx);
+		}
+		try{
+			//	response header
+			//
+			con.write( sprintf( "HTTP/1.0 %d %S\r\n", res.statuscode, res.getStatusMessage()));
+			con.write( sprintf( "Content-type: %S\r\n", res.contenttype));
+			con.write( sprintf( "Connection: Close\r\n"));
+			local bb = null;
+			if( typeof( res.data) == SS_STRING){
+				bb = #ByteBuffer();
+				bb.clear();
+				bb.putText( res.data);
+				bb.pos = 0;
+			}else{
+				bb = res.data;
+			}
+			if( bb) con.write( sprintf( "Content-Length: %d\r\n", bb.remain));
+			foreach( h in res.headers){
+				//	printf( "%S: %S\r\n", h.name, h.value);
+				con.write( sprintf( "%S: %S\r\n", h.name, h.value));
+			}
+			con.write( sprintf( "\r\n"));
+			//	response body
+			//
+			if( bb) con.write( bb);
+		}catch( ex){
+			printexception( ex);
+			printf( "HTTPServer send response failure...\n");
+		}
+		//	close
+		close();
+	}
+	
+	function nothandled( res){
+		res.statuscode = 404;
+		res.contenttype = "text/html; charset=UTF-8"
+		local sb = StringBuffer();
+		sb .. "<HTML><HEAD><TITLE>Not Found</TITLE></HEAD><BODY>\r\n";
+		sb .. "<H1>Page Not Found</H1>\r\n";
+		sb .. sprintf( "The requested page \"%S\" could not be found.\r\n", path);
+		sb .. "</BODY></HTML>";
+		res.data = string( sb);
+	}
+	
+	function servererror( res, ex){
+		res.statuscode = 500;
+		res.contenttype = "text/html; charset=UTF-8"
+		local sb = StringBuffer();
+		sb .. "<HTML><HEAD><TITLE>Internal Server Error</TITLE></HEAD><BODY>\r\n";
+		sb .. "<H1>Internal Server Error</H1>\r\n";
+		if( ex instanceof Exception){
+			sb .. sprintf( "<h3>%S in %S: %S</h3><p>\r\n", getclassname( ex), realref( ex.thread), ex.message);
+			foreach( i, v in ex.getStackInfo()){
+				sb .. sprintf( "  at %S(%S:%d)<br>\r\n", v[0], v[1], v[2]);
+			}
+			sb .. "</p>"
+		}else{
+			sb .. sprintf( "<h3>%S in %S</h3>\r\n", ex, currentthread());
+		}
+		sb .. "</BODY></HTML>";
+		res.data = string( sb);
+	}
+	
+	////	utils
+	
+	function getPeer(){
+		local ip = con.getPeer();
+		return sprintf( "%d.%d.%d.%d",ip[0]||0,ip[1]||0,ip[2]||0,ip[3]||0);
+	}
+	
+	function getCookie(){
+		local c = headers["cookie"];	//	headerはlow caseになってる
+		if( c){
+			printf( "%S\n",c);
+			local t = {}, s = 0, e = c.indexOf( ";");
+			for( ;;){
+				if( e < 0) e = length( c);
+				local sc = c.substring( s, e);
+				local sp = sc.indexOf( "=")
+				t[sc.substring( 0, sp).trim()] <- sc.substring( sp+1).trim();
+				if( e == length( c)) break;
+				s = e; e = c.indexOf( ";", e+1);
+			}
+			printf( "%S\n", encodeJSON( t));
+			return t;
+		}else {
+			return null;
+		}
+	}
+	
+	
+}

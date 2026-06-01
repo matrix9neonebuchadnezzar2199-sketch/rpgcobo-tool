@@ -1,0 +1,1239 @@
+//	マップエディタ用のツール辞書
+//	※ツール辞書は自動翻訳適用外
+
+::T.merge( {
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	パラメータ(ツール使用のみ分)
+	"INILV"								: {"ja":"初期LV", "en":"Initial LV"}
+	"MAXLV"								: {"ja":"最大LV", "en":"Max LV"}
+	"MAXHP"								: {"ja":"最大HP", "en":"Max HP"}
+	"MAXMP"								: {"ja":"最大MP", "en":"Max MP"}
+	"expcurv"							: {"ja":"EXPカーブ", "en":"EXP Curve"}
+
+	"val_base"							: {"ja":"ベース", "en":"Base"}
+	"val_baserate"						: {"ja":"ベース倍率", "en":"Base Magnify"}
+	"val_supply"						: {"ja":"付与", "en":"Supply"}
+	"val_totalrate"						: {"ja":"最終倍率", "en":"Total Magnify"}
+	
+	//	ダメージタイプ
+	"dmgtype"							: {"ja":"ダメージタイプ", "en":"Damage Type"}
+	"dmgtype0"							: {"ja":"ダメージ無し", "en":"No Damage"}
+	"dmgtype1"							: {"ja":"HPダメージ", "en":"HP Damage"}
+	"dmgtype2"							: {"ja":"HP回復", "en":"HP Heal"}
+	"dmgtype3"							: {"ja":"MPダメージ", "en":"MP Damage"}
+	"dmgtype4"							: {"ja":"MP回復", "en":"MP Heal"}
+	"dmgtype5"							: {"ja":"TPダメージ", "en":"TP Damage"}
+	"dmgtype6"							: {"ja":"TP回復", "en":"TP Heal"}
+	
+	//	ブロック配置ルール
+	"plctype"							: {"ja":"配置ルール", "en":"Placing Rule"}
+	"plctype0"							: {"ja":"どこでも配置", "en":"Anywhere"}
+	"plctype1"							: {"ja":"床に配置", "en":"On the Floor"}
+	"plctype2"							: {"ja":"壁に配置", "en":"On the Wall"}
+	"plctype3"							: {"ja":"ドア用配置", "en":"For Door"}
+
+	//	ブロック床の処理
+	"floortype"							: {"ja":"床の処理", "en":"Floor Rule"}
+	"floortype0"						: {"ja":"未処理", "en":"Unprocess"}
+	"floortype1"						: {"ja":"人工床", "en":"Artiticial Floor"}
+	"floortype2"						: {"ja":"自然床", "en":"Natural Floor"}
+
+	//	
+	"columntype"						: {"ja":"カラムのタイプ", "en":"Column Type"}
+	"columntype0"						: {"ja":"柱", "en":"Pillar"}
+	"columntype1"						: {"ja":"ハシゴ", "en":"Ladder"}
+	"columntype2"						: {"ja":"バー", "en":"Bar"}
+
+	//	
+	"edgeshp"							: {"ja":"角の形状", "en":"Edge Shape"}
+	"edgeshp0"							: {"ja":"角", "en":"Sharp"}
+	"edgeshp1"							: {"ja":"面取り1", "en":"Bevel1"}
+	"edgeshp2"							: {"ja":"面取り2", "en":"Bevel2"}
+
+	//	陰面消去
+	"cullface"							: {"ja":"陰面消去", "en":"Face Culling"}
+	"cullface0"							: {"ja":"なし", "en":"None"}
+	"cullface1"							: {"ja":"下面", "en":"Bottom"}
+	"cullface2"							: {"ja":"背面・下面", "en":"Back Bottom"}
+	"cullface3"							: {"ja":"背面・下面・右面", "en":"Back Bottom Right"}
+
+	//	イベント登場条件
+	"spawndist"							: {"ja":"スポーン距離", "en":"Spawn distance"}
+	"spawndist0"						: {"ja":"なし", "en":"None"}
+	"spawndist1"						: {"ja":"画面内に入る", "en":"Enter Screen"}
+	"spawndist2"						: {"ja":"近づく(4m)", "en":"Reach(4m)"}
+	"spawndist3"						: {"ja":"近づく(8m)", "en":"Reach(8m)"}
+	"spawndist4"						: {"ja":"近づく(12m)", "en":"Reach(12m)"}
+	"spawndist5"						: {"ja":"常にスポーン", "en":"Always"}
+	
+	//	イベントトリガー条件
+	"evtrigger"							: {"ja":"トリガー条件", "en":"Trigger Type"}
+	"evtrigger0"						: {"ja":"なし", "en":"None"}
+	"evtrigger1"						: {"ja":"調べる(近)", "en":"Search(Near)"}
+	"evtrigger2"						: {"ja":"調べる(遠)", "en":"Search(Far)"}
+	"evtrigger3"						: {"ja":"接触", "en":"Contact"}
+	"evtrigger4"						: {"ja":"近づく", "en":"Reach"}
+	"evtrigger5"						: {"ja":"中に入る", "en":"Get inside"}
+	"evtrigger6"						: {"ja":"スポーン時", "en":"Spawn"}
+	"evtrigger7"						: {"ja":"実行し続ける", "en":"Keep Running"}
+	
+	//	標準マップグループ
+	"mapgroup"							: {"ja":"マップグループ", "en":"Map Group"}
+	"mapgroup_all"						: {"ja":"全てのマップ", "en":"All Maps"}
+	"mapgroup_unsorted"					: {"ja":"未分類", "en":"Unsorted"}
+	"mapgroup_field"					: {"ja":"フィールドマップ", "en":"Field Maps"}
+	"mapgroup_dungeon"					: {"ja":"ダンジョンマップ", "en":"Dungeon Maps"}
+	"mapgroup_battle"					: {"ja":"バトルマップ", "en":"Battle Maps"}
+	"mapgroup_special"					: {"ja":"特殊なマップ", "en":"Special Maps"}
+	"mapgroup_template"					: {"ja":"テンプレート", "en":"Template"}
+
+	//	サウンドタグ
+	"sndtag_menu"						: {"ja":"メニュー音", "en":"Menu Sound"}
+	"sndtag_object"						: {"ja":"オブジェクト音", "en":"Object Sound"}
+	"sndtag_action"						: {"ja":"アクション音", "en":"Menu Sound"}
+	"sndtag_hit"						: {"ja":"ヒット音", "en":"Menu Sound"}
+	"sndtag_efx"						: {"ja":"エフェクト音", "en":"Menu Sound"}
+
+	//	カメラワーク
+	"camwork"							: {"ja":"カメラワーク", "en":"CameraWork"}
+	"camwork_normal"					: {"ja":"標準カメラ", "en":"Standard Camera"}
+	"camwork_fixed"						: {"ja":"固定カメラ", "en":"Fixed Camera"}
+	"camwork_zfixed"					: {"ja":"Z固定カメラ", "en":"Z-Fixed Camera"}
+	"camwork_overview"					: {"ja":"俯瞰カメラ", "en":"Overview Camera"}
+
+	//	カメラモーション
+	"cammot_focus"						: {"ja":"焦点を回転", "en":"Focus Pivot"}
+	"cammot_eye"						: {"ja":"視点を回転", "en":"Eye Pivot"}
+	
+	//	トランジション
+	"speed_immediate"					: {"ja":"すぐに", "en":"Immediate"}
+	"speed_quick"						: {"ja":"クイック", "en":"Quick"}
+	"speed_normal"						: {"ja":"ノーマル", "en":"Normal"}
+	"speed_slow"						: {"ja":"スロー", "en":"Slow"}
+
+	//	誰 : カメラ、会話、
+	"who_none"							: {"ja":"なし", "en":"None"}
+	"who_ui"							: {"ja":"UI", "en":"UI"}
+	"who_player"						: {"ja":"プレイヤー", "en":"Player"}
+	"who_event"							: {"ja":"このイベント", "en":"This Event"}
+	"who_selchara"						: {"ja":"選択されたキャラ", "en":"Selected Chara"}
+	"who_specify"						: {"ja":"名前を入力", "en":"Specify a Name"}
+	"who_each"							: {"ja":"プレイヤーとイベント", "en":"Player and Event"}
+
+	"coord_marker"						: {"ja":"マーカー座標", "en":"Marker Position"}
+	"coord_screen"						: {"ja":"スクリーン座標", "en":"Screen Position"}
+	"coord_world"						: {"ja":"ワールド座標", "en":"World Position"}
+	
+	//	マップ移動方法
+	//	通常、建物、回想、バトル、ワイプ無し
+	"wipe"								: {"ja":"ワイプのタイプ", "en":"Wipe Type"}
+	"wipe0"								: {"ja":"ワイプ無し", "en":"No Wipe"}
+	"wipe1"								: {"ja":"通常", "en":"Normal"}
+	"wipe2"								: {"ja":"建物", "en":"Building"}
+	"wipe3"								: {"ja":"ワープ", "en":"Warp"}
+	"wipe4"								: {"ja":"回想", "en":"Dreaming"}
+	"wipe5"								: {"ja":"バトル", "en":"Battle"}
+
+	//	ワイプviewのタイプ
+	"wipeview"							: {"ja":"ワイプのビュー", "en":"Wipe View"}
+	"wipeview0"							: {"ja":"暗転", "en":"Black out"}
+	"wipeview1"							: {"ja":"明転", "en":"White out"}
+	"wipeview2"							: {"ja":"丸ワイプ", "en":"Circular"}
+	
+	//	移動
+	"move_stop"							: {"ja":"静止", "en":"Stop"}
+	"move_random"						: {"ja":"うろうろ", "en":"Walk Around"}
+	"move_chase1"						: {"ja":"追いかけ1", "en":"Chase1"}
+	"move_chase2"						: {"ja":"追いかけ2", "en":"Chase2"}
+	"move_escape"						: {"ja":"逃げ", "en":"Escape"}
+	"move_greet"						: {"ja":"静止＋挨拶", "en":"Stop+Greet"}
+	"move_hide"							: {"ja":"表示しない", "en":"Hide"}
+	
+	//	UI表示タイプ
+	"uivisible0"						: {"ja":"非表示", "en":"Invisible"}
+	"uivisible1"						: {"ja":"空白", "en":"Space"}
+	"uivisible2"						: {"ja":"グレーアウト", "en":"Greyed out"}
+	"uivisible3"						: {"ja":"表示", "en":"Visible"}
+
+	//	UI操作タイプ
+	"uiop_show"							: {"ja":"表示", "en":"Show"}
+	"uiop_hide"							: {"ja":"消去", "en":"Hide"}
+	"uiop_darken"						: {"ja":"暗転", "en":"Darken"}
+	"uiop_lighten"						: {"ja":"明転", "en":"Lighten"}
+	"uiop_value"						: {"ja":"値設定", "en":"Set Value"}
+	"uiop_action"						: {"ja":"アクション", "en":"Action"}
+	
+	//	UIクローズタイミング
+	"uiclose"							: {"ja":"UIを閉じるタイミング", "en":"When to close the UI"}
+	"uiclose0"							: {"ja":"閉じない", "en":"Don't close"}
+	"uiclose1"							: {"ja":"イベント終了時", "en":"End of Event"}
+	"uiclose2"							: {"ja":"すぐに", "en":"Immediate"}
+
+	//	UI配置位置
+	"uipos"								: {"ja":"表示座標","en":"Coordinates"}
+	"uipos_center"						: {"ja":"中央座標","en":"Center"}
+	"uipos_left"						: {"ja":"左寄せ","en":"Left Align"}
+	"uipos_right"						: {"ja":"右寄せ","en":"Right Align"}
+	"uipos_lr"							: {"ja":"左右指定","en":"Left-Right"}
+	"uipos_up"							: {"ja":"上寄せ","en":"Up Align"}
+	"uipos_down"						: {"ja":"下寄せ","en":"Down Align"}
+	"uipos_ud"							: {"ja":"上下指定","en":"Up-Down"}
+
+	//	プレイヤー操作モード
+	"ctrmode0"							: {"ja":"操作不能", "en":"Disabled"}
+	"ctrmode1"							: {"ja":"通常操作", "en":"Enabled"}
+	"ctrmode2"							: {"ja":"常にダッシュ", "en":"Always Dash"}
+	"ctrmode3"							: {"ja":"常に歩き", "en":"Always Walk"}
+	
+	//	状態タイプ
+	"condtype"							: {"ja":"状態タイプ", "en":"Condition Type"}
+	"condtype0"							: {"ja":"バフ", "en":"Buff"}
+	"condtype1"							: {"ja":"デバフ", "en":"Debuff"}
+	
+	//	死亡判定
+	"deadtype"							: {"ja":"死亡判定", "en":"Death Judgment"}
+	"deadtype0"							: {"ja":"生存", "en":"Alive"}
+	"deadtype1"							: {"ja":"生存（全滅判定あり）", "en":"Alive(Defeated)"}
+	"deadtype2"							: {"ja":"死亡", "en":"Dead"}
+
+	//	いつ
+	"when"								: {"ja":"いつ", "en":"When"}
+	"when_attackhit"					: {"ja":"攻撃を当てた時", "en":"Attack Hit"}
+	"when_damagehit"					: {"ja":"攻撃を受けた時", "en":"Damage Hit"}
+	"when_kill"							: {"ja":"倒した時", "en":"Kill"}
+	"when_killed"						: {"ja":"倒された時", "en":"Killed"}
+	//	誰に
+	"whom"								: {"ja":"誰に", "en":"Whom"}
+	"whom_me"							: {"ja":"自分", "en":"Myself"}
+	"whom_oppo"							: {"ja":"相手", "en":"Opponent"}
+
+	//	移動タイプ(マニュアルアクション)
+	"movetype"							: {"ja":"移動タイプ", "en":"Move type"}
+	"movetype_walk"						: {"ja":"歩き", "en":"Walk"}
+	"movetype_dash"						: {"ja":"ダッシュ", "en":"Dash"}
+	"movetype_jump"						: {"ja":"ジャンプ", "en":"Jump"}
+	"movetype_linear"					: {"ja":"直進", "en":"Linear"}
+	"movetype_warp"						: {"ja":"ワープ", "en":"Warp"}
+
+	//	ブロックタイプ
+	"blk_basic"							: {"ja":"基本", "en":"Basic"}
+	"blk_nature"						: {"ja":"地形", "en":"Terrain"}
+	"blk_naturewall"					: {"ja":"地形・壁", "en":"Terrain Wall"}
+	"blk_naturefloor"					: {"ja":"地形・床", "en":"Terrain Floor"}
+	"blk_structa"						: {"ja":"建築A", "en":"StructA"}
+	"blk_structb"						: {"ja":"建築B", "en":"StructB"}
+	"blk_structc"						: {"ja":"建築C", "en":"StructC"}
+	"blk_carpet"						: {"ja":"カーペット", "en":"Carpet"}
+	"blk_water"							: {"ja":"水", "en":"Water"}
+	"blk_fence"							: {"ja":"フェンス", "en":"Fence"}
+	"blk_plant"							: {"ja":"草花", "en":"Plant"}
+	"blk_door"							: {"ja":"ドア", "en":"Door"}
+	"blk_lamp"							: {"ja":"ランプ", "en":"Lamp"}
+	"blk_exterior"						: {"ja":"エクステリア", "en":"Exterior"}
+	"blk_interior"						: {"ja":"インテリア", "en":"Interior"}
+	"blk_treerock"						: {"ja":"自然物", "en":"Nature"}
+	"blk_columnladder"					: {"ja":"柱・ハシゴ", "en":"Column,Ladder"}
+	"blk_column"						: {"ja":"柱", "en":"Column"}
+	"blk_ladder"						: {"ja":"ハシゴ", "en":"Ladder"}
+	"blk_slopestair"					: {"ja":"坂・階段", "en":"Slope,Stair"}
+	"blk_slope"							: {"ja":"坂", "en":"Slope"}
+	"blk_stair"							: {"ja":"階段", "en":"Stair"}
+	"blk_roof"							: {"ja":"屋根", "en":"Roof"}
+	"blk_crack"							: {"ja":"クラック", "en":"Crack"}
+	
+	//	アニメーションID
+	"anim_stand"						: {"ja":"立ち", "en":"Stand"}
+	"anim_walk"							: {"ja":"歩行", "en":"Walk"}
+	"anim_dash"							: {"ja":"ダッシュ", "en":"Dash"}
+	"anim_crimb"						: {"ja":"登り", "en":"Climb"}
+	"anim_aim"							: {"ja":"構える", "en":"Aim"}
+	"anim_sick"							: {"ja":"苦しむ", "en":"Have Sick"}
+	"anim_sit"							: {"ja":"しゃがむ", "en":"Sit down"}
+	"anim_jump"							: {"ja":"ジャンプ", "en":"Jump"}
+	"anim_land"							: {"ja":"着地", "en":"Landing"}
+	"anim_sleep"						: {"ja":"眠り", "en":"Sleep"}
+	"anim_greet"						: {"ja":"挨拶", "en":"Greet"}
+	"anim_yes"							: {"ja":"はい", "en":"Say Yes"}
+	"anim_no"							: {"ja":"いいえ", "en":"Say No"}
+	"anim_happy"						: {"ja":"喜び", "en":"Enjoy"}
+	"anim_anger"						: {"ja":"怒り", "en":"Anger"}
+	"anim_sad"							: {"ja":"悲しみ", "en":"Sad"}
+	"anim_doubt"						: {"ja":"疑い", "en":"Doubt"}
+	"anim_fight"						: {"ja":"バトル開始", "en":"Enter Battle"}
+	"anim_victory"						: {"ja":"バトル勝利", "en":"Victory"}
+	"anim_damage"						: {"ja":"ダメージ", "en":"Damaged"}
+	"anim_shield"						: {"ja":"シールド", "en":"Shield"}
+	"anim_avoid"						: {"ja":"回避", "en":"Avoidance"}
+	"anim_die"							: {"ja":"死亡", "en":"Die"}
+	"anim_aimp"							: {"ja":"素手構え", "en":"Handed Aim"}
+	"anim_aimw"							: {"ja":"武器構え", "en":"Weapon Aim"}
+	"anim_aimb"							: {"ja":"弓構え", "en":"Bow Aim"}
+	"anim_spell"						: {"ja":"魔法詠唱", "en":"Magic chant"}
+	"anim_dashw"						: {"ja":"斬りかかり", "en":"Dash Slash"}
+
+	"anim_slash1"						: {"ja":"斬り1", "en":"Slash 1"}
+	"anim_slash2"						: {"ja":"斬り2", "en":"Slash 2"}
+	"anim_slash3"						: {"ja":"斬り3", "en":"Slash 3"}
+	"anim_slash4"						: {"ja":"斬り4", "en":"Slash 4"}
+	"anim_stick1"						: {"ja":"突き", "en":"Stab"}
+	"anim_stick2"						: {"ja":"下突き", "en":"Down Thrust"}
+	"anim_bow1"							: {"ja":"弓打ち1", "en":"Bow Shoot1"}
+	"anim_bow2"							: {"ja":"弓打ち2", "en":"Bow Shoot2"}
+	"anim_shoot1"						: {"ja":"銃撃", "en":"Gun Shoot"}
+	"anim_sweep1"						: {"ja":"振り回し", "en":"Swing"}
+	"anim_raise1"						: {"ja":"掲げる1", "en":"Raise1"}
+	"anim_raise2"						: {"ja":"掲げる2", "en":"Raise2"}
+
+	"anim_punch1"						: {"ja":"パンチ1", "en":"Punch1"}
+	"anim_punch2"						: {"ja":"パンチ2", "en":"Punch2"}
+	"anim_punch3"						: {"ja":"パンチ3", "en":"Punch3"}
+	"anim_kick1"						: {"ja":"キック1", "en":"Kick1"}
+	"anim_kick2"						: {"ja":"キック2", "en":"Kick2"}
+	"anim_blast1"						: {"ja":"波動", "en":"Blast"}
+	"anim_magic1"						: {"ja":"魔法発動", "en":"Magic Shoot"}
+
+	//	アニメパート
+	"animepart"							: {"ja":"アニメパート", "en":"Anime Part"}
+	"animepart0"						: {"ja":"全て再生", "en":"Play All"}
+	"animepart1"						: {"ja":"前～中", "en":"Top～Mid"}
+	"animepart2"						: {"ja":"中～後", "en":"Mid～End"}
+	"animepart3"						: {"ja":"逆再生", "en":"Reverse"}
+	"animepart4"						: {"ja":"前ポーズ", "en":"Top Pose"}
+	"animepart5"						: {"ja":"中ポーズ", "en":"Mid Pose"}
+	"animepart6"						: {"ja":"後ポーズ", "en":"End Pose"}
+	
+	//	リバーブ
+	"reverb"							: {"ja":"リバーブ", "en":"Reverb"}
+	"reverb_none"						: {"ja":"なし", "en":"None"}
+	"reverb_room"						: {"ja":"ルーム", "en":"Room"}
+	"reverb_plain"						: {"ja":"プレイン", "en":"Plain"}
+	"reverb_valley"						: {"ja":"バレー", "en":"Valley"}
+	"reverb_prizon"						: {"ja":"プリズン", "en":"Prizon"}
+	"reverb_cave"						: {"ja":"ケイブ", "en":"Cave"}
+
+	//	スクリーンエフェクト
+	"sfx_flash"							: {"ja":"フラッシュ", "en":"Flash"}
+	"sfx_color0"						: {"ja":"カラー:暗く", "en":"Color:Darken"}
+	"sfx_color1"						: {"ja":"カラー:明るく", "en":"Color:Brighten"}
+	"sfx_color2"						: {"ja":"カラー:セピア", "en":"Color:Sepia"}
+	"sfx_color3"						: {"ja":"カラー:モノトーン", "en":"Color:Monotone"}
+	"sfx_expscale"						: {"ja":"明度調整", "en":"Adjust Brightness"}
+	"sfx_quake0"						: {"ja":"画面揺れ:単発", "en":"Quake:Single"}
+	"sfx_quake1"						: {"ja":"画面揺れ:連続", "en":"Quake:Continuous"}
+	"sfx_raster0"						: {"ja":"ブラー", "en":"Blur"}
+	"sfx_raster1"						: {"ja":"ズームブラー", "en":"Zoom Blur"}
+	"sfx_raster2"						: {"ja":"ラスタースクロール", "en":"Raster Scroll"}
+	"sfx_raster3"						: {"ja":"TVノイズ", "en":"TV Noise"}
+	"lbl_expscale"						: {"ja":"明度スケール", "en":"Brightness"}
+
+	"sfxbit_0"							: {"ja":"カラー", "en":"Color"}
+	"sfxbit_1"							: {"ja":"ラスター", "en":"Raster"}
+	"sfxbit_2"							: {"ja":"画面揺れ", "en":"Quake"}
+
+	//	天気
+	"weather_none"						: {"ja":"なし", "en":"None"}
+	"weather_rain1"						: {"ja":"小雨", "en":"Light rain"}
+	"weather_rain2"						: {"ja":"大雨", "en":"Heavy rain"}
+	"weather_mist1"						: {"ja":"霧", "en":"Mist"}
+	"weather_mist2"						: {"ja":"砂嵐", "en":"Sandstorm"}
+	"weather_cloud1"					: {"ja":"雲の影", "en":"Cloud shadow"}
+	"weather_snow1"						: {"ja":"雪", "en":"Snow fall"}
+
+	//	ベース位置
+	"basepos"							: {"ja":"ベース位置", "en":"Base Position"}
+	"basepos0"							: {"ja":"配置した位置", "en":"Placed Pos"}
+	"basepos1"							: {"ja":"現在の位置", "en":"Current Pos"}
+	"basepos2"							: {"ja":"イベントの目の前", "en":"In front of Event"}
+	"basepos3"							: {"ja":"カスタム座標", "en":"Custom Pos"}
+
+	//	スタック時
+	"onstack"							: {"ja":"引っかかったら", "en":"When stack"}
+	"onstack0"							: {"ja":"歩き続ける", "en":"Keep moving"}
+	"onstack1"							: {"ja":"歩行をスキップ", "en":"Skip moving"}
+	"onstack2"							: {"ja":"ジャンプ", "en":"Jump"}
+	"onstack3"							: {"ja":"ワープ", "en":"Warp"}
+	
+	//	イベントコマンド
+	"cmd_category0"						: {"ja":"一般処理", "en":"General commands"}
+	"cmd_category1"						: {"ja":"変数処理", "en":"Variable commands"}
+	"cmd_category2"						: {"ja":"プレイヤー・パーティ処理", "en":"Player / Party commands"}
+	"cmd_category3"						: {"ja":"画面表示・入力処理", "en":"Screen Display / Input commands"}
+	"cmd_category4"						: {"ja":"シーンの制御", "en":"Scene Control commands"}
+	"cmd_category5"						: {"ja":"操作・演出処理", "en":"Operation / Acting commands"}
+	"cmd_category6"						: {"ja":"バトル用処理", "en":"Battle commands"}
+	
+	"cmd_wait"							: {"ja":"ウェイト", "en":"Wait"}
+	"cmd_ret"							: {"ja":"処理を終了", "en":"Return"}
+	"cmd_if"							: {"ja":"条件分岐", "en":"Branch"}
+	"cmd_if_else"						: {"ja":"その他の場合", "en":"Else Branch"}
+	"cmd_loop"							: {"ja":"ループ", "en":"Loop"}
+	"cmd_script"						: {"ja":"スクリプト実行", "en":"Exec Script"}
+	"cmd_macro"							: {"ja":"マクロ実行", "en":"Exec Macro"}
+	"cmd_macro_retvar"					: {"ja":"戻り値を代入", "en":"Set return value to"}
+	"cmd_label"							: {"ja":"ラベル", "en":"Label"}
+	"cmd_jump"							: {"ja":"ラベルへジャンプ", "en":"Jump to Label"}
+	"cmd_pagejump"						: {"ja":"ページへジャンプ", "en":"Jump to Page"}
+	"cmd_iterate"						: {"ja":"反復処理", "en":"Iterate"}
+	"cmd_iterate_itervar"				: {"ja":"反復する変数", "en":"Var to iterate"}
+	"cmd_iterate_valset"				: {"ja":"値を代入", "en":"Set value to"}
+	"cmd_iterate_keyset"				: {"ja":"キーを代入", "en":"Set key to"}
+	"cmd_iterate_skipnull"				: {"ja":"Nullをスキップ", "en":"Skip Nulls"}
+	"cmd_comment"						: {"ja":"コメント", "en":"Comment"}
+	
+	"cmd_compute"						: {"ja":"変数の設定", "en":"Var Operation"}
+	"cmd_arrayop"						: {"ja":"配列の操作", "en":"Array Operation"}
+	"cmd_tableop"						: {"ja":"テーブルの操作", "en":"Table Operation"}
+	"cmd_globalset"						: {"ja":"グローバル設定の変更", "en":"Global Setting"}
+	"cmd_stageset"						: {"ja":"ステージ設定の変更", "en":"Stage Setting"}
+	"cmd_settingget"					: {"ja":"設定の取得", "en":"Get Setting"}
+
+	"cmd_hpmp"							: {"ja":"HP,MPの操作", "en":"HP,MP Operation"}
+	"cmd_moneyop"						: {"ja":"所持金の増減", "en":"Money Operation"}
+	"cmd_expop"							: {"ja":"経験値の獲得", "en":"Gain Exp"}
+	"cmd_itemop"						: {"ja":"アイテムの増減", "en":"Item Operation"}
+	"cmd_equipop"						: {"ja":"装備の変更", "en":"Equip Change"}
+	"cmd_memberop"						: {"ja":"メンバーの交代", "en":"Member Change"}
+	"cmd_jobop"							: {"ja":"ジョブの操作", "en":"Job Operation"}
+	"cmd_condop"						: {"ja":"コンディションの操作", "en":"Condition Operation"}
+
+	"cmd_showmsg"						: {"ja":"メッセージ", "en":"Message"}
+	"cmd_choices"						: {"ja":"選択肢", "en":"Choices"}
+	"cmd_showui"						: {"ja":"プリセットUI", "en":"Preset UI"}
+	"cmd_showpic"						: {"ja":"ピクチャ配置", "en":"Place Picture"}
+	"cmd_customui"						: {"ja":"カスタムUI", "en":"Custom UI"}
+	"cmd_setuival"						: {"ja":"UIの内容設定", "en":"Set UI value"}
+	"cmd_inputui"						: {"ja":"UIイベントの入力", "en":"Input UI Events"}
+	"cmd_inputui_typeset"				: {"ja":"タイプを代入", "en":"Set Event type to"}
+	"cmd_inputui_nameset"				: {"ja":"ビュー名を代入", "en":"Set View name to"}
+	"cmd_inputui_valset"				: {"ja":"詳細を代入", "en":"Set struct to"}
+	"cmd_focusui"						: {"ja":"UIフォーカスを移動", "en":"Move UI Focus"}
+	"cmd_lockui"						: {"ja":"UI操作のロック", "en":"Lock UI"}
+	
+	"cmd_mapmove"						: {"ja":"マップの移動", "en":"Move Map"}
+	"cmd_mapasset"						: {"ja":"マップアセットの配置", "en":"Place Map Asset"}
+	"cmd_remasset"						: {"ja":"マップアセットの消去", "en":"Remove Map Asset"}
+	"cmd_mapmove_dest"					: {"ja":"移動先の指定", "en":"Destination"}
+	"cmd_battle1"						: {"ja":"バトル(グループ指定)", "en":"Battle(Group)"}
+	"cmd_battle2"						: {"ja":"バトル(詳細設定)", "en":"Battle(Custom)"}
+	"cmd_timescale"						: {"ja":"タイムスケール", "en":"Timescale"}
+	"cmd_gameover"						: {"ja":"ゲームオーバー", "en":"Game Over"}
+	"cmd_gotitle"						: {"ja":"タイトルに戻る", "en":"Go Title"}
+	
+	"cmd_anime"							: {"ja":"アニメーション", "en":"Animation"}
+	"cmd_efx"							: {"ja":"エフェクトの発生", "en":"Emit Effect"}
+	"cmd_facetoface"					: {"ja":"向き合う", "en":"Face to Face"}
+	"cmd_camwork"						: {"ja":"カメラワーク", "en":"Camerawork"}
+	"cmd_cammot"						: {"ja":"カメラモーション", "en":"Camera Motion"}
+	"cmd_actiontool"					: {"ja":"キャラ演出ツール", "en":"Chara Action Tool"}
+	"cmd_snd"							: {"ja":"効果音", "en":"Play Sound"}
+	"cmd_light"							: {"ja":"ライト点灯", "en":"light On/Off"}
+	"cmd_bgm"							: {"ja":"BGMの再生", "en":"Play BGM"}
+	"cmd_screenfxon"					: {"ja":"画面効果ON", "en":"ScreenFX On"}
+	"cmd_screenfxoff"					: {"ja":"画面効果OFF", "en":"ScreenFX Off"}
+	"cmd_move"							: {"ja":"キャラ移動", "en":"Chara Move"}
+	"cmd_freeze"						: {"ja":"フリーズ", "en":"Freeze"}
+
+	"cmd_battleend"						: {"ja":"バトルを終了", "en":"End Battle"}
+	"cmd_battlecmd"						: {"ja":"バトルコマンド実行", "en":"Battle Command"}
+	
+	//	イベントコマンド Tips
+	"cmd_wait_tips"						: {"ja":"指定したミリ秒数だけイベントの実行を待機します。", "en":"Waits for the event to execute for the specified number of mili-seconds."}
+	"cmd_ret_tips"						: {"ja":"このコマンドリストの実行を終了し、呼び出した処理に戻ります。", "en":"Terminates execution of this command list and returns to the calling process."}
+	"cmd_ret_if_tips"					: {"ja":"指定した条件を満たしていた場合に、続く処理を実行します。", "en":"Executes the following commands if the specified conditions are met."}
+	"cmd_loop_tips"						: {"ja":"指定した条件を満たしている間、続く処理をループ実行します。", "en":""}
+	"cmd_script_tips"					: {"ja":"スクリプトを直接実行します。", "en":""}
+	"cmd_macro_tips"					: {"ja":"マクロイベントを実行します。", "en":""}
+	"cmd_label_tips"					: {"ja":"「ラベルへジャンプ」コマンドのジャンプ先のラベルです。", "en":""}
+	"cmd_jump_tips"						: {"ja":"指定したラベルにジャンプします。", "en":""}
+	"cmd_pagejump_tips"					: {"ja":"別ページへジャンプします", "en":""}
+	"cmd_iterate_tips"					: {"ja":"配列かテーブルの各要素に対してループ処理を行います。", "en":""}
+	"cmd_comment_tips"					: {"ja":"処理に影響のないコメントです。", "en":""}
+
+	"cmd_compute_tips"					: {"ja":"様々な計算をしつつ結果を変数に格納します。", "en":""}
+	"cmd_arrayop_tips"					: {"ja":"配列に要素を追加する等の処理を行います。", "en":""}
+	"cmd_tableop_tips"					: {"ja":"テーブルに要素を追加する等の処理を行います。", "en":""}
+	"cmd_globalset_tips"				: {"ja":"グローバルな設定を変更します。この変更は保存されます。", "en":""}
+	"cmd_stageset_tips"					: {"ja":"ステージの設定を変更します。この変更は保存されます。", "en":""}
+	"cmd_settingget_tips"				: {"ja":"グローバル設定／ステージ設定を取得します。", "en":""}
+
+	"cmd_hpmp_tips"						: {"ja":"プレイヤーのHP,MPを回復したり減らしたりします。", "en":""}
+	"cmd_moneyop_tips"					: {"ja":"パーティの所持金を増減します。", "en":""}
+	"cmd_expop_tips"					: {"ja":"プレイヤーの経験値やジョブ経験値を増加します。", "en":""}
+	"cmd_itemop_tips"					: {"ja":"アイテムの入手や所持アイテムの消費をします。", "en":""}
+	"cmd_equipop_tips"					: {"ja":"プレイヤーの装備を変更します。", "en":""}
+	"cmd_memberop_tips"					: {"ja":"パーティメンバーを加入、離脱します。", "en":""}
+	"cmd_jobop_tips"					: {"ja":"プレイヤーのジョブを変更します。", "en":""}
+	"cmd_condop_tips"					: {"ja":"プレイヤーのコンディションを付与、解除します。", "en":""}
+
+	"cmd_showmsg_tips"					: {"ja":"会話ウィンドウを表示します。", "en":""}
+	"cmd_choices_tips"					: {"ja":"選択肢を表示し、結果によって処理を分岐します。", "en":""}
+	"cmd_showui_tips"					: {"ja":"標準機能の色々な機能を持つUIを表示します。", "en":""}
+	"cmd_showpic_tips"					: {"ja":"イベントピクチャを表示します。", "en":""}
+	"cmd_customui_tips"					: {"ja":"カスタムUIを表示します。", "en":""}
+	"cmd_setuival_tips"					: {"ja":"画面内のテキストなどを変更します。", "en":""}
+	"cmd_inputui_tips"					: {"ja":"入力されたUIからのイベントを取得します。", "en":""}
+	"cmd_focusui_tips"					: {"ja":"指定した場所にUIのカーソルを移動します。", "en":""}
+	"cmd_lockui_tips"					: {"ja":"UIの操作を出来なくします。", "en":""}
+	
+	"cmd_mapmove_tips"					: {"ja":"マップの移動をします。", "en":""}
+	"cmd_mapasset_tips"					: {"ja":"マップアセットを配置してステージの形状を変化させます。", "en":""}
+	"cmd_remasset_tips"					: {"ja":"配置されたマップアセットを消去します。", "en":""}
+	"cmd_battle1_tips"					: {"ja":"マップに設定されたエネミーグループとバトルします。", "en":""}
+	"cmd_battle2_tips"					: {"ja":"個別にエネミーグループを設定してバトルします。", "en":""}
+	"cmd_timescale_tips"				: {"ja":"シーン全体のタイムスケールを変化させます。", "en":""}
+	"cmd_gameover_tips"					: {"ja":"この場でゲームオーバーになります。", "en":""}
+	"cmd_gotitle_tips"					: {"ja":"タイトルに戻ります。", "en":""}
+
+	"cmd_anime_tips"					: {"ja":"キャラにアニメーションを再生します。", "en":""}
+	"cmd_efx_tips"						: {"ja":"キャラからエフェクトを発生します。", "en":""}
+	"cmd_facetoface_tips"				: {"ja":"イベントとプレイヤーが向き合います。", "en":""}
+	"cmd_camwork_tips"					: {"ja":"カメラワークを変更します。", "en":""}
+	"cmd_cammot_tips"					: {"ja":"カメラに対してモーションを追加します。", "en":""}
+	"cmd_actiontool_tips"				: {"ja":"キャラ演出ツールを実行します。", "en":""}
+	"cmd_snd_tips"						: {"ja":"キャラから効果音を発生します。", "en":""}
+	"cmd_light_tips"					: {"ja":"キャラからライトを点灯させます。", "en":"Turn on the light from the character."}
+	"cmd_bgm_tips"						: {"ja":"BGMを再生します。", "en":""}
+	"cmd_screenfxon_tips"				: {"ja":"様々な画面効果を追加します。", "en":""}
+	"cmd_screenfxoff_tips"				: {"ja":"現在ある画面効果を消去します。", "en":""}
+	"cmd_move_tips"						: {"ja":"キャラを移動します。", "en":""}
+	"cmd_freeze_tips"					: {"ja":"キャラの動作を一時的に止めます。", "en":""}
+	
+	"cmd_battleend_tips"				: {"ja":"勝利、敗北、又は中止を指定してバトルを強制的に終了します。", "en":""}
+	"cmd_battlecmd_tips"				: {"ja":"バトル用のコマンドを実行します。", "en":""}
+	
+	//	タイプ編集
+	"type_eqtype"						: {"ja":"装備タイプ", "en":"Equip Type"}
+	"type_eqslot"						: {"ja":"装備スロット", "en":"Equip Slot"}
+	"type_elem"							: {"ja":"属性", "en":"Element"}
+	"type_resistg"						: {"ja":"耐性グループ", "en":"Resist Group"}
+	"type_dmgform"						: {"ja":"ダメージ式", "en":"Damage Formula"}
+	"type_jobslot"						: {"ja":"ジョブスロット", "en":"Job Slot"}
+	"type_jobflag"						: {"ja":"専用ジョブフラグ", "en":"Special Job Flag"}
+	"type_skillg"						: {"ja":"スキルグループ", "en":"Skill Group"}
+	"type_battlecmd"					: {"ja":"バトルコマンド", "en":"Battle Command"}
+	"type_eqflag"						: {"ja":"専用装備フラグ", "en":"Special Eq Flag"}
+	"type_tribe"						: {"ja":"種族", "en":"Tribe"}
+	"type_emptyslot"					: {"ja":"空のスロット", "en":"Empty Slot"}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	変数
+	"var_work"							: {"ja":"ワーク変数", "en":"Work Var"}
+	"var_event"							: {"ja":"イベント変数", "en":"Event Var"}
+	"var_global"						: {"ja":"グローバル変数", "en":"Global Var"}
+	"var_system"						: {"ja":"システム変数", "en":"System Var"}
+	"qvar_item"							: {"ja":"アイテム所持数", "en":"Num of Items"}
+	"qvar_enemy"						: {"ja":"エネミー討伐数", "en":"Num of Enemy kill"}
+	"qvar_party"						: {"ja":"パーティ加入", "en":"Party member"}
+	"qvar_quest"						: {"ja":"クエストの状態", "en":"State of Quest"}
+	
+	//	フォーマット
+	"format_own"						: {"ja":"%S の所持", "en":"%S's num"}
+	"format_kill"						: {"ja":"%S を討伐", "en":"%S's num"}
+	"format_state"						: {"ja":"%S の状態", "en":"%S's state"}
+	"format_join"						: {"ja":"%S が加入", "en":"%S is join"}
+	"format_view"						: {"ja":"%S画面", "en":"%S View"}
+
+	//	ファイルタイプ
+	"filetype_bw"						: {"ja":"マップデータ", "en":"Map Data"}
+
+	"vartype0"							: {"ja":"なし", "en":"None"}
+	"vartype1"							: {"ja":"ON/OFF", "en":"ON/OFF"}
+	"vartype2"							: {"ja":"整数", "en":"Integer"}
+	"vartype3"							: {"ja":"実数", "en":"Number"}
+	"vartype4"							: {"ja":"文字列", "en":"String"}
+	"vartype5"							: {"ja":"スクリプト", "en":"Script"}
+	"vartype6"							: {"ja":"なんでも", "en":"Any"}
+
+	//	スキル消費タイプ
+	"skillconsume"						: {"ja":"消費ポイント", "en":"Consuming Point"}
+	"skillconsume0"						: {"en":"MP"}
+	"skillconsume1"						: {"en":"TP"}
+	"skillconsume2"						: {"en":"HP"}
+	"skillconsume3"						: {"en":"MP(％)"}
+	"skillconsume4"						: {"en":"TP(％)"}
+	"skillconsume5"						: {"en":"HP(％)"}
+
+	//	アイテム消費タイプ
+	"itemconsume"						: {"ja":"消費タイプ", "en":"Consume Type"}
+	"itemconsume0"						: {"ja":"消費しない", "en":"None"}
+	"itemconsume1"						: {"ja":"使用時に消費", "en":"Consume on use"}
+	"itemconsume2"						: {"ja":"使用時に10％で消費", "en":"Consume on use 10％"}
+	"itemconsume3"						: {"ja":"使用時に20％で消費", "en":"Consume on use 10％"}
+
+	//	アイテムタイプ
+	"itemtype"							: {"ja":"アイテムタイプ", "en":"Item Type"}
+	"itemtype0"							: {"ja":"通常アイテム", "en":"Normal Item"}
+	"itemtype1"							: {"ja":"キーアイテム", "en":"Key Item"}
+
+	"occasion"							: {"ja":"使用場面", "en":"Occasion"}
+	"occasion0"							: {"ja":"使用不可", "en":"Not to use"}
+	"occasion1"							: {"ja":"バトル", "en":"Battle"}
+	"occasion2"							: {"ja":"メニュー", "en":"Menu"}
+	"occasion3"							: {"ja":"バトル＆メニュー", "en":"Battle & Menu"}
+
+	//	require
+	"req_selchara"						: {"ja":"選択キャラ", "en":"Sel Chara"}
+	"req_atkchara"						: {"ja":"攻撃キャラ", "en":"Atk Chara"}
+	"req_defchara"						: {"ja":"防御キャラ", "en":"Def Chara"}
+
+	"reqfail"							: {"ja":"条件未達成時の表示", "en":"Display on failure"}
+	"reqfail0"							: {"ja":"詰めて消去", "en":"Erase"}
+	"reqfail1"							: {"ja":"空欄にする", "en":"Blank"}
+	"reqfail2"							: {"ja":"グレーアウト", "en":"Gray out"}
+	"reqfail3"							: {"ja":"売り切れ表示", "en":"Sold out"}
+
+	//	ストアタイプ
+	"storetype"							: {"ja":"ストアタイプ", "en":"Store Type"}
+	"storetype0"						: {"ja":"アイテムショップ", "en":"Item Shop"}
+	"storetype1"						: {"ja":"スキルグループ", "en":"Skill Group"}
+	"storetype2"						: {"ja":"ランダム宝箱", "en":"Random Treasure"}
+	"storetype3"						: {"ja":"選択肢", "en":"Choices"}
+
+	//	スキルフラグ
+	"skillflag"							: {"ja":"スキルフラグ", "en":"Skill Flags"}
+	"skillflag0"						: {"ja":"通常攻撃", "en":"Normal Skill"}
+	"skillflag1"						: {"ja":"別の対象を自動選択", "en":"Choose Alt Target"}
+	"skillflag2"						: {"ja":"回避可能", "en":"Can be Avoided"}
+	"skillflag3"						: {"ja":"シールド可能", "en":"Can be shielded"}
+	"skillflag4"						: {"ja":"反射可能", "en":"Can be Reflected"}
+	"skillflag5"						: {"ja":"吸収可能", "en":"Can be Drained"}
+	"skillflag6"						: {"ja":"カウンター可能", "en":"Can be Countered"}
+	"skillflag7"						: {"ja":"かばう可能", "en":"Can be Covered"}
+	"skillflag8"						: {"ja":"ボスには無効", "en":"Ineffective to Boss"}
+	"skillflag9"						: {"ja":"死者にのみ有効", "en":"Only for the Dead"}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	プロパティ値、共通用語
+
+	"lbl_lvar"							: {"ja":"左辺値", "en":"L-value"}
+	"lbl_rvar"							: {"ja":"右辺値", "en":"R-value"}
+	"lbl_arithop"						: {"ja":"操作", "en":"Operation"}
+	"lbl_ovfx"							: {"ja":"オーバーレイFX", "en":"Overlay FX"}
+	"lbl_backop"						: {"ja":"戻る操作", "en":"Back Operation"}
+	"lbl_targetvar"						: {"ja":"対象の変数", "en":"Target Var"}
+	"lbl_getlength"						: {"ja":"長さの取得", "en":"Get Length"}
+	
+	//	プロジェクト内検索
+	"search_gotodb"						: {"ja":"データベースをワード検索", "en":"Search Database by Keyword"}
+	
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	スキルタイプ、その他スキル用プロパティ値
+
+	"skilltype"							: {"ja":"スキルタイプ", "en":"Skill Type"}
+	"skilltype_unusable"				: {"ja":"使用不能", "en":"Unusable"}
+	"skilltype_noop"					: {"ja":"何もしない", "en":"Do nothing"}
+	"skilltype_attack"					: {"ja":"攻撃スキル", "en":"Attack Skill"}
+	"skilltype_heal"					: {"ja":"回復スキル", "en":"Healing Skill"}
+	"skilltype_buff"					: {"ja":"バフスキル", "en":"Buff Skill"}
+	"skilltype_debuff"					: {"ja":"デバフスキル", "en":"Debuff Skill"}
+	"skilltype_enhance"					: {"ja":"強化攻撃スキル", "en":"Enhanced Skill"}
+	"skilltype_macro"					: {"ja":"マクロスキル", "en":"Macro Skill"}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	データベースサイドビュー
+
+	"side_dbview"						: {"ja":"データベース", "en":"Database"}
+	"side_dbview_game"					: {"ja":"ゲーム設定", "en":"Game Setting"}
+	"side_dbview_player"				: {"ja":"プレイヤー", "en":"Player Chara"}
+	"side_dbview_job"					: {"ja":"ジョブ", "en":"Job"}
+	"side_dbview_skill"					: {"ja":"スキル", "en":"Skill"}
+	"side_dbview_enemy"					: {"ja":"エネミー", "en":"Enemy"}
+	"side_dbview_cond"					: {"ja":"コンディション", "en":"Condition"}
+	"side_dbview_item"					: {"ja":"アイテム", "en":"Item"}
+	"side_dbview_weapon"				: {"ja":"武器", "en":"Weapon"}
+	"side_dbview_armor"					: {"ja":"防具", "en":"Armor"}
+	"side_dbview_store"					: {"ja":"ストア", "en":"Store"}
+	"side_dbview_quest"					: {"ja":"クエスト", "en":"Quest"}
+	"side_dbview_macro"					: {"ja":"マクロイベント", "en":"Macro Event"}
+	"side_dbview_map"					: {"ja":"マップ", "en":"Map"}	//	mm
+	"side_dbview_point"					: {"ja":"ポイント", "en":"Point"}	//	mm
+
+	"side_dbview_tips_game"				: {"ja":"ゲーム全体のルールや初期設定を編集します", "en":"Edit the rules and initial settings of the whole game"}
+	"side_dbview_tips_player"			: {"ja":"ゲームで操作するキャラの能力や見た目を編集します", "en":"Edit the ability and appearance of the characters to be operated in the game"}
+	"side_dbview_tips_chara"			: {"ja":"マップに配置するキャラの主に見た目を編集します", "en":"Edit the appearance mainly of the character placed on the map"}
+	"side_dbview_tips_job"				: {"ja":"プレイヤーに設定する職業を編集します。\n能力や技などを付与できます", "en":"Edit the occupation to set for the player.\nYou can grant abilities and skills"}
+	"side_dbview_tips_skill"			: {"ja":"プレイヤーやエネミーの使う魔法や技を編集します", "en":"Edit the magic and techniques used by players and Enemy"}
+	"side_dbview_tips_enemy"			: {"ja":"敵キャラの能力や見た目を編集します", "en":"Edit the ability and appearance of the enemy character"}
+	"side_dbview_tips_cond"				: {"ja":"眠りや混乱のような状態異常を編集します", "en":"Edit abnormalities such as sleep and confusion"}
+	"side_dbview_tips_item"				: {"ja":"様々なタイプのアイテムを編集します", "en":"Edit various types of items"}
+	"side_dbview_tips_weapon"			: {"ja":"プレイヤーが装備する武器の能力や見た目を編集します", "en":"Edit the abilities and appearance of the weapons equipped by the player"}
+	"side_dbview_tips_armor"			: {"ja":"プレイヤーが装備する防具の能力を編集します", "en":"Edit the armor abilities equipped by the player"}
+	"side_dbview_tips_quest"			: {"ja":"ゲームで受けるクエストを編集します", "en":"Edit the quests to be received in the game"}
+	"side_dbview_tips_macro"			: {"ja":"（上級者用）ゲームのどこからでも呼び出せたり\n常時実行できるマクロイベントを編集します", "en":"(ADVANCED) Edit macro events that can be called from anywhere in the game"}
+	
+	"side_dbview_game_setting"			: {"ja":"システム設定", "en":"System Setting"}
+	"side_dbview_game_type"				: {"ja":"各種タイプ", "en":"Various types"}
+	"side_dbview_game_dict"				: {"ja":"ワード辞書", "en":"Word dictionary"}
+	"side_dbview_game_gvar"				: {"ja":"グローバル変数", "en":"Global Var"}
+
+	"lbl_dbedit"						: {"ja":"データベースの編集", "en":"Database Edit"}
+	"lbl_idsort"						: {"ja":"IDの整理", "en":"Organizing IDs"}
+	"lbl_openresdir"					: {"ja":"リソースのフォルダを開く", "en":"Open resource folder"}
+	
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	データベースエディタ
+	
+	"lbl_gametitle"						: {"ja":"ゲームのタイトル", "en":"Game Title"}
+	"lbl_subtitle"						: {"ja":"サブタイトル", "en":"Sub-Title"}
+	"lbl_gamedesc"						: {"ja":"ゲームの説明", "en":"Game Description"}
+	"lbl_macro"							: {"ja":"マクロ", "en":"Macro"}
+	
+	"lbl_price"							: {"ja":"価格", "en":"Price"}
+	"lbl_learnlv"						: {"ja":"習得LV", "en":"Learning LV"}
+	"lbl_requse"						: {"ja":"使用可能条件", "en":"Requiment to use"}
+	"lbl_add_lvtype"					: {"ja":"成長タイプの追加", "en":"New Growth Type"}
+	"lbl_apply_lvtype"					: {"ja":"成長タイプの適用", "en":"Apply Growth Type"}
+	"lbl_manage_lvtype"					: {"ja":"成長タイプの管理…", "en":"Manage Growth Type..."}
+	"lbl_copytsv"						: {"ja":"TSVをコピー", "en":"Copy TSV"}
+	"lbl_pastetsv"						: {"ja":"TSVをペースト", "en":"Paste TSV"}
+	"lbl_skill"							: {"ja":"スキル", "en":"Skill"}
+	"lbl_defskill"						: {"ja":"デフォルトスキル", "en":"Default Skill"}
+	"lbl_actionid"						: {"ja":"アクションID", "en":"Action ID"}
+
+	"lbl_map"							: {"ja":"マップ", "en":"Map"}
+	"lbl_portal"						: {"ja":"ポータル", "en":"Portal"}
+	"lbl_option"						: {"ja":"オプション", "en":"Options"}
+	"lbl_baseoption"					: {"ja":"基本オプション", "en":"Base Options"}
+	"lbl_lvoption"						: {"ja":"習得オプション", "en":"LV Options"}
+	"lbl_ownable"						: {"ja":"永久取得", "en":"Permanently obtained"}
+	"lbl_input_bool"					: {"ja":"ON/OFF", "en":"ON/OFF"}
+	"lbl_input_number"					: {"ja":"数値", "en":"Number"}
+	"lbl_input_string"					: {"ja":"文字列", "en":"String"}
+	"lbl_input_script"					: {"ja":"スクリプト", "en":"Script"}
+	"lbl_input_var"						: {"ja":"変数の選択", "en":"Select Variable"}
+	"lbl_input_dataid"					: {"ja":"データID", "en":"Data ID"}
+	"lbl_lvcurve"						: {"ja":"レベルカーブ", "en":"Lv Curve"}
+	"lbl_battleai"						: {"ja":"バトルAI", "en":"Battle AI"}
+	"lbl_contturns"						: {"ja":"継続ターン", "en":"Continuous Turns"}
+	"lbl_addskilllist"					: {"ja":"スキル一覧に追加", "en":"Add to SkillList"}
+	"lbl_enemyuse"						: {"ja":"エネミーが使用可能", "en":"Enemy Useable"}
+	"lbl_dropitem"						: {"ja":"取得アイテム", "en":"Drop Item"}
+	"lbl_droprate"						: {"ja":"ドロップ率", "en":"Drop Rate"}
+	"lbl_issteal"						: {"ja":"盗むの対象", "en":"For Steal skill"}
+	"lbl_actnum"						: {"ja":"行動回数", "en":"Action Num"}
+	"lbl_ailv"							: {"ja":"AIレベル", "en":"AI Level"}
+	"lbl_rndwgt"						: {"ja":"ランダム率", "en":"Random Rate"}
+	"lbl_affecttgr"						: {"ja":"ターゲット率が有効", "en":"Affect TargetRate"}
+	"lbl_userate"						: {"ja":"使用率", "en":"Use Rate"}
+	"lbl_turnbits"						: {"ja":"ターンを限定", "en":"Limited Turn"}
+	"lbl_eqtypebits"					: {"ja":"有効装備", "en":"Capable Equips"}
+	"lbl_iniequips"						: {"ja":"初期装備", "en":"Initial Equips"}
+	"lbl_eqlockbits"					: {"ja":"装備ロック", "en":"Locked Equips"}
+	"lbl_enemy"							: {"ja":"エネミー", "en":"Enemy"}
+	"lbl_lineup"						: {"ja":"ラインナップ", "en":"Lineup"}
+	"lbl_condlv"						: {"ja":"コンディションLV", "en":"Condition LV"}
+	"lbl_countrem"						: {"ja":"発動で状態解除", "en":"Remove Condition"}
+	"lbl_uncommandable"					: {"ja":"コマンド不可", "en":"Uncommandable"}
+	"lbl_revcond"						: {"ja":"相反コンディション", "en":"Reverse Condition"}
+	"lbl_xcondbits"						: {"ja":"他状態の発動をブロック", "en":"Block other Conditions"}
+	"lbl_remcondbits"					: {"ja":"他状態を解除", "en":"Remove other Conditions"}
+	"lbl_rem_die"						: {"ja":"死亡で解除", "en":"Removed on Death"}
+	"lbl_rem_battle"					: {"ja":"バトル終了で解除", "en":"Removed on End Battle"}
+	"lbl_rem_turn"						: {"ja":"ターンで解除", "en":"Removed by Turns"}
+	"lbl_rem_walk"						: {"ja":"歩数で解除", "en":"Removed by Walks"}
+	"lbl_efx_start"						: {"ja":"発動エフェクト", "en":"Start Effect"}
+	"lbl_efx_cont"						: {"ja":"継続エフェクト", "en":"Continuous Effect"}
+	"lbl_showpop"						: {"ja":"付与・解除をポップアップ", "en":"Popup put/remove"}
+	"lbl_ignoredead"					: {"ja":"死者には無効", "en":"Not valid for the Dead"}
+	"lbl_showstat"						: {"ja":"ステータス画面に表示", "en":"Show in Status"}
+	"lbl_ammo"							: {"ja":"発射体", "en":"Ammo"}
+	"lbl_stacknum"						: {"ja":"所持可能数", "en":"Stack Num"}
+	"lbl_needown"						: {"ja":"所持が必要", "en":"Need to own"}
+	"lbl_macroarg"						: {"ja":"マクロ引数", "en":"Macro Argument"}
+	"lbl_cmdtgt"						: {"ja":"コマンド対象", "en":"Command Target"}
+	"lbl_pinchfriends"					: {"ja":"ピンチの味方", "en":"Friends in a pinch"}
+	"lbl_atkresult"						: {"ja":"攻撃結果", "en":"Attack Result"}
+
+	"lbl_changeable"					: {"ja":"変更可", "en":"Changeable"}
+	"lbl_unchangeable"					: {"ja":"変更不可", "en":"Unchangeable"}
+	
+	"dict_category0"					: {"ja":"ステータス", "en":"Status"}
+	"dict_category1"					: {"ja":"メニュー／コマンド", "en":"Menu/Command"}
+	"dict_category2"					: {"ja":"画面表示", "en":"Screen representation"}
+	"dict_category3"					: {"ja":"メッセージ", "en":"Message"}
+	
+	"dialog_resid_title"				: {"ja":"リソースの選択", "en":"Select Resource"}
+	"dialog_lvtype_title"				: {"ja":"成長タイプの管理", "en":"Manage Growth Types"}
+
+	////////// システム設定
+
+	"setting_basic"						: {"ja":"基本設定", "en":"Basic Setting"}
+	"setting_startup"					: {"ja":"開始設定", "en":"StartUp Setting"}
+	"setting_status"					: {"ja":"システム状態", "en":"System Status"}
+	"setting_ui"						: {"ja":"メニュー画面状態", "en":"Menu UI Status"}
+	"setting_command"					: {"ja":"バトルコマンド", "en":"Battle Command"}
+
+	"setting_battletype"				: {"ja":"バトルシステム", "en":"Battle System"}
+	"setting_battletype0"				: {"ja":"ターン制", "en":"Turn-based"}
+	"setting_battletype1"				: {"ja":"行動順制", "en":"Action order-based"}
+	"setting_battletype2"				: {"ja":"リアルタイム", "en":"Real time"}
+	"setting_maxmembers"				: {"ja":"最大パーティ人数", "en":"Maximum Members"}
+	"setting_jxptype"					: {"ja":"ジョブポイント加算", "en":"Job Point addition"}
+	"setting_hotelheal"					: {"ja":"宿屋の回復", "en":"Healing of the inn"}
+	"setting_lvupheal"					: {"ja":"レベルアップで回復", "en":"Recover by leveling up"}
+	"setting_showhidden"				: {"ja":"物陰のプレイヤーを表示", "en":"Show hidden player"}
+	"setting_inimembers"				: {"ja":"開始メンバー", "en":"Initial Members"}
+	"setting_titlemap"					: {"ja":"タイトルマップ", "en":"Title Map"}
+	"setting_inimap"					: {"ja":"開始マップ", "en":"Initial Map"}
+	"setting_inimap_open"				: {"ja":"このマップを開く", "en":"Open this Map"}
+	"setting_playervisible"				: {"ja":"プレイヤーの表示", "en":"Player Visible"}
+	"setting_playermodel"				: {"ja":"プレイヤーの表示モデル", "en":"Player Model"}
+	"setting_ctrmode"					: {"ja":"操作可能状態", "en":"Controllable State"}
+	"setting_walkspd"					: {"ja":"歩行の速度", "en":"Walking Speed"}
+	"setting_menuopenable"				: {"ja":"メニュー開閉可能", "en":"Menu Open Enabled"}
+	"setting_randomencount"				: {"ja":"ランダムエンカウント", "en":"Radom Encounter"}
+	"setting_saveable"					: {"ja":"セーブ可能", "en":"Save Enabled"}
+	"setting_weather"					: {"ja":"天気", "en":"Weather"}
+	"setting_exitmap"					: {"ja":"脱出先マップ", "en":"MapExit Destination"}
+	"setting_mapexitable"				: {"ja":"マップ脱出有効", "en":"MapExit Enabled"}
+	
+	"setting_jxptype_auto"				: {"ja":"自動分配", "en":"Auto"}
+	"setting_jxptype_manual"			: {"ja":"手動で割り振り", "en":"Manual"}
+
+	"setting_hotelheal0"				: {"ja":"HP,MPのみ回復", "en":"Heal only HP, MP"}
+	"setting_hotelheal1"				: {"ja":"状態異常も回復", "en":"Heal Bad Status too"}
+	"setting_hotelheal3"				: {"ja":"死亡も回復", "en":"Revive too"}
+	
+	////////// スキルプロパティ
+
+	"lbl_atkform"						: {"ja":"威力式", "en":"Attack Formula"}
+//	"lbl_dmgrate"						: {"ja":"ダメージ補正", "en":"Damage Rate"}
+	"lbl_spdrate"						: {"ja":"速度補正", "en":"Speed Rate"}
+	"lbl_hitrate"						: {"ja":"命中補正", "en":"Hit Rate"}
+	"lbl_atknum"						: {"ja":"攻撃回数", "en":"Attack Count"}
+	"lbl_putconds"						: {"ja":"コンディションの付与", "en":"Put Conditions"}
+	"lbl_remconds"						: {"ja":"コンディションの解除", "en":"Remove Conditions"}
+	"lbl_aimani"						: {"ja":"構えアニメ", "en":"Aiming Anime"}
+	"lbl_useact"						: {"ja":"発動アクション", "en":"Using Action"}
+	"lbl_atkact"						: {"ja":"攻撃アクション", "en":"Attack Action"}
+	"lbl_hitact"						: {"ja":"ヒットアクション", "en":"Hit Action"}
+	"lbl_endact"						: {"ja":"終了アクション", "en":"Ending Action"}
+	"lbl_nextskill"						: {"ja":"続くスキル", "en":"Next Skill"}
+	"lbl_macroid_battle"				: {"ja":"バトル時マクロ", "en":"Macro in Battle"}
+	"lbl_macroid_menu"					: {"ja":"メニュー時マクロ", "en":"Macro in Menu"}
+	"lbl_acttest"						: {"ja":"アクションのテスト", "en":"Action Test"}
+	
+	////////// オプション
+
+	"optcatg0"							: {"ja":"能力変化", "en":"Ability change"}
+	"optcatg1"							: {"ja":"スキル実行", "en":"Skill exec"}
+	"optcatg2"							: {"ja":"自動実行", "en":"Auto exec"}
+
+	"lbl_dmgrate"						: {"ja":"ダメージ倍率", "en":"Damage Rate"}
+	"lbl_dmgval"						: {"ja":"ダメージ値", "en":"Damage Value"}
+	"lbl_formbits"						: {"ja":"有効なダメージ", "en":"Valid Damages"}
+	"lbl_elembits"						: {"ja":"有効な属性", "en":"Valid Elements"}
+	"lbl_rateadj"						: {"ja":"確率調整", "en":"Rate Adjust"}
+	"lbl_userate"						: {"ja":"使用率", "en":"Use Rate"}
+	"lbl_dmggainrate"					: {"ja":"ダメージ加算(％)", "en":"Damage gain(％)"}
+	"lbl_blockbycond"					: {"ja":"状態で発動をブロック", "en":"Blocked by Conditions"}
+	"lbl_reldmg"						: {"ja":"相対ダメージ", "en":"Relative Damage"}
+	"lbl_replacecmd"					: {"ja":"コマンドを置き換え", "en":"Replace Command"}
+	"lbl_cmdtoreplace"					: {"ja":"置き換え元", "en":"Command to replace"}
+	"lbl_successrate"					: {"ja":"成功率", "en":"Success Rate"}
+	"lbl_setchangeskills"				: {"ja":"変化するスキルを指定", "en":"Specify Skills to change"}
+	"lbl_needshield"					: {"ja":"要:盾装備", "en":"Req: Shield Equipped"}
+	"lbl_sealbits"						: {"ja":"封印時に不発", "en":"Unuse when Sealed"}
+	"lbl_onetime"						: {"ja":"1回のみ", "en":"One Time"}
+	
+	////////// require
+
+	"lbl_varcmp"						: {"ja":"変数を比較", "en":"Compare Variables"}
+	"lbl_ownitem"						: {"ja":"アイテムを所持", "en":"Own Item"}
+	"lbl_inparty"						: {"ja":"パーティ加入", "en":"Joined to Party"}
+	"lbl_visitmap"						: {"ja":"マップに来訪", "en":"Visited to Map"}
+
+	"lbl_isdead"						: {"ja":"死亡しているか", "en":"Is Dead"}
+	"lbl_iscommandable"					: {"ja":"コマンド可能か", "en":"Is Commandable"}
+
+	"aipagereq_team70"					: {"ja":"仲間がダメージ", "en":"Friends Damaged"}
+	"aipagereq_teamdead"				: {"ja":"仲間に死亡者", "en":"Friends Dead"}
+	"aipagereq_turn"					: {"ja":"ターン", "en":"Battle Turn"}
+	
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	マクロ・イベントエディタ
+
+	"lbl_runmode"						: {"ja":"実行モード", "en":"Run Mode"}
+	"lbl_runatmenu"						: {"ja":"メニュー時にも実行", "en":"Run at Menu"}
+	"lbl_runreqs"						: {"ja":"実行条件", "en":"Requirements to run"}
+	"lbl_pagereqs"						: {"ja":"ページ選択条件", "en":"Requirements"}
+	"lbl_addcmd"						: {"ja":"コマンド挿入", "en":"Insert Command"}
+	"lbl_editcmd"						: {"ja":"コマンド編集", "en":"Edit Command"}
+	"lbl_reqs"							: {"ja":"条件", "en":"Requirements"}
+	"lbl_noreq"							: {"ja":"条件なし", "en":"None"}
+	"lbl_appearreqs"					: {"ja":"登場条件", "en":"Requirements to appear"}
+	"lbl_pagememo"						: {"ja":"ページのメモ", "en":"Page Memo"}
+	"lbl_pararun"						: {"ja":"並列実行", "en":"Parallel Run"}
+	"lbl_link_var"						: {"ja":"変数とリンク", "en":"Link to Variable"}
+	"lbl_unlink_var"					: {"ja":"変数のリンクを解除", "en":"Unlink to Variable"}
+	"lbl_errorop"						: {"ja":"エラー時の処理", "en":"Operation on Error"}
+	"lbl_op"							: {"ja":"操作", "en":"Operation"}
+	"lbl_remap"							: {"ja":"マップの再配置", "en":"Restore Map"}
+	"lbl_choice"						: {"ja":"選択肢", "en":"Choice"}
+	"lbl_choices"						: {"ja":"選択肢", "en":"Choices"}
+	"lbl_choicenum"						: {"ja":"選択肢の数", "en":"Num of Choices"}
+	"lbl_btmchoice"						: {"ja":"最後の選択肢", "en":"Bottom of Choice"}
+	"lbl_retm1"							: {"ja":"-1を返す", "en":"Return -1"}
+	"lbl_backenable"					: {"ja":"戻るボタン", "en":"Back Button"}
+	"lbl_arrayvar"						: {"ja":"配列変数", "en":"Array var"}
+	"lbl_keeprset"						: {"ja":"レンダー設定を変えない", "en":"Keep Render settings"}
+	"lbl_turn"							: {"ja":"振り向く", "en":"Turn"}
+	"lbl_noenemies"						: {"ja":"エネミー無し", "en":"No Enemies"}
+	"lbl_movehere"						: {"ja":"ここに移動", "en":"Move to here"}
+	"lbl_setbasepos"					: {"ja":"ベース位置をここに設定", "en":"Set Base Position here"}
+	"lbl_waitreqs"						: {"ja":"条件を待つ", "en":"Wait for Requirements"}
+	"lbl_equipmyown"					: {"ja":"所持品を装備", "en":"Equip my own"}
+	"lbl_hp1"							: {"ja":"死亡無効", "en":"Prevent Death"}
+	
+	"lbl_runmode0"						: {"ja":"手動呼び出し", "en":"Manual Call"}
+	"lbl_runmode1"						: {"ja":"自動実行", "en":"Auto Exec"}
+	"lbl_runmode2"						: {"ja":"自動実行(並列)", "en":"Auto Exec(Parallel)"}
+
+	//	イベントプロパティ
+	"lbl_moveaction"					: {"ja":"移動アクション", "en":"Move Action"}
+	"lbl_movespd"						: {"ja":"移動速度", "en":"Move Speed"}
+	"lbl_playani"						: {"ja":"アニメを再生", "en":"Play Anime"}
+	"lbl_ui"							: {"ja":"UI", "en":"UI"}
+	"lbl_who"							: {"ja":"誰が", "en":"Who"}
+	"lbl_specify"						: {"ja":"指定する", "en":"Specify"}
+	"lbl_notspecify"					: {"ja":"指定なし", "en":"Not Specified"}
+	"lbl_battlemap"						: {"ja":"バトルマップ", "en":"Battle Map"}
+	"lbl_enemy"							: {"ja":"エネミー", "en":"Enemy"}
+	"lbl_enemies"						: {"ja":"エネミー", "en":"Enemies"}
+	"lbl_escapable"						: {"ja":"逃走可能", "en":"Escapable"}
+	"lbl_filterg"						: {"ja":"フィルターグループ", "en":"Filter Groups"}
+	"lbl_encrate"						: {"ja":"遭遇率", "en":"Encounter rate"}
+	"lbl_restoreonend"					: {"ja":"終了時に元に戻す", "en":"Restore on Finish"}
+	"lbl_anyslot"						: {"ja":"何れかのスロット", "en":"Any slot"}
+	"lbl_waitaction"					: {"ja":"アクションを待つ", "en":"Wait for Action"}
+	"lbl_waitfade"						: {"ja":"フェードを待つ", "en":"Wait for Fade"}
+	"lbl_focusto"						: {"ja":"フォーカス先", "en":"Focus UI to"}
+	"lbl_reqnum"						: {"ja":"条件の数", "en":"Num of Requrements"}
+	"lbl_chase"							: {"ja":"追尾", "en":"Chase"}
+	"lbl_searchrad"						: {"ja":"索敵半径", "en":"Search Radius"}
+	"lbl_victory"						: {"ja":"勝利", "en":"Victory"}
+	"lbl_draw"							: {"ja":"中止", "en":"Draw"}
+	"lbl_lose"							: {"ja":"敗北", "en":"Lose"}
+	"lbl_focuspos"						: {"ja":"焦点の位置", "en":"Focus Pos"}
+	"lbl_placeasset"					: {"ja":"マップアセット配置", "en":"Place Map Asset"}
+	"lbl_placeparma"					: {"ja":"永久配置", "en":"Permanent Place"}
+	"lbl_stage"							: {"ja":"ステージ", "en":"Stage"}
+
+	//	イベントロール
+	"lbl_storeclerk"					: {"ja":"ショップ店員", "en":"Store Clerk"}
+	"lbl_hotelclerk"					: {"ja":"宿屋店員", "en":"Hotel Clerk"}
+	"lbl_doctor"						: {"ja":"医者", "en":"Doctor"}
+	"lbl_storeid"						: {"ja":"ストアID", "en":"Store-ID"}
+	
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	リソースエディター
+	
+	"side_resource"						: {"ja":"リソース", "en":"Resource"}
+	"side_res_chara_vox"				: {"ja":"キャラボクセル", "en":"Chara Voxel"}
+	"side_res_obj_vox"					: {"ja":"オブジェクトボクセル", "en":"Object Voxel"}
+	"side_res_equip_vox"				: {"ja":"装備ボクセル", "en":"Equip Voxel"}
+	"side_res_event_pic"				: {"ja":"イベントピクチャ", "en":"Event Picture"}
+	"side_res_enemy_pic"				: {"ja":"エネミーピクチャ", "en":"Enemy Picture"}
+	"side_res_enemy_pm"					: {"ja":"エネミーモデル", "en":"Enemy Model"}
+	"side_res_efx"						: {"ja":"エフェクト", "en":"Effect"}
+	"side_res_map_vox"					: {"ja":"マップボクセル", "en":"Map Voxel"}
+	"side_res_map_asset"				: {"ja":"マップアセット", "en":"Map Asset"}
+	"side_res_bgm"						: {"ja":"BGM", "en":"BGM"}
+	"side_res_snd"						: {"ja":"効果音", "en":"Sound Effect"}
+	"side_res_voice"					: {"ja":"ボイス", "en":"Voice"}
+	"side_res_icon"						: {"ja":"アイコン", "en":"Icon"}
+	"side_res_uimap"					: {"ja":"UI", "en":"UI"}
+	"side_res_chara_etc"				: {"ja":"キャラ一般", "en":"Chara Etc"}
+
+	"lbl_editvox"						: {"ja":"ボクセルを編集", "en":"Edit Voxel"}
+	"lbl_editmot"						: {"ja":"モーションを編集", "en":"Edit Motion"}
+	"lbl_resedit"						: {"ja":"リソースの編集", "en":"Resource Edit"}
+	"lbl_plcpush"						: {"ja":"配置プッシュ", "en":"Push Placing"}
+	"lbl_fitfloor"						: {"ja":"床面に張り付け", "en":"Pasted on the floor"}
+	"lbl_bgm"							: {"ja":"BGM", "en":"BGM"}
+	"lbl_looptest"						: {"ja":"ループをテスト", "en":"Test BGM Loop"}
+	"lbl_centerpos"						: {"ja":"中心位置", "en":"Center Pos"}
+	"lbl_attackpos"						: {"ja":"攻撃位置", "en":"Attack Pos"}
+	"lbl_groundpos"						: {"ja":"接地位置", "en":"Ground Pos"}
+	"lbl_eventuse"						: {"ja":"イベントとして配置", "en":"Place as Event"}
+	"lbl_editasset"						: {"ja":"アセットを編集", "en":"Edit this Asset"}
+	"lbl_editall_mtl"					: {"ja":"マテリアル一括設定", "en":"Edit Materials"}
+	"lbl_copy_pal"						: {"ja":"パレット画像をコピー", "en":"Copy Palette Image"}
+	"lbl_paste_pal"						: {"ja":"パレット画像をペースト", "en":"Paste Palette Image"}
+	"lbl_reset_pal"						: {"ja":"パレットをリセット", "en":"Reset Palette"}
+	"lbl_reset_col"						: {"ja":"カラーをリセット", "en":"Reset Color"}
+	"lbl_load_img"						: {"ja":"画像を読み込む", "en":"Load Image"}
+	"lbl_copy_code"						: {"ja":"文字コードをコピー", "en":"Copy Uniode"}
+	"lbl_copy_img"						: {"ja":"画像をコピー", "en":"Copy Image"}
+	"lbl_paste_img"						: {"ja":"画像をペースト", "en":"Paste Image"}
+	"lbl_talkstyle"						: {"ja":"話し方", "en":"How to say"}
+	"lbl_voiceactor"					: {"ja":"ボイスアクター", "en":"Voice Actor"}
+	"lbl_voicemodel"					: {"ja":"ボイスモデル", "en":"Voice Model"}
+	"lbl_addttsvoice"					: {"ja":"TTSボイスを追加", "en":"Add TTS Voice"}
+	"lbl_addsndvoice"					: {"ja":"音声ボイスを追加", "en":"Add Sound Voice"}
+	"lbl_genvoice"						: {"ja":"ボイス生成", "en":"Generate Voice"}
+	"lbl_wall"							: {"ja":"壁", "en":"Wall"}
+	"lbl_floor"							: {"ja":"床", "en":"Floor"}
+	"lbl_poke"							: {"ja":"はみ出し", "en":"Poke"}
+	"lbl_battle"						: {"ja":"バトル", "en":"Battle"}
+	"lbl_viewinfo"						: {"ja":"情報表示", "en":"Information"}
+	"lbl_mapcol"						: {"ja":"マップのコリジョン", "en":"Map Collision"}
+	"lbl_updatesnd"						: {"ja":"サウンド情報の更新", "en":"Update Sound info"}
+	"lbl_sndcheck"						: {"ja":"サウンド確認", "en":"Sound Check"}
+	"dlg_sndimport"						: {"ja":"サウンドのインポート", "en":"Import Sound"}
+	"pop_sndimport"						: {"ja":"効果音ファイルをインポートしました", "en":"Imported a Sound file"}
+	"pop_bgmimport"						: {"ja":"BGMファイルをインポートしました", "en":"Imported a BGM file"}
+
+	"lbl_baseui"						: {"ja":"ベースとなるUI", "en":"Base UI"}
+	"lbl_langui"						: {"ja":"使用するUI(言語ごとに選択)", "en":"UI used (Select for each language)"}
+	"lbl_addui"							: {"ja":"UIを追加", "en":"Add UI"}
+	"lbl_useui"							: {"ja":"このUIを使用する", "en":"Use this UI"}
+	"lbl_editui"						: {"ja":"UIを編集", "en":"Edit UI"}
+	"lbl_changeui"						: {"ja":"UIを置き換える", "en":"Replace UI"}
+	"confirm_editbaseui"				: {"ja":"ベースUIを編集しますか？\nゲームが正常に起動しなくなる恐れがあります。", "en":"Would you like to edit the base UI? \nThe game may get not to start properly."}
+
+	"icon_general"						: {"ja":"一般アイコン", "en":"General Icons"}
+	"icon_tribe"						: {"ja":"種族アイコン", "en":"Tribe Icons"}
+	"icon_elem"							: {"ja":"属性アイコン", "en":"Element Icons"}
+	"icon_cond"							: {"ja":"状態アイコン", "en":"Condition Icons"}
+	"icon_equip"						: {"ja":"装備アイコン", "en":"Equip Icons"}
+	"icon_skill"						: {"ja":"スキルアイコン", "en":"Skill Icons"}
+	"icon_item"							: {"ja":"アイテムアイコン", "en":"Item Icons"}
+	"icon_weapon"						: {"ja":"武器アイコン", "en":"Weapon Icons"}
+	"icon_armor"						: {"ja":"防具アイコン", "en":"Armor Icons"}
+	"icon_etc"							: {"ja":"その他アイコン", "en":"Etc Icons"}
+
+	"confirm_save_befor_edit"			: {"ja":"編集するために保存する必要があります。", "en":"This file need to be saved for editing."}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	マップサイドビュー
+	
+	"side_map"							: {"ja":"マップの一覧", "en":"Map List"}
+
+	"ctxmenu_mapside_newmap"			: {"ja":"新規マップ", "en":"Create Map"}
+	"ctxmenu_mapside_newcopy"			: {"ja":"このマップをコピーして作成", "en":"Create from this Map"}
+	"ctxmenu_mapside_duplicate"			: {"ja":"マップを複製", "en":"Duplicate Map"}
+	"ctxmenu_mapside_delete"			: {"ja":"マップを削除", "en":"Delete Map"}
+	"ctxmenu_mapside_newgroup"			: {"ja":"新規グループ", "en":"Create Group"}
+	"ctxmenu_mapside_rengroup"			: {"ja":"グループ名を変更", "en":"Rename Group"}
+	"ctxmenu_mapside_delgroup"			: {"ja":"グループを削除", "en":"Delete Group"}
+	"ctxmenu_mapside_movgroup"			: {"ja":"グループを移動", "en":"Move Group"}
+	
+	"dlg_newmap_title"					: {"ja":"新規マップの作成", "en":"Create New Map"}
+	"dlg_newmap_mapid"					: {"ja":"マップID", "en":"Map ID"}
+	"dlg_newmap_template"				: {"ja":"テンプレートの選択", "en":"Select a Template"}
+
+	"confirm_mapside_delgroup"			: {
+		"ja":"このマップグループを削除しますか？\n中のマップは未分類に移動します。\n\n[W]注意：この操作は取り消しできません。", 
+		"en":"Do you want to delete this map group? \nThe maps inside will be moved to Uncategorized.\n\n[W]Caution: This operation cannot be undone."
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	マップエディター
+	
+	"editor_map"						: {"ja":"マップエディター", "en":"Map Editor"}
+	"editor_map_label_viewlist"			: {"ja":"ビューリスト", "en":"View List"}
+	
+	"lbl_listev"						: {"ja":"イベント", "en":"Events"}
+	"lbl_listmk"						: {"ja":"マーカー", "en":"Markers"}
+	"lbl_listboth"						: {"ja":"イベント＆マーカー", "en":"Events, Markers"}
+
+	"lbl_customevent"					: {"ja":"カスタムイベント", "en":"Custom Event"}
+	"lbl_placeevent"					: {"ja":"イベントを配置", "en":"Place an Event"}
+	"lbl_placemarker"					: {"ja":"マーカーを配置", "en":"Place a Marker"}
+	"lbl_placeportal"					: {"ja":"ポータルを配置", "en":"Place a Portal"}
+	"lbl_placeinimap"					: {"ja":"ここを初期マップ位置に設定", "en":"Set here to the Initial map point"}
+	"lbl_placedoor"						: {"ja":"開くドアに変換", "en":"To Openable Door"}
+	"lbl_placeportaldoor"				: {"ja":"ポータルドアに変換", "en":"To Portal Door"}
+	"lbl_tomapasset"					: {"ja":"アセットに登録","en":"Register to Assets"}
+	"lbl_tocustomevent"					: {"ja":"カスタムイベントに変換", "en":"To Custom Event"}
+	
+	//	マップエディター用メニュー
+	"editor_map_menu_edit_mapsize"		: {"ja":"マップのサイズ変更", "en":"Resize Map"}
+	"editor_map_menu_edit_mapclear"		: {"ja":"マップのクリア", "en":"Clear Map"}
+	"editor_map_menu_edit_grow_sels"	: {"ja":"選択を拡大", "en":"Grow Selection"}
+	"editor_map_menu_edit_fit_sels"		: {"ja":"選択をフィット", "en":"Fit Selection"}
+	"editor_map_menu_edit_to_asset"		: {"ja":"アセット化", "en":"To Asset"}
+	"editor_map_menu_edit_encount"		: {"ja":"エンカウントの設定", "en":"Encounting Setting"}
+	
+	//	ツール
+	"editor_map_tool"					: {"ja":"ツール選択", "en":"Tools"}
+	"editor_map_tool_sel"				: {"ja":"選択ツール", "en":"Selection Tool"}
+	"editor_map_tool_level"				: {"ja":"整地ツール", "en":"Leveler Tool"}
+	"editor_map_tool_pen"				: {"ja":"ペンツール", "en":"Pen Tool"}
+	"editor_map_tool_column"			: {"ja":"柱ツール", "en":"Column Tool"}
+	"editor_map_tool_fence"				: {"ja":"フェンスツール", "en":"Fence Tool"}
+	"editor_map_tool_column"			: {"ja":"柱ツール", "en":"Column Tool"}
+	"editor_map_tool_slope"				: {"ja":"坂道ツール", "en":"Slope Tool"}
+	"editor_map_tool_roof"				: {"ja":"屋根ツール", "en":"Roof Tool"}
+	"editor_map_tool_exterior"			: {"ja":"エクステリアツール", "en":"Exterior Tool"}
+	"editor_map_tool_interior"			: {"ja":"インテリアツール", "en":"Interior Tool"}
+	"editor_map_tool_tree"				: {"ja":"自然物ツール", "en":"Nature Tool"}
+	"editor_map_tool_plant"				: {"ja":"草花ツール", "en":"Plant Tool"}
+	"editor_map_tool_crack"				: {"ja":"クラックツール", "en":"Crack Tool"}
+	"editor_map_tool_water"				: {"ja":"水面ツール", "en":"Water Tool"}
+	"editor_map_tool_carpet"			: {"ja":"カーペットツール", "en":"Carpet Tool"}
+	"editor_map_tool_barrior"			: {"ja":"進入禁止ツール", "en":"NoEntry Tool"}
+	"editor_map_tool_asset"				: {"ja":"アセットツール", "en":"Asset Tool"}
+	"editor_map_tool_event"				: {"ja":"イベントツール", "en":"Event Tool"}
+
+	"lbl_mapgen"						: {"ja":"マップ生成", "en":"Generate Map"}
+	"lbl_encountgroup"					: {"ja":"エンカウントグループ", "en":"Encounting Group"}
+	"lbl_battletest"					: {"ja":"バトルのテスト", "en":"Battle Test"}
+	"lbl_encountarea"					: {"ja":"エンカウントの範囲", "en":"Encounting Area"}
+	"lbl_selmode"						: {"ja":"選択モード", "en":"Selecting mode"}
+	"lbl_mapprops"						: {"ja":"マップのプロパティ", "en":"Map Properties"}
+	"lbl_copyfrommap"					: {"ja":"別マップからコピー", "en":"Copy from another map"}
+	
+
+	"penmode_paint"						: {"ja":"ペイント", "en":"Paint"}
+	"penmode_attach"					: {"ja":"アタッチ", "en":"Attach"}
+	"penmode_erace"						: {"ja":"イレース", "en":"Erace"}
+	"penmode_fill"						: {"ja":"フィル", "en":"Fill"}
+	"penmode_clear"						: {"ja":"クリア", "en":"Clear"}
+	"penmode_box"						: {"ja":"ボックス", "en":"Box"}
+	"penmode_line"						: {"ja":"ライン", "en":"Line"}
+	"penmode_wipe"						: {"ja":"ワイプ", "en":"Wipe"}
+
+	//	ラベル
+	"lbl_map_rsetid_link"				: {"ja":"マップ設定とリンク", "en":"Link with Map's Settings"}
+	"lbl_map_selblk"					: {"ja":"ブロックの選択", "en":"Select Block"}
+	"lbl_map_selfblk"					: {"ja":"フリーブロックの選択", "en":"Select FreeBlock"}
+	"lbl_map_mode"						: {"ja":"モード", "en":"Mode"}
+	"lbl_map_pen"						: {"ja":"ペンタイプ", "en":"Pen type"}
+	"lbl_map_from"						: {"ja":"開始位置", "en":"From"}
+	"lbl_map_to"						: {"ja":"終了位置", "en":"To"}
+	"lbl_map_offset"					: {"ja":"オフセット", "en":"Offset"}
+	"lbl_map_setblock"					: {"ja":"ブロックを置き換える", "en":"Replace Block"}
+	"lbl_map_eracefblk"					: {"ja":"フリーブロックの削除", "en":"Erace FreeBlock"}
+	"lbl_map_savedselections"			: {"ja":"保存された選択範囲", "en":"Saved Selections"}
+	"lbl_mapshot"						: {"ja":"全体マップ", "en":"Map Shot"}
+	"lbl_mapshotmode"					: {"ja":"縮小マップの表示", "en":"Map Viewing Mode"}
+	"lbl_automapping"					: {"ja":"オートマッピング", "en":"Auto Mapping"}
+	"lbl_selblock"						: {"ja":"ブロック選択", "en":"Block Select"}
+	"lbl_selasset"						: {"ja":"アセットの選択", "en":"Select Asset"}
+	"lbl_encntrate"						: {"ja":"エンカウント率", "en":"Encounter Rate"}
+	"lbl_groupnum"						: {"ja":"グループ数", "en":"Group Num"}
+	"lbl_asset"							: {"ja":"アセット", "en":"Asset"}
+	"lbl_eventlist"						: {"ja":"イベントリスト", "en":"Event List"}
+
+	"lbl_map_cursize"					: {"ja":"現在のサイズ", "en":"Current Size"}
+	"lbl_map_floorheight"				: {"ja":"床の高さ", "en":"Floor Height"}
+	"lbl_map_clearevents"				: {"ja":"イベントのクリア", "en":"Clear Events"}
+	
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	デバッグ
+	"act_debug"							: {"ja":"デバッグ", "en":"Debug"}
+	"menu_debug"						: {"ja":"デバッグ", "en":"Debug"}
+	"menu_debug_start"					: {"ja":"デバッグを開始", "en":"Start Debug"}
+	"menu_debug_selectslot"				: {"ja":"開始地点の選択", "en":"Select a Start point"}
+	"menu_debug_setting"				: {"ja":"デバッグ設定", "en":"Debug Settings"}
+	"menu_debug_title"					: {"ja":"タイトル画面から", "en":"From Title Scene"}
+	"menu_debug_here"					: {"ja":"この場所からデバッグ", "en":"Debug from this point"}
+	"menu_debug_clearsavedata"			: {"ja":"セーブデータを初期化", "en":"Clear Save Data"}
+	
+	"confirm_clearsavedata"				: {"ja":"セーブデータを全てクリアしますか？", "en":"Are you sure to clear all save data?"}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	ビルド
+	"act_build"							: {"ja":"ビルド", "en":"Build"}
+	"dialog_build"						: {"ja":"ビルドダイアログ", "en":"Build Dialog"}
+	"pop_loginforbuild"					: {"ja":"ビルドをするにはログインが必要です。", "en":"Login is required to build."}
+	
+	"lbl_owntickets"					: {"ja":"所有チケット", "en":"Owned tickets"}
+	"lbl_buyticket"						: {"ja":"チケットを購入", "en":"Buy Tickets"}
+
+	"build_step1"						: {"ja":"1. ビルドサーバーへアップロード", "en":"1. Upload to BuildServer"}
+	"build_step2"						: {"ja":"2. ビルドの実行", "en":"2. Running a Build"}
+	"build_step3"						: {"ja":"3. 結果をダウンロード", "en":"3. Download the Result"}
+	
+	"build_webgl"						: {"ja":"WebGL (html,js)", "en":"WebGL (html,js)"}
+	"build_webgl_desc"					: {"ja":"ウェブブラウザで動作するhtml, js等をビルドします。\nPCやスマートフォンでプレイ可能です。", "en":"Build HTML, JS, etc. that run in a web browser.\nCan be played on PC or Smartphone."}
+	"build_win32"						: {"ja":"Windows (exe)", "en":"Windows (exe)"}
+	"build_win32_desc"					: {"ja":"Windows PC用のアプリをビルドします。", "en":"Windows .exe"}
+	"build_android_desc"				: {
+		"ja":"Android用のアプリをビルドします。出力フォルダ内にあるbuild_apk.batを実行するとAPKが生成されます。", 
+		"en":"Windows .exe"
+	},
+	"build_ios_desc"				: {
+		"ja":"iPhone/iPad用のアプリをビルドします。出力されたxcodeファイルをMac上でビルドしてください。", 
+		"en":"Windows .exe"
+	},
+
+	"lbl_build_openoutdir"				: {"ja":"出力フォルダを開く", "en":"Open Output folder"}
+	"confirm_overwrite_outdir"			: {"ja":"出力先のフォルダが存在します。上書きしますか？", "en":"The output folder exists. Do you want to overwrite it?"}
+	
+	"lbl_outdirname"					: {"ja":"出力フォルダ名", "en":"Output Folder"}
+	"lbl_exename"						: {"ja":"exeファイル名", "en":"Exe File name"}
+	"lbl_apkpackage"					: {"ja":"APKパッケージ名", "en":"APK Package Name"}
+	"lbl_usesw"							: {"ja":"サービスワーカーを使用", "en":"Use ServiceWorker"}
+	"lbl_debuggl"						: {"ja":"グラフィックをデバッグ", "en":"Debug Graphics"}
+
+	"lbl_build_connect"					: {"ja":"ビルドサーバーに接続しています。", "en":"Connecting to build server."}
+	"lbl_build_completed"				: {"ja":"🎉 [S]ゲームのビルドが完了しました！", "en":"🎉 [S]The game build was completed!"},
+
+	"pop_build_starterr"				: {"ja":"ビルドが開始できませんでした。", "en":"Build could not start."}
+	
+	"lbl_build_zipping"					: {"ja":"アップロードのためにプロジェクトをzip圧縮中です。", "en":"Zipping project for upload.", },
+	"tmpl_build_confirm"				: {
+		"ja":"ビルドを開始しますか？ビルドが成功するとチケットが消費されます。\n[P]現在の所持数: $own\n使用する枚数: $use",
+		"en":"Do you want to start the build? When the build was successful, a ticket will be consumed. \n[P]You have: $v",
+	},
+	"tmpl_build_noticket"				: {"ja":"ビルドチケットが足りません\n現在の所持数 $own\n使用する枚数 $use\n", "en":"Running game build... $v"},
+
+	"tmpl_build_running"				: {"ja":"ゲームのビルドを実行しています… $v", "en":"Running game build... $v"},
+	"tmpl_build_error"					: {"ja":"ゲームのビルドが失敗しました\n$v", "en":"Game build failed\n$v"},
+	
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	プラグイン
+	"menu_file_plugin"					: {"ja":"プラグインマネージャー", "en":"Plugin Manager"}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	テンプレートインストール
+	"confirm_asset_install"				: {
+		"ja":"プロジェクトにデータが存在しません。\nデフォルトのデータをインストールしますか？",
+		"en":"No data exists in the project. \nDo you want to install default data?",
+	}
+	"asset_install"						: {
+		"ja":"デフォルトのアセットをダウンロード・インストールしています。しばらくお待ちください。",
+		"en":"Downloading and installing default assets. Please wait for a moment."
+	}
+	"asset_install_done"				: {
+		"ja":"アセットのインストールが完了しました。ツールを再読み込みします。",
+		"en":"Downloading and installing default assets. Please wait for a moment."
+	}
+	"asset_install_title"				: {"ja":"アセットのダウンロード中", "en":"Downloading assets"}
+
+	"lbl_closetool"						: {"ja":"ツールを閉じる", "en":"Close tool"}
+	
+	
+	//	override
+	"menu_file_relaunch"				: {"ja":"RPG-Coboを再読み込み", "en":"Reload RPG-Cobo"}
+	"tmpl_popen_blender_addon"			: {"ja":"[#ddd]$name のアドオンをインストール中\n", "en":"[#ddd]Installing $name add-ons"}
+	"pop_relaunch"						: {"ja":"RPG-Coboがリロードされました", "en":"RPG-Cobo has been reloaded"}
+
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	//	UI
+
+	//	main menu => DictProps
+	//	info 
+	"ui_info_top"						: {"ja":"上部情報表示", "en":"Show Top Information"}
+	"ui_info_top_time"					: {"ja":"表示時間", "en":"Display time"}
+	"ui_info_timer"						: {"ja":"タイマー表示", "en":"Show Timer"}
+	"ui_info_money"						: {"ja":"所持金表示", "en":"Show Money"}
+	"ui_pop_damage"						: {"ja":"ダメージポップアップ", "en":"Popup Damage"}
+	//	message
+	"ui_message_talk"					: {"ja":"会話ウィンドウ", "en":"Talk Window"}
+	"ui_message_log"					: {"ja":"ログメッセージ", "en":"Log Message"}
+	//	misc
+	"ui_misc_waitclick"					: {"ja":"クリック待ち", "en":"Wait for Click"}
+	"ui_misc_levelup"					: {"ja":"レベルアップ表示", "en":"Show LevelUp"}
+	"ui_misc_btnhelp"					: {"ja":"ボタンヘルプ", "en":"Button Help"}
+	//	dialog
+	"ui_dialog_choices"					: {"ja":"選択ダイアログ", "en":"Selection Dialog"}
+	"ui_dialog_confirm"					: {"ja":"確認ダイアログ", "en":"Confirm Dialog"}
+	"ui_dialog_selchara"				: {"ja":"キャラ選択ダイアログ", "en":"Chara Selection Dialog"}
+	"ui_dialog_buyitem"					: {"ja":"アイテム売買ダイアログ", "en":"Item buy/sell Dialog"}
+	
+});

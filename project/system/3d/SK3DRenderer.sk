@@ -1,0 +1,784 @@
+
+//	tyoitest
+
+enum ViewportSize
+{
+	VP_FULL = -1
+	VP_HALF = -2
+	VP_QUAT = -3
+	VP_EIGHTH = -4
+}
+
+local fbattach = { "color0" = 0, "color1" = 1, "color2" = 2, "color3" = 3, "color4" = 4, "color5" = 5, "color6" = 6, "color7" = 7, "depth" = 8, "stencil" = 9, "depthstencil" = 10, };
+
+////////////////////////////////////////////////////
+//	※RenderTargetは直接オブジェクトを持っているべき。
+//	Texture, FrameBufferに拡張を施す
+
+Texture.params <- null;		//	w,h,fmt,lv
+
+//	※なんか奇数のサイズにすると謎に描画が変になるので偶数に切り上げるように。。。。
+local _texsize( s, vp){
+	return s>=0 ? s : (Math.max( vp>>(-1-s) , 4) + (vp&1));
+}
+
+function Texture::prepare( r){
+	create( _texsize( params.w, r.rtw), _texsize( params.h, r.rth), params.fmt, params["flags"]||0, params["lv"]||1);
+	return this;
+}
+
+function Texture::resized( r){
+	if( !params) return this;
+	if( params.w < 0 || params.h < 0) prepare( r);
+	return this;
+}
+
+FrameBuffer.params <- null;	//	color0, depth, ...
+
+function FrameBuffer::prepare( r){
+	foreach( i, v in params){
+		local rt = r.findRenderTarget( v);
+		this[ fbattach[i] ] = rt;
+	}
+	return this;
+}
+
+function FrameBuffer::resized( r){
+	return this;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	実行環境によってレンダリングを調整するヒント。グローバルに一つある。
+//	実際のレンダリング品質はシャドウの解像度、SSAO,SSGIなどの設定にも左右される。
+//	LV.4 : 完全フル解像度。よっぽどのゲーミングPC用かSS撮影用
+//	LV.3 : 高性能ゲーミングPC。1440pまでフル解像度。
+//	LV.2 : 一般ゲーミングPC、ゲーミングスマホ。1080pまでフル解像度
+//	LV.1 : 廉価ゲーミングPC、高級スマホ。900pまでフル解像度
+//	LV.0 : オンボードPC、一般スマホ。720pまで。
+
+class RenderHint
+{
+	maxreso = 1080;				//	最大解像度。これ以上はアップスケールで対応。
+	antialias = 1;				//	none, fxaa, smaa。
+	upscale = 1;				//	bilinear, sgsr。
+	ssao_reso = 0;				//	SSAOの解像度。半分、等倍
+	ssao_qua = 1;				//	fast, normal, quality
+	ssgi_reso = 0;				//	SSGIの解像度。半分、等倍。※等倍はとても重いのでSS撮影用
+	ssgi_qua = 1;				//	fast, normal, quality
+	shadow_qua = 1;				//	シャドウの品質はどう設定させようか？ブラー、解像度、
+	blur_qua = 1;				//	色々なところで掛かるブラーの品質を指定。最大サンプリング数。
+	
+	function set( t){
+		foreach( i,v in t){
+			if( i in this) this[i] = v;
+		}
+	}
+};
+
+::renderhint <- RenderHint();
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	SK3DRenderer
+//
+
+class SK3DRenderer
+{
+	static PassRegistory = {};
+
+	scn = null;
+	env = null;
+	camera = null;				//	Camera
+	ocull = null;				//	OcclusionCulling maindisplistのオクルージョンカリング。クエリのタイミングはパスで。
+	
+	//	render resolution
+	rtreso = 1080;				//	1080pより上はアップスケールされる
+	rtw = -1;
+	rth = -1;
+	upscale = 1.0;				//	アップスケーリングのスケール
+	
+	//	render targets
+	finaltarget = null;
+	finalvp = null;
+	temptargets = null;
+	
+	//	rener passes
+	mainpass = null;			//	SK3DRenderPass
+	bgpass = null;				//	BackgroundPass : mainpassの中で実行する
+
+	//	weather
+	weather = null;				//	SK3DWeather : mainpassの中で実行する
+	foweather = null;			//	{ weather, w, speed } : フェードアウトするweather。
+
+	//	context
+	currenttarget = null;
+	displist = null;			//	main camera SK3DDisplayList
+	paused = false;				//	ポーズ状態なら3Dレンダリングをスキップできる。メインパスで各自判断
+	
+	//	depth query
+	depthpb = null;				//	PixelBuffer
+	
+	constructor( s){
+		scn = s;
+		finalvp = (0,0,0,0);
+		displist = SK3DDisplayList();
+		temptargets = {};
+		camera = s.maincamera;
+		bgpass = PassRegistory.ColorBackgroundPass();
+	}
+	
+	function setCamera( c){
+		camera = c;
+	}
+
+	//	e : SK3DEnvironment
+	//	eには全てのレンダリング設定が含まれているため、これを呼び出すことで初めてこのレンダラーが
+	//	使用可能になる。再度呼び出した際は以前のレンダーパスは全て破棄されて作り直される。
+	function setEnvironment( e){
+		env = e;
+		if( !e.worldpos) e.worldpos = Vector3D();
+		//	
+		// printf( "RENDERER setEnvironment!!!!!!!!! %S\n%S\n", e.data["renderpass"], encodeJSON( e.data, 1));
+		local rp = e.data["renderpass"] || 0;
+		switch( rp){
+		case 0: mainpass = PassRegistory.LegacyRenderPass( e.data); break;
+		case 1: mainpass = PassRegistory.PBRForwardRendererPass( e.data); break;
+		case 2: mainpass = PassRegistory.PBRDeferredRendererPass( e.data); break;
+		}
+		gcTempTargets();
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	target
+	
+	//	パラメータを指定してレンダーターゲット(主にテクスチャ)を作成する。
+	//	ここから作ると画面解像度の変化を反映させることができる。
+	function createRenderTarget( p){
+		local rt;
+		if( p["w"] && p["h"] && "fmt" in p){
+			rt = Texture();
+		}else
+		if( p["color0"] || p["depth"]){	//	FrameBufferはここから作る必要もないが、、、
+			rt = FrameBuffer();
+		}else{
+			throw Exception( "invalid RenderTarget parameters: ".. encodeJSON( p));
+		}
+		rt.params = p;
+		rt.prepare( this);
+		return rt;
+	}
+	
+	//	メインパスのターゲットを検索する。一応サブパスのも掘り下げて検索できるがsetupPass中ではやらないこと。
+	function findRenderTarget( name, d=1){
+		if( name instanceof RenderTarget) return name;
+		return mainpass.findRenderTarget( name, d);
+	}
+
+	//	一時使用のテクスチャをパス間で使いまわすために使用する。
+	function findTempTarget( seed, p){
+		if( temptargets[seed]) return temptargets[seed];
+		local tex = createRenderTarget( p);
+		return temptargets[seed]<-tex;
+	}
+
+	//	どこからの参照もなくなったテンポラリターゲットを消去する。
+	function gcTempTargets(){
+		foreach( tex in temptargets){
+			if( refcount( tex) <= 1) removi;
+		}
+	}
+	
+	//	レンダリングターゲットを設定する。nullを指定すると元のターゲットに設定される。
+	function setRenderTarget( t, vp, cls=false){
+		if( t){
+			currenttarget = t;
+			skSetRenderTarget( t);
+			skSetViewport( vp);
+		}else{
+			currenttarget = finaltarget;		//	ok??
+			skSetRenderTarget( finaltarget);
+			skSetViewport( vp || finalvp);
+		}
+		if( cls){	//	glClearすると速くなるんだとか
+			skClearScreen( #ClearParam( 0,0,0,0, 1));
+		}
+	}
+
+	//	ビューポートサイズからレンダリング解像度を更新する。
+	function updateRenderResolution( vp){
+		local rt = #(0,0), ups = 1.0;
+		if( vp[3] > rtreso){
+			ups = float( vp[3])/rtreso;
+			rt.set( vp[2]*rtreso/vp[3], rtreso);
+		}else{
+			rt.set( vp[2], vp[3]);
+		}
+		if( rtw != rt[0] || rth != rt[1]){
+			upscale = ups;
+			resizeTargets( rt[0], rt[1]);
+		}
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	depth query
+
+	//	ビューポート座標を指定してその場所のデプス値を取得する。
+	//	※ツール用。ゲームで使うなら要最適化
+	function queryDepth( u, v){
+		local ztex = mainpass["ztex"];
+		if( !ztex) return 1.0;
+		local pb = PixelBuffer();
+		local old = skSetRenderTarget( ztex);
+		local x = u*ztex.width, y = v*ztex.height;
+		pb.readPixels( x, y, 1, 1);
+		skSetRenderTarget( old);
+		local bb = ByteBuffer();
+		pb.download( bb);
+		bb.endian = 0; local d = bb.geti()>>>8;	//	LEの上位24bits?
+		return d / 16777215.0;
+	}
+
+	function queryWorldPos( u, v){
+		local d = queryDepth( u, v);
+		local p = Vector3D( u, v, d).scale( 2.0, -2.0, 2.0).add( -1.0, 1.0, -1.0);
+		local im = #Matrix();
+		local im = camera.prjmat.mult44( camera.viewmat, im).invert44( im);
+		local w = p.transformw( im);
+		p.scale( 1.0/w);
+		return p;
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	render
+
+	static oldvp = (0,0,0,0);
+
+	function render( vp){
+		currenttarget = finaltarget = skGetRenderTarget();
+		if( finaltarget){
+			oldvp[0] = finaltarget.width; oldvp[1] = finaltarget.height;
+		}else{
+			skGetScreenSize( oldvp);
+		}
+		if( vp[0] >= oldvp[0] || vp[1] >= oldvp[1] || vp[0]+vp[2] <= 0 || vp[1]+vp[3] <= 0) return;
+		//	prepare render
+		skGetViewport( oldvp);
+		skSetViewport( vp);
+		skPushMatrix( 0, 1, 2);
+		skPushRenderStates();
+		updateRenderResolution( vp);
+		if( mainpass.needsetup) mainpass.setupPass( this);
+		foreach( i, v in vp) finalvp[i] = v;
+		local cam = camera;
+		cam.setViewport( vp);
+		prepareDisplayList( displist, cam, -1);	//	maindisplistは最初に作る。prepassでも要る場合がある。
+		ocull?.cull( cam, displist);			//	ocullが設定されている場合にここでオクルージョンカリング。
+		//	bind env
+		skBindEnvironment( env);
+		//	メインレンダーパスを実行。中でサブパスを流す。
+		mainpass.performPass( this);
+		//	finish render
+		skClearLights();
+		setRenderTarget( null, oldvp);
+		skPopMatrix( 2, 1, 0);
+		skPopRenderStates();
+	}
+	
+	function resizeTargets( w, h){
+		if( w != rtw || h != rth){
+			gcTempTargets();
+			rtw = w; rth = h;
+			foreach( t in temptargets) t.resized( this);
+			//	setupPassではレンダリングターゲット等は全て生成されなおす
+			if( mainpass.needsetup) mainpass.setupPass( this);
+			else mainpass.targetsResized( this);
+		}
+	}
+	
+	function prepareDisplayList( dlist, cam, passmask){
+		dlist.clear();
+		dlist.setCamera( cam);
+		dlist.cullNodes( scn.objs, passmask);
+		dlist.sort();
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	weather
+	//	
+
+	//	
+	function setWeather( wd){
+		weather = wd["type"] && SK3DWeather.create( wd);
+		foweather = null;
+	}
+
+	//	
+	function fadeWeather( wd, time){
+		local w = wd["type"] && SK3DWeather.create( wd);
+		local t = foweather = { weather=weather, w=1.0}, self = this;
+		weather = w;
+		setInterval( @( dt){	//	フェード
+			if( (t.w-=dt*1.0/time) <= 0.0){
+				self.foweather = null; return undefined;
+			}
+		}, 1);
+	}
+
+	//	天気でのライティング調整。x:dir FdFr, y:ibl Fd, z:ibl Fr
+	function weatherLit(){
+		local v = #Vector3D();
+		v( weather ? weather.litscale : 1.0);
+		local w = foweather["w"];
+		if( w) v.lerp( (foweather.weather||Weather).litscale, w, v);
+		return v;
+	}
+
+	//	デカールのエフェクト描画前の天気描画。雲、霧
+	function weatherPassA(){
+		local w = foweather["w"] || 0.0;
+		if( foweather["weather"]["performPassA"]) foweather.weather.performPassA( this, w);
+		if( weather["performPassA"]) weather.performPassA( this, 1.0-w);
+	}
+	
+	//	デカールの描画後。こちらは普通の描画と置換マップ描画で更にB,Cに分かれる
+	function weatherPassBC( src){
+		local w = foweather["w"] || 0.0;
+		if( foweather["weather"]["performPassB"]) foweather.weather.performPassB( this, w);
+		if( weather["performPassB"]) weather.performPassB( this, 1.0-w);
+		//
+		if( !weather["performPassC"] && !foweather["weather"]["performPassC"]) return src;
+		//	ピンポン的にバッファに描画。最後に出力したバッファを最終描画のソースにする
+		local dst = findTempTarget( src.params.w+123812, src.params);
+		if( foweather["weather"]["performPassC"]){
+			local tmp = src; src = dst; dst = tmp;
+		}
+		if( weather["performPassC"]){
+			foweather.weather.performPassC( this, w, src, dst);
+			src = dst;
+		}
+		weather?.performPassA( this, 1.0-w);
+		if( weather["performPassC"]){
+			foweather["weather"]?.performPassC( this, w, src, dst);
+		}
+		return src;
+	}
+}
+
+//	カスタムなレンダーパスはこのクラスをextendしてperformPassに実装
+//	
+//	＠setupPassは最初の描画時かSK3DRenderer.setupPass()を呼び出すことで実行される。
+//	この時、すでに作られていたリソース等はすべて作り直される。
+//	
+class SK3DRenderPass
+{
+	enabled = true;
+	target = null;					//	SK3DRenderTarget ... nullの場合はビューポート
+	viewport = null;				//	
+
+	ps = null;
+	needsetup = true;
+	
+	constructor( t){
+		if( t) setPassSetting( t);
+	}
+
+	function setPassSetting( t){
+		ps = t;
+		needsetup = true;
+	}
+	function setupPass( r){
+		needsetup = false;
+	}
+	function targetsResized( r){}
+	function performPass( r){}
+
+	static function createMaterial( tecname){
+		local m1 = Material();
+		if( tecname) m1.tec = skFXFindTechnique( tecname);
+		m1.cullface = m1.depthtest = m1.depthmask = 0;
+		m1.miscmat0 = Matrix();
+		return m1;
+	}
+
+	//	直下のサブパスそれぞれを引数にfnを実行。
+	function foreachSubpass( fn){
+		foreach( i, v in getclass( this)){
+			if( this[i] instanceof SK3DRenderPass) ~( fn, this, this[i]);
+		}
+	}
+
+	//	直下のターゲットそれぞれを引数にfnを実行。
+	function foreachTarget( fn){
+		foreach( i, v in getclass( this)){
+			if( this[i] instanceof RenderTarget) ~(fn, this, this[i]);
+		}
+	}
+	
+	//	階層下って探し回るので頻繁に呼び出すのはNG
+	//	※また、setupPassの順番がtableの順なのでメインパス以外のを取得しようとしても大抵失敗する。
+	function findRenderTarget( name, d=1){
+		local t = this[name];
+		if( t instanceof RenderTarget) return t;
+		if( --d >= 0){
+			foreach( i, v in getclass( this)){
+				if( this[i]["findRenderTarget"])
+					if( t = this[i]?.findRenderTarget( name, d)) return t;
+			}
+		}
+		return null;
+	}
+}
+
+
+/////////////////////////////////////////////////////
+//	
+//	※※※※※ExposureはCPUにダウンロードする形式に変更！
+//	
+
+class ExposureState
+{
+	static S = 100.0;		//	Sensor sensitivity
+	static K = 12.5;		//	reflected-light meter calibration constant
+	static q = 0.65;		//	?
+
+	//	露光調整範囲の初期設定パラメータ。
+	ev100 = 10.0;			//	露光値。この値は変化しないで、lavgの値が使われていく。
+	autoexposure = false;	//	オート露光調整
+	autospeed = 1.0;		//	調整速度。
+	evrange = (-4.0, 12.0);	//	露光の範囲。exposureは反転するので小さい数字がmaxに。-4.0~12.0とか
+
+	//	※ev100形式で保存したほうが良いような感じ。
+	curev = 1.0;			//	現在の露光。evrangeの幅で
+	tgtev = 1.0;			//	レンダリング結果から取得したLavg。AutoExposurePassは毎フレームここをアップデートしていく。
+
+	function setPassSetting( ps){
+		ev100 = ps["ev100"] || 13.0;
+		autoexposure = ps["autoexposure"] || false;
+		autospeed = ps["autospeed"] || 1.0;
+		evrange = clone (ps["evrange"] || ExposureState.evrange);
+		curev = tgtev = ev100;
+	}
+
+	function getExposure(){
+		return toExposure( curev);
+	}
+
+	/////////////////////////////////////////////////////////////////
+	//	単位変換
+
+	//	EV100 = log2(Lavg * (S/K))
+	static function toEV100( lavg){
+		return Math.log2( lavg * 8.0);
+	}
+
+	//	H = 1 /Lmax. Lmax = (78/qS) * 2^EV100
+	static function toExposure( ev100){
+		return 1.0 / (1.2 * Math.exp2( ev100));
+	}
+	
+	static function toLuminance( ev100){
+		return Math.exp2( ev100 - 3.0);	//	3==log2(S/K)
+	}
+
+	//	C = 250 : the incident-light meter calibration constant
+	//	E = 2^EV100 / (S/C)
+	static function toIlluminance( ev100){
+		return 2.5 * Math.exp2( ev100);
+	}
+}
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	Fog
+//
+
+with Fog
+{
+	function setData( t){
+	}
+
+	function computeParams( cam){
+	}
+}
+
+
+class DepthFog extends Fog
+{
+	fogc = 0x000000ff;		//	フォグカラー
+	zoffs   = 0.0;			//	Zオフセット
+	klin = 1.0;				//	リニアフォールオフ
+	kexp = 0.0;				//	expフォールオフ
+
+	function setData( t){
+		fogc = t.fogc;
+		zoffs = t.zoffs;
+		klin = t.klin;
+		kexp = t.kexp;
+		computeParams( cam);
+	}
+
+	function computeParams( cam){
+		setParams( zoffs, klin, kexp, 0.0, (fogc>>>24)/255.0, ((fogc>>>16)&255)/255.0, ((fogc>>>8)&255)/255.0, (fogc&255)/255.0);
+	}
+	
+	function getColor( v){
+		return fogc;
+	}
+
+	function getFallOffZ(){
+		//	z' = z + zoffs;
+		//	klin*z' + exp( kexp*z') > 0.99
+	}
+}
+
+local gs = Vector3D( 0.228912, 0.466611, 0.304478);		//	青強め
+
+class AtmosphereFog extends Fog
+{
+	+sunvec = gs;				//	Vector3D
+	+esun = gs;					//	Vector3D
+	+br = gs;					//	Vector3D
+	+bm = gs;					//	Vector3D
+	g = 0.0;					//	float
+
+	function atovec( v, a){
+		v( a[0], a[1], a[2]);
+	}
+	
+	function atovec2( v, a){
+		v( Math.max( a[0], 0.001), Math.max( a[1], 0.001), Math.max( a[2], 0.001));
+	}
+	
+	function setData( t){
+		atovec( sunvec, t.sunvec);
+		atovec( esun, t.esun);
+		atovec2( br, t.br);
+		atovec2( bm, t.bm);
+		g = t.g;
+		// computeParams();
+	}
+
+	function computeParams( cam){
+		local vmat = cam.viewmat;
+		local brit = 20.0;
+		local bRM = br + bm;
+		local ibRMEsun = esun / bRM;
+		local bRpi  = br * ibRMEsun * (3.0 / (16.0*Math.PI) * brit);
+		local bMpig = bm * ibRMEsun * ((1.0-g)*(1.0-g)/(4.0*Math.PI) * brit);
+		local sv = #Vector3D();
+		local sunv = esun.dot( gs);
+		sv( sunvec).transform0( vmat).normalize();
+		setParams(
+			  sv.x,   sv.y,   sv.z,  sunv,
+			 -bRM.x, -bRM.y, -bRM.z,  0.0,
+			 bRpi.x, bRpi.y, bRpi.z,  1.0+g*g,
+			 bMpig.x,bMpig.y,bMpig.z,-2.0*g
+		);
+	}
+	
+	function getColor( v){
+		local brit = 20.0;
+		local bRM = br + bm;
+		local ibRMEsun = esun / bRM;
+		local bRpi  = br * ibRMEsun * (3.0 / (16.0*Math.PI) * brit);
+		local bMpig = bm * ibRMEsun * ((1.0-g)*(1.0-g)/(4.0*Math.PI) * brit);
+		//
+		local costh = v.dot( sunvec);
+		local c = bRpi*( 1.0+costh*costh) + bMpig*Math.pow( (1.0+g*g)+(-2.0*g)*costh,-1.5);
+		c.x = Math.saturate( c.x);
+		c.y = Math.saturate( c.y);
+		c.z = Math.saturate( c.z);
+		// c.saturate();
+		return ((c.x * 255.0)<<24) | ((c.y * 255.0)<<16) | ((c.z * 255.0)<<8) | 0xff;
+	}
+
+	function getFallOffZ(){
+		//	local bRM = br + bm;
+		//	exp( -bRM * z ) < 0.005; 
+		//	-bRM * z < loge( 0.005)
+		//	z < loge( 0.005) / -bRM
+		local loge = Math.logn( 0.005, 2.71828182845904);
+		local bRM = br + bm;
+		local ibRM = -Math.max( bRM.x, Math.max( bRM.y, bRM.z));
+		// local ibRM = -( bRM.x + bRM.y + bRM.z)/3.0;
+		return loge / ibRM;
+	}
+}
+
+//	PBRで使用可能なフォグ。他のフォグはlegacyレンダリングでのみ使用可能
+class PbrFog extends Fog
+{
+	+color = Vector3D();
+	density = 1.0;
+	zoffs = 0.0;
+	yplane = 0.0;
+	yfalloff = 1.0;
+
+	function setData( t){
+		local c = t.color;
+		color( c>>>24, (c>>>16)&255, (c>>>8)&255).scale( Math.pow( 1.1, (c&255)-128)/255.0);
+		density = t.density;
+		yplane = t.yplane;
+		yfalloff = t.yfalloff;
+	}
+
+	function computeParams( cam, ex){
+		// .x = density .y = -fallof*(camy-height) .z = density * exp(-fallof*(camy-height))
+		local im = cam.viewmat.invert34( #Matrix());
+		// printf( "camy? %S \n", im[13]); cam.viewmat.print();
+		local foff = -( yfalloff * (im[13] - yplane));
+		setParams(
+			// density, yplane, density * Math.exp( foff), yfalloff,
+			density, -yplane, density * Math.exp( foff), yfalloff,
+			color.x*ex, color.y*ex, color.z*ex, zoffs,
+			0,0,0,0,
+			0,0,0,0
+		);
+		// printf( "-------\n");	printf( "%S %S %S %S  %S %S %S\n", density, -yplane, density * Math.exp( foff), yfalloff, color.x*ex, color.y*ex, color.z*ex);
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	SK3DEnvironment
+//	
+
+class SK3DEnvironment extends Environment
+{
+	id = ""
+	envlights = null;		//	enviroment lights
+	data = null;
+
+	constructor( t=null){
+		if( t){
+			setData( t);
+		}
+	}
+
+	function setData( t){
+		data = t;
+		id = t["id"] || "*";
+		//	legacy ambient
+		if( t["ambup"]){
+			ambup = t.ambup;
+			ambdown = t.ambdown;
+		}
+		//	lights
+		if( t["envlights"]){
+			envlights = [];
+			foreach( i, v in t.envlights){
+				envlights .. createLight( v);
+			}
+		}else{
+			envlights = null;
+		}
+		//	fog
+		if( t["fog"]["type"]){
+			local f = #[null,DepthFog,AtmosphereFog,PbrFog];
+			f = f[t.fog.type]();
+			f.type = t.fog.type;
+			f.setData( t.fog);
+			fog = f;					//	読み込み成功してから代入
+		}else{
+			fog = null;
+		}
+	}
+
+	function createLight( data){
+		local li = Light();
+		li.type = data.type;
+		//	vector / position
+		if( ("head" in data) && ("pitch" in data)){
+			//	TODO : vだけだとバンク角が表現できない！
+			local v = Quaternion.fromHPB( data.head*Math.DTOR, data.pitch*Math.DTOR, (data["bank"]||0.0)*Math.DTOR) * Vector3D(0,0,-1);
+			li.vx = v.x;
+			li.vy = v.y;
+			li.vz = v.z;
+		}
+		if( data["pos"]){
+			li.px = data.pos[0];
+			li.py = data.pos[1];
+			li.pz = data.pos[2];
+		}
+		li.color = data["color"] || 0xffffffff;
+		li.scolor = data["scolor"] || 0xffffffff;
+		li.power = ("power" in data) ? data.power/255.0 : 0.8;	//	powerは100ぐらい
+		li.pixellight = data["pixellight"]||0;
+		li.k1 = data["k1"] || 0.0;
+		li.k2 = data["k2"] || 0.0;
+		//
+		local sh = data["shadow"];
+		if( sh["shadowtype"] && sh["shadowdens"]){
+			local sm = li.shadow = ShadowMap();
+			sm.casnum = sh["shadowtype"] || 0;
+			sm.texsize = sh["shadowreso"] || 1024;
+			sm.depth = sh["shadowdens"] || 0.0;
+			sm.zfar = sh["shadowfar"] || 50.0;
+			sm.raylen = sh["shadowray"] || 30.0;
+			sm.softness = sh["shadowsoft"] || 0.5;
+		}
+		return li;
+	}
+}
+
+class RenderSettings
+{
+	data = null;
+
+	//	これ置き換えれば独自の読み込み先を指定できる
+	static confloader = @(){
+		local res = ::getResource( "/rendersets.json");
+		if( res){
+			return decodeJSON( res.loadData());
+		}else{
+			return ::getResourceContent( "/system/3d/rendersets.sk") ();
+		}
+	}
+
+	static confsaver = @( rsets){
+		local bb = encodeJSON( res, 1, ByteBuffer());
+		local f = FileRef( skGetCodebase() .. "/rendersets.json");
+		f.save( bb);
+	}
+
+	function checkLoadData(){
+		if( data) return;
+		data = confloader();
+	}
+	
+	function getRenderSettingData( id){
+		foreach( d in data){ if( d.id == id) return d; }
+		return null;
+	}
+
+	function getEnvironment( id){
+		checkLoadData();
+		local env = SK3DEnvironment( getRenderSettingData( id));
+		return env;
+	}
+
+	//	pbrを指定して取得可能
+	function getDefaultEnvironment( ispbr=false){
+		checkLoadData();
+		foreach( v in data){
+			local vispbr = (v.renderpass>=1);
+			if( ispbr == vispbr) return SK3DEnvironment( v);
+		}
+		return SK3DEnvironment( data[0]);
+	}
+
+	function getDefaultRSetID( ispbr=false){
+		checkLoadData();
+		foreach( v in data){
+			local vispbr = (v.renderpass>=1);
+			if( ispbr == vispbr) return v.id;
+		}
+		return data[0].id;
+	}
+}
+
+::RenderSettings <- RenderSettings();

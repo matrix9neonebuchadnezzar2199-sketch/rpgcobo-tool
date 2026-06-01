@@ -1,0 +1,372 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+Dialog.BGPATH <- "/skstudio/ui/dialog/bg.ui";
+Dialog.DIALOGPATH <- "/skstudio/ui/dialog/anime.ui";
+
+//	様々なダイアログの表示を行う
+//	
+class Dialogs
+{
+	//	msg, icon, yestxt, notxt, check, checksel
+	static function confirm( p){
+		local dlg = Dialog( p["check"] ? "/skstudio/ui/dialog/confirmchk.ui" : "/skstudio/ui/dialog/confirm.ui");
+		local v = dlg.view;
+		local chk = v.findChild( "check");
+		v.setValue( "lbl", p.msg);
+		if( p["icon"]) v.setValue( "icon", p.icon);
+		if( p["yestxt"]) v.setValue( "btn_ok.lbl", p.yestxt);
+		if( p["notxt"]) v.setValue( "btn_cancel.lbl", p.notxt);
+		if( p["check"]) v.setValue( "check.lbl", p.check);
+		if( p["checksel"]) chk.setSelected( true);
+		if( p["needcheck"]){
+			local g = v.findChild( "applyg");
+			g.anime( -1);
+			chk.addEventListener( ACTION_EVENT, @( e) g.anime( chk.isSelected()?0:-1));
+		}
+		dlg.show();
+		return dlg.ret ? (chk?.isSelected() ? 2 : 1) : 0;
+	}
+
+	//	ファイル変更をセーブするか選択するダイアログ。
+	//	
+	static function fileSaveCheck( pathlist){
+		local dlg = Dialog( "skstudio/ui/dialog/savecheck.ui");
+		local a = pathlist.map( @( v)({ icon = ::skstudio.getResourceIcon( ::getResource( v)), lbl = v, disable=1}));
+		local list = ListBehavior( dlg.view.findChild( "LIST"), a);
+		dlg.show();
+		return dlg.ret;
+	}
+
+	//	プログレスバー付ダイアログ。fnに進捗率を設定するfunctionが渡される。
+	//	
+	static function progress( msg, fn, cancel=false){
+		local dlg = Dialog( "skstudio/ui/dialog/progress.ui");
+		dlg.view.setValue( "msg", msg);
+		if( !cancel) dlg.view.findChild( "dlgbody").anime( -1);
+		local prgptr = ptr( 0.0);
+		local prgfunc( p){	//	これ再描画抑えるとzip圧縮が2000ms=>1100msぐらいまで減る。。。
+			dlg.view.findChild( "bar").inneranime( Math.saturate( p)*10.0);
+			if( p > ~prgptr+0.02){
+				prgptr << p;
+				suspend();
+			}
+		}
+		local t = newthread();
+		t.start( @(){
+			try{
+				fn( prgfunc);
+				prgfunc( 1.0);
+				suspend(); sleep( 100);
+				dlg.ret = "OK";
+			}catch( ex){
+				dlg.ret = ex;
+				printexception( ex);
+			}
+			dlg.close();
+		}, this);
+		dlg.show();
+		return dlg.ret;
+	}
+
+	//	外部ツールを起動し、軌道が完了し終わるまで表示する。起動の進捗を表示。
+	//	パラメータprmは以下の値の入るテーブル
+	//	exe : string/FileRef
+	//	args : string[]
+	//	name : ツール名
+	static function launchTool( prm){
+		local dlg = Dialog( "skstudio/ui/dialog/popen.ui");
+		local dlgbody = dlg.view.findChild( "dlgbody")
+		dlg.view.setValue( "title", tmpl( T.tmpl_launch, {v=prm["name"]}));
+		local exitptr = ptr( 0);
+		local setprogress( cmd){
+			local p = int( cmd[1]) * 0.1;
+			dlgbody.findChild( "progress").anime( 1.0+p * 0.1);
+			dlgbody.setValue( "rlbl", "%.1f%%" % p);
+		}
+		local setlabel( cmd){
+			local s = ::T["tmpl_"..cmd[1]];
+			if( s){
+				local fn = compiletemplate_c( s);
+				s = ~(fn, prm);
+			}
+			dlg.view.setValue( "msg", ::rtf( s));
+			if( cmd[0] == "SK-OUTPUTP"){
+				dlgbody.anime( 1); setprogress( ["","0"]);
+			}else{
+				dlgbody.anime( 0);
+			}
+		}
+		local readlines( p){
+			local li;
+			while( li = p.readLine()){
+				printf( "popen stdout: %S\n", li);
+				local cmd = li.trim().split( " ");
+				switch( cmd[0]){
+				case "SK-OUTPUT":
+				case "SK-OUTPUTP":
+					setlabel( cmd);
+					break;
+				case "SK-PROGRESS":
+					setprogress( cmd);
+					break;
+				}
+			}
+		}
+		local fn(){
+			local p = popen_s();
+			setlabel( ["","popen_start"]);
+			try{
+				local ret = p.open( prm.exe, prm.args, 0x100);	//	パイプ
+				for( ;;){
+					readlines( p);
+					if( !p.isrunning()) break;
+					sleep( 100);
+				}
+				exitptr << p.exitcode();
+				printf( "popen exitcode = %S\n", ~exitptr);
+				setlabel( ["",~exitptr==0 ? "popen_done" : "popen_error"]);
+			}catch( ex){
+				printexception( ex);
+				exitptr << -1;
+				setlabel( ["","popen_error"]);
+			}
+			//	osimai
+			while( !p.eof()){ readlines( p); suspend(); }	//	残った出力掃き出し
+			p.close();
+			sleep( ~exitptr ? 2600 : 1600);	//	ちょっとの間表示
+			dlg.close();
+		}
+		local t = newthread();
+		t.start( fn, this);
+		dlg.show();
+		return ~exitptr;
+	}
+
+	static function showWaiting( msg, cont, cancel=false){
+		local dlg = Dialog( "skstudio/ui/dialog/waiting.ui");
+		dlg.view.setValue( "msg", msg);
+		if( !cancel) dlg.view.findChild( "dlgbody").anime( -1);
+		dlg.ret = false;
+		local t = newthread();
+		t.start( @(){
+			dlg.view.findChild( "dlgbody").action( "show");
+			suspend();
+			for( ;;){
+				suspend();
+				if( dlg.inclose && dlg.view.getRoot() != ::rootview) return;
+				if( !cont()){ dlg.ret = true; dlg.close(); break; }
+			}
+		}, this);
+		dlg.show();
+		return dlg.ret;
+	}
+}
+
+class Popups
+{
+	static function showInfo( lbl, icon=null){
+		local popsc = ::loadSKView( "/skstudio/ui/dialog/infopopup.ui");
+		popsc.setValue( "lbl", lbl);
+		if( icon) popsc.setValue( "icon", icon);
+		popsc.pickable = false;
+		local d = popsc.computeSizeDelta();
+		local w = Math.max( popsc.bnd.w, popsc.bnd.w+d.x);
+		local h = Math.max( popsc.bnd.h, popsc.bnd.h+d.y);
+		popsc.stretchSize( w, h);
+		local pop = Popup( popsc);
+		pop.modal = 0;
+		local t0 = skGetTime();
+		local m = ::rootview.mouses[0];
+		local mp0 = Vector3D( ::getMousePos( 0));
+		pop.view.addUpdateFunc( @(){
+			local mp1 = ::getMousePos( 0);
+			if( m.downtime > t0 || skGetTime( t0)>=3000 || (mp0.hypot( mp1)>=10.0 && skGetTime( t0)>=500 && !pop.view.contains( m.entered))){
+				pop.view.actionAndDie( "hide");
+				return false;
+			}
+			return true;
+		});
+		pop.show( null, mp0);
+	}
+
+	static function showError( lbl, icon=null){
+		showInfo( lbl, icon || "\ue002");
+	}
+
+	//	NOTIFY_ERRORのトレース付きのエラーを表示。操作時のエラーはこれを呼び出すように！
+	static function showErrorTrace( cmd){
+		local popptr = #ptr();	//	連続で表示するときに変にならないように
+		//	
+		local popsc = ::loadSKView( "/skstudio/ui/dialog/tracepopup.ui");
+		local ex = cmd.error, th = realref( ex.thread);
+		local title = "%S in %S" % (getclassname( ex), th.getName() || string( th));
+		popsc.setValue( "lbl", tmpl( T.tmpl_error_popup, {v=title}));
+		local sb = StringBuffer();
+		sb .. ex.message .. "\n";
+		local a = ex.getStackInfo();
+		foreach( i,v in a){
+			sb .. "\n%d : %S(%S:%d)" % (i+1,v[0],v[1],v[2]);
+			if( i>=3 && length( a)>5){ sb .. "\n..."; break; }
+		}
+		popsc.setValue( "trace", string( sb));
+		local d = popsc.computeSizeDelta();
+		local w = Math.max( popsc.bnd.w, popsc.bnd.w+d.x);
+		local h = Math.max( popsc.bnd.h, popsc.bnd.h+d.y);
+		popsc.stretchSize( w, h);
+		//
+		local pop = Popup( popsc);
+		local t0 = skGetTime();
+		local m = ::rootview.mouses[0];
+		local mp0 = Vector3D( ::getMousePos( 0));
+		pop.view.addEventListener( MOUSE_EVENT, @( e){
+			local close = false;
+			switch( e.id){
+			// case MOUSE_EXITED: close = (!pop.view.contains( e.dst)); break;
+			case MOUSE_PRESSED: close = e.count>=2; break;
+			case MODAL_MOUSE_PRESSED: close = true; break;
+			case MODAL_MOUSE_MOVED: close = (skGetTime( t0) >= 2000); break;
+			}
+			if( close) pop.view.actionAndDie( "hide");
+		});
+		pop.view.addEventListener( ACTION_EVENT, @( e){
+			if( e.src["name"] == "copybtn"){
+				local t = {
+					title = title,
+					message = ex.message,
+					trace = a.map( @( v)+{ func=v[0], src=v[1], line=v[2], locals = v.slice( 3).map( @( v) realref( v))});
+				};
+				skPutClipboardData( encodeJSON( t, 5));
+			}
+		});
+		pop.show( null, mp0);
+	}
+
+	//	指定したラベルのリネームを行う。ポップアップって感じではないけど機能は共通化させたい
+	//	
+	static function showRename( lbl, prms=null){
+		local root = ::rootview;
+		local r = Rect2D( 0, 0, lbl.bnd.w, lbl.bnd.h).transform( lbl.mat).transform( root.getInvMatrix());
+		local poptf = ::loadSKView( prms["uipath"] || "/skstudio/ui/uieditor/rename.ui");
+		local edit = poptf.findChild( "textedit"), editlabel = edit.findChild( "editlabel");
+		r.w = Math.min( r.w, prms["maxwidth"] || 200);
+		poptf.stretchSize( r.w+edit.bnd.w-editlabel.bnd.w, r.h+edit.bnd.h-editlabel.bnd.h);
+		poptf.pos( r.x-editlabel.pos.x, r.y-editlabel.pos.y, 0);
+		root.addChild( poptf);
+		local oldcurs = ::gpui.gpuitarget;
+		local oldfocus = ::rootview.focusview;
+		local oldname = lbl.getText();
+		edit.setText( oldname);
+		edit.startTextEdit();
+		local fn( e){
+			local close = false;
+			switch( e.id){
+			case MODAL_MOUSE_PRESSED: close = true; break;
+			case KEY_PRESSED:
+			case KEY_REPEATED:
+				switch( e.keycode){
+				case VK_ENTER: 
+					if( !e.src.isMultiline() || !e.isShiftDown()) close = true;
+					break;
+				case VK_TAB: close = true; break;
+				case VK_ESCAPE: edit.setText( oldname); close = true; break;
+				}
+				break;
+			}
+			if( close) poptf.removeFromParent();
+		}
+		edit.textedit.addEventListener( KEY_EVENT, fn);
+		poptf.addEventListener( MOUSE_EVENT, fn);
+		poptf.startModal();
+		if( oldfocus && ::rootview.contains( oldfocus)) oldfocus.requestFocus();
+		else ::rootview.changeKeyEventFocus( null);
+		//
+		return edit.getText();
+	}
+
+	static function showNumInput( t){
+		local propdef = {
+			name = t["title"] || "num",
+			props = [
+				{ pid="num", lbl="$T.lbl_hsv", type=PropertyType.SCALAR, ui="bar", range=t.range, q=t.q, cnt="cnt5.ui" },
+			],
+		};
+		local d = {num=t.val};
+		local ret = PropertyEditPopup_OK.run( null, propdef, d);
+		return ret ? ret.num : d.num;
+	}
+}
+
+//	
+//	
+//	
+class UndoableDialog extends Dialog
+{
+	op = null;
+	undobtn = null;
+	redobtn = null;
+
+	function init( v){
+		super.init( v);
+		undobtn = view.findChild( "undobtn");
+		redobtn = view.findChild( "redobtn");
+		op = OperationStack();
+		updateUndoable();
+	}
+	
+	function updateUndoable(){
+		if( !undobtn || !redobtn) return;
+		local undoable = op.undoable();
+		if( undoable != !!undobtn.enabled){
+			undobtn.enabled = undoable;
+			undobtn.anime( undoable?0:5);
+		}
+		local redoable = op.redoable();
+		if( redoable != !!redobtn.enabled){
+			redobtn.enabled = redoable;
+			redobtn.anime( redoable?0:5);
+		}
+	}
+
+	function refresh(){
+	}
+
+	function submitOp( redo, undo, trk=null){
+		op.submit( redo, undo, trk);
+		updateUndoable();
+	}
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			updateUndoable();
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			updateUndoable();
+			return true;
+		}
+		return false;
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "undobtn":
+			op.undo();
+			refresh();
+			updateUndoable();
+			break;
+		case "redobtn":
+			op.redo();
+			refresh();
+			updateUndoable();
+			break;
+		}
+		super.actionevent( e);
+	}
+}
+

@@ -1,0 +1,263 @@
+import VirtualKeyCode;
+import GamepadButtonCode;
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////////
+//	StoreUI.sk ストア表示UI
+//	アイテムショップ、スキルショップ、クラフトショップ
+//	
+
+////////////////////////////////////////////////////////////////////////////////////
+//	アイテムショップUI
+//	武器防具は誰かに装備させるようなUIはいるかな？
+//	※storeデータのtype=0
+
+local shopitemlist( sid){
+	return rpgdata[sid].items.map( @( v, i){
+		local b = ::reqchk( v["reqs"]) ? 4 : v["reqfail"];
+		local itemid = v.dataid, idata = rpgdata[itemid];
+		local iname = idata.icon .. idata.name, price = ::commanum( v["price"]||idata["price"]);
+		if( !b) return undefined;	//	詰めて消去
+		local prms = { item=v, stat=b, _name="i"..i, };
+		switch( b){
+		case 1: return { lbl="", rlbl="", ...prms };	//	空欄
+		case 2: return { lbl="[G]"..iname, rlbl="[G]"..price, ...prms };	//	グレーアウト
+		case 3: return { lbl="[G]"..iname, rlbl="[G]$T.soldout", ...prms };	//	売り切れ
+		case 4: return { lbl=iname, rlbl=price, ...prms };	//	購入可能
+		}
+	});
+}
+
+//	
+local equipinfo( pc, itemid, idata){
+	if( !pc) return "";
+	local eqtype = idata["eqtype"];
+	local si = pc.getEquipableSlot( itemid);
+	if( si < 0){	//	装備不能
+		return `\uf7c7[G]$pc.name`;
+	}else{	//	上昇、下降、同じ
+		local eq0 = pc.equips[si];
+		local pc1 = pc.cloneForCompare();
+		local item = RPGObject.create( itemid);
+		pc1.setEquip( si, item);
+		local d = ::equipmenu_showpids.reduce( @( v, x) x+pc1[v]-pc[v], 0);
+		local ic = d>0 ? "\uf7c4[#BFFFEF]" : d<0 ? "\uf7c5[#FF4D4D]" : "\uf7c6[#fff]";
+		return `$ic$pc.name`;
+	}
+}
+
+//	選択されたアイテムの情報を表示する
+//	所持数、説明、装備可能情報
+local itemselected( view, itemid){
+	local idata = rpgdata[itemid];
+	local stacknum = idata["stacknum"] || 8;
+	local item = RPGItem();
+	item.setDataID( itemid);
+	local eqinfo = "";
+	if( itemid[0]=='W' || itemid[0]=='A'){
+		eqinfo = rtf( rpgstat.members.map( @( pc) equipinfo( pc, itemid, idata)).join( "\n"));
+	}
+	view.bindValues({
+		desc = ::RPGSystem.getDescription( item),
+		num = @() sprintf( "$T.ownnum  %3d / %d", rpgstat.countItems( itemid), stacknum);
+		equipinfo = eqinfo,
+	});
+}
+
+//	システムに登録。
+RPGSystem.ui ..
+{
+	key = "store_item"
+	lbl = "アイテムショップ"
+	type = "store"			//	mainmanu, submenu, choose, dialog, message, info, store, debug, misc, 
+	topinfo = @( t){
+		local d = ::conf.store[t["storeid"]];
+		return d ? d.icon..d.name : null;
+	}
+	icon = "\ue54c"
+	
+	props = [				//	
+		{ pid="storeid", lbl="$T.lbl_group", type=DATAID, datatype=["store"], filter=@( v) v.type==0, variable=1 },
+		{ pid="showmoney", lbl="$T.lbl_showmoney", type=BOOL, variable=1 },
+	],
+
+	defval = {
+		storeid = "R000"			//	※アイテムショップのIDにしないと
+		showmoney = true
+	}
+
+	uifunc = @( prms){
+		local storeid = prms.storeid, d = ::conf.store[storeid];
+		local _list = shopitemlist( storeid);
+		local vprms = {
+			uipath = "store_item.ui"
+			layer = "message"
+			action = "show"
+			focus = _list[0]["_name"]
+			binds = {
+				itemlist = _list
+			}
+		};
+		RPGMain.showUI( { key="info_money"});
+		local view = RPGMain.showView( vprms);
+		
+	SELECT:
+		//	リスト選択
+		local selitem = RPGMain.uiLoop( {
+			"action" : @( e){
+				return e.item;
+			}
+			"select" : @( e){
+				itemselected( view, e.item.item.dataid);
+			}
+			"back" : @( e){
+				::playSound( "SE004");
+				return "none";
+			}
+		});
+		if( selitem!="none"){
+			if( selitem.stat==4){
+				view.action( "darken");
+				::playSound( "SE001");
+				if( RPGMain.showUI( {
+					key = "dialog_buyitem"
+					itemid = selitem.item.dataid
+				})){
+					view.setValue( "itemlist", shopitemlist( storeid));
+				}
+				view.action( "lighten");
+			}else{
+				::playSound( "SE002");
+			}
+			goto SELECT;
+		}
+		view.actionAndDie( "hide");
+		RPGMain.showUI( { key="info_money", op="hide"});
+		view.waitAction();
+	}
+};
+
+////////////////////////////////////////////////////////////////////////////////////
+//	アイテムの売却UI
+
+RPGSystem.ui ..
+{
+	key = "store_sellitem"
+	lbl = "アイテムの売却"
+	type = "store"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	topinfo = "アイテムの売却";
+	icon = "\ue54c"
+
+	props = [					//	金額レートぐらいかな
+	],
+
+	//	アイテム画面の実装。画面uiと、一つの関数のみで出来る設計に。
+	//	キャラの選択は不要
+	function uifunc( prms){
+		local tabptr = ptr( 0);		//	アイテム、武器、防具、キーアイテム。
+		//	アイテムリストを作成
+		//	空の場合は空白を3つ。その他は3の倍数に。アイテムリストはnullが入ってる
+		local makelist( type){
+			local typekey = ["items","weapons","armors",];	//	"keyitems"は無し
+			local a = ::rpgstat[typekey[type]];
+			return a.map( @( v, i) v ? {
+				lbl=v.iconname(), _name="i"..i, item=v, rlbl=@() v.num>1 ? v.num : "",
+			} : { lbl="", _name="i"..i, rlbl="", item=null});
+		}
+		local view = RPGMain.showView({
+			uipath = "menu_item.ui"
+			layer = "message"
+			name = "menu_main"
+			binds = {
+				//	タブ一覧
+				tablist = array( 3).map( @( v, i)({
+					_name = "tab"..i,
+					lbl = ["$T.item","$T.weapon","$T.armor"][i],
+					tgl = @() (i==~tabptr)?10:0,
+				})),
+				//	アイテム一覧
+				itemlist = makelist( ~tabptr);
+			},
+			action = "show"
+			focus = "i0"
+		});
+		local setdesc( v){
+			view.setValue( "desclbl", v["item"]? RPGSystem.getDescription( v.item, "売却価格  \uf25f"..commanum( v.item.data.price/2)) : "");
+		}
+		local remakelist(){
+			local a = makelist( ~tabptr);
+			view.setValue( "itemlist", a);
+			view.focusTo( "i0");
+			setdesc( a[0]);
+		}
+		//	使用可能なアイテムを選択
+		local inctab( d){ tabptr << ((~tabptr+d+3) % 3); remakelist(); }
+	BACK_TO_ITEMSEL:
+		local selitem = RPGMain.uiLoop( {
+			"action" : @( e){	//	スロット、最強装備、すべて外すが来る
+				switch( e.name){
+				case "tabinc": inctab( 1); ::playSound( "SE000"); break;
+				case "tabdec": inctab( -1); ::playSound( "SE000"); break;
+				case "tab0": case "tab1": case "tab2": case "tab3": 
+					tabptr << (e.name[3]-'0');
+					remakelist();
+					break;
+				default:
+					if( e.item["item"]){
+						return e.item;
+					}else{
+						::playSound( "SE002");
+					}
+					break;
+				}
+			}
+			"page" : @( e){
+				::playSound( "SE000");
+				inctab( e.count);
+			}
+			"select" : @( e){	//	選択時に説明表示
+				if( "item" in e.item) setdesc( e.item);
+			}
+			"back" : @( e){ return "back"; }
+		});
+		if( selitem == "back"){
+			view.actionAndDie( "hide");
+			view.waitAction();
+			return true;
+		}
+		view.action( "darken");
+		//	スタック無しなら"売却","戻る"、スタックありなら売却ダイアログ
+		local b;
+		if( selitem.item.data["stacknum"]){
+			::playSound( "SE001");
+			b = RPGMain.showUI({
+				key = "dialog_buyitem"
+				itemid = selitem.item.dataid
+				sell = true
+				price = selitem.item.data.price / 2
+			});
+		} else {
+			if( RPGMain.showUI({
+				key = "dialog_choices"
+				uipath = "dialog_choices2.ui"
+				text0 = "$T.sell"
+				text1 = "$T.btn_back"
+				place = selitem._name
+				pos = { right=-160}
+				backop = 2
+			}) == 0){
+				b = true;
+				rpgstat.reduceItem( selitem.item);
+				::playSound( "SE003");
+			}
+		}
+		if( b){
+			remakelist();
+		}
+		view.action( "lighten");
+		//	
+		goto BACK_TO_ITEMSEL;
+	}
+};
+

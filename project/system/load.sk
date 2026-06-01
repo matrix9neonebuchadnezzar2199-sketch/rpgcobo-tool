@@ -1,0 +1,21 @@
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	Sakana System classes / functions
+//
+runsk("/system/consts.sk");
+
+{ local r = getsk("/preload.sk"); if( r) runsk( r); }	//	preload.sk extension
+
+if( skGetWorkerID() != 0){
+	runsk("/system/baselib/IO.sk");
+	runsk("/system/baselib/HTTPClient.sk");
+	// runsk("/system/worker.sk");
+}else{
+	runsk("/system/baselib/load.sk");
+	runsk("/system/loadshader.sk");
+	runsk("/system/ui/load.sk");
+	runsk("/system/sound/load.sk");
+	runsk("/system/3d/load.sk");
+	// runsk("/system/worker.sk");
+}

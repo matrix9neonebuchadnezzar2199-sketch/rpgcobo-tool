@@ -1,0 +1,18 @@
+
+runsk( "DBSideView.sk");
+runsk( "DBEditor.sk");
+runsk( "OptionList.sk");
+runsk( "DBEditorPlayer.sk");
+runsk( "DBEditorJob.sk");
+runsk( "DBEditorSkill.sk");
+runsk( "DBEditorEquip.sk");
+runsk( "DBEditorCond.sk");
+runsk( "DBEditorEnemy.sk");
+runsk( "DBEditorSetting.sk");
+runsk( "DBEditorType.sk");
+runsk( "DBEditorDict.sk");
+runsk( "DBEditorGvar.sk");
+runsk( "DBEditorMacro.sk");
+runsk( "DBEditorStore.sk");
+
+runsk( "LVCurveDialog.sk");

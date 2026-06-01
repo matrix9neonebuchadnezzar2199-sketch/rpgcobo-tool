@@ -1,0 +1,556 @@
+
+import VirtualKeyCode;
+import ModifiersMask;
+
+
+//	/data/trans/ja.trans の形式で保存されてる
+//	ソース辞書もターゲット辞書も同じフォーマット。プロジェクト言語は表示されない。
+//	
+class TransSideView extends SKView
+{
+	langdir = null;				//	Resource "/data/trans"変えることもできるが
+	langlist = null;			//	ListBehavior : 
+
+	projlang = null;			//	"ja", "en"
+	projlangitem = null;		//	
+	langitems = null;			//	
+
+	static function createSideView(){
+		local v = ::loadSKView( "/skstudio/ui/trans/transview.ui", TransSideView);
+		v.init();
+		return v;
+	}
+	
+	static function setlistview( la, v, i){
+		defaultsetview( la, v, i);
+		if( i.meta){
+			v.findChild( "g").anime( 0);
+			v.setValue( "ver", i.meta.srcver);
+			v.setValue( "progress", "%d%%" % i.meta.progress);
+		}else{
+			v.findChild( "g").anime( 5);
+			v.setValue( "progress", "$T.lbl_notcreated");
+		}
+	}
+
+	function init(){
+		//	language list
+		langlist = ListBehavior( findChild( "langlist"), []);
+		langlist.setviewfunc = setlistview;
+		langlist.listview.addEventListener( ACTION_EVENT, langevent);
+		langlist.listview.addEventListener( ITEM_EVENT, langevent);
+		langlist.listview.addEventListener( MOUSE_EVENT, langevent);
+		//
+		addEventListener( ACTION_EVENT, actionevent);
+		addEventListener( BROADCAST_EVENT, broadevent);
+		//	lang items
+		langdir = ::getResource( "/data/trans");
+		projlang = ::conf.setting.projlang;
+		refreshLangs();
+		refreshProjLang();
+	}
+
+	function makelangitem( c){
+		local v = ::sakana.languagelist.find( @(v) v.code==c);
+		local path = v.code..".trns";
+		local r = langdir.getResource( path);
+		local t = { lbl:v.name, code:v.code, icon:v.icon, res:r, path:path, meta:null};
+		if( r){
+			t.meta = decodeJSON( r.getContent())._meta;
+		}
+		return t;
+	}
+
+	function refreshLang( c){
+		local i = langitems.findi( @(v) v.code==c);
+		langitems[i] = makelangitem( c);
+		langlist.setListItems( langitems);
+	}
+
+	function refreshProjLang(){
+		projlangitem = makelangitem( projlang);
+		setValue( "projlanglbl", "%S %S"%( projlangitem.icon, projlangitem.lbl));
+		if( projlangitem.meta){
+			local date = Date( long( projlangitem.meta.created) - Date.timezone());
+			setValue( "srcverlbl", string( projlangitem.meta.srcver));
+			setValue( "srcdatelbl", date.asString());
+		}else{
+			setValue( "srcverlbl", "$T.side_transview_nodict");
+			setValue( "srcdatelbl", "");
+		}
+	}
+
+	function refreshLangs(){
+		langitems = [];
+		foreach( v in ::sakana.languagelist){
+			if( v.code != projlang){
+				local li = makelangitem( v.code);
+				langitems .. li;
+			}
+		};
+		langlist.setListItems( langitems);
+	}
+
+	function setCurrentPath( path){
+		local lang = langitems.find( @( v) v.res.path==path);
+		if( lang){
+			langlist.setSelectedItem( lang);
+		}
+	}
+
+	function langevent( e){
+		e.consume();
+		switch( e.id){
+		case ITEM_HOVER:
+			break;
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				langlist.setSelectedItem( e.actioncmd);
+				showLangContextMenu( e);
+			}else{
+				if( e.actioncmd.res) ::skstudio.openEditor( e.actioncmd.res.path);
+			}
+			break;
+		}
+	}
+	
+	function showLangContextMenu( e){
+		local meta = e.actioncmd.meta;
+		local menudata = meta?[
+			{ id="edit", lbl="$T.lbl_edit", icon="\ue745" },
+			{ id="update", lbl="$T.dlg_trans_updatedst", icon="\ue627" },
+			"-",
+			{ id="delete", lbl="$T.menu_edit_del", icon="\ue872" },
+		] : [
+			{ id="make", lbl="$T.dlg_trans_makedst", icon="\ue148" },
+		];
+		local ret = MenuPopup.run( menudata);
+		local dstitem = e.actioncmd;
+		switch( ret["id"]){
+		case "edit":
+			::skstudio.openEditor( e.actioncmd.res.path);
+			break;
+		case "make":
+			local ret = MakeTargetDialog.run( dstitem, this);
+			break;
+		case "update":
+			local ret = MakeTargetDialog.run( dstitem, this);
+			break;
+		case "delete":
+			break;
+		}
+	}
+
+	function actionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "menubtn":
+			showMenuContextMenu( e);
+			break;
+		}
+	}
+
+	function showMenuContextMenu( e){
+		local meta = projlangitem.meta;
+		local menudata = meta ? [
+			{ id="makesrc", lbl="$T.ctxmenu_trans_updatesrc", icon="\ue627" },
+		] : [
+			{ id="makesrc", lbl="$T.ctxmenu_trans_makesrc", icon="\ue148" },
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "makesrc":
+			makeSourceDict();
+			break;
+		}
+	}
+
+	//	ソース翻訳辞書を作成する。
+	//	・追加されたワード、削除されたワード、更新されたワードを表示し、
+	//	OKを押すと保存する。
+	function makeSourceDict(){
+		local olddict, oldver = 0;
+		if( projlangitem.res){
+			local t = decodeJSON( projlangitem.res.getContent());
+			olddict = t.transdict;
+			oldver = t._meta.srcver;
+		}else{
+			olddict = {};
+		}
+		local newdict = TranslationUtil.makeTranslationTable( ::conf._map);
+		if( !(newdict <> olddict)){
+			Popups.showError( "$T.dlg_trans_nochange");
+			return;
+		}
+		// printf( "---------------- %S\n", encodeJSON( newdict, 1|4));
+		if( ConfirmDictDialog.run( olddict, newdict, false)){
+			local conf = {
+				transdict = newdict,
+				check = "",
+				_meta = { srcver=oldver+1, created=string( Date.currentTime()), progress=100 },
+			}
+			local bb = encodeJSON( conf, 1|4, ByteBuffer()); bb.pos = 0;
+			local f = FileRef( langdir.file, projlang..".trns");
+			f.save( bb);
+			//	
+			::skstudio.fileview.refreshDir( langdir.path);
+			refreshProjLang();
+		}
+	}
+	//	受け取るブロードキャストコマンド
+	//	"dir_refreshed": フォルダがリフレッシュされた。trnsの保存で起きる
+	//	
+	function broadevent( e){
+		local bc = e["actioncmd"];
+		switch( bc["cmd"]){
+		case "dir_refreshed":
+			local n = bc.dir.name;
+			if( n.endsWith( ".trns")){
+				local c = n.substring( 0, n.indexOf( '.'));
+				refreshLang( c);
+			}
+			break;
+		}
+	}
+}
+
+//	
+//	
+class TransSideView.ConfirmDictDialog extends Dialog
+{
+	tabs = null;		//	TabsBehavior
+	wordlist = null;	//	GPUListView
+	pager = null;		//	
+	
+	listitems = null;	//	追加、更新、削除、全て
+	selitems = null;
+
+	static function run( olddict, newdict, type){
+		local oldflat = TranslationUtil.flattenTable( olddict);
+		local newflat = TranslationUtil.flattenTable( newdict);
+		local diff = TranslationUtil.diffTable( oldflat, newflat);
+		local resflat = null;
+		local listitems = [ _toarray( diff[0]), _toarray( diff[1]), _toarray( diff[2]), _toarray( newflat), ];
+		local dlg = TransSideView.ConfirmDictDialog( "/skstudio/ui/dialog/makesrcdict.ui", listitems, type);
+		dlg.show();
+		return dlg.ret;
+	}
+
+	static function run2( diff, newflat){
+		local listitems = [ _toarray( diff[0]), _toarray( diff[1]), _toarray( diff[2]), _toarray( newflat), ];
+		local dlg = TransSideView.ConfirmDictDialog( "/skstudio/ui/dialog/makesrcdict.ui", listitems, 1);
+		dlg.show();
+		return dlg.ret;
+	}
+	
+	constructor( v, li, type){
+		super( v);
+		listitems = li;
+		tabs = TabsBehavior( view.findChild( "tabs"), [
+			`$T.dlg_trans_tab_added (${length( listitems[0])})`,
+			`$T.dlg_trans_tab_changed (${length( listitems[1])})`,
+			`$T.dlg_trans_tab_deleted (${length( listitems[2])})`,
+			`$T.dlg_trans_tab_all (${length( listitems[3])})`,
+		]);
+		tabs.listview.addEventListener( ACTION_EVENT, tabevent);
+		wordlist = view.findChild( "LIST");
+		pager = PagerBehavior( view.findChild( "pager"));
+		if( type){
+			view.setValue( "title", "$T.dlg_trans_makedst");
+		}
+	}
+
+	static function _toarray( tb){
+		local a = [];
+		foreach( i, v in tb) a .. { key:i, val:v };
+		a.sort( @( v) v.key);
+		return a;
+	}
+
+	function shown(){
+		setListType( 0);
+		pager.setPage( 0);
+		setPage( 0);
+	}
+
+	function setListType( i){
+		selitems = listitems[i];
+		pager.setPageNum( (length( selitems)+99)/100);
+	}
+
+	function setPage( p){
+		local items = selitems.slice( p*100, Math.min( p*100+100, length( selitems)));
+		local vd = ::getResourceContent( "/skstudio/ui/trans/worditem.ui");
+		wordlist.clearRows();
+		foreach( i, v in items){
+			local r = vd.createSKView();
+			r.setValue( "idx", string( i+p*100+1));
+			r.setValue( "key", v.key);
+			r.setValue( "val", v.val);
+			r.stretchSize( wordlist.window.bnd.w, r.bnd.h);
+			local d = r.computeSizeDelta();
+			if( d.y > 0.0) r.stretchSize( r.bnd.w, r.bnd.h+d.y);
+			wordlist.addRow( r);
+		}
+		wordlist.updateLayout();
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "pager":
+			setPage( pager.page);
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	function tabevent( e){
+		e.consume();
+		setListType( e.actioncmd);
+		pager.setPage( 0);
+		setPage( 0);
+	}
+}
+
+//	
+//	
+//	
+class TransSideView.MakeTargetDialog extends Dialog
+{
+	transview = null;
+
+	dstitem = null;		//	
+	langitems = null;	//	TransSideView.langitemsを渡す
+
+	srcmenu = null;
+	methodmenu = null;		//	自動翻訳方法。「自動翻訳なし」「Web翻訳（非商用のみ）」「Google Translation API」
+
+	//	auto translation
+	srcconf = null;
+	htmldata = null;
+	httpserv = null;
+
+	static methodlist = [
+		{ lbl="$T.trans_method_none", id="none" },
+		{ lbl="$T.trans_method_web", id="web" },
+		{ lbl="$T.trans_method_google", id="google" },
+	];
+
+	static function run( dstitem, transview){
+		local dlg = TransSideView.MakeTargetDialog( "/skstudio/ui/dialog/makedstdict.ui", dstitem, transview);
+		dlg.show();
+		dlg.httpserv?.close();
+		return dlg.ret;
+	}
+
+	constructor( v, di, tv){
+		super( v);
+		transview = tv;
+		dstitem = di;
+		langitems = tv.langitems.filter( @(a) a.meta&&a.code!=di.code);
+		if( length( langitems)) langitems[0] <- "-";
+		langitems[0] <- tv.projlangitem;
+		srcmenu = MenuBehavior( view.findChild( "srcmenu"), langitems);
+		view.setValue( "dstdict.icon", di.icon);
+		view.setValue( "dstdict.lbl", di.lbl);
+		local srcitem;
+		if( di.meta["srclang"]){
+			srcitem = langitems.find( @(a) a.code==di.meta.srclang);
+		}
+		if( !srcitem) srcitem = langitems[0];
+		srcmenu.selectItem( srcitem);
+		view.setValue( "srcver", string( srcitem.meta.srcver));
+
+		methodmenu = MenuBehavior( view.findChild( "methodmenu"), methodlist);
+		//	
+		local m = methodlist.find( @( v) v.id==di.meta["method"]) || methodlist[1];
+		methodmenu.selectItem( m);
+		setTranslationMethod( m.id);
+		if( dstitem.meta){
+			srcmenu.view.anime( 5);
+			srcmenu.view.enabled = false;
+		}
+	}
+
+	function setTranslationMethod( id){
+		local sel = "method_"..id;
+		foreach( i in ["method_none", "method_web", "method_google"]){
+			local v = view.findChild( i);
+			v.setVisible( i==sel);
+		}
+		// auto_on.anime( 1);	//	test
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "methodmenu":
+			local b = e.actioncmd["id"];
+			setTranslationMethod( b);
+			break;
+		case "btn_openweb":
+			openTransWeb();
+			break;
+		case "btn_importweb":
+			local txt = null;
+			if( skCheckClipboardType( ClipboardType.CLIPBOARD_TEXT)) {
+				txt = skGetClipboardData( ClipboardType.CLIPBOARD_TEXT);
+				importTransResult( txt);
+			}
+			break;
+		case "btn_create":
+			createRawDict();
+			break;
+		case "btn_googletrans":
+			execGoogleTranslation();
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	//	翻訳ウェブを表示！ソース辞書から
+	//	
+	function openTransWeb(){
+		local srcitem = srcmenu.selitem;
+		srcconf = decodeJSON( srcitem.res.getContent());
+		local html = TranslationUtil.makeTranslationHTML( srcconf.transdict, srcitem.code, dstitem.code);
+		htmldata = ByteBuffer(); htmldata.putText( html); htmldata.pos = 0;
+		// local port = 9909;
+		// if( !httpserv){
+		// 	local _addr = IPAddress( (127,0,0,1,port));
+		// 	httpserv = TinyHTTPServer();
+		// 	httpserv.bindServer( _addr);
+		// 	httpserv.setHandlers( [this]);
+		// }
+		// skOpenURL( "http://localhost:%S/trans.html" % port);
+		FileRef( "log/trans.html").save( htmldata);
+		skOpenURL( "file://%S/log/trans.html" % skGetCurrentDir());	//	ファイル直接開いていい
+		local method_web = view.findChild( "method_web");
+		method_web.anime( 1);
+	}
+
+	//	http serv
+	function getResponse( c, res){
+		if( c.path == "/trans.html"){
+			res.statuscode = 200;
+			res.contenttype = "text/html";
+			res.data = htmldata;
+		}
+		return undefined;
+	}
+
+	function execGoogleTranslation(){
+		local key = ::account["apikeymap"]["googletrans"];
+		if( !length( key)){
+			if( Dialogs.confirm( {msg="$T.confirm_googletrans_apikey"})){	//icon="\uef48"
+				PreferenceDialog.run( "apikey"); 
+			}
+			return;
+		}
+		local srcitem = srcmenu.selitem;
+		srcconf = decodeJSON( srcitem.res.getContent());
+		local html = TranslationUtil.makePlainTranslationHTML( srcconf.transdict, srcitem.code, dstitem.code);
+		local d = Date(), dstr = "%02d%02d_%02d%02d" % ( d.tm_mon+1, d.tm_mday, d.tm_hour, d.tm_min);
+		//	
+		{
+			local bb = ByteBuffer(); bb.putText( html); bb.pos = 0;
+			FileRef( "log/googletrans_srchtml_%S.html" % dstr).save( bb);		//	一応ログに保存しておく。エラー時などに追跡したい
+		}
+		local req = { q=html, source=srcitem.code, target=dstitem.code, format="html"};
+		local url = "https://translation.googleapis.com/language/translate/v2";
+		//	
+		local http = HTTPClient();
+		http.verbose = true;
+		http.throwhttperror = false;
+		http.addHeader( "X-goog-api-key", key);
+		http.addHeader( "Content-Type", "application/json; charset=utf-8");
+		local bb = http.post( url, encodeJSON( req, 5));
+		FileRef( "log/googletrans_result_%S.json" % dstr).save( bb); bb.pos = 0;	//	一応ログに保存しておく。エラー時などに追跡したい
+		// local bb = FileRef( "tmp/trns.json").load();
+		//	
+		local ret = decodeJSON( bb), rethtml = ret["data"]["translations"][0]["translatedText"];
+		//	
+		local i0 = rethtml.indexOf( "<sakana>");
+		local i1 = rethtml.indexOf( "</sakana>")+9;
+		local subhtml = rethtml.substring( i0, i1);
+		importTransResult( subhtml);
+	}
+
+	//	ウェブの結果をインポート
+	//	
+	function importTransResult( txt){
+		try{
+			local newdict = TranslationUtil.makeTableFromTranslatedHTML( txt);
+			if( newdict){
+				local srcitem = srcmenu.selitem;
+				local resconf;
+				//	※※※※ 既に翻訳済み辞書があるなら
+				if( dstitem.meta){
+					if( !srcconf){
+						local srcitem = srcmenu.selitem;
+						srcconf = decodeJSON( srcitem.res.getContent());
+					}
+					local t = decodeJSON( dstitem.res.getContent());
+					local td = TransDict( t);
+					local oldflat = td.flattb;
+					local newflat = TranslationUtil.flattenTable( newdict);
+					local diff = TranslationUtil.diffTable( oldflat, newflat);
+					local srchashtb = TranslationUtil.getWordHashTable( TranslationUtil.flattenTable( srcconf.transdict));
+					td.removeSouceUnchanged( diff[1], srchashtb);
+					// printf( "TD--------------------------------------------------------------\n%S\n", encodeJSON( td.flattb, 5));
+					// printf( "DIFF------------------------------------------------------------\n%S\n", encodeJSON( diff, 5));
+					TranslationUtil.applyDiff( td.flattb, diff);
+					if( TransSideView.ConfirmDictDialog.run2( diff, td.flattb)){
+						resconf = td.write();
+						resconf._meta.srcver = srcitem.meta.srcver;
+						resconf._meta.created = string( Date.currentTime());
+					}
+				}else{
+					local olddict = {};
+					if( TransSideView.ConfirmDictDialog.run( olddict, newdict, true)){
+						//	save trns!!!!!!!
+						local m = methodmenu.selitem.id;
+						resconf = {
+							transdict = newdict,
+							check = null,
+							_meta = { srcver=srcitem.meta.srcver, srclang=srcitem.code, created=string( Date.currentTime()), progress=0, method=m },
+						}
+					}
+				}
+				//
+				if( resconf){
+					local langdir = transview.langdir;
+					local bb = encodeJSON( resconf, 1|4, ByteBuffer()); bb.pos = 0;
+					local f = FileRef( langdir.file, dstitem.code..".trns");
+					f.save( bb);
+					//	
+					::skstudio.fileview.refreshDir( langdir.path);
+					transview.refreshLang( dstitem.code);
+					
+					//	open trns!!!!!!!
+					
+					close();
+				}
+			}
+		}catch( ex){
+			printexception( ex);
+			Popups.showError( "$T.dlg_trans_import_error");
+		}
+	}
+
+	function createRawDict(){
+		local srcitem = srcmenu.selitem;
+		local srcconf = decodeJSON( srcitem.res.getContent());
+		local olddict = {};
+		local newdict = deepclone( srcconf.transdict)
+		if( TransSideView.ConfirmDictDialog.run( olddict, newdict, true)){
+		}
+	}
+}
+
+::skstudio.registerSideView( {
+	uid:"side_transview", lbl="$T.side_transview", icon="\ue8e2", createSideView:TransSideView.createSideView, defkey="^_L",
+	matches = @( path){ 
+		return path.endsWith( ".trns");
+	}
+});
+::skstudio.registerActivity( {uid:"act_transview", sideview="side_transview", icon="\ue8e2", slbl="$T.slbl_trans"});

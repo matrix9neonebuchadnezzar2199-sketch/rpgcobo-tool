@@ -1,0 +1,583 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+local srcdir = dirname( callee().getSourceName());
+
+//	
+//	
+class DBSideView extends SKView
+{
+	static dbtypelist = [ 
+		"game", "*", "player", "job", "skill", "enemy", "cond", "item", "weapon", "armor", "store", /*"quest",*/ "macro", 
+	];
+	
+	//	タイプ
+	typelist = null;			//	ListBehavior : 
+	typemap = null;				//	{type:{}} : 
+	curtype = null;				//	"player", "item", ...
+	//	項目
+	itemlist = null;			//	ListBehavior : 
+	allitems = null;			//	全項目。100項目ごとにページに分かれる
+	page = 0;					//	
+	pagenum = 1;				//	
+	capsmenu = null;			//	
+	pager = null;				//	
+
+	static function createSideView(){
+		local v = ::loadSKView( srcdir.."/ui/dbview.ui", DBSideView);
+		v.init();
+		return v;
+	}
+
+	static function settypeview( la, v, i){
+		local lbl = v.findChild( "lbl"), icon = v.findChild( "icon"), sep = v.findChild( "sep");
+		if( i["type"] == "*"){
+			lbl.visible = icon.visible = false;
+			sep.visible = true;
+			v.tips = null;
+		}else{
+			lbl.visible = icon.visible = true;
+			sep.visible = false;
+			lbl.setValue( i.lbl);
+			icon.setValue( i["icon"]);
+			v.tips = i["tips"] || null;
+		}
+	}
+
+	static function setitemview( la, v, i){
+		local lbl = v.findChild( "lbl"), icon = v.findChild( "icon"), sep = v.findChild( "sep");
+		lbl.visible = icon.visible = true;
+		sep.visible = false;
+		lbl.setValue( i.lbl);
+		icon.setValue( i["icon"]);
+		v.tips = i["tips"] || null;
+		if( !i["val"]){
+			lbl.textbox.colormask = 0x999999ff;
+		}else{
+			lbl.textbox.colormask = -1;
+		}
+	}
+
+	//	
+	static function refreshItemFunc( dbtype){
+		switch( dbtype){
+		case "cond":	//	コンディション内にはoption[i].countremに自分のIDを入れてるのでそれを更新
+			return @( id, data){
+				foreach( opd in data["option"]){
+					if( opd["countrem"]["condid"]) opd.countrem.condid = id;
+				}
+			}
+			break;
+		}
+		return @( id, data) {};
+	}
+
+	function init(){
+		typelist = ListBehavior( findChild( "typelist"), []);
+		typelist.setviewfunc = settypeview;
+		typelist.listview.addEventListener( ITEM_EVENT, typeevent);
+		typelist.listview.addEventListener( ACTION_EVENT, typeevent);
+		itemlist = ListBehavior( findChild( "sublist"), []);
+		itemlist.setviewfunc = setitemview;
+		itemlist.listview.addEventListener( ITEM_EVENT, itemevent);
+		itemlist.listview.addEventListener( ACTION_EVENT, itemevent);
+		capsmenu = findChild( "capsmenu");
+		pager = PagerBehavior( findChild( "pager"));
+		addEventListener( ACTION_EVENT, actionevent);
+		addEventListener( BROADCAST_EVENT, broadevent);
+		
+		createTypeList();
+		typelist.setSelectedItem( typemap["game"]);
+		setType( "game")
+		setPage( 0);
+	}
+
+	function _counttypeitems( type){
+		local n = 0;
+		foreach( i, v in ::conf[type]){
+			if( i[0] == '_') continue;
+			++n;
+		}
+		return n;
+	}
+
+	function createTypeList(){
+		typemap = {};
+		local a = [];
+		foreach( type in dbtypelist){
+			if( type == "*"){
+				a .. { type="*"};
+			}else{
+				local n = _counttypeitems( type);
+				local v = {
+					type = type,
+					lbl = ((n?"$T.side_dbview_%S (%S)":"$T.side_dbview_%S") % (type, n)),
+					icon = ConfigResource.dbiconmap[type],
+					tips = "$T.side_dbview_tips_"..type,
+					dir = "/.x/"..type
+				};
+				a .. v;
+				typemap[type] <- v;
+			}
+		}
+		typelist.setListItems( a);
+	}
+
+	function updateTypeList(){
+		foreach( v in typelist.items){
+			if( v["lbl"]){
+				local type = v.type;
+				local n = _counttypeitems( type);
+				v.lbl = ((n?"$T.side_dbview_%S (%S)":"$T.side_dbview_%S") % (type, n));
+			}
+		}
+		typelist.refreshItems();
+	}
+
+	function setType( t){
+		curtype = t;
+		setValue( "typename", typemap[t].lbl);
+		allitems = [];
+		local dir = ::getResource( typemap[t].dir);
+		local caps = ::conf[dir.name]["_meta"]["caps"];
+		if( !caps){
+			capsmenu.setVisible( false);
+			pager.view.setVisible( false);
+		}else{
+			capsmenu.setVisible( true);
+			pager.view.setVisible( true);
+			capsmenu.setValue( "lbl", "×"..caps);
+			pagenum = caps / 100;
+			pager.setPageNum( pagenum);
+			pager.setPage( 0);
+		}
+		foreach( r in dir.getList()){
+			local v = r.getContent();
+			allitems .. {
+				lbl = r["itemname"] || sprintf( "%S: %S", r.id, v["name"] || ""),
+				icon = r["itemicon"] || v["icon"],
+				res = r, val = v,
+				// tips = "AODWJOFJAWOWJAOFJAWOWJFOWAJOFJOWJA"
+			};
+		}
+	}
+
+	function setPage( p){
+		page = p;
+		local items = allitems.slice( p*100, Math.min( p*100+100, length( allitems)));
+		itemlist.setListItems( items);
+	}
+
+	function setCurrentPath( path){
+		local dbtype = getdbtype( path);
+		if( (#("setting","type","dict","gvar")).contains( dbtype)){
+			setType( "game");
+		}else{
+			setType( dbtype);
+		}
+		local r = getResource( path);
+		local i = allitems.findi( @( v) v.res==r);
+		setPage( i/100);
+		pager.setPage( i/100);
+		updateMatrixAll();
+		itemlist.setSelectedIndex( i%100);
+		itemlist.scrollIndexToVisible( i%100);
+		typelist.setSelectedItem( typemap[curtype]);
+		typelist.scrollItemToVisible( typemap[curtype]);
+	}
+
+	function typeevent( e){
+		switch( e.id){
+		case ITEM_SELECTED:
+			local v = e.actioncmd;
+			if( v["type"] != "*"){
+				setType( v.type);
+				setPage( 0);
+			}
+			break;
+		case ACTION_PERFORMED:
+			if( e.actioncmd.type != "*"){
+				if( e.isMouseDown( BUTTON2_MASK)){
+					typelist.setSelectedItem( e.actioncmd);
+					showTypeContextMenu( e);
+				}
+			}
+			break;
+		}
+	}
+
+	function showTypeContextMenu( e){
+	}
+
+	function itemevent( e){
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				itemlist.setSelectedItem( e.actioncmd);
+				if( curtype != "game"){
+					showItemContextMenu( e);
+				}
+			}else{
+				::skstudio.openEditor( e.actioncmd.res.path);
+			}
+			break;
+		}
+	}
+	
+	function showItemContextMenu( e){
+		local r = e.actioncmd.res, data = r.getContent();
+		local cbdata = getClipboard( "dbside");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		//
+		local m = [];
+		m .. { id="edit", lbl="$T.lbl_edit", icon="\ue745" };
+		m .. "-";
+		m .. { id="copy", lbl="$T.menu_edit_copy", icon="\ue14d", disable=!data };
+		m .. { id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!(cbdata["id"][0]==r.name[0]) };
+		m .. { id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=!data};
+		m .. "-";
+		m .. { id="sort", lbl="$T.lbl_idsort", icon="\ue240", disable=(curtype=="game")};
+		local ret = MenuPopup.run( m);
+		//	
+		switch( ret["id"]){
+		case "edit": ::skstudio.openEditor( r.path); break;
+		case "copy": putClipboard( "dbside", {id=r.name, data=data}); break;
+		case "paste": pasteDBItem( r, cbdata); break;
+		case "delete": deleteDBItem( r); break;
+		case "sort":
+		{
+			local idmap = DBSortDialog.run( curtype);
+			if( idmap){
+				IDSortApplier.apply( curtype, idmap, refreshItemFunc( curtype));
+			}
+		}
+		}
+	}
+
+	function pasteDBItem( r, cb){
+		local d = r.getContent();
+		if( d){
+			if( !Dialogs.confirm( {msg=rtf( tmpl( T.tmpl_override_noundo, {v0=`$r.name:$d.name`, v1=`$cb.id:$cb.data.name`})), icon="\ue002"} )) return;
+		}
+		local fn = refreshItemFunc( curtype);
+		fn( r.name, cb.data);	//	cb.dataが破壊されるけど問題なし
+		r.save( cb.data);
+		::skstudio.fileview.refreshDir( r.path);
+		::skstudio.flushEditor( r.path);
+	}
+	
+	function deleteDBItem( r){
+		local d = r.getContent();
+		if( d){
+			if( !Dialogs.confirm( {msg=rtf( tmpl( T.tmpl_confirm_erace_noundo, {v=`$r.name:$d.name`})), icon="\ue002"} )) return;
+			r.clear();
+			::skstudio.fileview.refreshDir( r.pres.path);
+			::skstudio.flushEditor( r.pres.path);
+		}
+	}
+	
+	function actionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "capsmenu":
+			showChangeCaps( e);
+			break;
+		case "pager":
+			setPage( pager.page);
+			break;
+		}
+	}
+	
+	function showChangeCaps( e){
+		local menulist = [];
+		for( local l = 1;l < 11;l ++){
+			menulist .. { lbl:"$T.lbl_caps: "..(l*100), val:l, icon:(pagenum==l)?"\ue5ca":null};
+		}
+		local ret = MenuPopup.run( menulist);
+		if( ret && ret.val != pagenum){
+			local dir = ::getResource( typemap[curtype].dir);
+			dir.flush();
+			local caps = ret.val*100;
+			::conf[dir.name]["_meta"]["caps"] = caps;
+			::skstudio.fileview.refreshDir( dir.path);
+			//
+			local p = page;
+			setType( curtype);
+			pager.setPage( Math.min( p, pagenum-1));
+		}
+	}
+
+	//	受け取るブロードキャストコマンド
+	//	"dir_refreshed": フォルダがリフレッシュされた。マップの保存で起きる
+	//	
+	function broadevent( e){
+		local bc = e["actioncmd"];
+		switch( bc["cmd"]){
+		case "dir_refreshed":
+			if( bc.dir.path.startsWith( typemap[curtype].dir)){
+				updateTypeList();
+				setType( curtype);
+				setPage( page);
+			}
+			break;
+		}
+	}
+}
+
+
+//	※データベースにもリソースにも使用可能
+//	
+class DBSortDialog extends UndoableDialog
+{
+	datatype = null;		//	"player","item",... | "chara_vox","enemy_pic",...
+	datamap = null;
+	prefix = "P";
+	numpage = 200;
+	
+	list = null;
+	orgitems = null;
+	allitems = null;
+	items = null;
+	pager = null;
+
+	static function toarray( datamap, pf){
+		local caps = datamap["_meta"]["caps"] || 100;
+		local a = array( caps);
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "%S%03d", pf, l);
+			local item = datamap[id];
+			a[l] = { id=id, name=item["name"]||"", item=item};
+		}
+		return a;
+	}
+
+	constructor( v, dt){
+		super( v);
+		op = OperationStack();
+		datatype = dt;
+		prefix = Table.indexOf( RPGData.typemap, dt) || Table.indexOf( RPGResource.typemap, dt);
+		list = ListBehavior( view.findChild( "LIST"));
+		list.multisel = true;
+		list.dndfunc = 3;
+		list.listview.addEventListener( ITEM_EVENT, listevent);
+		list.listview.addEventListener( ACTION_EVENT, listevent);
+		local self = this, pf = prefix;
+		list.setviewfunc = @( la, v, i){
+			defaultsetview( la, v, i);
+			local idx = self.allitems.indexOf( i);
+			local id = sprintf( "%S%03d", pf, idx);
+			v.setValue( "idx", id);
+			//	位置が変わったアイテムは色を変える
+			v.findChild( "changed").anime( !i.item?-1:(id==i.id)?0:1);
+		}
+		datamap = ::conf[dt] || ::conf._resource[dt];
+		allitems = toarray( datamap, prefix);
+		orgitems = clone allitems;
+		pager = PagerBehavior( view.findChild( "pager"));
+		setNumPerPage( 200);
+		setPage( 0);
+	}
+
+	function setNumPerPage( np){
+		numpage = np;
+		pager.setPageNum( (length( allitems)+np-1)/np);
+	}
+
+	function setPage( p){
+		pager.setPage( p);
+		refreshPage();
+	}
+
+	function refreshPage(){
+		local p = pager.page;
+		local items = allitems.slice( p*numpage, Math.min( p*numpage+numpage, length( allitems)));
+		list.setListItems( items);
+	}
+
+	function listevent( e){
+		switch( e.id){
+		case ITEM_SORT:
+		{
+			local self = this;
+			local olditems = clone list.items, newitems = ::applyItemSwap( clone olditems, e);
+			local offs = pager.page * numpage, num = length( olditems);
+			local redo = [@(){
+				for( local l = 0;l < num;l ++) self.allitems[offs+l] = newitems[l];
+				self.refreshPage();
+			}];
+			local undo = [@(){
+				for( local l = 0;l < num;l ++) self.allitems[offs+l] = olditems[l];
+				self.refreshPage();
+			}];
+			submitOp( redo, undo);
+			break;
+		}
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "pager":
+			setPage( pager.page);
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	static function run( datatype){
+		local dlg = this( srcdir .. "/ui/dbsortdialog.ui", datatype);
+		dlg.show();
+		if( dlg.ret && dlg.allitems <> dlg.orgitems){
+			local datamap = dlg.datamap, pf = dlg.prefix;
+			local idmap = {};
+			foreach( i,v in dlg.allitems){
+				local id0 = sprintf( "%S%03d", pf, i);
+				local id1 = v.id;
+				if( id0 != id1){
+					if( !datamap[id0] && !datamap[id1]) continue;
+					idmap[id0] <- id1;
+				}
+			}
+			return length( idmap) ? idmap : null;
+		}
+	}
+}
+
+
+//	データベースのID整理を適用する。
+//	/data以下の全てのjsonファイルに対して個別に行う。::confのマージされた状態のテーブルだと分離して保存が少々面倒なため。
+//	・
+//	・NUM_I010みたいなクエリ変数も置き換えるか？
+//	・メッセージ中やスクリプト内の文字列中のIDは置き換えるか？
+//	
+class IDSortApplier
+{
+	dbtype = null;			//	"player", "cond", "skill", ...
+	idmap = null;			//	{ "K003":"K512", ... } : IDとIDを置き換えるマップ
+	
+	/*	ID関係性を保つための処理。後回し。
+	//	
+	function isKeyHasID( key){
+		if( typeof( key) != SS_STRING) return false;
+		if( key.endsWith( "id")) return true;
+		if( key.contains( dbtype)) return true;
+		return false;
+	}
+
+	//	IDのリストのキーかどうか。DATAIDSのプロパティのやつ。
+	//	現在は jobs, equips, inimembers 。
+	function isKeyHasIDList( key){
+		return;
+	}
+
+	//	スクリプトやメッセージなど、文字列の中にIDが埋め込まれることがあるKeyかどうか。
+	//	あまり緩い条件だと、たまたま同じ文字列がヒットした物に対して置換をしてしまい、エラーや文字化けの原因になる。
+	function isKeyContainsID( key){
+		return false;
+	}
+
+	function isKeyHasIDBits( key){
+		if( typeof( key) != SS_STRING) return false;
+		if( !key.contains( "bits")) return false;
+		if( !key.contains( dbtype)) return false;
+		return true;
+	}
+
+	//	
+	function _rule( ti, t, i, v){
+		if( i[0]=='_') return undefined; // _から始まるフィールド名は無視される
+		switch( typeof( v)){
+		case SS_STRING:
+			if( typeof( i)==SS_INTEGER){
+				if( isKeyHasIDList( ti)){	//	配列内のIDは配列の名前をチェック。多重配列とかは無視。
+					if( idmap[v]) t[i] = idmap[v];
+				}
+			}else
+			if( isKeyHasID( i)){
+				if( idmap[v]) t[i] = idmap[v];
+				//	"I000,10"みたいなフォーマットもチェックしないと
+				//	"NUM_I000"みたいなクエリ変数もチェックしないと
+			}else
+			if( isKeyContainsID( key)){
+				//	TODO テキスト置換を試みる
+			}
+			break;
+		case SS_INTEGER:
+		case SS_ARRAY:
+			if( isDBBits( i)){	//	dataidをビットマスクで持っている配列かチェック。__bitsとかかな
+				foreach( id0, id1 in idmap){
+					local b0 = ::getBit( v, id0), b1 = ::getBit( v, id1);
+					if( b0 != b1){	//	ビットが入れ替わってたら
+						v = ::setBit( v, id1, b0);
+						v = ::setBit( v, id0, b1);
+					}
+				}
+				t[i] = shrinkBits( v);
+				break;
+			}
+		case SS_TABLE:
+			foreach( vi, vv in v){
+				_rule( i, v, vi, vv);
+			}
+			break;
+		}
+	}
+
+	function applySortDatabase( data){
+		return data;
+	}
+	*/
+	
+	static function apply( type, idmap, func){
+		//	影響を受けるconfを予めコピーして適用していく。
+		local changed = [];
+		// local types = ("dict","setting","type","player","job","cond","skill","item","weapon","armor","enemy","map","quest","store","gvar","point","macro");
+		// foreach( tp in types){
+		// 	local data = ::conf[tp];
+		// 	local newdata = IDSortApplier().applySortDatabase( data);
+		// 	if( data <> newdata){
+		// 		changed .. ( tp, newdata);
+		// 	}
+		// }
+		local idsort(){	//	入れ替え処理そのもの。ついでにセーブ
+			local data1 = ::conf[type], data0 = clone data1;
+			foreach( id0, id1 in idmap){
+				if( data1[id1]){
+					data0[id0] <- data1[id1];
+					if( data0[id0]) func( id0, data0[id0]);
+				}else{
+					delete data0[id0];
+				}
+			}
+			local res = ::getResource( "/.x/%S" % type);
+			res.save( data0);
+			::skstudio.fileview.refreshDir( res.path);
+		}
+		if( length( changed)){
+			//	変化があった場合は、その変化を適用するかしないか確認し、セーブ後に再起動をする。
+			
+		}else{
+			idsort();
+			//	影響が無ければ再起動までは不要。ID変化したものはflushEditorする。
+			foreach( id, _ in idmap){
+				::skstudio.flushEditor( "/.x/%S/%S" % (type, id));
+			}
+		}
+	}
+}
+
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+with( skstudio){
+	registerActivity( {uid:"act_dbview", order:-90, sideview="side_dbview", icon="\uf120", tips="$T.side_dbview", slbl="$T.lbl_data"});
+	registerSideView(
+	{
+		uid:"side_dbview", lbl="$T.side_dbview", icon="\uf120", createSideView:DBSideView.createSideView, defkey="^_D",
+		matches = @( path){
+			local dbtype = getdbtype( path);
+			return dbtype && dbtype!="map" && dbtype!="map_asset";		//	マップもこのエディタでは編集不能
+		}
+	});
+}
+

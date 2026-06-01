@@ -1,0 +1,391 @@
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	Texture, Sprite, TextBoxの拡張機能
+//
+
+// Texture.res <- null;
+Sprite.ref <- null;
+
+function getTexture( src, flags=0){
+	if( !src){
+		return null;
+	}
+	if( src instanceof SS_STRING){
+		src = ::getResource( src);
+		if( !src) return null;
+	}
+	if( src.userdata) return src.userdata;	//	Textureのはず。。。
+	try{
+		local tex = Texture();
+		local img = skLoadImage( src.loadData(), ::loadimageoption);
+		if( flags & 16) img.premultAlpha();
+		if( src.name.contains( "_srgb.")) flags |= 4;	//	ファイル名でsRGB形式を判別。クエリ形式でもいいかも？
+		tex.load( img, flags);
+		tex.ref = weakref( src);
+		src.userdata = tex;
+		return tex;
+	}catch( e){
+		printf( "texture loading error : %S\n", src.path);
+		printexception( e);
+		return null;
+	}
+}
+
+function chooseLoadImageOption( ...){
+	local a = skGetSupportedTextureFormats();
+	local len = vargc;
+	for( local l = 0;l < len;l ++){
+		local fmt = vargv[l];
+		if( a.contains( fmt)){
+			::loadimageoption = fmt;
+			break;
+		}
+	}
+	printf("loadImage option = %S / %S\n", ::loadimageoption, encodeJSON( a));
+}
+
+Sprite.constructor <- function( src = null){
+	shadersrc = skGetDefaultSpriteShader();
+	if( !shadersrc) throw Exception( "no default sprite shader");
+
+	if( src instanceof Texture){
+		tex0 = src;
+	}else
+	if( src instanceof RGBAImage){
+		tex0 = Texture();
+		tex0.load( src);
+	}else
+	if( src instanceof ::Resource){
+		//	Spriteそのものが入ってるかも。。。
+		if( src.userdata){
+			if( src.userdata instanceof Texture){
+				tex0 = src.userdata;
+			}else
+			if( src.userdata instanceof Sprite){
+				set( clone src.userdata);
+				return;
+			}
+		}else
+		if( src.getContent() instanceof Sprite){
+			src.userdata = src.cache;
+			src.flush();
+			set( clone src.userdata);
+			return;
+		}else{
+			tex0 = ::getTexture( src);
+		}
+		if( !tex0) throw Exception( "invalid Sprite source : "..src);
+	}
+	if( tex0){
+		bnd = Rect2D( 0, 0, tex0.width, tex0.height);
+	}else{
+		bnd = Rect2D( 0, 0, 32, 32);
+	}
+//	printf("SPRITE %f %f %f %f\n",bnd.x,bnd.y,bnd.w,bnd.h);
+}
+
+function Sprite::set( sp){
+	//	shadersrc, streach, tex0, tex1はクローンなし
+	shadersrc = sp.shadersrc;
+	tex0 = sp.tex0;
+	tex1 = sp.tex1;
+	blend = sp.blend;
+	color = sp.color;
+	bnd = sp.bnd;
+	pos = sp.pos;
+	mat = sp.mat;
+	uvmat0 = sp.uvmat0;
+	uvmat1 = sp.uvmat1;
+	streach = sp.streach;
+}
+
+function Sprite::_cloned( org){
+	//	shadersrc, streach, tex0, tex1はクローンなし
+	bnd = clone bnd;
+	pos = clone pos;
+	mat = clone mat;
+	uvmat0 = clone uvmat0;
+	uvmat1 = clone uvmat1;
+}
+
+function Sprite::setSubBounds( bnd){
+	if( !uvmat0) uvmat0 = Matrix();
+	local b = bnd;
+	local sx = 1.0/tex0.width;
+	local sy = 1.0/tex0.height;
+	uvmat0.identity().translate( b[0]*sx, b[1]*sy, 0.0).scale( b[2]*sx, b[3]*sy, 1.0);
+}
+
+//	このテクスチャに別のテクスチャ等を描画する。カラー、デプスに対応。
+//	option指定で矩形やブレンド、filterも指定できるように。。。
+function Texture::draw( src, opt=null){
+	local sp = #Sprite(){ ss = skFXFindTechnique("sprite.copy").getShaderSource(0); miscmat = Matrix(); }
+	local w = width, h = height;	//	※mipmap考慮しないと、、、
+	local isdepth = (format==SK_DEPTH16||format==SK_DEPTH24||format==SK_DEPTH32);
+	if( src instanceof Texture){
+		sp.tex0 = src;
+	}else
+	if( typeof( src) == SS_ARRAY){
+		sp.tex0 = null;
+		sp.miscmat[0] = src[0];
+		sp.miscmat[1] = src[1];
+		sp.miscmat[2] = src[2];
+		sp.miscmat[3] = src[3];
+	}else
+	if( typeof( src) == SS_INTEGER){
+		sp.tex0 = null;
+		sp.miscmat[0] = (src>>>24) / 255.0;
+		sp.miscmat[1] = ((src>>>16)&255) / 255.0;
+		sp.miscmat[2] = ((src>>>8)&255) / 255.0;
+		sp.miscmat[3] = (src&255) / 255.0;
+	}else{
+		throw Exception( "src is not drawable : "..src);
+	}
+	sp.blend = SK_OFF;
+	sp.bnd.set( 0, 0, w, h);
+	skPushRenderStates();
+	skSetRenderState( SK_COLORMASK, isdepth?0:-1);
+	skSetRenderState( SK_DEPTHMASK, isdepth);
+	skSetRenderState( SK_DEPTHTEST, isdepth ? SK_ALWAYS : 0);
+	local vp = #(0,0,0,0); skGetViewport( vp);
+	local rt = skSetRenderTarget( src);
+	skSetViewport();
+	skDrawSprite( sp);		//	やりたいのこれ
+	skSetRenderTarget( rt);
+	skSetViewport( vp);
+	skPopRenderStates();
+	sp.tex0 = null;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	ImageClip
+//	標準仕様として使用する。
+//
+
+class ImageClip
+{
+	clipid = "";
+	subbnd = null;			//
+	pivot = null;			//
+	stretch = null;			//
+	color = 0xffffffff;
+	blend = 2;
+	resorate = 100;
+
+	//	instant fields ... 読み込み時、編集後に設定される。
+	uvmat = null;
+	stretchrect = null;
+
+	constructor( t=null){
+		if( t){
+			readJSON( t);
+		}
+	}
+
+	function readJSON( t){
+		foreach( i, v in t){
+			if( i in this) this[i] = v;
+		}
+	}
+
+	function writeJSON(){
+		local t = {
+			clipid = clipid,
+			subbnd = subbnd,
+		};
+		if( blend != 2) t.blend <- blend;
+		if( color != -1) t.color <- color;
+		if( pivot) t.pivot <- pivot;
+		if( stretch) t.stretch <- stretch;
+		if( resorate != 100) t.resorate <- resorate;
+		return t;
+	}
+
+	function getUVMatrix( imagesrc){
+		if( !uvmat){
+			local b = subbnd;
+			uvmat = Matrix();
+			local sx = 1.0 / imagesrc.width;
+			local sy = 1.0 / imagesrc.height;
+			uvmat.identity().translate( b[0]*sx, b[1]*sy, 0.0).scale( b[2]*sx, b[3]*sy, 1.0);
+		}
+		return uvmat;
+	}
+
+	function getStretchRect(){
+		if( !stretchrect){
+			stretchrect = Rect2D( stretch[0], stretch[1], stretch[2], stretch[3]);
+		}
+		return stretchrect;
+	}
+
+	function createSprite( tex){
+		local sp = Sprite( tex);
+		if( pivot){ sp.bnd.x=-pivot[0]; sp.bnd.y=-pivot[1]; }
+		if( subbnd){
+			sp.uvmat0 = getUVMatrix( tex);
+			sp.bnd.w = subbnd[2];
+			sp.bnd.h = subbnd[3];
+		}
+		if( stretch){
+			sp.streach = getStretchRect();
+			sp.punch = stretch[4]?1:0;
+		}
+		sp.color0 = color;
+		sp.blend = blend;
+		sp.reso = resorate * 0.01;
+		return sp;
+	}
+}
+
+function getErrorSprite( path){
+	throw Exception( sprintf( "ERROR SPRITE %S", path));
+	return null;
+}
+
+/**
+ *	pathからSpriteを取得する。
+ */
+function getSprite( path, errsp = true){
+	local r = ::getResource( path);
+	if( !r){
+		return errsp?getErrorSprite( path):null;
+	}
+	//	Spriteそのものが入ってるかも。。。
+	if( r.userdata){
+		if( r.userdata instanceof Texture){
+			return Sprite( r.userdata);
+		}else{
+			return clone r.userdata;
+		}
+	}
+	if( r.getContent() instanceof Sprite){
+		local sp = r.cache;
+		r.flush();
+		r.userdata = sp;
+		return clone sp;
+	}
+	//
+	local tex = ::getTexture( r);
+	if( !tex){
+		return errsp?getErrorSprite( path):null;
+	}
+	// OK!
+	local sp = Sprite( tex);
+	return sp;
+}
+
+///////////////////////////////////////////////////////////////////
+//
+//	SpriteSheet
+//
+//
+
+class SpriteSheetClip extends Resource
+{
+	clip = null;
+
+	constructor( ss, t){
+		clip = ImageClip( t);
+		pres = ss;
+		name = t.clipid;
+		rev = pres.rev;
+	}
+
+	function load( i = 1){
+		if( !cache){
+			cache = clip.createSprite( pres.tex);
+		}
+	}
+}
+
+class SpriteSheet extends Resource
+{
+	srcres = null;
+	tex = null;
+	cliplist = null;
+
+	constructor( r){
+		srcres = r;
+		name = r.name;
+		isdir = true;
+	}
+
+	function _cloned( org){
+		pres = null;
+		pathcache = null;
+		list = null;
+		cache = null;
+		userdata = null;
+		foreach( i, v in cliplist){
+			cliplist[i] = clone v;
+			cliplist[i].pres = this;
+		}
+	}
+
+	function loadList(){
+		if( !tex){
+			local r = srcres;
+			local img;
+			local data = r.loadData();
+			try{
+				img = skLoadImage( data, null);
+			}catch( ex){
+				printexception( ex);
+				printf( "R : %S %S %S\n", r.path, r.file.path, r.file.size);
+				printf( "data : %S %S\n", r.pos, r.size);
+			}
+			//	metadata
+			try{
+				local t = decodeJSON( img.metadata);
+				cliplist = array( length( t.cliplist));
+				foreach( i, v in t.cliplist){
+					cliplist[i] = SpriteSheetClip( this, v);
+				}
+				if( t["pma"]){
+					img.premultAlpha();
+				}
+			}catch( ex){
+				printexception( ex);
+				printf( "%S\n", img.metadata.asText());
+			}
+			tex = Texture();
+			tex.load( img);
+			tex.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_LINEAR, SK_LINEAR));
+			tex.ref = weakref( r);
+		}
+		if( !list){
+			list = [...cliplist];
+		};
+	}
+
+	function flush(){
+		super.flush();
+		tex = null;
+		cliplist = null;
+	}
+
+	function refresh(){
+		srcres.refresh();
+		if( rev != srcres.rev){
+			rev = srcres.rev;
+			flush();
+			return true;
+		}
+		return false;
+	}
+}
+
+::aliasloaders ..
+	function( res){
+		if( res.name.endsWith(".ss.png") || res.name.endsWith(".ss.webp")){
+			local r = SpriteSheet( res);
+			r.name = res.name.substring( 0, res.name.indexOf("."));
+			r.pres = res.pres;
+			r.flags |= 0x2000;
+			return r;
+		}
+		return null;
+	}

@@ -1,0 +1,1492 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import CollisionGroupID;
+import BlockFlagID;
+import BlockPlacementID;
+import FreeBlockCategoryID;
+import PenMode;
+
+		
+function makebox( p0, p1, h){
+	local r = IRect3D( p0.bx+p0.nx*h, p0.by+p0.ny*h, p0.bz+p0.nz*h, 1, 1, 1);
+	local bx = p1.bx+p1.nx*h;
+	local by = p1.by+p1.ny*h;
+	local bz = p1.bz+p1.nz*h;
+	r.expand( (bx,by,bz));
+	return r;
+}
+
+////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////
+//	
+//	ペンツール
+//	5種類の描画モードを持つ。複雑さでは選択ツールの次ぐらいのレベル。
+//	
+////////////////////////////////////////////////////////////////////////
+
+class MapTools.tool_pen extends MapTool
+{
+	penmap = null;
+
+	mode = 0;				//	
+	penid = null;			//	string
+	blkflag = BLK_SOLID;	//	rayTestで使う
+	blk = 1;				//	選択されたブロック
+	peng = null;
+
+	static blkflags = (BLK_SOLID|BLK_LIQUID|BLK_DECAL, BLK_SOLID, BLK_SOLID|BLK_LIQUID, BLK_SOLID|BLK_LIQUID);
+	static isattach = (false, true, false, true, false);
+	
+	constructor( e){
+		super( e);
+		penmap = getPenmap();
+		penid = "rect";
+		//
+		optionview = ::loadSKView( "/plugin/rpgtools/mapeditor/ui/tool_pen.ui");
+		optionview.addEventListener( ACTION_EVENT, optionevent);
+		selblk = SelectBlock( optionview.findChild( "selblock"));
+		selblk.setBlockPages( [1,2,3]);		//	,4,5は今は非表示で。。。
+		blk = 2;
+		selblk.selectBlock( blk);	//	todo どれか
+		selblk.view.addEventListener( ACTION_EVENT, selblkevent);
+		peng = optionview.findChild( "peng");
+		//	
+		setMode( 1);
+		optionview.findChild( penid).setSelected( true);
+	}
+
+	function setMode( m){
+		optionview.findChild( "mode"..mode)?.setSelected( false);
+		optionview.findChild( "mode"..m).setSelected( true);
+		mode = m;
+		local mm = ["$T.penmode_erace","$T.penmode_attach","$T.penmode_paint","$T.penmode_box","$T.penmode_fill"];
+		optionview.findChild( "modelbl").setText( mm[m]);
+		optionview.anime( m<3 ? 0:-1);
+	}
+
+	function optionevent( e){
+		e.consume();
+		local n = e.src["name"];
+		switch( n){
+		case "mode0": case "mode1": case "mode2": case "mode3": case "mode4":
+			local m = e.src.name[4]-'0';
+			if( m != mode){
+				setMode( m);
+			}
+			break;
+		default:
+			if( (n in penmap) || n=="rect"){
+				local pid = e.src["name"];
+				if( pid != penid){
+					optionview.findChild( penid).setSelected( false);
+					optionview.findChild( pid).setSelected( true);
+					penid = pid;
+				}
+			}
+			break;
+		}
+	}
+
+	function selblkevent( e){
+		e.consume();
+		if( e.actioncmd["blk"]){
+			blk = e.actioncmd["blk"];
+		}
+	}
+
+	//	mode、penidからペンを取得
+	function getpens(){
+		return penmap[(mode>=3||penid=="rect")?"p01":penid];
+	}
+
+	//	
+	function canvasevent( e){
+		switch( e.id){
+		case MOUSE_MOVED:
+		{
+			e.consume();
+			local hb = rayTest( e, blkflags[mode], isattach[mode]);
+			switch( mode){
+			case 0:
+				placeSelectPen( hb, getpens()[0], mode);
+				break;
+			default:
+				placePen( hb, getpens()[0], mode);
+				break;
+			}
+			break;
+		}
+		case MOUSE_PRESSED:
+		{
+			local hb = rayTest( e, blkflags[mode], isattach[mode]);
+			if( hb && e.isMouseDown( BUTTON1_MASK)){
+				e.consume();
+				switch( mode){
+				case 3:
+					return boxStart( e, hb);
+				case 4:
+					removeGuide( "pen");
+					return fillBlocks( e, hb);
+				case 0:	//	FB消去追加。。。
+					if( hb.fbtype){
+						local bop = BlockOperation( editor.bw);
+						bop.deleteFreeBlock({ fbuid:hb.fbuid });
+						bop.submit( editor);
+						return;
+					}
+				default:
+					return penid=="rect" ? rectStart( e, hb) : paintStart( e, hb);
+				}
+			}
+			break;
+		}
+		case MOUSE_EXITED:
+		{
+			removeGuide( "pen");
+			e.consume();
+			break;
+		}
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_1: case VK_2: case VK_3: case VK_4: case VK_5: 
+				setMode( e.keycode-VK_1);
+				break;
+			}
+			break;
+		}
+		if( !e.consumed){
+			return super.canvasevent( e);
+		}
+	}
+
+	static modemethods = ( "eraceBlock", "attachBlock", "paintBlock")
+
+	//	ペイント、アタッチ、イレースのドラッグ開始。最初の描画も行う。
+	//	Shift : 面のX,Z軸に対して直線
+	//	Ctrl  : 面の法線軸に対して直線
+	//	
+	function paintStart( e0, hb0){
+		local self = this;
+		local pens = getpens(), pen = pens[hb0.f], pen0 = pens[0];
+		local bop = BlockOperation( editor.bw);
+		local rot = getCameraRot();
+		local blk = blk;
+		local mode = mode;
+		local method = modemethods[mode];
+		
+		//	最初の描画
+		bop[method]({ pen:pen, hb:hb0, blk:blk });
+		bop.submit( editor);
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				local hb;
+				//	ドラッグでの描画。mousedown地点の平面
+				if( e.modifiers&CTRL_MASK){
+					local h = self.planeHeight( e, hb0), bh = (h*2.0)|0;
+					hb = #HitBlock(); hb.set( hb0);
+					hb.bx += bh*hb.nx;
+					hb.by += bh*hb.ny;
+					hb.bz += bh*hb.nz;
+				}else{
+					hb = self.planeTest( e, hb0);
+					if( hb && (e.modifiers&SHIFT_MASK)){
+						self.adjustPlane( hb0, hb);
+					}
+				}
+				if( hb){
+					bop[method]({ pen:pen, hb:hb, blk:blk });
+					if( bop.len()) bop.merge( editor);
+				}
+				self.placePen( hb, pen0, mode);
+				break;
+			case MOUSE_MOVED:	//	普通はこれ来ない
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				return null;
+			case KEY_PRESSED:
+				break;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	//	始点⇒終点のボックスでペイント、アタッチ、イレース
+	//	アタッチ時のみ膨らむ
+	//	※描画中にコリジョン形状が変化しないようにBlockColiderInterface.lock=trueにする。lock時は生成も行わないのであらかじめ作る必要あり！
+	function rectStart( e0, hb0){
+		local self = this;
+		local pens = penmap["p01"], pen = pens[hb0.f], pen0 = pens[0];
+		local bop = BlockOperation( editor.bw);
+		local rot = getCameraRot();
+		local mode = mode, blkflag = blkflags[mode], atc=isattach[mode]?1:0;
+		local blk = mode==0 ? 0 : blk;
+		local method = modemethods[mode];
+		local box = makebox( hb0, hb0, atc);
+		//	コリジョンの退避
+		local colitf = canvas.bwcol.ref;
+		colitf.createCollisions( IRect3D( box).expand( 16));
+		colitf.lock = true;
+		//	最初の描画
+		local trk = "rect"..skGetTime();
+		bop.rectFillBlock({ box=box, blk=blk, isattach=atc });
+		bop.submit( editor, trk);
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				local hb = self.rayTest( e, blkflag, atc);
+				if( hb){
+					local b = makebox( hb0, hb, atc);
+					if( b <> box){
+						self.editor.op.undo();
+						bop.rectFillBlock({ box:b, blk:blk, isattach=atc });
+						bop.submit( self.editor, trk);
+						box.set( b);
+					}
+				}
+				self.placePen( hb, pen, mode);
+				break;
+			case MOUSE_CANCELLED:
+			case MOUSE_RELEASED:
+				self.canvas.bwcol.ref.lock = false;
+				return null;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+
+	//	水平、垂直の2段階でアタッチする
+	function boxStart( e0, hb0){
+		local self = this;
+		local pens = getpens(), pen = pens[hb0.f];
+		local bop = BlockOperation( editor.bw);
+		local rot = getCameraRot();
+		local blk = blk;
+		local mode = mode;
+		local hb1 = HitBlock(); hb1.set( hb0);
+		local box = IRect3D();
+		
+		//	最初の描画
+		local trk = "box"..skGetTime();
+		bop.attachBlock({ pen:pen, hb:hb0, blk:blk });
+		bop.submit( editor, trk);
+		
+		//	push
+		local pushfn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				local hb;
+				local h = self.planeHeight( e, hb1), bh = (h*2.0)|0;
+				hb = #HitBlock(); hb.set( hb1);
+				hb.bx += bh*hb.nx;
+				hb.by += bh*hb.ny;
+				hb.bz += bh*hb.nz;
+				local b = makebox( hb0, hb, 1);
+				if( b <> box){
+					self.editor.op.undo();
+					bop.boxAttachBlock({ box:b, blk:blk });
+					bop.submit( self.editor, trk);
+					box.set( b);
+					//
+					local p3d = self.guides["push"];
+					local pm = RPGToolMesh.createPushMesh( box.w, box.h, box.d, 1<<hb0.f);
+					p3d.setSource( pm);
+					p3d.pos( box.x, box.y, box.z).scale( 0.5);
+					p3d.matdirty = true;
+				}
+				self.placePen( hb, pen, mode);
+				break;
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				self.removeGuide( "push");
+				return null;
+			}
+			return pushfn;
+		}
+		
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				local hb;
+				hb = self.planeTest( e, hb0);
+				if( hb && (e.modifiers&SHIFT_MASK)){
+					self.adjustPlane( hb0, hb);
+				}
+				if( hb){
+					local b = makebox( hb0, hb, 1);
+					if( b <> box){
+						self.editor.op.undo();
+						bop.boxAttachBlock({ box:b, blk:blk });
+						bop.submit( self.editor, trk);
+						hb1.set( hb);
+						box.set( b);
+					}
+				}
+				self.placePen( hb, pen, mode);
+				break;
+			case MOUSE_CANCELLED:
+				return null;
+			case MOUSE_RELEASED:
+				if( e.isClicked()){	//	クリック操作は操作続行
+					break;
+				}
+			case MOUSE_PRESSED:
+			{
+				local pm = RPGToolMesh.createPushMesh( box.w, box.h, box.d, 1<<hb0.f);
+				local p3d = SK3DObject( pm);
+				p3d.pos( box.x, box.y, box.z).scale( 0.5);
+				self.addGuide( "push", p3d);
+				return pushfn;
+			}
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	//	※blk==0のときは何もしない
+	function fillBlocks( e, hb){
+		if( !hb.blk) return;
+		
+		local bop = BlockOperation( editor.bw);
+		bop.floodfillBlock({ hb:hb, blk:blk });
+		if( bop.len()) bop.submit( editor);
+	}
+}
+
+class MapTools.tool_water extends MapTool
+{
+	penmap = null;
+
+	mode = 0;				//	
+	penid = null;			//	string
+	blkflag = BLK_SOLID|BLK_LIQUID;	//	rayTestで使う
+	blk = 1;				//	選択されたブロック
+	lastgndblk = 0;			//	最後に水に置き換わった地面ブロック。1-5まで
+	
+	constructor( e){
+		super( e);
+		penmap = getPenmap();
+		penid = "p01";
+		//
+		optionview = ::loadSKView( "/plugin/rpgtools/mapeditor/ui/tool_water.ui");
+		optionview.addEventListener( ACTION_EVENT, optionevent);
+		selblk = SelectBlock( optionview.findChild( "selblock"));
+		selblk.setBlockPages( [8]);
+		blk = 8;
+		selblk.selectBlock( blk);
+		selblk.view.addEventListener( ACTION_EVENT, selblkevent);
+	
+		setMode( 0);
+		optionview.findChild( penid).setSelected( true);
+	}
+
+	function setMode( m){
+		optionview.findChild( "mode"..mode)?.setSelected( false);
+		optionview.findChild( "mode"..m).setSelected( true);
+		mode = m;
+		local mm = #["$T.penmode_paint","$T.penmode_box","$T.penmode_fill","$T.penmode_clear"];
+		optionview.findChild( "modelbl").setText( mm[m]);
+	}
+
+	function optionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "mode0": case "mode1": case "mode2": case "mode3":
+			local m = e.src.name[4]-'0';
+			if( m != mode){
+				setMode( m);
+			}
+			break;
+		default:
+			if( e.src["name"] in penmap){
+				local pid = e.src["name"];
+				if( pid != penid){
+					optionview.findChild( penid).setSelected( false);
+					optionview.findChild( pid).setSelected( true);
+					penid = pid;
+				}
+			}
+			break;
+		}
+	}
+
+	function selblkevent( e){
+		e.consume();
+		if( e.actioncmd["blk"]){
+			blk = e.actioncmd["blk"];
+		}
+	}
+
+	//	mode、penidからペンを取得
+	function getpens(){
+		return penmap[mode>=1?"p01":penid];
+	}
+
+
+	//	
+	function canvasevent( e){
+		switch( e.id){
+		case MOUSE_MOVED:
+		{
+			e.consume();
+			local at = mode!=3;
+			local hb = rayTest( e, blkflag, at);
+			placePen( hb, getpens()[0], hb["by"]<0? PEN_ATTACH : at? PEN_PAINT : PEN_ERACE);
+			break;
+		}
+		case MOUSE_PRESSED:
+		{
+			local at = mode!=3;
+			local hb = rayTest( e, blkflag, at);
+			if( hb && e.isMouseDown( BUTTON1_MASK)){
+				e.consume();
+				if( hb.by < 0) hb.push( 1);
+				//
+				switch( mode){
+				case 1:
+					return boxStart( e, hb);
+				case 2:
+					removeGuide( "pen");
+					return fillBlocks( e, hb);
+				case 3:
+					removeGuide( "pen");
+					return clearBlocks( e, hb);
+				default:
+					return paintStart( e, hb);
+				}
+			}
+			break;
+		}
+		case MOUSE_EXITED:
+		{
+			removeGuide( "pen");
+			e.consume();
+			break;
+		}
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_1: case VK_2: case VK_3: case VK_4:
+				setMode( e.keycode-VK_1);
+				break;
+			}
+		}
+		if( !e.consumed){
+			return super.canvasevent( e);
+		}
+	}
+
+	//	ペイント、アタッチ、イレースのドラッグ開始。最初の描画も行う。
+	//	Shift : 面のX,Z軸に対して直線
+	//	Ctrl  : 面の法線軸に対して直線
+	//	
+	function paintStart( e0, hb0){
+		local self = this;
+		local pens = getpens(), pen = pens[hb0.f];
+		local bop = BlockOperation( editor.bw);
+		local rot = getCameraRot();
+		local blk = blk;
+		local mode = mode==3 ? PEN_ERACE : PEN_PAINT;
+		if( (hb0.blk&31)>=1 && (hb0.blk&31)<=5) lastgndblk = hb0.blk;
+		
+		//	最初の描画
+		bop.paintBlock({ pen:pen, hb:hb0, blk:blk });
+		bop.submit( editor);
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				local hb;
+				//	ドラッグでの描画。mousedown地点の平面
+				if( e.modifiers&CTRL_MASK){
+					local h = self.planeHeight( e, hb0), bh = (h*2.0)|0;
+					hb = #HitBlock(); hb.set( hb0);
+					hb.bx += bh*hb.nx;
+					hb.by += bh*hb.ny;
+					hb.bz += bh*hb.nz;
+				}else{
+					hb = self.planeTest( e, hb0);
+					if( hb && (e.modifiers&SHIFT_MASK)){
+						self.adjustPlane( hb0, hb);
+					}
+				}
+				if( hb){
+					bop.paintBlock({ pen:pen, hb:hb, blk:blk });
+					if( bop.len()) bop.merge( editor);
+				}
+				self.placePen( hb, pen, mode);
+				break;
+			case MOUSE_MOVED:	//	普通はこれ来ない
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				return null;
+			case KEY_PRESSED:
+				break;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+
+	function boxStart( e0, hb0){
+		local self = this;
+		local pens = getpens(), pen = pens[hb0.f];
+		local bop = BlockOperation( editor.bw);
+		local rot = getCameraRot();
+		local blk = blk;
+		local mode = mode;
+		local hb1 = HitBlock(); hb1.set( hb0);
+		local box = IRect3D();
+		if( (hb0.blk&31)>=1 && (hb0.blk&31)<=5) lastgndblk = hb0.blk;
+		
+		//	最初の描画
+		local trk = "box"..skGetTime();
+		bop.paintBlock({ pen:pen, hb:hb0, blk:blk });
+		bop.submit( editor, trk);
+		
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				local hb;
+				hb = self.planeTest( e, hb0);
+				if( hb && (e.modifiers&SHIFT_MASK)){
+					self.adjustPlane( hb0, hb);
+				}
+				if( hb){
+					local b = makebox( hb0, hb, 0);
+					if( b <> box){
+						self.editor.op.undo();
+						bop.boxPaintWater({ box:b, blk:blk });
+						bop.submit( self.editor, trk);
+						hb1.set( hb);
+						box.set( b);
+					}
+				}
+				self.placePen( hb, pen, 2);
+				break;
+			case MOUSE_CANCELLED:
+				return null;
+			case MOUSE_RELEASED:
+				if( e.isClicked()){	//	クリック操作は操作続行
+					break;
+				}
+			case MOUSE_PRESSED:
+			{
+				return null;
+			}
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	function fillBlocks( e, hb){
+		if( !hb.blk) return;
+		if( !Block.isClass( hb.blk, "water")) return;
+		
+		local bop = BlockOperation( editor.bw);
+		bop.floodfillBlock({ hb:hb, blk:blk });
+		if( bop.len()) bop.submit( editor);
+	}
+
+	function clearBlocks( e, hb){
+		if( !hb.blk) return;
+		if( !Block.isClass( hb.blk, "water")) return;
+		if( !lastgndblk) return;
+		
+		local bop = BlockOperation( editor.bw);
+		bop.floodfillBlock({ hb:hb, blk:lastgndblk });
+		if( bop.len()) bop.submit( editor);
+	}
+}
+
+class MapTools.tool_carpet extends MapTool
+{
+	mode = 0;				//	
+	blkflag = BLK_SOLID;	//	rayTestで使う
+	blk = 1;				//	選択されたブロック
+	
+	constructor( e){
+		super( e);
+		//
+		optionview = ::loadSKView( "/plugin/rpgtools/mapeditor/ui/tool_carpet.ui");
+		optionview.addEventListener( ACTION_EVENT, optionevent);
+		selblk = SelectBlock( optionview.findChild( "selblock"));
+		selblk.setBlockPages( [9]);
+		blk = 9;
+		selblk.selectBlock( blk);
+		selblk.view.addEventListener( ACTION_EVENT, selblkevent);
+		
+		setMode( 0);
+	}
+
+	function setMode( m){
+		optionview.findChild( "mode"..mode)?.setSelected( false);
+		optionview.findChild( "mode"..m).setSelected( true);
+		mode = m;
+		local mm = #["$T.penmode_box","$T.penmode_fill","$T.penmode_clear"];
+		optionview.findChild( "modelbl").setText( mm[m]);
+	}
+
+	function optionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "mode0": case "mode1": case "mode2": 
+			local m = e.src.name[4]-'0';
+			if( m != mode){
+				setMode( m);
+			}
+			break;
+		}
+	}
+
+	function selblkevent( e){
+		e.consume();
+		if( e.actioncmd["blk"]){
+			blk = e.actioncmd["blk"];
+		}
+	}
+
+	//	mode、penidからペンを取得
+	function getpens(){
+		return penmap[mode>=1?"p01":penid];
+	}
+
+	//	
+	function canvasevent( e){
+		switch( e.id){
+		case MOUSE_MOVED:
+		{
+			e.consume();
+			local pens = getPenmap()["p01"], pen = pens[0];
+			if( mode == 0){
+				local hb = rayTest( e, blkflag, true);
+				if( hb["f"] != 0) hb = null;	//	上面のみ有効
+				placePen( hb, pen, PEN_ATTACH);
+			}else{
+				local hb = rayTest( e, BLK_SOLID|BLK_DECAL, false);
+				placePen( hb, pen, mode==2? PEN_ERACE : PEN_PAINT);
+			}
+			break;
+		}
+		case MOUSE_PRESSED:
+		{
+			if( e.isMouseDown( BUTTON1_MASK)){
+				e.consume();
+				switch( mode){
+				case 1:
+					removeGuide( "pen");
+					local hb = rayTest( e, BLK_SOLID|BLK_DECAL, false);
+					if( hb) return fillBlocks( e, hb);
+					break;
+				case 2:
+					removeGuide( "pen");
+					local hb = rayTest( e, BLK_SOLID|BLK_DECAL, false);
+					if( hb) return clearBlocks( e, hb);
+					break;
+				default:
+					local hb = rayTest( e, blkflag, true);
+					printf( "eeeeee %S\n", hb);
+					if( hb && hb.f == 0){//	上面のみ有効
+						return boxStart( e, hb);
+					}
+					break;
+				}
+			}
+			break;
+		}
+		case MOUSE_EXITED:
+		{
+			removeGuide( "pen");
+			e.consume();
+			break;
+		}
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_1: case VK_2: case VK_3:
+				setMode( e.keycode-VK_1);
+				break;
+			}
+		}
+		if( !e.consumed){
+			return super.canvasevent( e);
+		}
+	}
+
+	function boxStart( e0, hb0){
+		local self = this;
+		local pens = getPenmap()["p01"], pen = pens[0];
+		local bop = BlockOperation( editor.bw);
+		local rot = getCameraRot();
+		local blk = blk;
+		local mode = mode;
+		local hb1 = HitBlock(); hb1.set( hb0);
+		local box = IRect3D();
+		
+		//	最初の描画
+		local trk = "box"..skGetTime();
+		bop.attachBlock({ pen:pen, hb:hb0, blk:blk });
+		bop.submit( editor, trk);
+		
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				local hb;
+				hb = self.planeTest( e, hb0);
+				if( hb && (e.modifiers&SHIFT_MASK)){
+					self.adjustPlane( hb0, hb);
+				}
+				if( hb){
+					local b = makebox( hb0, hb, 1);
+					if( b <> box){
+						self.editor.op.undo();
+						bop.boxAttachBlock({ box:b, blk:blk });
+						bop.submit( self.editor, trk);
+						hb1.set( hb);
+						box.set( b);
+					}
+				}
+				self.placePen( hb, pen, 2);
+				break;
+			case MOUSE_CANCELLED:
+				return null;
+			case MOUSE_RELEASED:
+				if( e.isClicked()){	//	クリック操作は操作続行
+					break;
+				}
+			case MOUSE_PRESSED:
+			{
+				return null;
+			}
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	function fillBlocks( e, hb){
+		if( !hb.blk) return;
+		if( !Block.isClass( hb.blk, "carpet")) return;
+		
+		local bop = BlockOperation( editor.bw);
+		bop.floodfillBlock({ hb:hb, blk:blk });
+		if( bop.len()) bop.submit( editor);
+	}
+
+	function clearBlocks( e, hb){
+		if( !hb.blk) return;
+		if( !Block.isClass( hb.blk, "carpet")) return;
+		
+		local bop = BlockOperation( editor.bw);
+		bop.floodfillBlock({ hb:hb, blk:0 });
+		if( bop.len()) bop.submit( editor);
+	}
+}
+
+
+class MapTools.tool_fence extends MapTool
+{
+	blkflag = BLK_SOLID;	//	rayTestで使う
+
+	blk = 1;				//	選択されたブロック
+	blkh = 2;
+	hpen = null;				//	ガイド用ペン。作る
+	hpens = null;
+	
+	hval = null;			//	
+	mode = 0;
+	
+	constructor( e){
+		super( e);
+		hpens = {};
+		//
+		optionview = ::loadSKView( "/plugin/rpgtools/mapeditor/ui/tool_fence.ui");
+		optionview.addEventListener( ACTION_EVENT, optionevent);
+		
+		hval = createNumInputBehavior( optionview.findChild( "hval"));
+		hval.setRange( 1, 8, 1);
+		hval.setValue( 2);
+		
+		selblk = SelectBlock( optionview.findChild( "selblock"));
+		selblk.setBlockPages( [10]);
+		setBlock( 10);
+		selblk.selectBlock( blk);	//	todo どれか
+		selblk.view.addEventListener( ACTION_EVENT, selblkevent);
+		setMode( 1);
+	}
+
+	function setMode( m){
+		optionview.findChild( "mode"..mode)?.setSelected( false);
+		optionview.findChild( "mode"..m).setSelected( true);
+		mode = m;
+	}
+
+	function optionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "mode0": case "mode1": case "mode2":
+			setMode( e.src.name[4]-'0');
+			break;
+		case "hval":
+			blkh = hval.getValue();
+			hpen = gethpen( blkh);
+			break;
+		}
+	}
+
+	function incParameter( e){
+		hval.setValue( hval.getValue() + e.count);
+		blkh = hval.getValue();
+		hpen = gethpen( blkh);
+	}
+
+	function selblkevent( e){
+		e.consume();
+		if( e.actioncmd["blk"]){
+			setBlock( e.actioncmd["blk"]);
+		}
+	}
+
+	function setBlock( b){
+		blk = b;
+		blkh = Block.getFenceHeight( b);
+		hval.setValue( blkh);
+		hpen = gethpen( blkh);
+	}
+
+	function gethpen( h){
+		local p = hpens[h];
+		if( !p){
+			local vd = VoxelData8( 1, h, 1);
+			vd.clear( 1);
+			vd.pivot = (0,0,0);
+			p = (hpens[h] <- vd);
+		}
+		return p;
+	}
+
+	//	
+	function canvasevent( e){
+		switch( e.id){
+		case MOUSE_MOVED:
+		{
+			e.consume();
+			if( mode == 2){
+				local pens = getPenmap()["p01"], pen = pens[0];
+				local hb = rayTest( e, blkflag);
+				if( hb && !Block.isClass( hb.blk, "fence")) hb = null;
+				placeSelectPen( hb, pen, PEN_ERACE);
+			}else{
+				local hb = rayTest( e, blkflag);
+				if( hb && hb.f!=0) hb = null;
+				placePen( hb, hpen, PEN_ATTACH);
+			}
+			break;
+		}
+		case MOUSE_PRESSED:
+		{
+			if( mode == 2){
+				local hb = rayTest( e, blkflag);
+				if( hb && !Block.isClass( hb.blk, "fence")) hb = null;
+				removeGuide( "pen");
+				if( hb){
+					local bop = BlockOperation( editor.bw);
+					bop.floodfillBlock({ hb:hb, blk:0 });
+					if( bop.len()) bop.submit( editor);
+				}
+			}else{
+				local hb = rayTest( e, blkflag);
+				if( hb && e.isMouseDown( BUTTON1_MASK)){
+					e.consume();
+					return boxStart( e, hb);
+				}
+			}
+			break;
+		}
+		case MOUSE_EXITED:
+		{
+			removeGuide( "pen");
+			e.consume();
+			break;
+		}
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_1:
+				;
+			}
+			break;
+		}
+		if( !e.consumed){
+			return super.canvasevent( e);
+		}
+	}
+
+	function boxStart( e0, hb0){
+		local self = this;
+		local pen = hpen;
+		local bop = BlockOperation( editor.bw);
+		local rot = getCameraRot();
+		local blk = blk, blkh = blkh;
+		local box = IRect3D();
+		local isline = mode==0;
+		
+		//	最初の描画
+		local trk = "fence"..skGetTime();
+		bop.attachFence({ box:makebox( hb0, hb0, 1), blk:blk, blkh:blkh, hb0:hb0 });
+		bop.submit( editor, trk);
+		
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				local hb;
+				hb = self.planeTest( e, hb0);
+				if( hb && (e.modifiers&SHIFT_MASK)){
+					self.adjustPlane( hb0, hb);
+				}
+				if( hb){
+					local b = makebox( hb0, hb, 1);
+					if( isline){
+						if( b.w >= b.d){ b.d=1; b.z=hb0.bz; }
+						else{ b.w=1; b.x=hb0.bx; }
+					}
+					b.y = hb0.by+hb0.ny; b.h = 1;
+					if( b <> box){
+						self.editor.op.undo();
+						bop.attachFence({ box:b, blk:blk, blkh:blkh, hb0:hb0 });
+						bop.submit( self.editor, trk);
+						box.set( b);
+					}
+				}
+				self.placePen( hb, pen, PEN_ATTACH);
+				break;
+			case MOUSE_CANCELLED:
+				return null;
+			case MOUSE_RELEASED:
+				if( e.isClicked()){	//	クリック操作は操作続行
+					break;
+				}
+			case MOUSE_PRESSED:
+				return null;
+			}
+			return fn;
+		};
+		return fn;
+	}
+}
+
+
+//	アタッチ、ワイプ。
+//	スプレーモードはいらんか、、、
+class MapTools.tool_plant extends MapTool
+{
+	penmap = null;
+
+	mode = 0;				//	
+	penid = null;			//	string
+	blkflag = BLK_SOLID;	//	rayTestで使う
+	blk = 1;				//	選択されたブロック
+	lastgndblk = 0;			//	最後に水に置き換わった地面ブロック。1-5まで
+	
+	constructor( e){
+		super( e);
+		penmap = getPenmap();
+		penid = "p01";
+		//
+		optionview = ::loadSKView( "/plugin/rpgtools/mapeditor/ui/tool_plant.ui");
+		optionview.addEventListener( ACTION_EVENT, optionevent);
+		selblk = SelectBlock( optionview.findChild( "selblock"));
+		selblk.setBlockPages( [11]);
+		blk = 11;
+		selblk.selectBlock( blk);
+		selblk.view.addEventListener( ACTION_EVENT, selblkevent);
+		
+		setMode( 1);
+		optionview.findChild( penid).setSelected( true);
+	}
+
+	function setMode( m){
+		optionview.findChild( "mode"..mode)?.setSelected( false);
+		optionview.findChild( "mode"..m).setSelected( true);
+		mode = m;
+		local mm = #["$T.penmode_erace","$T.penmode_attach","$T.penmode_wipe"];
+		optionview.findChild( "modelbl").setText( mm[m]);
+	}
+
+	function optionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "mode0": case "mode1": case "mode2":
+			local m = e.src.name[4]-'0';
+			if( m != mode){
+				setMode( m);
+			}
+			break;
+		default:
+			if( e.src["name"] in penmap){
+				local pid = e.src["name"];
+				if( pid != penid){
+					optionview.findChild( penid).setSelected( false);
+					optionview.findChild( pid).setSelected( true);
+					penid = pid;
+				}
+			}
+			break;
+		}
+	}
+
+	function selblkevent( e){
+		e.consume();
+		if( e.actioncmd["blk"]){
+			blk = e.actioncmd["blk"];
+		}
+	}
+
+	//	mode、penidからペンを取得
+	function getpens(){
+		return penmap[mode>=2?"p01":penid];
+	}
+
+	//	
+	function canvasevent( e){
+		switch( e.id){
+		case MOUSE_MOVED:
+		{
+			e.consume();
+			local hb = rayTest( e, blkflag, false);
+			placePen( hb, getpens()[0], mode);
+			break;
+		}
+		case MOUSE_PRESSED:
+		{
+			local hb = rayTest( e, blkflag, false);
+			if( hb && e.isMouseDown( BUTTON1_MASK)){
+				e.consume();
+				switch( mode){
+				case 0:
+					return wipe2DStart( e, hb);
+				default:
+					return paintStart( e, hb);
+				}
+			}
+			break;
+		}
+		case MOUSE_EXITED:
+		{
+			removeGuide( "pen");
+			e.consume();
+			break;
+		}
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_1: case VK_2: case VK_3:
+				setMode( e.keycode-VK_1);
+				break;
+			}
+		}
+		if( !e.consumed){
+			return super.canvasevent( e);
+		}
+	}
+
+	//	ペイント、アタッチ、イレースのドラッグ開始。最初の描画も行う。
+	//	Shift : 面のX,Z軸に対して直線
+	//	Ctrl  : 面の法線軸に対して直線
+	//	
+	function paintStart( e0, hb0){
+		local self = this;
+		local pens = getpens(), pen = pens[hb0.f];
+		local bop = BlockOperation( editor.bw);
+		local rot = getCameraRot();
+		local blk = blk;
+		local mode = mode;
+		local method = MapTools.tool_pen.modemethods[mode];
+		if( (hb0.blk&31)>=1 && (hb0.blk&31)<=5) lastgndblk = hb0.blk;
+		
+		//	最初の描画
+		bop[method]({ pen:pen, hb:hb0, blk:blk });
+		bop.submit( editor);
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				local hb;
+				//	ドラッグでの描画。mousedown地点の平面
+				if( e.modifiers&CTRL_MASK){
+					local h = self.planeHeight( e, hb0), bh = (h*2.0)|0;
+					hb = #HitBlock(); hb.set( hb0);
+					hb.bx += bh*hb.nx;
+					hb.by += bh*hb.ny;
+					hb.bz += bh*hb.nz;
+				}else{
+					hb = self.planeTest( e, hb0);
+					if( hb && (e.modifiers&SHIFT_MASK)){
+						self.adjustPlane( hb0, hb);
+					}
+				}
+				if( hb){
+					bop[method]({ pen:pen, hb:hb, blk:blk });
+					if( bop.len()) bop.merge( editor);
+				}
+				self.placePen( hb, pen, mode);
+				break;
+			case MOUSE_MOVED:	//	普通はこれ来ない
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				return null;
+			case KEY_PRESSED:
+				break;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	function wipe2DStart( e0, hb0){
+		local self = this;
+		local rot = getCameraRot();
+		local box = IRect3D( hb0.bx, hb0.by, hb0.bz, 1, 1, 1);
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				local hb;
+				hb = self.planeTest( e, hb0);
+				if( hb && (e.modifiers&SHIFT_MASK)){
+					self.adjustPlane( hb0, hb);
+				}
+				if( hb){
+					local b = makebox( hb0, hb, 0);
+					if( b <> box){
+						box.set( b);
+					}
+				}
+				self.removeGuide( "pen");
+				self.place2DRegion( box, PEN_SELECT);
+				break;
+			case MOUSE_RELEASED:
+				if( box.valid() && !e.isClicked()){
+					// self.sksel = self.place2DRegion( box, PEN_SELECT);
+					// box.y = 0; box.h = 128;	//	
+					// self.selbox = box;
+				}else{
+					// self.selbox = self.sksel = null;
+				}
+				local bop = BlockOperation( editor.bw);
+				bop.wipeBlocks({ box=box, fn=@( blk) (blk&31)==11});	//	plantのみ消す!
+				bop.submit( editor);
+				self.removeGuide( "box");
+				return null;
+			case MOUSE_MOVED:	//	普通はこれ来ない
+			case MOUSE_CANCELLED:
+				return null;
+			case KEY_PRESSED:
+				break;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	function clearBlocks( e, hb){
+		if( !hb.blk) return;
+		if( !Block.isClass( hb.blk, "water")) return;
+		if( !lastgndblk) return;
+		
+		local bop = BlockOperation( editor.bw);
+		bop.floodfillBlock({ hb:hb, blk:lastgndblk });
+		if( bop.len()) bop.submit( editor);
+	}
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////
+//	
+//	整地ツール
+//	
+//	
+////////////////////////////////////////////////////////////////////////
+
+
+class MapTools.tool_level extends MapTool
+{
+	penmap = null;
+
+	penid = null;			//	string
+	blkflag = BLK_SOLID;	//	rayTestで使う
+	blk = 1;				//	選択されたブロック
+
+	mode = 0;				//	高さを直指定
+
+	offsval = null;
+	repchk = null;
+	x2chk = null;
+	abschk = null;
+	offschk = null;
+
+	aligns = null;	//	[min,none,max]
+	align = 1;
+	
+	constructor( e){
+		super( e);
+		penmap = getPenmap();
+		penid = "p05";
+		//
+		optionview = ::loadSKView( "/plugin/rpgtools/mapeditor/ui/tool_level.ui");
+		optionview.addEventListener( ACTION_EVENT, optionevent);
+		selblk = SelectBlock( optionview.findChild( "selblock"));
+		selblk.setBlockPages( [1,2,3]);
+		blk = 33;
+		selblk.selectBlock( blk);	//	todo どれか
+		selblk.view.addEventListener( ACTION_EVENT, selblkevent);
+		repchk = optionview.findChild( "repchk");
+		x2chk = optionview.findChild( "x2chk");
+		x2chk.setSelected( true);
+		//
+		abschk = optionview.findChild( "abschk");
+		offschk = optionview.findChild( "offschk");
+		//
+		offsval = createNumInputBehavior( optionview.findChild( "offsval"));
+		offsval.setRange( -16, 16, 1);
+		offsval.setValue( 4);
+		//
+		aligns = ["align0","align1","align2"].map( @( v) optionview.findChild( v) );
+		aligns[1].setSelected( true);
+		//	
+		optionview.findChild( penid).setSelected( true);
+		optionview.anime( -1);
+		setMode( 0);
+	}
+
+	function setMode( m){
+		mode = m;
+		offschk.setSelected( !!m);
+		abschk.setSelected( !m);
+		if( m){
+			offsval.setRange( -16, 16, 1);
+			offsval.setValue( 4);
+		}else{
+			offsval.setRange( 0, 32, 1);
+			offsval.setValue( 4);
+		}
+	}
+
+	function optionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "abschk": setMode( 0); break;
+		case "offschk": setMode( 1); break;
+		case "repchk": optionview.anime( e.src.isSelected() ? 0 : -1); break;
+		case "align0": case "align1": case "align2": 
+			align = e.src.name[5]-'0';
+			foreach( i,v in aligns) v.setSelected( i==align);
+			break;
+		default:
+			if( e.src["name"] in penmap){
+				local pid = e.src["name"];
+				if( pid != penid){
+					optionview.findChild( penid).setSelected( false);
+					optionview.findChild( pid).setSelected( true);
+					penid = pid;
+				}
+			}
+			break;
+		}
+	}
+
+	function incParameter( e){
+		offsval.setValue( offsval.getValue() + e.count);
+		//
+		editor.canvas.view.repaint();
+		local hb = rayTestX( e, blkflag);
+		local dh = offsval.getValue()+(mode?0:-(hb["by"]||0));
+		placeLVPen( hb, getpens()[0], dh);
+	}
+
+	function selblkevent( e){
+		e.consume();
+		if( e.actioncmd["blk"]){
+			blk = e.actioncmd["blk"];
+		}
+	}
+
+	function getpens(){
+		return penmap[penid];
+	}
+
+	function rayTestX( e, blkflag){
+		local hb = rayTest( e, blkflag);
+		if( hb["f"] != 0) hb = null;
+		if( hb && x2chk.isSelected()){ hb.bx = (hb.bx+1)&~1; hb.bz = (hb.bz+1)&~1; }
+		return hb;
+	}
+
+	//	
+	function canvasevent( e){
+		switch( e.id){
+		case MOUSE_MOVED:
+		{
+			local hb = rayTestX( e, blkflag);
+			local dh = offsval.getValue()+(mode?0:-(hb["by"]||0));
+			placeLVPen( hb, getpens()[0], dh);
+			e.consume();
+			break;
+		}
+		case MOUSE_PRESSED:
+		{
+			local hb = rayTestX( e, blkflag);
+			if( e.isMouseDown( BUTTON1_MASK)){
+				if( hb){
+					e.consume();
+					return levelerStart( e, hb);
+				}
+			}
+			break;
+		}
+		case MOUSE_EXITED:
+		{
+			removeGuide( "pen");
+			e.consume();
+			break;
+		}
+		case KEY_PRESSED:
+			switch( e.keycode){
+			case VK_1: case VK_2: case VK_3: case VK_4: case VK_5: 
+				break;
+			}
+		}
+		if( !e.consumed){
+			return super.canvasevent( e);
+		}
+	}
+
+	function showContextMenu( e){
+		local hb = rayTest( e, blkflag, true); if( hb.by < 0) hb = null;
+		local ctxmenu = [
+			{ id="pick", lbl=("この高に設定: %S" % (hb?hb.by:"---")), icon="\ue259", disable=!hb },
+			"-",
+			...getDefaultContextMenu( e),
+		];
+		local m = MenuPopup.run( ctxmenu);
+		switch( m["id"]){
+		case "pick":
+			setMode( 0);
+			offsval.setValue( hb.by);
+			break;
+		default:
+			return processDefaultContextMenu( e, m);
+		}
+	}
+	
+	function levelerStart( e0, hb0){
+		local self = this;
+		local pens = getpens(), pen = pens[hb0.f];
+		local bop = BlockOperation( editor.bw);
+		local rot = getCameraRot();
+		local blk = repchk.isSelected() ? blk : 0;
+		local offs0 = offsval.getValue(), x2 = x2chk.isSelected();
+		local m = mode, align = align;
+		//	最初の描画
+		bop.levelSet({ pen:pen, hb:hb0, blk:blk, newy:m?hb0.by+offs0:offs0, align=align });
+		bop.submit( editor);
+		//	開始時のtoolfunc
+		local fn( e){
+			e.consume();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				local hb, ny = 0;
+				//	ドラッグでの描画。mousedown地点の平面
+				if( e.modifiers&CTRL_MASK){
+				 	local h = self.planeHeight( e, hb0), bh = (h*2.0)|0;
+					hb = #HitBlock(); hb.set( hb0);
+					ny = bh;
+					// hb.bx += bh*hb.nx;
+					// hb.by += bh*hb.ny;
+					// hb.bz += bh*hb.nz;
+				}else{
+					hb = self.planeTest( e, hb0);
+					if( hb && (e.modifiers&SHIFT_MASK)){
+						self.adjustPlane( hb0, hb);
+					}
+				}
+				if( hb){
+					if( hb && x2){ hb.bx = (hb.bx+1)&~1; hb.bz = (hb.bz+1)&~1; }
+					bop.levelSet({ pen:pen, hb:hb, blk:blk, newy:(m?(hb.by+offs0):offs0)+ny, align=align });
+					if( bop.len()) bop.merge( editor);
+				}
+				local dh = self.offsval.getValue()+(m?0:-(hb["by"]||0)) + ny;
+				self.placeLVPen( hb, pen, dh);
+				break;
+			case MOUSE_MOVED:	//	普通はこれ来ない
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				return null;
+			case KEY_PRESSED:
+				break;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	//	
+	function getlvvd( penid){
+		local vc = ::getResourceContent( "/resource/vox/_sys/pen.vox");
+		return vc.findParts( penid.replace( "p", "l")).vd8;
+	}
+
+	//	レベラー用のペンは普通のペンに高さガイドが付く
+	function placeLVPen( hb, pen, dh){
+		setHitInfo( hb);
+		if( !hb) return removeGuide( "pen");
+		local sk3d = guides["pen"];
+		if( !sk3d || sk3d.ref[0]!=pen || sk3d.ref[1]!=dh){
+			sk3d?.kill();
+			sk3d = createPen( pen, PEN_PAINT);
+			//	lvmesh
+			local vd8 = getlvvd( penid);
+			local vmd = VoxelMeshBuilder.createVoxelMeshData( vd8, null, 0, 63);
+			local pm = vmd.createPolygonMesh( vd8.pal);
+			pm.face .. (clone pm.face[0]); pm.face[1].m = clone pm.face[1].m;
+			foreach( i,f in pm.face){
+				local m = f.m;
+				m.visiblemask = SK_VISIBLE_DECAL;
+				if( i){ m.depthtest = SK_GREATER; m.alphatest = 1; m.alpharef = 0.5; }
+			}
+			local h3d = SK3DObject( pm);
+			h3d.pos.add( 0, 0.5+dh*0.5, 0);
+			sk3d.addChild( h3d);
+			//
+			addGuide( "pen", sk3d);
+			sk3d.ref = (pen,dh);
+		}
+		movePen( hb, sk3d);
+	}
+}

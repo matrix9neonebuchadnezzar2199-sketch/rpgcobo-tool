@@ -1,0 +1,65 @@
+/**********************************************************************************
+ *	module : mod_transform
+ *	
+ *	
+ **********************************************************************************/
+declare mod_transform;
+
+
+param transform
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute mediump vec3 in_n <ID=NORMAL>;
+	attribute mediump vec4 in_tan <ID=TANGENT>;
+	attribute highp vec4 in_widx <id=WEIGHTIDX>;		//	nande ok?
+	attribute lowp vec4 in_w <ID=WEIGHT>;
+	
+	uniform highp mat4 wvmat <id=WVMAT>;
+	uniform highp mat4 pmat <id=PMAT>;
+	uniform mediump vec4 bone[BONENUM*3] <id=BONEMAT>;
+}
+
+vs transform
+{
+	lowp vec3 pack3( in highp float f){
+		highp vec3 v = fract( vec3( 256.0, 1.0, 1.0/256.0) * f);
+		return v-v.xxy * vec3( 0.0, 1.0/256.0, 1.0/256.0);
+	}
+	
+	//	[0] : MVP mat, [1] : MVN, [2] : MVTAN+W
+	highp mat4 getTransformedVectorsPN( in highp vec3 p, in mediump vec3 n){
+		highp mat4 m;
+		mediump mat3 wv3 = mat3( wvmat[0].xyz, wvmat[1].xyz, wvmat[2].xyz);
+		$( BONEWEIGHT){
+			$( UV4){
+				lowp ivec4 i = ivec4( in_widx)*3; mediump vec4 w = in_w;
+				mediump vec4 vx = bone[i.x] * w.x + bone[i.y] * w.y + bone[i.z] * w.z + bone[i.w] * w.w; i = i + 1;
+				mediump vec4 vy = bone[i.x] * w.x + bone[i.y] * w.y + bone[i.z] * w.z + bone[i.w] * w.w; i = i + 1;
+				mediump vec4 vz = bone[i.x] * w.x + bone[i.y] * w.y + bone[i.z] * w.z + bone[i.w] * w.w;
+			} : {
+				mediump ivec3 i1 = ivec3( round( pack3( in_widx.x)*256.0))*3, i2 = ivec3( round( pack3( in_widx.y)*256.0))*3;
+				lowp vec3 w1 = pack3( in_widx.z) * (256.0/255.0), w2 = pack3( in_widx.w) * (256.0/255.0);
+				mediump vec4 vx = bone[i1.x] * w1.x + bone[i1.y] * w1.y + bone[i1.z] *w1.z + bone[i2.x] * w2.x + bone[i2.y] * w2.y + bone[i2.z] * w2.z; i1 += 1; i2 += 1;
+				mediump vec4 vy = bone[i1.x] * w1.x + bone[i1.y] * w1.y + bone[i1.z] *w1.z + bone[i2.x] * w2.x + bone[i2.y] * w2.y + bone[i2.z] * w2.z; i1 += 1; i2 += 1;
+				mediump vec4 vz = bone[i1.x] * w1.x + bone[i1.y] * w1.y + bone[i1.z] *w1.z + bone[i2.x] * w2.x + bone[i2.y] * w2.y + bone[i2.z] * w2.z; i1 += 1; i2 += 1;
+			}
+			highp vec4 p4 = vec4( p.xyz, 1.0);
+			m[0] = (wvmat * vec4( dot( vx, p4), dot( vy, p4), dot( vz, p4), 1.0));
+			m[1] = normalize( wv3 * vec3( dot( vx.xyz, n), dot( vy.xyz, n), dot( vz.xyz, n))).xyzz;
+			$( UV5) {
+				m[2] = vec4( normalize( wv3 * vec3( dot( vx.xyz, in_tan.xyz), dot( vy.xyz, in_tan.xyz), dot( vz.xyz, in_tan.xyz))), in_tan.w);
+			}
+		} : {
+			m[0] = (wvmat * vec4( p.xyz, 1.0));
+			m[1] = normalize( wv3 * n).xyzz;
+			$( UV5) {
+				m[2] = vec4( normalize( wv3 * in_tan.xyz), in_tan.w);
+			}
+		}
+		return m;
+	}
+	
+	highp mat4 getTransformedVectors(){
+		return getTransformedVectorsPN( in_pos.xyz, in_n.xyz);
+	}
+}

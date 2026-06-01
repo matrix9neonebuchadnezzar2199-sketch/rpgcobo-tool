@@ -1,0 +1,747 @@
+
+import SKViewPropertyID;
+import ModifiersMask;
+import VirtualKeyCode;
+import UIOP;
+
+class Line2D
+{
+	a = 0.0; b = 0.0; c = 0.0;
+	
+	constructor( p1, p2){
+		local v = p2-p1, w = v.length();
+		a = -v.y / w;
+		b = v.x / w;
+		c = -( a * p1.x + b * p1.y);
+	}
+	
+	function intersects( q, w){
+		local t = -(a*q.x + b*q.y + c) / (a*w.x + b*w.y);
+		return (t<(-0.00001)||t>1.000001)?null:(q+w*t);
+	}
+}
+
+local v_1 = Vector3D(), v_2 = Vector3D(), v_3 = Vector3D(), v_4 = Vector3D(), v_e = Vector3D(1,1,1);
+local r_1 = Rect2D(), r_2 = Rect2D(), r_3 = Rect2D(), r_e = Rect2D(0,0,1,1);
+local q_1 = Quaternion(), q_e = Quaternion(0,0,0,1);
+local m_1 = Matrix();
+local lines = [
+	Line2D( v_1(0,0,0), v_2(1,0,0)), Line2D( v_1(1,0,0), v_2(1,1,0)),
+	Line2D( v_1(1,1,0), v_2(0,1,0)), Line2D( v_1(0,1,0), v_2(0,0,0)),
+];
+
+class UICanvas
+{
+	view = null;			//	canvas
+	editor = null;			//	UIEditor
+	
+	root = null;			//	SKView : 
+	selection = null;		//	UISelectionLayer : rootの上に乗る。ここで選択とかをやる
+	dropimg = null;			//	
+	
+	axis = null;			//	上線、下線
+	
+	zoom = 100;
+	
+	scproot = null;
+	
+	constructor( v, e){
+		view = v;
+		view.ref = this;
+		editor = e;
+		v.dragsource = this;
+		
+		// setBuffer( 2);
+		// buf.blend = 0;
+		
+		//	axis
+		axis = UIAxis();
+		view.addChild( axis);
+		
+		//	selection
+		selection = UISelectionLayer( this);
+		view.addChild( selection);
+		
+		//	drop image
+		local dop = Sprite(); dop.color = 0x141400ff; dop.blend = SK_ADD;
+		dropimg = SKImageView( dop);
+		dropimg.setVisible( false);
+		dropimg.stretchalign = 15;
+		(dropimg.viewdata = ::SKViewEntityData()).staticparams = [( SIZE_STATIC, (view.bnd.w, view.bnd.h))]
+		view.addChild( dropimg);
+		
+		//	listeners
+		view.addEventListener( DROPTARGET_EVENT, dropevent);
+		view.addEventListener( KEY_EVENT, keyevent);
+	}
+	
+	function setData( d){
+		local r = d.createSKView( ::UIEditorRootView);
+		// markSKViewMotionsR( r);
+		if( root){
+			view.removeChild( root);
+		}
+		root = r;
+		view.insertChild( 0, r);
+		
+		centering();
+		selection.updateSelection();
+	}
+	
+	function refreshResouces( v=null){
+	}
+
+	function refreshImageView( v){
+	}
+
+
+	function markSKViewMotionsR( v){
+		// markSKViewMotions( v);
+		foreach( c in v.children){
+			// markSKViewMotionsR( c);
+		}
+	}
+	
+	function updateSelection( a){
+		view.repaint();
+		selection.updateSelection();
+	}
+	
+	//	
+	function centering(){
+		if( !root) return;
+		local w = view.bnd.w, h = view.bnd.h;
+		local rw = root.bnd.w * root.scale.x, rh = root.bnd.h * root.scale.y;
+		root.pos.x = ( (w-rw)*0.5 - root.bnd.x * root.scale.x) | 0;
+		root.pos.y = ( (h-rh)*0.5 - root.bnd.y * root.scale.y) | 0;
+		root.matdirty = 1;
+		axis.pos << root.pos;
+		axis.matdirty = 1;
+		view.repaint();
+	}
+	
+	function render(){
+		skDrawSprite( backsp);
+	}
+	
+	function refresh(){
+		view.repaint();
+		selection.updateSelection();
+	}
+
+	function _moveFrameRecurs( v, t){
+		v.moveFrameSelf( null, t);
+		if( !(v.layerflags & 8) && !v.viewdata["link"]){	//	libview以外
+			foreach( c in v.children){
+				_moveFrameRecurs( c, t);
+			}
+		}
+	}
+	
+	function setFrameTime( t){
+		_moveFrameRecurs( root, t+0.0);
+		root.updateMatrixAll();
+	}
+	
+	function zoomfor( gx, gy, c){
+		local z = zoom;
+		if( z+c > 500){ z = Math.min( z+c*50, 800); }
+		else if( z+c > 300){ z = Math.min( z+c*20, 800); }
+		else if( z+c > 100){ z = Math.min( z+c*10, 800); }
+		else{ z = Math.max( z+c*5, 10); }
+		zoomto( gx, gy, z);
+	}
+	
+	function zoomto( gx, gy, z){
+		local zoom0 = zoom;
+		zoom = z;
+		local invmat = view.getInvMatrix();
+		local rmat = invmat.mult44( root.mat);
+		local p0 = v_4( gx, gy, 0).transform( invmat);	//	キャンバス座標系のgx,gy
+		local mat = Matrix.fromTranslate( p0).scale( zoom*1.0/zoom0).translate( p0*-1.0);
+		root.pos.transform( mat);
+		root.scale( zoom*0.01);
+		root.matdirty = true;
+		axis.pos << root.pos;
+		axis.matdirty = 1;
+		root.repaint();
+		editor.zoomlbl.setText( ""..z);
+	}
+	
+	function scrollfor( dx, dy){
+		root.pos.add( dx, dy, 0);
+		root.scale( zoom*0.01);
+		root.matdirty = true;
+		axis.pos << root.pos;
+		axis.matdirty = 1;
+		root.repaint();
+	}
+	
+	function linecheck( q, w){
+		foreach( li in lines){
+			local p = li.intersects( q, w);
+			if( p && p.x >= -0.00001 && p.x <= 1.00001 && p.y >= -0.00001 && p.y <= 1.00001) return true;
+		}
+		return false;
+	}
+	
+	//	(0,0)-(1,1)の正方形にr*mの矩形が当たるかチェック
+	function rectcheck( r, m){
+		local mr = r_1.set( r).transform( m);
+		if( !r_e.contacts( mr)) return false;
+		if( r_e.contains( mr)) return true;
+		//
+		if( r.contains( r_3.set( r_e).transform( m.invert44())) ) return true;
+		//
+		//	
+		local p1 = v_1(r.x    ,r.y    ,0).transform( m);
+		local p2 = v_2(r.x+r.w,r.y    ,0).transform( m);
+		local p3 = v_3(r.x+r.w,r.y+r.h,0).transform( m);
+		local p4 = v_4(r.x    ,r.y+r.h,0).transform( m);
+		local v1 = p2-p1, v2 = p3-p2, v3 = p4-p3, v4 = p1-p4;
+		if( linecheck( p1, v1) || linecheck( p2, v2) || 
+			linecheck( p3, v3) || linecheck( p4, v4))
+		{
+			return true;
+		}else{
+			return false;
+		}
+	}
+	
+	function selectRegion( gr){
+		local a = [];
+		local invm = Matrix.fromScale( 1.0/gr.w, 1.0/gr.h, 1.0).translate( -gr.x, -gr.y, 0.0);
+		foreach( cv in root.children){
+			_selectRegion( invm, cv, a);
+		}
+		return a;
+	}
+	
+	function _selectRegion( invm, v, a){
+		local f = v.layerflags, lk = (f>>1)&3;
+		if( !v.visible || !(f&1) || lk==0){	//	非表示・ロック
+			return;
+		}
+		local m = invm.mult44( v.mat);
+		if( lk!=2 && rectcheck( r_2.set( 0, 0, v.bnd.w, v.bnd.h), m)){
+			a .. v;
+		}
+		// if( !(v instanceof ::SKGroupView)){
+		if( !v["isdir"]){
+			return ;		//	子供選択不可
+		}
+		foreach( cv in v.children){
+			_selectRegion( invm, cv, a);
+		}
+	}
+
+	///////////////// dnd
+	
+	function acceptDrag( e){
+		return false;
+	}
+
+	function isDropable( f){
+		local n = f.name.toLowerCase();
+		if( n.endsWith( ".png")) return true;
+		if( n.endsWith( ".jpg")) return true;	//	png以外はコンバート走る
+		if( n.endsWith( ".jpeg")) return true;
+		if( n.endsWith( ".webp")) return true;
+		return false;
+	}
+
+	function acceptDrop( ds, x, y){
+		if( ds instanceof ListBehavior){
+			local item = ds.getSelectedItems()[0];
+			if( item["path"]) return true;	//	fileview
+			if( item["func"]) return true;	//	widget
+		}
+		if( ds instanceof FileDragSource){
+			local a = ds.filelist;
+			if( isDropable( a[0])) return true;	//	1個だけー
+		}
+		return false;
+	}
+	
+	function keyevent( e){
+		if( e.id != KEY_PRESSED) return;
+		switch( e.keycode){
+		// case VK_F1:
+		// 	centering();
+		// 	break;
+		case VK_F2:
+			if( editor.sellist[0]) editor.uiright.showRename( editor.sellist[0]);
+			break;
+		}
+	}
+	
+	function dropevent( e){
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+			dropimg.setVisible( true);
+			break;
+		case TARGET_DRAG_EXIT:
+			dropimg.setVisible( false);
+			break;
+		case TARGET_DROP:
+			selection.requestFocus();
+			dropimg.setVisible( false);
+			if( e.dragsrc instanceof ListBehavior){
+				local item = e.dragsrc.getSelectedItems()[0];
+				if( item["path"]){
+					local r = ::getResource( item.path);
+					if( r == editor.res) break;
+					if( r.getContent() instanceof ::SKViewData){
+						dropUI( r.name.substring( 0, r.name.lastIndexOf(".")), r.path, e.x, e.y);
+					}else
+					if( ::getSprite( r.path)){
+						dropImage( r.name.substring( 0, r.name.lastIndexOf(".")), r.path, e.x, e.y);
+					}
+				}else
+				if( item["func"]){
+					dropWidget( item, e.x, e.y);
+				}
+			}else
+			if( e.dragsrc instanceof FileDragSource){
+				local a = e.dragsrc.filelist;
+				local imgbb = a[0].load( ByteBuffer());	//	TempBufferは保存できない
+				local img = skLoadImage( imgbb);
+				if( !img) return;	//	画像ファイルじゃなかった
+				imgbb.pos = 0;
+				local rpos = v_1(e.x,e.y,0).transform( root.getInvMatrix());
+				local v = SKEmbedImageView();
+				v.name = "embedimg";
+				v.setParam( IMAGEDATA, imgbb);
+				v.setParam( SIZE, [img.width, img.height]);
+				_viewdropped( v, rpos);
+			}
+			break;
+		}
+	}
+	
+	function dropImage( name, path, x, y){
+		local rpos = v_1(x,y,0).transform( root.getInvMatrix());
+		local v = SKImageView();
+		v.name = name;
+		v.setParam( IMAGE, path);
+		{
+			local sp = ::getSprite( path), tex = sp.tex0;
+			v.setParam( SIZE, [Math.round( sp.bnd.w/sp.reso)|0, Math.round( sp.bnd.h/sp.reso)|0]);
+		}
+		_viewdropped( v, rpos);
+	}
+	
+	function dropUI( name, path, x, y){
+		local rpos = v_1(x,y,0).transform( root.getInvMatrix());
+		// local vd = ::getResourceContent( path).rootdata;
+		local vd = SKViewEntityData();// clone vd;		//	staticparamsだけ使う？
+		vd.link = path;
+		local v = vd.createSKView( ::SKLibView);
+		v.name = name;
+		_viewdropped( v, rpos);
+	}
+	
+	function dropWidget( w, x, y){
+		local rpos = v_1(x,y,0).transform( root.getInvMatrix());
+		local v = w.func();
+		v.name = w.name;
+		v.updateLayout();
+		_viewdropped( v, rpos);
+	}
+	
+	function _viewdropped( v, rpos){
+		markSKViewMotions( v);
+		putSKViewMotion( v, POSITION, 0, [rpos.x-v.bnd.x-(v.bnd.w>>1),rpos.y-v.bnd.y-(v.bnd.h>>1),0.0], 1);
+		//	Viewが追加されたのでrefreshでツリー更新
+		local ol = clone editor.sellist, nl = [v];
+		local redo = [
+			OP_AddSKView( root, v),
+			OP_SelectSKViews( editor, nl),
+		];
+		local undo = [
+			OP_RemoveSKView( root, v),
+			OP_SelectSKViews( editor, ol),
+		];
+		editor.submitOp( redo, undo);
+	}
+	
+	function enterScriptRun(){
+		if( !scproot){
+			// editor.setSelection( []);
+			local d = SKViewData();
+			d.rootdata = editor.toSKViewEntityData( root);
+			scproot = d.createSKView( ::SKEditorScriptRootView);
+			scproot.syncanime = false;
+			scproot.pos << root.pos;
+			scproot.scale << root.scale;
+			scproot.sp.color = 0x222255ff;
+			scproot.name = "scproot";
+			// insertChild( 0, scproot);
+			view.addChild( scproot);
+			root.visible = false;
+		}
+	}
+	
+	function exitScriptRun(){
+		if( scproot){
+			view.removeChild( scproot);
+			scproot = null;
+		}
+		root.visible = true;
+		view.repaint();
+	}
+	
+}
+
+class UIAxis extends SKView
+{
+	xsp = null;
+	ysp = null;
+	
+	constructor(){
+		xsp = Sprite();
+		ysp = Sprite();
+		xsp.color = 0x393939ff;
+		ysp.color = 0x393939ff;
+		xsp.bnd.set( -1000, 2, 2000, 1);
+		ysp.bnd.set( 2, -1000, 1, 2000);
+		bnd.set( -2, -2, 4, 4);
+		enabled = false;
+	}
+	
+	function render(){
+		skDrawSprites( xsp, ysp);
+	}
+}
+
+local scalep = [Vector3D(0,0,0),Vector3D(0.5,0,0),Vector3D(1.0,0,0),Vector3D(0,0.5,0),Vector3D(1,0.5,0),Vector3D(0,1,0),Vector3D(0.5,1,0),Vector3D(1,1,0)];
+local rotp = [Vector3D(0,0,0),Vector3D(1,0,0),Vector3D(0,1,0),Vector3D(1,1,0)]
+
+//	CanvasBehaviorと同等の選択、操作処理にする
+//	
+class UISelectionLayer extends SKView
+{
+	editor = null;			//	
+	canvas = null;			//	UIEditorCanvas
+	sellist = null;			//	SKView[] : canvas.sellist
+	selrect = null;			//	Rect2D : グローバル座標系
+	mouseon = null;			//	SKView / 1-8=scale 9-12=rot
+	mx = 0;
+	my = 0;
+
+	tool = null;			//	UICanvasTool
+
+	//////////////////////////////////////// for render
+
+	pivotsp = null;			//	Sprite
+	scalesp = null;			//	Sprite
+	scalectrsp = null;			//	Sprite
+	rotctrsp = null;			//	Sprite
+	gsp = null;
+	//	
+	bndpm = null;			//	
+	//	controller bnd, mat
+	ctrbnd = null;
+	ctrmat = null;			//	Matrix ... 
+	ctrpivot = null			//	Vector3D 
+
+	//
+	constructor( c){
+		name = "uiselectionlayer";
+		canvas = c;
+		editor = c.editor;
+		sellist = editor.sellist;
+		stretchalign = 15;
+		local bnd = c.view.bnd;
+		bnd.set( 0, 0, bnd.w, bnd.h);
+		(viewdata = ::SKViewEntityData()).staticparams = [( SIZE_STATIC, (bnd.w, bnd.h))]
+		
+		bndpm = #ToolMesh.createSquareLineMesh();
+		
+		pivotsp = ::getSprite( "/skstudio/img/ui/_white.png");
+		pivotsp.bnd.set( -5, -5, 10, 10);
+		scalesp = ::getSprite( "/skstudio/img/ui/bf4.png");
+		scalesp.bnd.set( -5, -5, 10, 10);
+		
+		scalectrsp = ::getSprite( "/skstudio/img/ui/icont_scale.png");
+		rotctrsp = ::getSprite( "/skstudio/img/ui/icont_scale.png");
+		gsp = ::getSprite( "/skstudio/img/ui/b10.png"); gsp.mat = Matrix();
+		
+		ctrmat = Matrix();
+		ctrbnd = Rect2D();
+		ctrpivot = Vector3D();
+		
+		tool = UICanvasTool( editor, canvas);
+		
+		addEventListener( MOUSE_EVENT, mouseevent);
+	}
+
+	function isSelectionResizable(){
+		if( length( sellist) != 1) return false;
+		foreach( p in sellist[0].getProperties()){
+			if( p.pid == SIZE_STATIC || p.pid == SIZE) return true;
+		}
+		return false;
+	}
+	
+	function updateSelection(){
+		repaint();
+		switch( length( sellist)){
+		case 0: return;
+		case 1:
+			{
+				local v = sellist[0];
+				v.updateMatrix();
+				ctrmat << canvas.root.getInvMatrix().mult44( v.mat);
+				ctrbnd << v.bnd;
+				ctrpivot( -v.bnd.x, -v.bnd.y, 0);
+			}
+			break;
+		default:
+			{
+				local invmat = canvas.root.getInvMatrix();
+				foreach( i,v in sellist){
+					v.updateMatrix();
+					local vmat = invmat.mult44( v.mat);
+					local vbnd = r_1.set( 0, 0, v.bnd.w, v.bnd.h).transform( vmat);
+					if( i == 0){
+						ctrbnd << vbnd;
+					}else{
+						ctrbnd.set( ctrbnd | vbnd);
+					}
+				}
+				ctrmat.identity().translate( ctrbnd.x, ctrbnd.y, 0);
+				ctrpivot( ctrbnd.w/2, ctrbnd.h/2, 0);
+			}
+			break;
+		}
+	}
+
+	function _drawgroupbnd( v){
+		local col = 0;
+		if( v instanceof SKGroupView){
+			col = 0x00ffff22;
+		}else
+		if( v instanceof SKLibView){
+			col = 0xffff0022;
+		}else
+		if( v instanceof GPUIButton){
+			col = 0xff00ff22;
+		}else
+		if( v instanceof GPUITextEdit){
+			col = 0x0080ff22;
+		}
+		if( col){
+			gsp.color = Math.lerpcolor( col&0xff, col, (col&0xff)/255.0);
+			gsp.mat.set( getInvMatrix()).mult44( v.mat, gsp.mat);
+			skDrawSprite( gsp, -1, -1, v.bnd.w+2, v.bnd.h+2);
+		}
+		foreach( c in v.children){
+			_drawgroupbnd( c);
+		}
+	}
+	
+	function render(){
+		// foreach( v in canvas.root.children) _drawgroupbnd( v);
+		skPushRenderStates();
+		skPushMatrix( 2);
+		switch( length( sellist)){
+		case 0: goto DRAWSEL;
+		case 1: if( !selrect) break;
+		default: 
+			bndpm.face[0].m.Kd = 0xff9900ff;
+			foreach( v in sellist){
+				local r = v.bnd;
+				skSetMatrix( 0, m_1.set( v.mat).scale( r.w, r.h, 1));
+				bndpm.render();
+			}
+			break;
+		}
+		//	draw controll | selrect
+		if( !selrect){
+			bndpm.face[0].m.Kd = 0xccccffff;
+			local m = canvas.root.mat.mult44( ctrmat).scale( ctrbnd.w, ctrbnd.h, 1);
+			local is = 1.0 / canvas.root.mat[0];
+			skSetMatrix( 0, m);
+			bndpm.render();
+			//	control scale
+			foreach( p in scalep){
+				local m2 = canvas.root.mat.mult44( ctrmat).translate( v_1( p).scale( ctrbnd.w, ctrbnd.h, 1)).scale( is);
+				skSetMatrix( 0, m2);
+				skDrawSprite( scalesp);
+			}
+			//	control pivot
+			{
+				local m2 = canvas.root.mat.mult44( ctrmat).translate( ctrpivot).scale( is);
+				skSetMatrix( 0, m2);
+				skDrawSprite( pivotsp);
+			}
+		}
+		//	draw mouseon
+		DRAWSEL:
+		if( selrect){
+			bndpm.face[0].m.Kd = 0xffffffff;
+			local m = Matrix().translate( selrect.x, selrect.y, 0).scale( selrect.w, selrect.h, 1);
+			skSetMatrix( 0, m);
+			bndpm.render();
+		}
+		if( mouseon){
+			if( typeof( mouseon) == SS_INTEGER){
+				local m = canvas.root.mat.mult44( ctrmat);
+				if( mouseon <= 8){
+					local p = scalep[mouseon-1];
+					local m2 = m_1.set( ::rootview.mat).translate( v_1(p).scale( ctrbnd.w, ctrbnd.h, 1).transform( m));
+					skSetMatrix( 0, m2);
+					skDrawSprite( scalectrsp);
+				}else
+				if( mouseon <= 12){
+					local p = rotp[mouseon-9];
+					local m2 = m_1.set( ::rootview.mat).translate( v_1(p).scale( ctrbnd.w, ctrbnd.h, 1).transform( m).add(p.x*12-6,p.y*12-6,0));
+					skSetMatrix( 0, m2);
+					skDrawSprite( rotctrsp);
+				}
+			}else{
+				bndpm.face[0].m.Kd = 0xffcc00ff;
+				local r = mouseon.bnd;
+				skSetMatrix( 0, m_1.set( mouseon.mat).scale( r.w, r.h, 1));
+				bndpm.render();
+			}
+		}
+		skPopMatrix( 2);
+		skPopRenderStates();
+	}
+	
+	function mouseevent( e){
+		if( e.id == MOUSE_RELEASED){	//	リリースのタイミングでフォーカス取得。カメラワーク向けの操作も含む
+			requestFocus( e);
+		}
+		e.computeLocal( canvas.root.getInvMatrix());
+		//	まずはカメラワークに処理させる
+		camevent( e); if( e.consumed) return;
+		//	
+		if( e.isMouseDown( BUTTON2_MASK) && !e.isShiftDown()){
+			if( e.id == MOUSE_PRESSED){
+				showContextMenu( e);
+			}
+		}else{
+			if( tool) tool.procevent( e);
+		}
+	}
+
+	/////////////////////////////////////////////////////////
+	//	コンテキストメニュー！！！
+
+	function showContextMenu( e){
+		local sels = editor.sellist, slen = length( sels), st = ::skstudio;
+		local m = [];
+		if( !slen){
+			m .. st.getMenu( "menu_edit_paste");
+			m .. st.getMenu( "editor_ui_menu_edit_clipboardimg");
+		}else{
+			m .. st.getMenu( "menu_edit_cut");
+			m .. st.getMenu( "menu_edit_copy");
+			m .. "-";
+			m .. st.getMenu( "editor_ui_menu_edit_order");
+			m .. "-";
+			if( slen > 1){
+				m .. st.getMenu( "editor_ui_menu_edit_group");
+			}else{
+				local s0 = sellist[0]
+				if( (s0["isdir"] && length( s0.children)) ||
+					s0 instanceof SKLibView ||
+					s0 instanceof GPUIButton || 
+					s0 instanceof GPUITextEdit || 
+					s0 instanceof SKMultiImageView){
+					m .. st.getMenu( "editor_ui_menu_edit_ungroup");
+				}
+				m .. st.getMenu( "editor_ui_menu_edit_to");
+				if( s0 instanceof SKImageView){
+					if( s0.imageref){
+						m .. "-";
+						m .. { uid="_opendir", lbl=string( s0.imageref), icon="\ue2c8" };
+					}
+				}else
+				if( s0.viewdata["link"]){
+					m .. "-";
+					m .. { uid="_opendir", lbl=string( s0.viewdata.link), icon="\ue2c8" };
+				}
+			}
+		}
+		local ret = MenuPopup.run( m);
+		if( ret){
+			if( ret.uid == "_opendir"){
+				::skstudio.fileview.setCurrentPath( ret.lbl);
+			}else{
+				editor.execMenu( ret);
+			}
+		}
+	}
+
+	function isScroll( e){
+		return e.isMouseDown( BUTTON3_MASK) || (e.isMouseDown( BUTTON2_MASK) && e.isShiftDown())
+	}
+
+	function camevent( e){
+		switch( e.id){
+		case MOUSE_PRESSED:
+			if( isScroll( e)){
+				mx = e.x; my = e.y;
+				e.consume();
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( isScroll( e)){
+				canvas.scrollfor( e.x-mx, e.y-my);
+				mx = e.x; my = e.y;
+				e.consume();
+			}
+			break;
+		case MOUSE_WHEEL_MOVED:
+			canvas.zoomfor( e.x, e.y, e.count);
+			e.consume();
+			break;
+		case MOUSE_PINCH:
+			canvas.zoomfor( e.x, e.y, e.dx/100);
+			e.consume();
+			break;
+		case MOUSE_PAN:
+			canvas.scrollfor( e.dx, e.dy);
+			e.consume();
+			break;
+		}
+	}
+
+	function getMouseOn( gx, gy){
+		if( length( sellist) && isSelectionResizable()){
+			//	control scale
+			local m = canvas.root.mat.mult44( ctrmat);
+			foreach( i,p in scalep){
+				local gp = v_1(p).scale( ctrbnd.w, ctrbnd.h, 1).transform( m);
+				if( Math.abs( gx-gp.x) <= 7 && Math.abs( gy-gp.y) <= 7){
+					return i+1;
+				}
+			}
+		}
+		local a = canvas.selectRegion( r_3.set( gx-1,gy-1,2,2));
+		local v = length(a)?a.last():null;
+		return v;
+	}
+
+	function setMouseOn( v){
+		mouseon = v;
+		repaint();
+	}
+	
+	function setSelectRegion( r){
+		selrect = r;
+		repaint();
+	}
+	
+	//	
+	//	UIリフレッシュを伴わない一時的な選択変更
+	//	
+	function setTempSelection( a){
+		sellist.clear();
+		sellist ... a;
+	}
+}

@@ -1,0 +1,824 @@
+////////////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	SkillActionCommon.sk
+//	スキルアクションで必要な関数やプロパティを定義
+//	
+
+import DamageResultType;
+import CommandTargetType;
+import DamageType;
+import PropertyType;
+import RPGPropertyType;
+import SkillFlag;
+
+//	コマンドターゲットのリスト
+local cmdtgt_all = [
+	{ lbl="$T.cmdtgt0", val=0 },
+	{ lbl="$T.cmdtgt1", val=1, icon="\uf252" },
+	{ lbl="$T.cmdtgt2", val=2, icon="\uf252" },
+	{ lbl="$T.cmdtgt3", val=3, icon="\uf252" },
+	{ lbl="$T.cmdtgt4", val=4, icon="\uf252" },
+	{ lbl="$T.cmdtgt5", val=5, icon="\uf252" },
+	{ lbl="$T.cmdtgt6", val=6, icon="\uf252" },
+	{ lbl="$T.cmdtgt7", val=7, icon="\uf252" },
+	{ lbl="$T.cmdtgt8", val=8, icon="\uf250" },
+	{ lbl="$T.cmdtgt9", val=9, icon="\uf250" },
+	{ lbl="$T.cmdtgt10", val=10, icon="\uf250" },
+	{ lbl="$T.cmdtgt11", val=11, icon="\uf250" },
+	{ lbl="$T.cmdtgt12", val=12, icon="\uf250" },
+	{ lbl="$T.cmdtgt13", val=13, icon="\uf250" },
+	{ lbl="$T.cmdtgt14", val=14, icon="\uf24a" },
+	{ lbl="$T.cmdtgt15", val=15, icon="\uf24a" },
+	{ lbl="$T.cmdtgt16", val=16, icon="\uf24a" },
+];
+
+local cmdtgt_enemy = [
+	cmdtgt_all[TGT_ENEMY_SINGLE],
+	cmdtgt_all[TGT_ENEMY_RANDOM],
+	cmdtgt_all[TGT_ENEMY_R3],
+	cmdtgt_all[TGT_ENEMY_R6],
+	cmdtgt_all[TGT_ENEMY_LINE],
+	cmdtgt_all[TGT_ENEMY_COLUMN],
+	cmdtgt_all[TGT_ENEMY_ALL],
+	cmdtgt_all[TGT_ANY_SINGLE],
+	cmdtgt_all[TGT_ANY_RANDOM],
+	cmdtgt_all[TGT_ANY_ALL],
+];
+
+local cmdtgt_party = [
+	cmdtgt_all[TGT_PARTY_SINGLE],
+	cmdtgt_all[TGT_PARTY_SINGLE_NOTME],
+	cmdtgt_all[TGT_PARTY_COLUMN],
+	cmdtgt_all[TGT_PARTY_ALL],
+	cmdtgt_all[TGT_PARTY_ALL_NOTME],
+	cmdtgt_all[TGT_MYSELF],
+	cmdtgt_all[TGT_ANY_SINGLE],
+	cmdtgt_all[TGT_ANY_SINGLE],
+	cmdtgt_all[TGT_ANY_RANDOM],
+	cmdtgt_all[TGT_ANY_ALL],
+];
+
+local dmgtype_all = [
+	{ lbl="$T.dmgtype0", val=NO_DAMAGE },
+	{ lbl="$T.dmgtype1", val=HP_DAMAGE },
+	{ lbl="$T.dmgtype2", val=HP_HEAL },
+	{ lbl="$T.dmgtype3", val=MP_DAMAGE },
+	{ lbl="$T.dmgtype4", val=MP_HEAL },
+	{ lbl="$T.dmgtype5", val=TP_DAMAGE },
+	{ lbl="$T.dmgtype6", val=TP_HEAL },
+];
+
+local dmgtype_damage = [
+	dmgtype_all[NO_DAMAGE],
+	dmgtype_all[HP_DAMAGE],
+	dmgtype_all[MP_DAMAGE],
+	dmgtype_all[TP_DAMAGE],
+];
+
+local dmgtype_heal = [
+	dmgtype_all[NO_DAMAGE],
+	dmgtype_all[HP_HEAL],
+	dmgtype_all[MP_HEAL],
+	dmgtype_all[TP_HEAL],
+];
+
+local skillflaglist = [
+	{ lbl="$T.skillflag0", icon="\uf816", val=0 },
+	{ lbl="$T.skillflag1", icon="\uf815", val=1},
+	//
+	{ lbl="$T.skillflag2", icon="\uf814", val=2 },
+	{ lbl="$T.skillflag3", icon="\uf810" val=3 },
+	{ lbl="$T.skillflag4", icon="\uf811", val=4 },
+	{ lbl="$T.skillflag5", icon="\uf812", val=5 },
+	{ lbl="$T.skillflag6", icon="\uf813", val=6 },
+	{ lbl="$T.skillflag7", icon="\uf822", val=7 },	//	かばう
+	{ lbl="$T.skillflag8", icon="\uf821", val=8 },
+	{ lbl="$T.skillflag9", icon="\uf800", val=9 },
+];
+
+//	ダメージタイプがNO_DAMAGE又は未定義の時にはプロパティを非表示にする
+local hide_nodamage( pl){
+	local dmgtype = pl.getParam( "dmgtype");
+	return !dmgtype;
+}
+
+local deflbl_dmgform( fid){
+	return @( pl){
+		local i = pl.getParam( "dmgform");
+		local form = ::conf.type["dmgform"][i]["formula"];
+		if( form){
+			try{
+				local str = "return {%S}" % form;
+				local f = compilestring( str)()[fid];
+				if( typeof( f) == SS_CLOSURE){
+					local r = f.getSourceStringRange();
+					return str.substring( r[0], r[1]);
+				}
+			}catch( ex){
+				printexception( ex);
+			}
+		}
+	}
+}
+
+local deflbl_dmgform2( data, fid){
+	local i = data["dmgform"];
+	local form = ::conf.type["dmgform"][i]["formula"];
+	if( form){
+		try{
+			local str = "return {%S}" % form;
+			local f = compilestring( str)()[fid];
+			if( typeof( f) == SS_CLOSURE){
+				local r = f.getSourceStringRange();
+				return str.substring( r[0], r[1]).trim();
+			}
+		}catch( ex){
+			printexception( ex);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	演出スクリプトソース
+//	ソース直書き＋プロパティでいく！
+//	
+
+local scpheadprop = { pid="HB", lbl="$T.lbl_script", type=HEADER, cnt="header.ui", expanded=false };
+local scpprop = {
+	pid="scp", lbl="$T.lbl_script", type=SCRIPT, multiline=8, cnt="cnt5.ui"
+	get = @( prop, data){
+		local v = data[prop.pid];
+		if( !v) v = ::skillscriptmap[data["id"]];
+		return v;
+	},
+	set = @( prop, data, val){
+		val = val.trim();
+		local defval = ::skillscriptmap[data["id"]];
+		data[prop.pid] <- (val != defval)?val : null;
+	}
+};
+
+//	useact, atkact, hitact, endact のデフォルトスクリプト。idが対応している
+//	
+::skillscriptmap <- {
+//	共通
+noop = "",
+custom = "",
+//	発動スクリプト
+////////// 通常発動 /////////// 
+use_normal = 
+`if( ispic){
+	efx( eefx);
+	wait( EFX);
+}else{
+}`,
+////////// 魔法発動 /////////// 
+use_charge =
+`anime( useani);
+snd( usesnd);
+efx( useefx);
+wait( EFX);
+`,
+////////// 暗転魔法発動 /////////// 
+use_darkcharge =
+`::rpgstage.screenfx.screenEffectOn( {"expscale":0.3,"sfxid":"expscale","time":600});
+wait( 300);
+anime( useani);
+snd( usesnd);
+efx( useefx);
+wait( EFX);
+`,
+//	アタックスクリプト
+////////// 通常攻撃 /////////// 
+atk_normal =
+`if( ispic) return wait( 100);
+anime( atkani);
+wait( atkdelay);
+efx( atkefx);
+snd( atksnd);
+`,
+////////// 発射攻撃 /////////// 
+atk_shoot =
+`anime( atkani);
+wait( 250);
+efx( atkefx);
+snd( atksnd);
+shoot( {id=ammofx,time=ammotime, dst=dst3d, dis=true});
+wait( ammotime);
+`,
+//	ヒットスクリプト
+////////// 通常ヒット /////////// 
+hit_normal = 
+`if( this["cri"]) criticalHit();
+efx( hitefx);
+snd( hitsnd);
+wait( hitdelay);
+anime( hitani);
+wait( EFX);
+`,
+//	終了スクリプト
+end_dark = 
+`::rpgstage.screenfx.screenEffectOff( {sfxbits=1, time=600});
+wait( 600);
+`,
+
+};
+
+//	なし
+local nonescp = {
+	id="noop",
+	lbl = "$T.lbl_none",
+	props = [ ],
+	defval = { scp=null, }
+};
+
+//	カスタム。パラメータ無しで好きに組み立てる
+local customscp = {
+	id="custom",
+	lbl = "$T.lbl_custom",
+	props = [ scpprop, ],
+	defval = { scp=null, }
+};
+
+////////////////////// 発動スクリプト
+
+::SkillBeginScripts <- [
+	nonescp,
+	//	通常発動スクリプト。普通の物理攻撃スキル、アイテム使用などいろいろな発動に使われる。
+	//	プレイヤー : 何もしない
+	//	エネミー : ブリンク演出
+	//	プロパティ : ブリンクエフェクト
+	{
+		id = "use_normal",
+		lbl = "ノーマル発動",
+		props = [
+			{ pid="eefx", lbl="($T.lbl_enemy)$T.lbl_effect", type=RESID, restype="efx", },
+			scpheadprop,
+			scpprop,
+		],
+		defval = { eefx="FX099", scp=null, }
+		tostring = @( v) sprintf( ": %S", v["eefx"]),
+	},
+	//	魔法・ため攻撃発動スクリプト。
+	//	プレイヤー・エネミー : 発動アニメ、発動エフェクト
+	//	プロパティ : 魔法アニメ、エフェクトの指定
+	{
+		id="use_charge",
+		lbl = "魔法発動"
+		props = [
+			{ pid="useani", lbl="$T.lbl_anime", type=ANIME_POPUP, nullable=true, },
+			{ pid="useefx", lbl="$T.lbl_effect", type=RESID, restype="efx", nullable=true, },
+			{ pid="usesnd", lbl="$T.lbl_sound", type=RESID, restype="snd", nullable=true, },
+			scpheadprop,
+			scpprop,
+		],
+		defval = { useani={id="stand"}, useefx="FX000", usesnd=null, scp=null, }
+		tostring = @( v) sprintf( ": %S %S", v["useani"]["id"]||"", v["useefx"]||""),
+	},
+	//	魔法・ため攻撃発動スクリプト。
+	//	プレイヤー・エネミー : 発動アニメ、発動エフェクト
+	//	プロパティ : 魔法アニメ、エフェクトの指定
+	{
+		id="use_darkcharge",
+		lbl = "暗転魔法発動"
+		props = [
+			{ pid="useani", lbl="$T.lbl_anime", type=ANIME_POPUP, nullable=true, },
+			{ pid="useefx", lbl="$T.lbl_effect", type=RESID, restype="efx", nullable=true, },
+			{ pid="usesnd", lbl="$T.lbl_sound", type=RESID, restype="snd", nullable=true, },
+			scpheadprop,
+			scpprop,
+		],
+		defval = { useani={id="stand"}, useefx="FX000", usesnd=null, scp=null, }
+		tostring = @( v) sprintf( ": %S %S", v["useani"]["id"]||"", v["useefx"]||""),
+	},
+	customscp
+];
+
+
+////////////////////// アタックスクリプト
+
+::SkillAttackScripts <- [
+	nonescp,
+	//	物理攻撃スクリプト。物理攻撃を振ってダメージを与える行動。
+	//	プレイヤー : 踏み込んで振りアニメ＋エフェクト
+	//	エネミー : 一瞬待つだけで演出は無し
+	//	プロパティ : 振りアニメ、振りエフェクト
+	{
+		id="atk_normal",
+		lbl = "ノーマル攻撃",
+		props = [
+			{ pid="atkani", lbl="$T.lbl_anime", type=ANIME_POPUP, nullable=true, },
+			{ pid="atkefx", lbl="$T.lbl_effect", type=RESID, restype="efx", nullable=true, },
+			{ pid="atksnd", lbl="$T.lbl_sound", type=RESID, restype="snd", nullable=true, },
+			{ pid="atkdelay", lbl="アニメ遅延", type=SCALAR, range=(0,1000), ui="bar", barrange=(0,1000,10), },
+			scpheadprop,
+			scpprop,
+		],
+		defval = { atkani=null, atkefx=null, atksnd=null, scp=null, atkdelay=100, }
+		tostring = @( v) sprintf( ": %S %S %S", v["atkani"]["id"]||"", v["atkefx"]||"", v["atksnd"]||""),
+	},
+	//	弓攻撃スクリプト。一連のアニメと矢が相手に向かっていくまで。飛んでく系魔法も。
+	//	プレイヤー : 打ちアニメ＋エフェクト、矢が飛ぶ
+	//	エネミー : 矢は飛ぶ
+	//	プロパティ : 打ちアニメ、打ちエフェクト、矢エフェクト
+	{
+		id="atk_shoot",
+		lbl = "発射攻撃",
+		props = [
+			{ pid="atkani", lbl="$T.lbl_anime", type=ANIME_POPUP, },
+			{ pid="atkefx", lbl="$T.lbl_effect", type=RESID, restype="efx", nullable=true, },
+			{ pid="atksnd", lbl="$T.lbl_sound", type=RESID, restype="snd", nullable=true, },
+			{ pid="ammofx", lbl="$T.lbl_ammo", type=RESID, restype="efx", nullable=true, },
+			{ pid="ammotime", lbl="飛行時間", type=SCALAR, range=(1,9999), }
+			scpheadprop,
+			scpprop,
+		],
+		defval = { atkani=null, atkefx=null, atksnd=null, ammofx=null, ammotime=100, scp=null, }
+	},
+	customscp
+];
+
+////////////////////// ヒットスクリプト
+
+::SkillHitScripts <- [
+	nonescp,
+	//	標準ヒットスクリプト。食らいモーション、食らいサウンド、食らいエフェクト
+	//	ミスの時、シールドの時等はani, sndidが入れ替わる。また、エフェクトのオーバーレイが非表示。
+	{
+		id="hit_normal",
+		lbl = "ノーマルヒット",
+		props = [
+			{ pid="hitani", lbl="$T.lbl_anime", type=ANIME_POPUP, nullable=true, },
+			{ pid="hitefx", lbl="$T.lbl_effect", type=RESID, restype="efx", nullable=true, },
+			{ pid="hitsnd", lbl="$T.lbl_sound", type=RESID, restype=["snd"], nullable=true, },
+			{ pid="hitdelay", lbl="アニメ遅延", type=SCALAR, range=(0,1000), ui="bar", barrange=(0,1000,10), },
+			scpheadprop,
+			scpprop,
+		],
+		defval = { hitani={id="damage"}, hitefx=null, hitsnd=null, scp=null, hitdelay=100, }
+		tostring = @( v) sprintf( ": %S %S %S", v["hitani"]["id"]||"", v["hitefx"]||"", v["hitsnd"]||""),
+	},
+	customscp
+];
+
+////////////////////// 終了スクリプト
+
+::SkillEndScripts <- [
+	nonescp,
+	{
+		id = "end_dark",
+		lbl = "暗転終了",
+		props = [
+		],
+		defval = {}
+	},
+	customscp
+];
+
+//	スキルアクション⇒スキルタイプ
+//	
+//	何もしない
+//	攻撃スキル
+//	回復スキル
+//	バフスキル
+//	デバフスキル
+//	マクロスキル
+//	
+//	隊列変更スキル　※指定不能
+
+//	アクション定義を返す。name,pid等は入ってないので...でつなげること
+local makeactionprop( scps){
+	return {
+		type=PROPERTYLIST,
+		propdef=@(){
+			local propdef = {
+				name="aiuro", width=520, 
+				props = @( v){
+					local ss = scps.find( @( s) s.id==v.id);
+					local a = [
+						{ pid="id", lbl="$T.lbl_actionid", type=LIST, list=@() scps.map( @( v)({ lbl=v.lbl, val=v.id })), refresh=1, cnt="cnt8.ui"
+							set = @( prop, data, val){
+								local ss = scps.find( @( v) v.id==val);
+								Table.clear( data); data ... ss.defval; data.id <- ss.id;
+							}
+						},
+						...ss.props,
+					];
+					return a;
+				},
+				tostring = @( v){
+					local pdef = scps.find( @( x) x.id==v.id);
+					return sprintf( "%S %S", pdef["lbl"], (fget( pdef, "tostring", pdef, v) || ""));
+				}
+			};
+			return propdef;
+		},
+		defval={ id=scps[0].id, ...scps[0].defval},
+	};
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//	スキルで使用しそうなプロパティ定義を大体網羅しておく
+
+local occasionprop = { pid="occasion", lbl="$T.occasion", type=LIST,
+	list = [
+		{ lbl:"$T.occasion1", val:1},
+		{ lbl:"$T.occasion2", val:2},
+		{ lbl:"$T.occasion3", val:3},
+	],
+	defval = 1,
+};
+local occasionprop_none = { pid="occasion", lbl="$T.occasion", type=NOEDITOR, defval=0, }
+local occasionprop_battle = { pid="occasion", lbl="$T.occasion", type=NOEDITOR, defval=1, }
+
+local cmdtgtprop = { pid="cmdtgt", lbl="$T.cmdtgt", type=LIST, list=cmdtgt_all, defval=0 }
+local cmdtgtprop_enemy = { pid="cmdtgt", lbl="$T.cmdtgt", type=LIST, list=cmdtgt_enemy, defval=cmdtgt_enemy[0].val }
+local cmdtgtprop_party = { pid="cmdtgt", lbl="$T.cmdtgt", type=LIST, list=cmdtgt_party, defval=cmdtgt_party[0].val }
+
+local dmgtypeprop = { pid="dmgtype", lbl="$T.dmgtype", type=LIST, list=dmgtype_all, defval=HP_DAMAGE }
+local dmgtypeprop_damage = { pid="dmgtype", lbl="$T.dmgtype", type=LIST, list=dmgtype_damage, defval=HP_DAMAGE }
+local dmgtypeprop_heal = { pid="dmgtype", lbl="$T.dmgtype", type=LIST, list=dmgtype_heal, defval=HP_HEAL }
+
+//	ダメージ式関係。dmgtype=NO_DAMAGEの時には非表示になるものがある。
+local dmgformprop = { pid="dmgform", lbl="$T.type_dmgform", type=LIST, list=@() ::typelist( "dmgform"), defval=0, refresh=true, hide=hide_nodamage};
+local atkformprop = {
+	pid="atkform", lbl="$T.lbl_atkform", type=SCRIPT, defval="", hide=hide_nodamage, //deflbl=deflbl_dmgform( "atk"),
+	get = @( prop, data, e){
+		local val = data[prop.pid];
+		if( length( val)) return val;
+		return deflbl_dmgform2( e.data, "atk");
+	}
+	set = @( prop, data, val, e){
+		val = val.trim();
+		local defval = deflbl_dmgform2( e.data, "atk");
+		data[prop.pid] <- (val!="" && val!=defval) ? val : "";
+	}
+};
+local dmgrateprop = { pid="dmgrate", lbl="$T.lbl_dmgrate", type=VEC2, range=(0.0, 9.0), q=10, ui="r", defval=(0.9,1.1), hide=hide_nodamage};
+local spdrateprop = { pid="spdrate", lbl="$T.lbl_spdrate", type=SCALAR, range=(0.0, 9.0), q=100, ui="r", defval=1.0, };
+local hitrateprop = { pid="hitrate", lbl="$T.lbl_hitrate", type=SCALAR, range=(0.0, 9.0), q=100, ui="r", defval=1.0, hide=hide_nodamage};
+local atknumprop = { pid="atknum", lbl="$T.lbl_atknum", type=VEC2, range=(1, 9), defval=(1,1), ui="r", hide=hide_nodamage};
+local elembitsprop = { pid="elembits", lbl="$T.type_elem", type=CHECKBITS, list=@() ::typelist( "elem"), hide=hide_nodamage, defval=1};
+local remcondsprop = { pid="remconds", lbl="$T.lbl_remconds", type=CHECKBITS, list=@() ::datalist( "cond"), defval=0};
+local putcondsprop = { pid="putconds", lbl="$T.lbl_putconds", type=CHECKBITS, list=@() ::datalist( "cond"), defval=0};
+//	
+local condgprop = { pid="condg", lbl="$T.type_condg", type=LIST, list=@() ::typelist( "condg"), defval=0};
+local flagsprop = { pid="flags", lbl="$T.skillflag", type=CHECKBITS, list=skillflaglist, defval=255};
+
+//	エフェクト、アニメ
+local efxhead = { pid="HACT", lbl="$T.lbl_action", type=HEADER, menu=[
+	{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+	{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f"},
+]};
+
+local aimaniprop = { pid="aimani", lbl="$T.lbl_aimani", type=ANIME_POPUP, defval=null }
+local useactprop = { pid="useact", lbl="$T.lbl_useact", type=PROPERTYLIST, ...makeactionprop( SkillBeginScripts), }
+local atkactprop = { pid="atkact", lbl="$T.lbl_atkact", type=PROPERTYLIST, ...makeactionprop( SkillAttackScripts), }
+local hitactprop = { pid="hitact", lbl="$T.lbl_hitact", type=PROPERTYLIST, ...makeactionprop( SkillHitScripts), }
+local endactprop = { pid="endact", lbl="$T.lbl_endact", type=PROPERTYLIST, ...makeactionprop( SkillEndScripts), }
+
+local acttestprop = {
+	pid="acttest", lbl="", type=CUSTOMBUTTON, ui="1", cnt="cnt5.ui", get=@( prop, data) 1, set=@( prop, data, act) 0, 
+	tostring = @() "$T.lbl_acttest", icon = "\ue1c4",
+	edit = @( val){
+		::skstudio.editor.testAction();
+	}
+}
+
+//	効果予測値を返す。0.0は効果なし。1.0で100%の効果。2.0とかだと弱点を突いている。
+//	※弱点、反射、吸収などの測定も行うべき。泥臭いコードになりそうだが。。。
+
+//	攻撃用の効果測定メソッド
+function forecastAttack( skill, src, dst){
+	if( dst.HP <= 0 || dst.isDead()) return 0.0;	//	死亡者には攻撃無効。石化などの死亡扱いコンディションでも。
+	return 1.0;
+}
+
+//	回復用の効果測定メソッド。併せてコンディションの付与・解除もチェック。
+//	fordead=1: 死者にも使用可能, 2: 死者のみに使用可能, 0: 生存者のみ
+function forecastHeal( skill, src, dst){
+	if( dst.isDead()){
+		//	死亡状態では、その状態を解除できるスキルのみが有効。※これだと死、石がついてて石だけ回復出来る。まあいいか
+		return dst.canRemoveAnyCondition( skill["remconds"]) ? 1.0 : 0.0;
+	}else
+	if( skill.flags & (1<<FLAG_NOOP_ALIVE)){	//	死者にのみ有効なスキル。復活魔法ぐらい。
+		return 0.0;
+	}
+	local pid = DamageTypePID[skill["dmgtype"]];
+	local r = dst.getPointRate( pid);
+	if( pid && r < 100) return 1.0;		//	回復パラメータが最大じゃなければOK
+	if( dst.canRemoveAnyCondition( skill["remconds"])) return 1.0;
+	return 0.0;
+}
+
+//	バフ用効果測定メソッド。複数のグッドコンディションを相手に付ける。
+//	死んでる相手には無効。
+function forecastBuff( skill, src, dst){
+	if( dst.HP <= 0 || dst.isDead()) return 0.0;
+	if( dst.canPutAnyCondition( skill["putconds"])) return 1.0;
+	return 0.0;
+}
+
+//	デバフ用効果測定メソッド。複数のバッドコンディションを一度につけることができるが、耐性は一番強いものをベースに計算される。
+//	もしくは個別に計算？
+function forecastDebuff( skill, src, dst){
+	if( dst.HP <= 0 || dst.isDead()) return 0.0;
+	if( dst.canPutAnyCondition( skill["putconds"])) return 1.0;
+	return 0.0;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////
+//	メニュー使用スキル用メソッド
+
+//	メニューで回復系スキルを発動した時のメソッド。
+//	・キャラ選択画面が表示されていることが前提の演出。
+//	・演出は音とパーティクルのみ
+function menuHealSkillFunc( skill, src, dsts){
+	//	計算のためにSkillCommand、Damageを生成。
+	local cmd = SkillCommand( src, skill, dsts);
+	local success = false;
+	foreach( dst in dsts){
+		if( !dst) continue;
+		if( forecastHeal( skill, src, dst) <= 0.0) continue;	//	死者に回復とかを弾く
+		success = true;
+		local dmg = Damage( cmd, dst);
+		dmg.calcDamage();
+		//	オプション挟むならここ
+		dmg.finishDamage();
+		dst.addPoint( dmg.pid, -dmg.val);	//	回復実行。
+		foreach( condid in bitdblist( skill["remconds"], "cond")){	//	コンディション解除
+			dst.removeCondition( condid);
+		}
+		//	演出。sleepはいらないかな？
+		local p = ::rootview.findChild( "dialog_selchara.%S.mdl" % dst.dataid);	//	dialog_selchara=キャラ選択ダイアログ
+		p?.hitSkill( skill);
+	}
+	if( success && skill["hitact"]["hitsnd"]){
+		local snd = ::conf._resource.snd[skill["hitact"]["hitsnd"]];
+		::playSound( skill["hitact"]["hitsnd"], {gain=snd.gain*0.3});
+	}
+	return success;
+}
+
+//	メニューでバフ系スキルを発動した時のメソッド
+//	
+function menuBuffSkillFunc( skill, src, dsts){
+	local success = false;
+	foreach( dst in dsts){
+		if( forecastBuff( skill, src, dst) <= 0.0) continue;	//	死者に回復とかを弾く
+		success = true;
+		foreach( condid in bitdblist( skill["putconds"], "cond")){	//	コンディション付与
+			dst.putCondition( condid);
+		}
+		//	演出。sleepはいらないかな？
+	}
+	return success;
+}
+
+//	メニューでマクロを発動した時のメソッド。
+//	・キャラ選択が無い場合はdst=null
+//	・マクロ実行中はスレッドはブロック。
+function menuMacroSkillFunc( skill, src, dsts){
+	local wvar = clone RPGEventRunner.iniwvar;
+	local m = ::rpgstage.startMacro( skill.macroid_menu, false, wvar);
+	while( m["mode"] == 2){
+		suspend();
+	}
+	//	実行が成功した場合はWに成功を入れる。この場合に消費処理をする。
+	//	※このマクロでマップ移動なんかをする場合にこの後の処理が中断されてしまう。。。
+	local success = !!wvar["W"];
+	return success;
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	ここからスキルタイプ定義
+//	
+
+RPGSystem.skilltype .. {
+	key = "unusable",
+	lbl = "$T.skilltype_unusable",
+
+	battlefunc = null
+	menufunc = null
+	forecast = @() 0.0
+
+	props = [
+		occasionprop_none,
+	]
+}
+
+//	何もしないは、構えモーションのまま次のターンまで待機する。※アクティブバトルの場合は次の入力時点で解除。
+//	その間スキルは付き続けるので、オプションと組み合わせて様々な状態を作り出すことができる。
+//	防御、カウンター、魔封剣、かばう、、、かばう対象を指定したいときにはRPGCharaBaseにフィールドを追加するしかないかなー
+//	眠り、混乱、麻痺などの行動制約が付いた場合にスキルは解除される。スタンでも同じく。
+//	バトル時のみ使用可能。
+//	
+RPGSystem.skilltype .. {
+	key = "noop",
+	lbl = "$T.skilltype_noop",
+
+	battlefunc = SkillCommand.noopSkillFunc
+	menufunc = null
+	forecast = @() 1.0	//	効果を予測することはできない。。。
+
+	props = [
+		occasionprop_battle,	//	非表示
+		cmdtgtprop,
+		//
+		efxhead,
+		aimaniprop,
+		useactprop,
+		acttestprop,
+	]
+}
+
+//	敵に対して攻撃するスキル。
+//	バトル時のみ使用可能。
+//	
+RPGSystem.skilltype .. {
+	key = "attack"
+	lbl = "$T.skilltype_attack"
+	
+	battlefunc = SkillCommand.commonSkillFunc
+	menufunc = null
+	forecast = forecastAttack
+
+	props = [
+		occasionprop_battle,	//	非表示
+		cmdtgtprop_enemy,
+		dmgtypeprop,
+		dmgformprop,
+		atkformprop,
+		dmgrateprop,
+		spdrateprop,
+		hitrateprop,
+		atknumprop,
+		elembitsprop,
+		flagsprop,
+		//
+		efxhead,
+		aimaniprop,
+		useactprop,
+		atkactprop,
+		hitactprop,
+		endactprop,
+		acttestprop,
+	]
+}
+
+//	回復スキル
+//	バトル時、メニュー時どちらでも使用可能(選択)
+//	
+RPGSystem.skilltype .. {
+	key = "heal"
+	lbl = "$T.skilltype_heal"
+	
+	battlefunc = SkillCommand.commonSkillFunc
+	menufunc = menuHealSkillFunc
+	forecast = forecastHeal
+
+	props = [
+		occasionprop,
+		cmdtgtprop_party,
+		dmgtypeprop_heal,
+		dmgformprop,
+		atkformprop,
+		spdrateprop,
+		remcondsprop,
+		flagsprop,
+		//
+		efxhead,
+		aimaniprop,
+		useactprop,
+		atkactprop,
+		hitactprop,
+		endactprop,
+		acttestprop,
+	]
+}
+
+//	バフスキル。良効果の付与。ダメージ系のプロパティは無し
+//	味方に対しての状態付与で、確率計算式がある。
+//	バトル時、メニュー時どちらでも使用可能(選択)
+//	
+RPGSystem.skilltype .. {
+	key = "buff"
+	lbl = "$T.skilltype_buff"
+
+	battlefunc = SkillCommand.buffSkillFunc
+	menufunc = menuBuffSkillFunc
+	forecast = forecastBuff
+
+	props = [
+		occasionprop,
+		cmdtgtprop_party,
+		spdrateprop,
+		putcondsprop,
+		flagsprop,
+		//	成功率、付与レベル
+		//	
+		efxhead,
+		aimaniprop,
+		useactprop,
+		hitactprop,
+		acttestprop,
+	]
+}
+
+//	デバフスキル。悪効果の付与
+//	確率計算用の状態グループと、確率調整、確率計算式がある。
+//	バトル時のみ使用可能。
+//	
+RPGSystem.skilltype .. {
+	key = "debuff"
+	lbl = "$T.skilltype_debuff"
+
+	battlefunc = SkillCommand.debuffSkillFunc
+	menufunc = null
+	forecast = forecastDebuff
+
+	props = [
+		occasionprop_battle,
+		cmdtgtprop_enemy,
+		{...dmgformprop, hide=false},	//	ダメージは無いけど表示
+		{...hitrateprop, hide=false},
+		spdrateprop,
+		putcondsprop,
+		flagsprop,
+		//	成功率、付与レベル
+		//	
+		efxhead,
+		aimaniprop,
+		useactprop,
+		hitactprop,
+		endactprop,
+		acttestprop,
+	]
+}
+
+//	強化攻撃スキル。他のスキル又はデフォルトスキルに対して別オプションで実行する。
+//	※cmdtgtは指定しないでもゲーム上から取ることもできるな
+RPGSystem.skilltype .. {
+	key = "enhance"
+	lbl = "$T.skilltype_enhance"
+	
+	battlefunc = SkillCommand.enhanceSkillFunc
+	menufunc = null
+	forecast = forecastAttack
+
+	props = [
+		occasionprop_battle,	//	非表示
+		{ pid="skillid", lbl="$T.lbl_nextskill", type=DATAID, datatype = ["skill"], nullable=true, defval=null, },
+		cmdtgtprop_enemy,
+		spdrateprop,
+		//
+		efxhead,
+		aimaniprop,
+		useactprop,
+		acttestprop,
+	]
+}
+
+//	マクロ実行
+//	バトルで使用するマクロ、メニューで使用するマクロを別々に設定可能。
+//	バトル時、メニュー時どちらでも使用可能（自動判別）。
+//	
+RPGSystem.skilltype .. {
+	key = "macro"
+	lbl = "$T.skilltype_macro"
+	
+	battlefunc = SkillCommand.macroSkillFunc
+	menufunc = menuMacroSkillFunc	//	
+	forecast = @() 1.0	//	効果を予測することはできない。。。
+
+	props = [
+		occasionprop_none,	//	↓のマクロ設定でoccasionが設定される。
+		cmdtgtprop,
+		{ pid="macroid_battle", lbl="$T.lbl_macroid_battle", type=DATAID, datatype = ["macro"], nullable=true, defval=null,
+			set = @( prop, data, val){
+				data[prop.pid] <- val; if( val) data.occasion|=1; else data.occasion&=~1;
+			}
+		},
+		{ pid="macroid_menu", lbl="$T.lbl_macroid_menu", type=DATAID, datatype = ["macro"], nullable=true, defval=null,
+			set = @( prop, data, val){
+				data[prop.pid] <- val; if( val) data.occasion|=2; else data.occasion&=~2;
+			}
+		},
+		spdrateprop,
+		{ pid="warg", lbl="$T.lbl_macroarg: W", type=VARIABLE, varbits=2|4|8|16, constbits=1|2|4, datatype="all", nullable=1, defval=null },
+		//	
+		efxhead,
+		aimaniprop,
+		useactprop,
+		endactprop,
+		acttestprop,
+	]
+}

@@ -1,0 +1,435 @@
+
+import PropertyType;
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	ぱーてぃくる
+//
+
+with ParticleGroup
+{
+	emitter <- null;			//	ParticleEmitter
+	modifiers <- null;			//	table[] : 
+	localcoord <- false;
+	
+	function start(){
+		emit( emitter);
+	}
+}
+
+class ParticleEffect
+{
+	static actiondef = {};
+
+	sk3dref = null;				//	weakref( SK3DObject)
+	gmat = null;				//	Matrix
+	gbnd = null;				//	Rect3D
+	
+	groups = null;				//	ParticleGroup[]
+	alive = 1;					//	
+	
+	layer = 0;					//	SK3DObject.layer
+
+	ptdata = null;				//	table
+	loopcnt = 0;
+	
+	//	
+	time = 0;					//	
+	actions = null;				//	
+	hasanchor = false;
+	
+	constructor(){
+		gbnd = Rect3D();
+	}
+	
+	function setSK3DObject( o){
+		sk3dref = weakref( o);
+		local m = gmat = o.gmat;
+		foreach( g in groups){
+			if( g.localcoord){
+				g.gmat = m;
+			}else{
+				g.emitmat = m;
+			}
+		}
+	}
+	
+	function start(){
+		alive = 1;
+		time = 0;
+		loopcnt = 0;
+	}
+	
+	function _cloned( org){
+		groups = clone groups;
+		foreach( i, g in groups){
+			groups[i] = clone g;
+			groups[i].m = clone g.m;
+		}
+		gbnd = clone gbnd;
+	}
+	
+	function update( dt){
+		updateActions( dt);
+		//
+		local _alive = alive, gr = #Rect3D();
+		alive = 0;
+		gbnd.invalidate();
+		foreach( g in groups){
+			alive += g.update( dt);
+			g.getBounds( gr);
+			if( g.gmat) gr.transform( g.gmat);
+			gbnd.expand( gr);
+		}
+		return alive | _alive || isActionRunning();
+	}
+
+	//	ParticleActionを実行する。
+	//	
+	function updateActions( dt){
+		local t0 = time, t1 = t0 + dt, rdt;
+	LOOP:
+		try{
+			foreach( i, a in actions){
+				if( a.time < t1){
+					alive = 1;
+					if( a.time >= t0){
+						rdt = a.time-t0;
+						local pa = actiondef[a.acttype];
+						pa.exec( this, a);
+					}
+				}
+			}
+		}catch( ex){
+			if( typeof( ex) == SS_INTEGER){	//	※todo 無限ループみたいにならないように、、、、
+				t0 = ex; t1 = t0 + rdt;
+				goto LOOP;
+			}else{
+				printexception( ex);
+			}
+		}
+		time = t1;
+	}
+
+	function isActionRunning(){
+		local act = actions.last();
+		return act && time < act.time;
+	}
+	
+	function render(){
+		//if( parentcoord){ skSetMatrix( 0, gmat); }else{ skInitMatrix( 0); }
+		skDrawParticleGroups( groups, gmat);
+	}
+
+	static function getParticleEffect( res){
+		if( typeof( res) == SS_STRING){
+			res = getResource( res);
+		}
+		local p = res.userdata;
+		if( !p){
+			local t = {};
+			local func = res.loadData().compile().bindenv( t);
+			func();
+			foreach( pd in t.groups){ pd.res = res; }
+			p = createParticleEffect( t);
+			res.userdata = p;
+		}
+		return clone p;
+	}
+	
+	static function createParticleEffect( t){
+		local pga = [];
+		local p = ParticleEffect();
+		foreach( i, pd in t.groups){
+			if( pd.enabled){
+				pga .. pd.createParticleGroup();
+				if( pd.overlay) p.layer = 8;		//	オーバーレイレイヤー
+			}
+		}
+		p.groups = pga;
+		p.ptdata = t;
+		if( !t["actions"]){
+			t.actions <- [{ acttype="emitall", time=0}]
+		}
+		p.actions = t.actions;
+		p.hasanchor = !!t.actions.find( @( v) v.acttype=="anchor");
+		return p;
+	}
+}
+
+local modeblends = [SK_VISIBLE_OPAQUE,SK_VISIBLE_OPAQUE,SK_VISIBLE_TRANSPARENT,SK_VISIBLE_DECAL,SK_VISIBLE_DECAL,SK_VISIBLE_DECAL]
+
+class ParticleGroupData
+{
+	res = null;				//	Resource : ParticleGroupData自身
+	
+	name = "GROUP";			//	
+	enabled = true;			//	
+	aimtype = 1;			//	int 
+	emitter = null;			//	ParticleEmitter
+	localcoord = false;	//	
+	
+	//	particle view
+	shapetype = 0;			//	
+	shapedata = null;		//	{} shapetypeによって違う！
+	//	material param
+	texture = null;			//	string : テクスチャへの相対パス
+	masktex = null;			//	string : マスクテクスチャ
+	color = 0xffffffff;		//	int : ==Kd
+	Ka = 0x808080ff;
+	Ks = 0;
+	emission = 0;			//	pbr emission
+	blend = SK_MIX;			//	int : 
+	blendmode = 5;			//	5:TRANS DECAL
+	tec = null;				//	string|null
+	overlay = 0.0;			//	bool
+	cullface = SK_CCW;
+	
+	//	modifier
+	mod = null;				//	table[] : setModifiersでセットする。
+	
+	
+	function createParticleGroup(){
+		local pg = ParticleGroup();
+		local pm = null;
+		local lmat = null;
+		local setmaterial = true;
+		pg.aimtype = aimtype;
+		pg.emitter = emitter;
+		switch( shapetype){
+		case 0:		//	PLANE
+			{
+				pg.ptcw = shapedata.w;
+				pg.ptch = shapedata.h;
+				pg.ptcr = shapedata["r"] || 0.0;
+				pg.ptcaxis = shapedata.axis;
+				pg.elemr = Math.max( pg.ptcw, pg.ptch);
+				break;
+			}
+		case 1:		//	BOX
+			{
+				pm = ::PrimitiveMeshes.createBox( shapedata.w, shapedata.h, shapedata.d);
+				pg.elemr = Math.max( shapedata.w, shapedata.h, shapedata.d);
+				break;
+			}
+		case 2: 	//	SPHERE
+			{
+				pm = ::PrimitiveMeshes.createSphere( shapedata.r, shapedata.segw, shapedata.segh);
+				pg.elemr = shapedata.r;
+				break;
+			}
+			break;
+		case 3: 	//	CYLINDER
+			{
+				pm = ::PrimitiveMeshes.createCylinder( shapedata.topr, shapedata.btmr, shapedata.h, shapedata.segw, shapedata.closemask);
+				pg.elemr = Math.max( shapedata.topr, shapedata.btmr, shapedata.h);
+				break;
+			}
+			break;
+		case 4: 	//	CUSTOM
+			{
+				local r = res.getResource( shapedata.path);
+				if( r) pm = ::getPolygonMesh( r);
+				if( !pm){
+					pm = ::PrimitiveMeshes.createBox( 0.1, 0.1, 0.1);		//	err pm
+				}
+				pg.ptcw = shapedata["w"] || 0.1;
+				pg.ptch = shapedata["h"] || 0.1;
+				pg.ptcd = shapedata["d"] || 0.1;
+				setmaterial = !shapedata["usemtl"];
+				local pmr = pm.bnd;
+				pg.elemr = Math.max( pmr.r*pg.ptcw, pmr.s*pg.ptch, pmr.t*pg.ptcd)*10.0;	//	*10??
+				break;
+			}
+		}
+		local hpb = shapedata["hpb"];
+		if( hpb[0]||hpb[1]||hpb[2]){
+			lmat = Matrix.fromHPB( hpb[0]*Math.DTOR, hpb[1]*Math.DTOR, hpb[2]*Math.DTOR);
+		}
+		local m = null;
+		if( pm){
+			pg.vtx = pm.vtx;
+			pg.idx = pm.face[0].idx;
+			pg.mode = pm.face[0].mode;
+			m = pg.m = pm.face[0].m;
+			// m.cullface = cullface;
+		}else{
+			m = pg.m = Material();
+			m.cullface = SK_OFF;
+			m.tec = skFXFindTechnique( "decal.def");
+		}
+		if( setmaterial){	//	custom時にマテリアル上書きをセットした場合falseになる
+			local tex = ::getTexture( res.getResource( texture));
+			if( tex) m.tex0 = tex;
+			if( masktex){
+				m.tex1 = ::getTexture( res.getResource( masktex));
+				m.uvbits = 2;
+			}
+			m.Kd = color;
+			m.Ka = Ka;
+			m.Ks = Ks;
+			//	pbr set
+			m.basecol = color;
+			m.rough = 1.0;
+			m.metal = 0.0;
+			m.mtype = 0;
+			m.mparam = 0xff000000 | ((emission&255)<<16);
+			//	
+			m.blend = blend;
+			m.visiblemask = modeblends[blendmode];
+			m.alphatest = (blendmode%3)==1;
+			m.depthmask = (blendmode%3)==2?0:1;
+		}
+		if( !pm && tec){
+			local t = skFXFindTechnique( tec);
+			if( t) m.tec = t;
+		}
+		if( overlay){
+			// m.depthtest = SK_ALWAYS;
+			m.polygonoffset1 = -overlay * 50000;
+		}
+		pg.lmat = lmat;
+		if( mod) pg.mods = ParticleModifiers( mod);
+		pg.localcoord = localcoord;
+		return pg;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	ParticleAction
+//	ParticleEffectに設定される
+//	
+
+::ParticleActions <- [];
+
+ParticleActions .. {
+	key = "emitall",
+	name = "$T.lbl_emitall",
+	icon = "\ue518",
+	info = "$T.lbl_emitall",
+	exec = @( pe, acd){
+		foreach( i, g in pe.groups) g.emit( g.emitter);
+		pe.alive = 1;
+	},
+	props = [
+	],
+};
+
+ParticleActions .. {
+	key = "emit",
+	name = "$T.lbl_emitone",
+	icon = "\ue1c6",
+	info = @(){
+		local s = "$T.lbl_emitone: "; for( local l = 0;l < 32;l ++){ if( (1<<l)&groupbits){ s = s..l }} return s;
+	}
+	exec = @( pe, acd){
+		foreach( i, g in pe.groups){
+			if( (1<<i) & acd.groupbits ) g.emit( g.emitter);
+		}
+		pe.alive = 1;
+	},
+	props = [
+		{
+			pid = "groupbits"
+			lbl = "$T.lbl_group"
+			type = CHECKBITS
+			defval = @() (1<<length( ::skstudio.editor.ptdata.groups))-1
+			list = @(){
+				local d = ::skstudio.editor.ptdata;	//	EfxEditor.ptdata
+				return d.groups.map( @( v){ return { lbl=v.name, }});
+			}
+		}
+	],
+};
+
+ParticleActions .. {
+	key = "loop",
+	name = "$T.lbl_loop",
+	icon = "\ue040",
+	info = @() sprintf( "$T.lbl_loop: %d:%02d x %S", lt/1000, (lt/10)%100, cnt?cnt : "∞"),
+	exec = @( pe, acd){
+		if( pe.loopcnt < acd.cnt){
+			++pe.loopcnt;
+			throw acd.lt;
+		}
+	},
+	props = [
+		{ pid = "lt", lbl = "$T.lbl_looppoint", type = SCALAR, range = (0,9999), defval = 0, },
+		{ pid = "cnt", lbl = "$T.lbl_loopcnt", type = SCALAR, range = (1,999), defval = 1, },
+	],
+};
+
+ParticleActions .. {
+	key = "snd",
+	name = "$T.lbl_sound",
+	icon = "\ue7f4",
+	info = @(){
+		local sd = ::soundmanager.getConf().sounds[sndid];
+		local lbl = length( sndid) ? sprintf( "%S", sd?::lang(sd.name) : "???") : "$T.lbl_notset";
+		return "$T.lbl_sound: "..lbl;
+	},
+	exec = @( pe, acd){
+		if( acd.sndid){
+			local sk3d = realref( pe.sk3dref);
+			sk3d?.playSound( acd.sndid, null);		//	gain,detune...
+		}
+	},
+	props = [
+		{ pid = "sndid", lbl = "$T.lbl_sound", type = SOUNDID, defval = null }
+		{ pid = "gain", lbl = "$T.lbl_gain", type = SCALAR, range = (0.0,2.0), q=10, defval = 1.0, }
+		{ pid = "detune", lbl = "$T.lbl_detune", type = SCALAR, range = (-12.0,12.0), q=10, defval = 0.0, }
+	],
+};
+
+ParticleActions .. {
+	key = "scp",
+	name = "$T.lbl_script",
+	icon = "\uec1c",
+	info = @(){
+		local info = "$T.lbl_script: ";
+		if( length( code) < 20){
+			info = info .. code;
+		}else{
+			info = info .. code.substring( 0, 18) .. "...";
+		}
+		return info;
+	},
+	exec = @( pe, acd){
+		local code = "local pe = vargv[0], acd = vargv[1];\n" .. acd.code;	//	毎回string結合やだなー
+		local fn = ::compilestring_c( code);	//	キャッシュされる
+		fn( pe, acd);
+	},
+	props = [
+		{ pid = "code", cnt = "cnt6.ui", lbl = "$T.lbl_script", type = SCRIPT, multiline = true, defval = "", }
+	],
+};
+
+ParticleActions .. {
+	key = "quake",
+	name = "$T.lbl_cameraquake",
+	icon = "\ue62d",
+	info = "$T.lbl_cameraquake",
+	exec = @( pe, acd){
+		local sk3d = realref( pe.sk3dref);
+		if( sk3d["scn"]){
+			local q = CameraQuake();
+			q.pow = acd.pow * 0.1;
+			q.distatten = float( acd.dist);
+			q.timeatten = 1.0 / acd.dur;
+			q.freq = float( acd.freq);
+			q.vert = acd.vert;
+			q.pos = Vector3D().transform( sk3d.gmat);
+			sk3d.scn.addQuake( q);
+		}
+	},
+	props = [
+		{ pid="pow", lbl="$T.lbl_power", type=SCALAR, range=(1,20), ui="bar", defval=3, }
+		{ pid="dist", lbl="$T.lbl_distance", type=SCALAR, range=(1,100), ui="bar", defval=40, }
+		{ pid="dur", lbl="$T.lbl_duration", type=SCALAR, range=(100,3000), ui="bar", defval=750, }
+		{ pid="freq", lbl="$T.lbl_freq", type=SCALAR, range=(1,100), ui="bar", defval=40, }
+		{ pid="vert", lbl="$T.lbl_vertquake", type=BOOL, defval=false, }
+	],
+};
+
+foreach( pa in ParticleActions) ParticleEffect.actiondef[pa.key] <- pa;

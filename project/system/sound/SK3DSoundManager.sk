@@ -1,0 +1,250 @@
+import SoundID;
+
+local m_1 = Matrix();
+local v_1 = Vector3D(), v_2 = Vector3D();
+
+/**
+ *	一つの3Dシーンに対して3Dサウンドをマネージするクラス。
+ *	SK3DSceneと関連付けされるが、リスナーはSoundContextに一つなので、基本的にSK3DSoundManagerは一画面に対して一つのみとなる。
+ *	
+ *	シーン上において3Dサウンドの出力先となるSoundMixerをいくつも保持する。
+ *	ミキサーはHRTF付きで最大で20個程度が限度となる。重くなる場合はHRTFを切ってもそこまで違和感はないはず(Switchのバッテリーモード)。
+ *	playSound時に、ソース位置の距離と吸着率、3Dパラメータによって吸着可能なミキサーを探す。吸着範囲は距離に比例して広くなる。
+ *	3Dパラメータの種類が違うと吸着は行われない。なので、3Dパラメータの種類は出来るだけ少なくする。
+ *	また、3Dパラメータの最大距離より遠ければ音は鳴らない。なので細かい音は最大距離を短くする。
+ *	さらにオクルージョンで完全に音が消える場合も最初から鳴らさない。
+ *	
+ *	追従型のサウンド（ボイスなど）は、基本的には毎回新たなミキサーを生成するが、十分遠い(30m以上とか)場合は追従を切り吸着をさせる。
+ *	
+ *	出力を終了したミキサーは回収され再利用される。HRTF用のバッファなどがあり少々セットアップに処理がかさむ？大したことはないが。
+ *	
+ *	アンビエントサウンドへの対応
+ *	メインの環境サウンドが全方向にあり、サブの環境サウンドが複数（水、火）が左右のバランスありで乗っかる。
+ *	メインは数秒の長いフェードで変化させる。雨はメイン扱いでフェードは比較的短い。
+ *	
+ *	
+ */
+class SK3DSoundManager
+{
+	ctx = null;					//	SoundContext : 
+	skscn = null;				//	SK3DScnene : 
+	cam = null;					//	Camera : 
+	reverbs = null;				//	音響環境に対するリバーブのミックスをいくつも入れる。
+	reverb = null;				//	選択されているリバーブミックス。
+	
+	mixers = null;				//	SK3DMixer[] : 
+	mixerpool = null;			//	SK3DMixer[] : リサイクル用
+
+	constructor( s){
+		skscn = s;
+		cam = s.maincamera;		//	
+		mixers = [];
+		mixerpool = [];
+		reverbs = ::soundmanager.getConf().reverbs;
+		reverb = reverbs["NONE"];
+		::soundmanager.checkctx();
+		ctx = ::soundmanager.ctx;
+	}
+	
+	function setReverbID( rid){
+		reverb = reverbs[rid];
+	}
+	
+	function play3DSound( sid, gmat){
+		local sp = ::soundmanager.getSoundPlayable( sid);
+		if( !sp) return;
+		sp.track3d = 0;		//	このメソッドはtrack3dにはならない
+		local sndmergerate = 0.5;
+		local dummysk3d = { gmat=gmat};
+		if( setup3DSound( sp, dummysk3d, #Vector3D(), sndmergerate)){
+			sp.play();	//	thread
+			return sp;
+		}
+	}
+
+	//	3Dサウンドをセットアップする。SoundPlayableを3D音源化する。
+	//	VoicePlayer.getVoicePlayable()で得たサウンドパラメータでも再生可能。
+	//	trueを返したらsp.play()をする。falseを返したら何らかの理由で音が鳴らない状況なのでplay()を呼び出さないこと。
+	//	
+	function setup3DSound( sp, sk3d, relpos, mergerate=1.0){
+		local src3d = sp.src3d, trk = sp.track3d;
+		//	まずリスナー位置を確認して、最大距離を超えてたら再生しない。
+		local gpos = (v_1<<relpos).transform( sk3d.gmat);		//	※relposはnullが入ってても動く。
+		local dist = gpos.hypot( cam.eye);
+		if( dist>src3d.maxdist && !trk) return false;
+		local directive = Math.saturate( (Math.HPI-src3d.conein) / (Math.HPI));		//	コーン幅が180°以上だとdirective
+		//	ミキサー検索。全て調べて一番近いミキサーを選ぶ。
+		local gvec = v_2(0,0,1).transform0( sk3d.gmat);
+		local w = 0.0001+dist*0.2;		//	wが吸着距離。 1mで0.2m, 5mで1.0m, 10mで2.0m。mergerate1.0で15°くらい。
+		local mx = null;
+		if( mergerate > 0.0){
+			local mindist = 1.0;							//	dist<1.0のみ吸着とする
+			foreach( m in mixers){
+				if( src3d!=m.src3d) continue;	//	ソースパラメータが違う場合は問答無用でアウト
+				if( trk!=m.track3d || (trk&&sk3d!=m.trackto)) continue;	//	トラッキングチェック。
+				local d = gpos.hypot( m.gpos) / w / mergerate;
+				// printf( "d %S / %S / %S = %S\n", gpos.hypot( m.gpos), w, mergerate, d);
+				if( d > 1.0) continue;
+				if( directive) d += (gvec.dot( m.gvec)+1.0)*directive;	//	
+				if( d < mindist){ mx = m; mindist = d; }
+			}
+		}
+		//	重複音のチェック。
+		if( mx){
+			local dupsnd = mx.mixer.findDuplicatedSound( sp.id);
+			if( dupsnd){	//	dupsndの音量は上げて良い
+				return false;
+			}
+		}
+		//	既存のミキサーでは再生できない。新たなミキサーを生成して再生。
+		//	その前にリバーブミックス値を取得する。gain,sendが0の場合は完全に音が遮蔽された。
+		local rp = getReverbMix( gpos, gvec);
+		if( rp.gain<=0.01 && !(rp.sends&0xfcfcfcfc)) return false;	//	遮蔽された
+		if( !mx){
+			mx = _createmixer( trk);
+			if( trk){
+				mx.setup( src3d, gpos, gvec, rp, sk3d, relpos, directive);
+			}else{
+				mx.setup( src3d, gpos, gvec, rp);
+			}
+			mixers .. mx;
+			mx.connect();
+		}
+		sp.mixer = mx.mixer;	//	SoundMixerをセットすること。Mixer3Dと名前が紛らわしい
+		sp.gain *= (1.0-rp.occlusion);
+		return true;
+	}
+	
+	function _createmixer( trk){
+		foreach( i,m in mixerpool){ if( trk==m.track3d) return delete mixerpool[i]; }
+		return trk?SK3DTrackingMixer( this) : SK3DMixer( this);
+	}
+
+	//	指定した位置のリバーブミックス値をintで返す。
+	//	基本的には値のあるリバーブチャンネルは1つのみに限られる。ミキサーはこのメソッドから
+	//	返ってくる値に向かってlerpしていく。
+	function getReverbMix( gpos, gvec){
+		local ret = #{sends=0,gain=1.0,occlusion=0.0};
+		local dist = gpos.hypot( cam.eye);
+		local rp = reverb;
+		if( rp){
+			//	rpに対して距離のセンド、ゲイン調整をする。
+			local w = rp.distrate * Math.saturate( dist * 0.01) * 0.01;
+			ret.sends = rp.sends;
+			ret.gain = Math.lerp( rp.gain*0.01, 0.0, w);
+		}else{
+			ret.sends = 0;
+			ret.gain = 1.0;
+		}
+		return ret;
+	}
+	
+	//	全てのサウンドを止める。強制的なdisconnectをするのでノイズが出る場合がある。
+	//	必要なら先にマスターゲインでフェードおくと良い。
+	function clearSounds(){
+		foreach( mx in mixers){ mx.disconnect(); }
+		mixers.clear();
+		mixerpool.clear();
+	}
+
+	//	再生中のサウンド監視、カメラ移動の適用、追従サウンドの位置更新
+	//	
+	function update( dt){
+		ctx[SK_SND_LISTENER] = cam;
+		foreach( mx in mixers){
+			//	再生しているSoundSourceが無く、残響音も消えたらmuteとみなされる。
+			//	オーディオフレーム(128サンプル)が4回以上連続でmuteのミキサーか調べる。
+			if( mx.mixer[SK_SND_MUTECOUNT] >= 4){
+				mx.disconnect();
+				mixerpool .. mx;
+				removei;
+			}else{
+				mx.update3d( dt, true);
+			}
+		}
+		ctx[SK_SND_CALC3D] = true;
+	}
+}
+
+local m_1 = Matrix();
+
+//	
+//	※指向性のサウンドに対して現状の実装では吸着が難しい(WebAudioのせい)。これはconeGain()がPannerの内部で
+//	計算されているため。distanceはドップラーのディレイ計算もあるので外部化はむずかしいが、コーンについては
+//	SoundSourceのゲインとしてこちらで計算してしまうのが良いのでは。
+//	例えば、SoundSourceには音の方向が入り、SoundMixerに位置が入る。SoundContext.commit()を毎フレーム呼び、
+//	各SoundSourceのコーンによるゲインを計算する。WebAudio側の実装もこれで揃える。
+//	
+//	※このクラスでは指向性サウンドのconeの追従は行わない。
+//	
+class SK3DMixer
+{
+	static track3d = 0;
+	
+	manager = null;				//	SK3DSoundManager : 
+	gpos = null;				//	シーン上のグローバル座標
+	gvec = null;				//	グローバルな向き。directiveな音源のみ使用する
+	mixer = null;				//	SoundMixer : 
+	src3d = null;				//	Source3DParam : 
+	
+	constructor( m){
+		manager = m;
+		gpos = Vector3D();
+		gvec = Vector3D();
+		mixer = m.ctx.createMixer( SK_SND_HRTF3D);
+	}
+	
+	function setup( _src3d, _gpos, _gvec, _rp){
+		src3d = _src3d;
+		gpos << _gpos;
+		gvec << _gvec;
+		mixer[SK_SND_SOURCE3D] = src3d;
+		mixer[SK_SND_POSITION] = m_1.identity().translate( gpos);
+		mixer[SK_SND_SEND] = _rp.sends;
+		mixer[SK_SND_GAIN] = _rp.gain;
+	}
+
+	function connect(){
+		mixer.connect();
+	}
+
+	function disconnect(){
+		mixer.disconnect();
+	}
+
+	function update3d( dt, moved){
+	}
+}
+
+//	追従に対応したSK3DMixer。サウンド吸着は非常に限定された状況以外では出来ない。
+//	
+class SK3DTrackingMixer extends SK3DMixer
+{
+	static track3d = 1;
+	
+	trackto = null;				//	SK3DObject : 追従モード。
+	relpos = null;				//	Vector3D : speakerからの相対位置。
+	directive = 0.0;			//	float : src3d.coneinが180で0。45で1。
+	
+	constructor( m){
+		super( m);
+		relpos = Vector3D();
+	}
+
+	function setup( _src3d, _gpos, _gvec, _rp, _sk3d, _relpos, _directive){
+		super.setup( _src3d, _gpos, _gvec, _rp);
+		trackto = _sk3d;
+		relpos << _relpos;
+		directive = _directive;
+	}
+
+	//	追跡モードのみ必要な処理が走る。追跡なしの場合はリバーブミックスの変化及びその補間が不要。
+	//	引数としてカメラが一定量動いたらmoved=trueが入ってくる。
+	function update3d( dt, moved){
+		local p = (v_1<<relpos).transform( trackto.gmat);
+		local m = m_1.identity().translate( p);
+		local v = v_2(0,0,1).transform0( trackto.gmat);
+		mixer[SK_SND_POSITION] = m;
+		//mixer[SK_SND_DIRECTION] = v;
+	}
+};

@@ -1,0 +1,36 @@
+
+workspace <- null;
+try{
+	local wsfile = FileRef( ".sakana.ws");
+	if( wsfile.exists()){
+		local bb = wsfile.load();
+		if( bb) workspace = decodeJSON( bb);
+	}
+}catch( ex){
+	printexception( ex);
+}
+
+if( workspace){
+	workspace.name <- sakana["appname"] || "unknown";
+}else{
+	workspace = {
+		name = sakana["appname"] || "unknown",
+		favorites = [],
+		tabs = [],
+		currentpath = "/",
+		lang = null,	//	※※※chooseLanguage後に入れないとダメ！
+		uiscale = 100,
+		tabsync = true,
+		showconsole = false,
+	}
+}
+
+//
+//	functions
+//
+function saveWorkspace(){
+	local wsfile = FileRef( ".sakana.ws");
+	local bb = encodeJSON( workspace, 1|4, ByteBuffer());
+	bb.pos = 0;
+	wsfile.save( bb);
+}

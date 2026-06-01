@@ -1,0 +1,38 @@
+declare occlusion;
+
+param def
+{
+	uniform highp mat4 wvpmat0 <id=WVPMAT>;
+	uniform highp mat4 wvpmat1 <id=MISC1MAT>;
+	
+	fragout lowp vec4 fragcolor;
+}
+
+vs def
+{
+	void main(){
+		highp ivec3 ip = (ivec3( gl_VertexID, gl_VertexID>>10, gl_VertexID>>21) & ivec3(1023,2047,1023)) - ivec3(512,1024,512);
+		highp vec4 p = vec4( vec3( ip) * 0.125, 1.0);
+		highp vec4 p0 = (wvpmat0 * p);
+		highp vec4 p1 = (wvpmat1 * p);
+		gl_Position = gl_InstanceID!=0 ? p1 : p0;
+	}
+}
+
+fs def
+{
+	void main(){
+//		gl_FragColor = vec4( 1.0);
+		fragcolor = vec4( 1.0);
+	}
+}
+
+technique def
+{
+	apilevel = 30;
+	pass {
+		param = def;
+		vs = def;
+		fs = def;
+	}
+}

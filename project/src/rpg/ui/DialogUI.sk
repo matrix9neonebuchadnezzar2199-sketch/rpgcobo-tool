@@ -1,0 +1,398 @@
+import VirtualKeyCode;
+import GamepadButtonCode;
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////////
+//	DialogUI.sk ダイアログ系UI
+//	リスト選択、キャラ選択、確認、メッセージのダイアログ、アイテム個数指定ダイアログ
+
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	複数の項目選択ダイアログUIを表示。
+//	RESULT変数に選択された番号(0~)が入る。キャンセルボタンは最後の番号を返す。
+
+RPGSystem.ui ..
+{
+	key = "dialog_choices"
+	lbl = "$T.ui_dialog_choices"
+	type = "dialog"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	icon = "\ue8ef"
+
+	uilist = [
+		{ lbl="$T.lbl_normal", val=null, },		//	標準タイプ
+		{ lbl="$T.lbl_popup", val="dialog_choices2.ui", },	//	ポップアップタイプ。左右に短い、表示演出が短い
+		{ lbl="$T.lbl_title", val="dialog_choices3.ui", },	//	常駐タイプ。
+	]
+
+	backoplist = [
+		{ lbl="$T.lbl_disabled", val=0, }
+		{ lbl="$T.lbl_btmchoice", val=1, }
+		{ lbl="$T.lbl_retm1", val=2, }
+	]
+	
+	props = @( cmd){
+		local a = [];
+		a .. { pid="uipath", lbl="$T.lbl_view", type=LIST, list=uilist, variable=1 }
+		a .. { pid="uipos", lbl="$T.lbl_position", type=UIPOSITION, variable=1 }
+		a ..{
+			pid="usevar", lbl=~(compiletemplate_c( T.tmpl_use_v), {v="$T.lbl_arrayvar"}), type=BOOL, refresh=1, 
+			set = @( prop, data, val){
+				data.usevar = val;
+				if( val){
+					if( !data["_var"]) data._var <- {};
+					data._var.list <- "W";
+					for( local l = 0;l < 8;l ++) delete data["text"..l];
+				}else{
+					delete data._var["list"];
+					data.text0 <- "$T.yes"
+					data.text1 <- "$T.lbl_no"
+				}
+			};
+		};
+		if( cmd["usevar"]){
+			a .. { pid="list", lbl="$T.lbl_arrayvar", type=STRING, variable=2, datatype=["store"], filter=@( v) v["type"]==3 };
+		}else{
+			local countfn( d){
+				for( local l = 1;l < 8;l ++) if( !d["text"..l]) return l;
+				return 8;
+			}
+			a .. [
+				{
+					pid="num", lbl="$T.lbl_choicenum", type=SCALAR, range=(1,8), refresh=1,
+					get = @( prop, data) countfn( data),
+					set = @( prop, data, val){
+						for( local l = 0;l < val;l ++){
+							local k = "text"..l;
+							if( !data[k]) data[k] <- ""..l;
+						}
+						delete data["text"..val];
+						delete data["_var"]["text"..val];	//	変数リンクも削除
+					}
+				},
+			];
+			local n = countfn( cmd);
+			for( local l = 0;l < n;l ++){
+				a .. { pid="text"..l, lbl="$T.lbl_choice "..l, type=STRING, variable=1 };
+			}
+		}
+		a .. { pid="backop", lbl="$T.lbl_backop", type=LIST, list=backoplist, variable=1 }
+		return a;
+	}
+
+	defval = {
+		usevar = false
+		text0 = "$T.yes"
+		text1 = "$T.no"
+		uipos = {x=640,y=360}
+		uipath = null
+		backop = 0
+	}
+
+	uifunc = @( prms){
+		local oldc = gpui.backupCursor();
+		playSound( "SE005");
+		local list = [];
+		if( prms["list"]){
+			foreach( i, s in prms.list){
+				local lbl = s.contains( "[") ? rtf( s) : s;
+				list .. { lbl:lbl, _name="item"..i, idx=i};
+			}
+		}else{
+			for( local l = 0;;l ++){
+				local s = prms["text"..l];
+				if( s){
+					local lbl = s.contains( "[") ? rtf( s) : s;
+					list .. { lbl:lbl, _name="item"..l, idx=l};
+				}else
+					break;
+			}
+		}
+
+		local view = RPGMain.showView({
+			layer = "message"
+			focus = "item0"
+			action = "show"
+			modal = true,
+			...prms,
+			uipath = prms["uipath"] || "dialog_choices.ui",
+			binds = {
+				LIST = list
+			},
+		});
+		//	リスト選択
+		local selfunc = prms["selfunc"];
+		local selidx = RPGMain.uiLoop( {
+			"action" : @( e){
+				if( selfunc && selfunc( e)){
+				}else
+				if( e.item){
+					playSound( "SE001");
+					sleep( 100);
+					return e.item.idx;
+				}
+			}
+			"back" : @( e){
+				if( selfunc && selfunc( e)){
+				}else
+				if( prms["backop"]){
+					playSound( "SE001");
+					sleep( 100);
+					return prms.backop==1 ? length( list)-1 : -1;
+				}else{
+					playSound( "SE002");
+				}
+			}
+		});
+		//	
+		view.actionAndDie( "hide");
+		view.waitAction();
+		gpui.restoreCursor( oldc);
+		rpgvar.RESULT = selidx;
+		return rpgvar.RESULT;
+	}
+};
+
+////////////////////////////////////////////////////////////////////////////////////
+//	確認ダイアログUIを表示。
+//	確認のメッセージ付き、選択肢は2つ。
+//	RESULT変数にtrue/falseが入る
+
+RPGSystem.ui ..
+{
+	key = "dialog_confirm"
+	lbl = "$T.ui_dialog_confirm"
+	type = "dialog"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	icon = "\ue8ef"
+	
+	props = @( cmd){
+		local a = [];
+		a .. { pid="msg", lbl="$T.lbl_message", type=STRING, variable=1, multiline=2}
+		local n = 2;
+		for( local l = 0;l < n;l ++){
+			a .. { pid="text"..l, lbl="$T.lbl_choice "..l, type=STRING, variable=1 };
+		}
+		return a;
+	}
+
+	defval = {
+		usevar = false
+		msg = "CONFIRM MESSAGE"
+		text0 = "$T.yes"
+		text1 = "$T.no"
+	}
+
+	uifunc = @( prms){
+		local oldc = gpui.backupCursor();
+		playSound( "SE005");
+		local list = [];
+		for( local l = 0;l < 2;l ++){
+			local s = prms["text"..l] || defval["text"..l];
+			if( s){
+				local lbl = s.contains( "[") ? RichText( s) : s;
+				list .. { lbl:lbl, _name="item"..l, idx=l};
+			}else
+				break;
+		}
+		local view = RPGMain.showView({
+			...defval,
+			uipath = "dialog_confirm.ui"
+			layer = "message"
+			action = "show"
+			modal = true,
+			...prms,
+			binds = {
+				msg = RichText( prms.msg)
+				LIST = list
+			},
+			focus = "item0"
+		});
+		//	リスト選択
+		local selfunc = prms["selfunc"];
+		local sel = RPGMain.uiLoop( {
+			"action" : @( e){
+				if( selfunc && selfunc( e)){
+					//	
+				}else{
+					playSound( "SE001");
+					sleep( 100);
+					return e.item;
+				}
+			}
+			"back" : @( e){
+				if( selfunc && selfunc( e)){
+				}else{
+					playSound( "SE004");
+					sleep( 100);
+					return "none";
+				}
+			}
+		});
+		view.actionAndDie( "hide");
+		view.waitAction();
+		gpui.restoreCursor( oldc);
+		rpgvar.RESULT = sel["idx"]==0;	//	0=yes
+		return rpgvar.RESULT;
+	}
+};
+
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	キャラ選択UIを表示。選択時にそのままprmsで渡したfunctionを実行することもできる。
+//	RESULT変数に選択したキャラのデータIDが入る。
+
+RPGSystem.ui ..
+{
+	key = "dialog_selchara"
+	lbl = "$T.ui_dialog_selchara"
+	type = "dialog"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	icon = "\ue8ef"
+	
+	props = @( cmd){
+		local a = [];
+		return a;
+	}
+
+	defval = {
+		msg = "SELECT A CHARA"
+		members = ["C000"]
+	}
+	
+	uifunc = @( prms){
+		local oldc = gpui.backupCursor();
+		local view = RPGMain.showView({
+			uipath = "dialog_selchara.ui"
+			name = "dialog_selchara"
+			layer = "message"
+			modal = true
+			binds = {
+				titlelbl = prms["titlelbl"]
+				memberlist = prms.members.map( ::bindMemberList),	//	MainMenuUI
+			},
+			focus = prms.members[0]["dataid"] || prms.members[0],	//	RPGPlayer|string
+			action = "show"
+		});
+		if( prms["selall"]){
+			foreach( v in prms.members) v && v.selected = true;
+		}
+		//	リスト選択
+		local sel = RPGMain.uiLoop( {
+			"action" : @( e){
+				::playSound( "SE001");
+				return e.item;
+			},
+			"back" : @( e){
+				::playSound( "SE004");
+				return "none";
+			},
+			...prms["uioverride"],
+		});
+		view.actionAndDie( "hide");
+		view.waitAction();
+		gpui.restoreCursor( oldc);
+		rpgvar.RESULT = sel=="none" ? null : sel.dataid;
+		if( prms["selall"]){
+			foreach( v in prms.members) v && v.selected = false;
+		}
+		return rpgvar.RESULT;
+	}
+};
+
+////////////////////////////////////////////////////////////////////////////////////
+//	アイテム選択UIを表示。選択時にそのままprmsで渡したfunctionを実行することもできる。
+//	アイテム、武器、防具、キーアイテムのどれかを指定する。
+//	※アイテムメニュー(MainMenuUI.sk)とは違い、イベント等でアイテムを渡したりする時に使う。
+//	
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	アイテム購入又は売却UIを表示。1,4,10個の購入が可能。
+//	アイテムはスタック数分、武器防具は8個まで購入可能。
+//	※売却時にも、スタックアイテム以外はこのダイアログで売ってはいけない。
+
+RPGSystem.ui ..
+{
+	key = "dialog_buyitem"
+	lbl = "$T.ui_dialog_buyitem"
+	type = "dialog"			//	mainmanu, submenu, choose, dialog, message, info, debug, store, misc, 
+	icon = "\ue8ef"
+	
+	props = [
+		{ pid="itemid", lbl="$T.lbl_item", type=DATAID, datatype=["item","weapon","armor"], variable=1 },
+		{ pid="sell", lbl="$T.btn_sell", type=BOOL },
+		{ pid="price", lbl="$T.lbl_price", type=SCALAR, rate=(0,1000000), variable=1 },
+	]
+	
+	defval = {
+		itemid = "I000", sell=false, price=0
+	}
+	
+	uifunc = @( prms){
+		local itemid = prms.itemid, idata = rpgdata[prms.itemid];
+		local stacknum = idata["stacknum"] || 8, pr1 = int( prms["price"] || idata.price);
+		local oldc = gpui.backupCursor();
+		local ret = false;
+		local sell = prms["sell"];
+		local cando = sell ? @( n){	//	所持数チェック
+			return rpgstat.countItems( itemid) >= n;
+		} : @( n){	//	スタック数、所持金のチェック
+			return rpgstat.countItems( itemid)+n <= stacknum;
+		};
+		local view = RPGMain.showView({
+			uipath = "dialog_buyitem.ui"
+			layer = "message"
+			modal = true
+			binds = {
+				msg = lang( T[sell?"sellitem":"buyitem"]) % (idata.icon .. idata.name);
+				"x1.lbl" = @() cando( 1) ? "×1" : #rtf( "[G]×1"),
+				"x4.lbl" = @() cando( 4) ? "×4" : #rtf( "[G]×4"),
+				"x10.lbl" = @() cando( 10) ? "×10" : #rtf( "[G]×10"),
+				price = @(){
+					local tv = ::gpui.gpuitarget["view"]["name"];
+					local pr = pr1 * int( tv?.substring( 1) || 1);
+					return "\uf25f" .. commanum( pr);
+				}
+			},
+			focus = "x1"
+			action = "show"
+		});
+	SELECT:
+		//	リスト選択
+		local sel = RPGMain.uiLoop( {
+			"action" : @( e){
+				return e.src.name;
+			}
+			"back" : @( e){
+				::playSound( "SE004");
+				return "none";
+			}
+		});
+		if( sel!="none"){
+			local n = int( sel.substring( 1));
+			if( cando( n)){
+				::playSound( "SE003");
+				if( sell){
+					rpgstat.reduceItemID( itemid, n);
+					::rpgstat.money += pr1 * n;
+				}else{
+					rpgstat.addItemID( itemid, n);
+					::rpgstat.money -= pr1 * n;
+				}
+				ret = true;
+			}else{
+				::playSound( "SE002");
+			}
+			goto SELECT;
+		}
+		view.actionAndDie( "hide");
+		view.waitAction();
+		gpui.restoreCursor( oldc);
+		rpgvar.RESULT = ret;
+		return rpgvar.RESULT;
+	}
+};
+
+
+

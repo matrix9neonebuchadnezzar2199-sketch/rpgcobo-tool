@@ -1,0 +1,215 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+//	
+//	
+function getRenderSettingMenuList( rset=true){
+	::RenderSettings.checkLoadData();
+	local a = [];
+	local icons = #( ("\ue430", 0xffff00ff), ("\ue2bd", 0x999999ff));
+	foreach( v in ::RenderSettings.data){
+		local ispbr = v.renderpass >= 1;
+		a .. { lbl=v.name, id=v.id, icon=icons[ispbr?0:1], data=v }
+	}
+	if( rset){
+		a .. "-";
+		a .. { lbl="$T.menu_view_rendersetting", icon=FileIcons.conf, data="_EDIT_"}
+	}
+	return a;
+}
+
+::currentrsetid <- null;
+
+//	他のエディター等でレンダープロファイルを選択したときに呼び出すことで、RenderSettingDialog上で選択されているrendersetも
+//	同期される。idで指定する。
+//	
+function selectCurrentRenderSettingID( rsetid){
+	::currentrsetid = rsetid;
+	// ::rootview.broadcastEvent( {cmd="renderset_selected", rsetid=rsetid});
+}
+
+//	
+//	
+class CanvasBehavior
+{
+	//	view
+	view = null;		//	SK3DView : 
+	head = null;		//	SKView
+	scn = null;			//	SK3DScene : 
+	b3world = null;		//	b3World : scn.b3world
+	envmenu = null;		//	MenuBehavior : 
+
+	//	camerawork
+	camwork = null;		//	ToolCamerawork
+	
+	//	sk3d
+	gridsk = null;		//	SK3DObject : 
+
+	//	tool function
+	toolfunc = null;	//	function : 
+	
+	envlist = null;
+	selenv = null;
+	colorbgpass = null;	//	view.renderer.bgpass
+	skyboxbgpass = null;
+	
+	constructor( v, h){
+		view = v;
+		head = h;
+		scn = view.scn;
+		b3world = scn.getB3World();
+		if( h) makeEnvMenu();
+		camwork = ToolCamerawork( view);
+		
+		//	bgpass
+		colorbgpass = view.renderer.bgpass;
+		skyboxbgpass = SK3DRenderer.PassRegistory.SkyboxBackgroundPass();
+
+		//////////////////////// sk3d
+		//	grid
+		local gridpm = ToolMesh.createGridMesh( 0.5, 20);
+		gridsk = SK3DObject( gridpm);
+		gridsk.name = "gridobj";
+		gridsk.setLayer( 1);
+		scn.addObject( gridsk);
+
+		
+		///////////////////////// event listeners
+		view.addUpdateFunc( updateFunc.bindenv( this));
+		view.addEventListener( MOUSE_EVENT, procevent);
+		view.addEventListener( KEY_EVENT, procevent);
+		view.addEventListener( ACTION_EVENT, procevent);	//	umm??
+		view.addEventListener( FOCUS_EVENT, procevent);
+
+		head?.addEventListener( ACTION_EVENT, actionevent);
+		view.addEventListener( BROADCAST_EVENT, broadevent);
+
+		camwork.updateCamera( 1);
+	}
+	
+	function makeEnvMenu(){
+		if( !envmenu){
+			envmenu = MenuBehavior( head.findChild( "envmenu"), null, false);	//	no sync
+		}
+		envlist = getRenderSettingMenuList();
+		envmenu.setMenu( envlist);
+		envmenu.selectItem( getEnvItem( view.renderer.env.id));
+	}
+
+	//	毎フレーム呼ばれる
+	function updateFunc( dt){
+		// view.updateScene( dt);		//	なんでこれ呼んでたんだろ・・・？
+		camwork.updateCamera( dt);
+		return true;
+	}
+
+	function procevent( e){
+		if( e.id == MOUSE_PRESSED){	//	プレスのタイミングでフォーカス取得。カメラワーク向けの操作も含む。リリースだとこれが他のフォーカスを持って行ってしまう場合あり
+			view.requestFocus( e);
+		}
+		e.computeLocal( view.getInvMatrix());
+		//	まずはカメラワークに処理させる
+		camwork.uievent( e); if( e.consumed){ view.repaint(); return; }
+		//
+		if( toolfunc){
+			toolfunc = toolfunc( e);
+		}else{
+			if( !e.consumed) defevent( e);
+		}
+	}
+	
+	//	override!
+	function defevent( e){
+		if( e.id == MOUSE_RELEASED){
+			if( e.isMouseDown( BUTTON2_MASK) && !(e.modifiers & (SHIFT_MASK|ALT_MASK|CTRL_MASK)) && e.isClicked()){
+				showCanvasContextMenu( e);
+			}
+		}
+	}
+
+	function showCanvasContextMenu( e){
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "envmenu":
+			local d = e.actioncmd;
+			if( d["data"] == "_EDIT_"){
+				skstudio.execMenu( "menu_view_rendersetting");	//	RenderSettingDialogの表示メニュー
+			}else
+			if( d){
+				selectEnvironment( d);
+			}
+			break;
+		case "skychk":
+			view.renderer.bgpass = e.src.isSelected() ? skyboxbgpass : colorbgpass;
+			view.repaint();
+			break;
+		}
+	}
+
+	function getEnvItem( rsetid){
+		foreach( v in envlist){
+			if( v["id"] == rsetid) return v;
+		}
+	}
+
+	function setRenderSettingID( rsetid){
+		local v = getEnvItem( rsetid);
+		if( !v){
+		}
+		envmenu?.selectItem( v);
+		view.renderer.setEnvironment( ::RenderSettings.getEnvironment( rsetid));
+	}
+
+	function selectEnvironment( d){
+		envmenu.selectItem( d);
+		local data = fget( d, "data");
+		view.renderer.setEnvironment( ::RenderSettings.getEnvironment( data.id));
+		::selectCurrentRenderSettingID( data.id);
+	}
+
+	//	受け取るブロードキャストコマンド
+	//	"renderset_changed": レンダープロファイルの内容更新
+	//	"editor_active": エディターがアクティブ状態になった。最新のプロファイルでレンダラーを作り直す
+	//	
+	function broadevent( e){
+		local bc = e["actioncmd"];
+		switch( bc["cmd"]){
+		case "renderset_changed":
+			local rset = bc.rset;
+			if( view.renderer.env.id == rset.id){
+				local env = SK3DEnvironment( rset);
+				view.renderer.setEnvironment( env);
+			}
+			break;
+		case "renderset_listchanged":
+			local rsetid = view.renderer.env.id;
+			if( envmenu) makeEnvMenu();
+			setRenderSettingID( rsetid);
+			break;
+		case "editor_active":
+			local rsetid = view.renderer.env.id;
+			if( envmenu) makeEnvMenu();
+			setRenderSettingID( rsetid);
+			//	
+			selectCurrentRenderSettingID( rsetid);
+			break;
+		}
+	}
+
+	///////////////////////////////////////////////////////////////////
+	//	選択用
+
+	function getObjectAt( lx, ly){
+		local b3res = view.rayTest( lx, ly), v = null;
+		foreach( br in b3res){
+			if( v = br.bodyb["ref"]) return v;
+		}
+		return null;
+	}
+	
+	function getRay( lx, ly){
+		return view.getRay( lx, ly);
+	}
+}

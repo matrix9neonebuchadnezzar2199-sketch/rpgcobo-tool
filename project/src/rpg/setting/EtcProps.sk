@@ -1,0 +1,277 @@
+//***LicenseHere
+
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	その他のプロパティ定義。
+//	コンディション、マップ、スキル、アイテム、武器、防具、クエスト、等
+//	
+
+local memoprop = ::RPGProperties.memoprop;
+
+////////////////////////////////////////////////////////////////////////////////
+//	コンディション
+
+local condprops = RPGSystem.condprops;
+
+condprops .. {
+	pid = "condtype",
+	lbl = "$T.condtype"
+	type = LIST,
+	list = [
+		{ lbl:"$T.condtype0", val=0 },
+		{ lbl:"$T.condtype1", val=1 },
+	],
+	defval = 0,
+};
+
+condprops .. {
+	pid = "resistg",
+	lbl = "$T.type_resistg"
+	type = LIST,
+	list = @() typelist( "resistg"),
+	defval = 0,
+};
+
+condprops .. {
+	pid = "deadtype",
+	lbl = "$T.deadtype"
+	type = LIST,
+	list = [
+		{ lbl:"$T.deadtype0", val=0 },
+		{ lbl:"$T.deadtype1", val=1 },
+		{ lbl:"$T.deadtype2", val=2 },
+	]
+	defval = 0
+};
+
+condprops .. {
+	pid = "uncommandable"
+	lbl = "$T.lbl_uncommandable"
+	type = BOOL,
+	defval = false
+};
+
+condprops .. {
+	pid = "MAXLV"
+	lbl = "$T.MAXLV"
+	type = LIST,
+	list = [
+		{ lbl:"$T.lbl_none", val=0 },
+		{ lbl:"1", val=1 },
+		{ lbl:"2", val=2 },
+		{ lbl:"3", val=3 },
+		{ lbl:"4", val=4 },
+	]
+	defval = 0
+};
+
+condprops .. {
+	pid = "revcondid"
+	lbl = "$T.lbl_revcond"
+	type = DATAID,
+	nullable = true
+	datatype = ["cond"]
+	defval = null
+	hide = @( pl) pl.getParam( "MAXLV")==0
+};
+
+condprops .. {
+	pid = "REM"
+	type = HEADER,
+	lbl = "解除条件"
+}
+
+condprops .. {
+	pid = "xcondbits"
+	lbl = "$T.lbl_xcondbits"
+	type = CHECKBITS,
+	list = @( pl){
+		local ri = pl.ref;
+		return datalist( "cond").filter( @( v, i) i!=ri);
+	},
+	defval = 0,
+};
+
+condprops .. {
+	pid = "remcondbits"
+	lbl = "$T.lbl_remcondbits"
+	type = CHECKBITS,
+	list = @( pl){
+		local ri = pl.ref;
+		return datalist( "cond").filter( @( v, i) i!=ri);
+	},
+	defval = 0,
+};
+
+condprops .. {
+	pid = "rem_die",
+	lbl = "$T.lbl_rem_die"
+	type = BOOL,
+	defval = true,
+};
+
+condprops .. {
+	pid = "rem_battle"
+	lbl = "$T.lbl_rem_battle"
+	type = BOOL,
+	defval = true,
+};
+
+condprops .. {
+	pid = "rem_turn"
+	lbl = "$T.lbl_rem_turn"
+	type = VEC2,
+	range = (0,100)
+	defval = [1,3]
+	ui = "r"
+};
+
+condprops .. {
+	pid = "rem_walk"
+	lbl = "$T.lbl_rem_walk"
+	type = VEC2,
+	range = (-100,100)
+	defval = [0,0]
+	ui = "r"
+};
+
+condprops .. {
+	pid = "ACT"
+	type = HEADER,
+	lbl = "演出"
+}
+
+/////////
+
+condprops .. {
+	pid = "ani",
+	lbl = "$T.lbl_anime"
+	type = ANIME_POPUP,
+	nullable = true,
+	defval = null
+};
+
+condprops .. {
+	pid = "efx_start",
+	lbl = "$T.lbl_efx_start"
+	type = RESID,
+	restype = ["efx"],
+	defval = null,
+	nullable = true
+};
+
+condprops .. {
+	pid = "efx_cont",
+	lbl = "$T.lbl_efx_cont"
+	type = RESID,
+	restype = ["efx"],
+	defval = null,
+	nullable = true
+};
+
+condprops .. {
+	pid = "snd_cont",
+	lbl = "$T.lbl_sound"
+	type = RESID,
+	restype = ["snd"],
+	defval = null,
+	nullable = true
+};
+
+condprops .. {
+	pid = "showpop",
+	lbl = "$T.lbl_showpop"
+	type = BOOL,
+	defval = true,
+};
+
+condprops .. {
+	pid = "showstat",
+	lbl = "$T.lbl_showstat"
+	type = BOOL,
+	defval = true,
+};
+
+////////////////////////////////////////////////////////////////////////////////
+//	ジョブ
+
+local jobprops = RPGSystem.jobprops;
+
+jobprops .. {
+	pid = "MAXLV",
+	lbl = "$T.MAXLV"
+	type = SCALAR,
+	range = ( 1, 99),
+	defval = 10,
+};
+
+jobprops .. {
+	pid = "expcurv"
+	lbl = "$T.expcurv"		//	ツール上での表示名
+	type = EXPCURVE
+	defval = (10,20)
+};
+
+////////////////////////////////////////////////////////////////////////////////
+//	武器
+
+local weaponprops = RPGSystem.weaponprops;
+
+weaponprops .. {
+	pid = "PATK"
+	lbl = "$T.PATK"
+
+	type = SCALAR
+	range = (0,9999)
+	defval = 100
+};
+
+weaponprops .. {
+	pid = "MATK"
+	lbl = "$T.MATK"
+	
+	type = SCALAR
+	range = (0,9999)
+	defval = 100
+};
+
+weaponprops .. {
+	pid = "skillid"
+	lbl = "基本スキル"
+	
+	type = DATAID
+	datatype = ["skill"],
+	filter = @( v, i){ return v.eqtypebits & (1<<skstudio.editor.data.eqtype); },
+
+	defval = "S000"
+};
+
+weaponprops .. memoprop
+
+////////////////////////////////////////////////////////////////////////////////
+//	防具
+
+local armorprops = RPGSystem.armorprops;
+
+armorprops .. {
+	pid = "PDEF"
+	lbl = "$T.PDEF"
+
+	type = SCALAR
+	range = (0,9999)
+	defval = 100
+};
+
+armorprops .. {
+	pid = "MDEF"
+	lbl = "$T.MDEF"
+	
+	type = SCALAR
+	range = (0,9999)
+	defval = 100
+};
+
+armorprops .. memoprop

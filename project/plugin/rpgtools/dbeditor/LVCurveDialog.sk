@@ -1,0 +1,417 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+class LVCurveDialog extends UndoableDialog
+{
+	op = null;
+	pid = null;					//	"HP","ATK",...
+	lvcurve = null;				//	lvcurve[pid]   ... [0]は消さないと
+	lvtype = 0;					//	自動生成時に参照。特に大事ではない
+	
+	vallist = null;				//	ListBehavior
+	guide = null;				//	LVCurveGuide
+	tool = null;				//	LVCurveTools
+
+	toolbtns = null;
+	toolidx = 0;
+	
+	zoom = 100;					//	val * zoom = x
+	val0 = 0.0;					//	x=0の時のval
+
+	mdrag = false;
+	mx = 0; my = 0;
+	mval0 = 0;
+
+	static function run( pid, lvcurve, lvtype){
+		local dlg = this( srcdir.."/ui/lvcurvedialog.ui", pid, lvcurve, lvtype);
+		dlg.show();
+		// if( dlg.ret){
+			local a = dlg.lvcurve.map( @( v) v.val);
+			a[0] <- lvcurve[0];
+			return a;
+		// }
+	}
+
+	constructor( v, p, c, t){
+		super( v);
+		pid = p;
+		c = clone c; delete c[0];
+		lvcurve = c.map( @( v, i)({ lv=i+1, val=v}));
+		lvtype = t;
+		vallist = ListBehavior( view.findChild( "vallist"));
+		vallist.multisel = true;
+		vallist.setviewfunc = @( la, v, i){
+			v.findChild( "lv").setValue( "%02d" % i.lv);
+			v.findChild( "val").setValue( i.val);
+		};
+		vallist.setListItems( lvcurve);
+		vallist.listview.content.addEventListener( MOUSE_EVENT, winevent);
+		vallist.setSelectable( false);
+		updateBarColors();
+		//
+		local ga = view.findChild( "guidearea");
+		guide = LVCurveGuide( this);
+		guide.setRect( 0, 0, ga.bnd.w, ga.bnd.h);
+		(guide.viewdata = ::SKViewEntityData()).staticparams = [( SKViewPropertyID.SIZE_STATIC, (ga.bnd.w, ga.bnd.h))];
+		ga.addChild( guide);
+		//
+		view.setValue( "title", "$T.lbl_lvcurve : $T."..pid);
+
+		toolbtns = [];
+		for( local l = 0;l < 3;l ++) toolbtns .. view.findChild( "tool"..l);
+		toolbtns[0].setSelected( true);
+
+		tool = LVCurveTools( this);
+
+		//	tipssss
+		local self = this;
+		vallist.listview.tips = @(){
+			local mo = ::rootview.mouses[0];
+			local p = (#Vector3D())( mo.mousex, mo. mousey, 0).transform( self.guide.getInvMatrix());
+			local v = self.getVal( p.x)|0;
+			return v>=0 ? v : null;
+		}
+	}
+
+	function updateBarColors(){
+		local lvc = lvcurve, val = 0;
+		foreach( i, v in vallist.items){
+			local bar = vallist.listview.rows[i].findChild( "bar");
+			if( val > v.val){
+				bar.anime( 10);
+			}else{
+				val = v.val;
+				bar.anime( 0);
+			}
+		}
+	}
+
+	function shown(){
+		zoomRange( 0, lvcurve.last().val);
+		// updateValBars();
+	}
+
+	function getX( v){
+		return (v-val0)*0.01 * zoom;
+	}
+
+	function getVal( x){
+		return (x*100.0/zoom) + val0;
+	}
+
+	function getLVVal( lv){
+		return lvcurve.find( @( v) v.lv==lv).val;
+	}
+
+	function setLVVal( lv, val){
+		return lvcurve.find( @( v) v.lv==lv).val = val;
+	}
+
+	function getLV( y){
+		local p = Vector3D( 0.0, y).transform( guide.mat).transform( vallist.listview.content.getInvMatrix());
+		return vallist.getItemAt( 100, p.y).lv;
+	}
+
+	function updateLVItem( lv){
+		vallist.refreshItems();	//	todoooo
+		updateValBars();
+	}
+
+	function zoomfor( c){
+		local z = zoom;
+		if( z+c > 500){ z = Math.min( z+c*50, 800); }
+		else if( z+c > 300){ z = Math.min( z+c*20, 800); }
+		else if( z+c > 100){ z = Math.min( z+c*10, 800); }
+		else{ z = Math.max( z+c*5, 10); }
+		// zoomto( gx, gy, z);
+		zoom = z;
+		guide.setZoom( z);
+		updateValBars();
+	}
+
+	//	
+	function zoomRange( mi, ma){
+		local z = (guide.bnd.w / (ma-mi) * 100)|0;
+		zoom = z;
+		val0 = mi;
+		guide.setZoom( z);
+		updateValBars();
+	}
+	
+	//	
+	function updateValBars(){
+		local x0 = getX( 0), v0 = getVal( 0);
+		local pval = -1;
+		foreach( i, r in vallist.listview.rows){
+			local b = r.findChild( "barimg"); b.imagealign = -1;
+			local val = lvcurve[i].val;
+			local x1 = getX( val);
+			if( x1 <= 0.0){
+				b.visible = false;
+			}else{
+				b.visible = true;
+				local w = Math.min( b.bnd.w, x1);
+				b.sp.bnd.set( 0.0, 0.0, w, b.sp.bnd.h);
+			}
+			pval = val;
+		}
+		vallist.listview.content.repaint();
+	}
+
+	function winevent( e){
+		switch( e.id){
+		case MOUSE_WHEEL_MOVED:
+			if( e.isCommandDown()){
+				e.consume();
+				zoomfor( e.count);
+			}
+			break;
+		case MOUSE_PINCH:
+			zoomfor( e.dx/100);	//	pinchは100が1unit
+			break;
+		case MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON3_MASK)){
+				e.computeLocal( vallist.listview.window.getInvMatrix());
+				mdrag = true;
+				// val0 = 0;
+				mx = e.lx; my = e.ly;
+				e.consume();
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( e.isMouseDown( BUTTON3_MASK)){
+				e.computeLocal( vallist.listview.window.getInvMatrix());
+				local dx = e.lx - mx, dy = e.ly - my;
+				val0 = Math.clamp( val0-dx*100.0/zoom, -20, 10000);
+				updateValBars();
+				vallist.listview.gpui.moveFor( 0, dy, 0, false);
+				mx = e.lx; my = e.ly;
+				e.consume();
+			}
+			break;
+		case MOUSE_RELEASED:
+			mdrag = false;
+			updateBarColors();
+			break;
+		}
+	}
+	
+	function execMenu( m){
+		if( tool.execMenu( m)) return true;
+		return super.execMenu( m);
+	}
+	
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "tool0": case "tool1": case "tool2":
+			toolidx = e.src.name[4]-'0';
+			foreach( v in toolbtns) v.setSelected( v==e.src);
+			vallist.selectable = (toolidx==2);
+			vallist.deselectAll();
+			break;
+		}
+		super.actionevent( e);
+	}
+}
+
+class LVCurveDialog.LVCurveTools
+{
+	dlg = null;
+
+	toolfunc = null;		//	function( UITool, Event)
+
+	constructor( d){
+		dlg = d;
+		d.vallist.listview.content.addEventListener( MOUSE_EVENT, procevent);
+	}
+
+	function procevent( e){
+		e.computeLocal( dlg.guide.getInvMatrix());
+		if( toolfunc){
+			toolfunc = toolfunc( e);
+		}
+		if( !e.consumed) defevent( e);
+	}
+	
+	function defevent( e){
+		switch( e.id){
+		case MOUSE_PRESSED:
+			if( e.lx>=0.0 && (e.modifiers & BUTTON1_MASK)){	//	左クリックのみ判定
+				if( dlg.toolidx == 0){
+					toolfunc = curveDrawFunc( this, e);
+				}else{
+					toolfunc = lineDrawFunc( this, e);
+				}
+			}
+			break;
+		}
+		return false;
+	}
+
+	function execMenu( m){
+		return false;
+	}
+
+	function curveDrawFunc( tool, e){
+		local self = this, d = dlg;
+		local lv = (d.vallist.getMouseItem().lv,);
+		local trk = skGetTime();
+		
+		local setLVVal( lv, val){
+			local lvvalmap = #{}, oldvalmap = #{}, d = d;
+			if( !(lv in oldvalmap)) oldvalmap[lv] <- d.getLVVal( lv);
+			lvvalmap[lv] <- val;
+			local redo = [@(){
+				foreach( lv, val in lvvalmap) d.setLVVal( lv, val);
+				d.updateLVItem( lv);
+				d.updateBarColors();
+			}];
+			local undo = [@(){
+				foreach( lv, _ in lvvalmap) d.setLVVal( lv, oldvalmap[lv]);
+				d.updateLVItem( lv);
+				d.updateBarColors();
+			}];
+			d.submitOp( redo, undo, trk);
+		}
+
+		setLVVal( lv[0], d.getVal( e.lx)|0);
+		
+		local fn( e){
+			local m = e.getMouseState();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				e.consume();
+				local _lv = d.vallist.getMouseItem()["lv"];
+				if( _lv){
+					setLVVal( _lv, d.getVal( e.lx)|0);
+				}
+				break;
+			case MOUSE_CANCELLED:
+			case MOUSE_RELEASED:
+				if( e.modifiers & BUTTON1_MASK){
+					e.consume();
+					return null;
+				}
+				break;
+			}
+			return fn;
+		}
+		return fn;
+	}
+
+	function lineDrawFunc( tool, e){
+		local self = this, d = dlg;
+		local trk = skGetTime();
+		local sv = Vector3D( e.lx, e.ly, 0), ev = clone sv;
+		
+		local oldlv = deepclone( d.vallist.items);
+		local setLVVal( sv, ev){
+			local lvvalmap = #{}, oldvalmap = #{}, d = d;
+			local v0 = d.getVal( sv.x)|0, i0 = d.getLV( sv.y);
+			local v1 = d.getVal( ev.x)|0, i1 = d.getLV( ev.y);
+			if( i0 > i1){
+				local vt = v0, it = i0; i0 = i1; v0 = v1; v1 = vt; i1 = it;
+			}
+			local dv = (v1-v0)*1.0 / Math.max( i1-i0, 1);
+			local newlv = oldlv.map( @( v){
+				if( v.lv>=i0 && v.lv<=i1) return { lv=v.lv, val=Math.iround( v0+dv*(v.lv-i0)), };
+				return clone v;
+			});
+			local redo = [@(){
+				foreach( v in newlv) d.setLVVal( v.lv, v.val);
+				d.updateLVItem( 1);
+				d.updateBarColors();
+			}];
+			local oldlv = oldlv;
+			local undo = [@(){
+				foreach( v in oldlv) d.setLVVal( v.lv, v.val);
+				d.updateLVItem( 1);
+				d.updateBarColors();
+			}];
+			d.submitOp( redo, undo, trk);
+		}
+		
+		local fn( e){
+			local m = e.getMouseState();
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				e.consume();
+				ev.set( e.lx, e.ly, 0.0);
+				setLVVal( sv, ev);
+				break;
+			case MOUSE_CANCELLED:
+			case MOUSE_RELEASED:
+				if( e.modifiers & BUTTON1_MASK){
+					e.consume();
+					return null;
+				}
+				break;
+			}
+			return fn;
+		}
+		return fn;
+	}
+}
+
+//	縦線と上下のガイドとツールのガイド表示。
+//	
+class LVCurveDialog.LVCurveGuide extends SKView
+{
+	static zoomgaps = [
+		(10, 1000), (20, 500), (50, 200),
+		(200, 100), (500, 50), (1000, 20), (10000000, 10),
+	];
+
+	stretchalign = 15;
+
+	dlg = null;
+	vgap = 100;		//	100毎の
+
+	bdr = null;		//	Sprite
+	tb = null;		//	TextBox
+	
+	line = null;	//	Vector3D[2] : ラインツール時の
+
+	constructor( d){
+		dlg = d;
+		bdr = ::getSprite( "/skstudio/img/ui/_white.png");
+		bdr.color = 0x11111180;
+		tb = TextBox( FontAttribute( Fonts.get( "script"), 14, 0xbfffffff, 0));
+		tb.align = 4;
+		tb.width = 40;
+		tb.height = 20;
+	}
+
+	//	ズームを設定してギャップを調整する
+	function setZoom( z){
+		repaint();
+		foreach( g in zoomgaps){
+			if( z <= g[0]){
+				return vgap = g[1];
+			}
+		}
+	}
+
+	function render(){
+		local v0 = int( dlg.getVal( 0)) / vgap * vgap, x = 0;
+		//	グリッド線描画
+		for( local v = v0; (x=dlg.getX( v)) < bnd.w ; v+=vgap){
+			skDrawSprite( bdr, x-1, 0, 2, bnd.h);
+		}
+		//	Textboxを上下に描画。ちょいとオーバーヘッド大きいかな
+		for( local v = v0; (x=dlg.getX( v)) < bnd.w ; v+=vgap){
+			tb.setText( v);
+			tb.x = x-20;
+			tb.y = -tb.bnd.h-4;
+			skDrawTextBox( tb);
+			tb.y = bnd.h + 4;
+			skDrawTextBox( tb);
+		}
+	}
+}

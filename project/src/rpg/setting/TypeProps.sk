@@ -1,0 +1,147 @@
+//***LicenseHere
+
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	全タイプ設定のプロパティ定義
+//	一部のタイプには名前、アイコン以外のプロパティが存在する。
+
+//	※※※ RPGProperties.nameiconpropとは形式が違う。。。
+// local nameiconprop = {
+// 	pid = "nameicon"
+// 	lbl = ""
+// 	type = NAME_ICON
+
+// 	defval = ["",""]
+// }
+
+local nameiconprop = RPGProperties.nameiconprop;
+
+local nameprop = {
+	pid = "name"
+	lbl = ""
+	type = STRING
+	defval = ""
+}
+
+local typeprops = RPGSystem.typeprops;
+
+local eqctglist = [
+	{ lbl="武器", val=0 }
+	{ lbl="盾", val=1 }
+	{ lbl="防具", val=2 }
+];
+
+//	eqtype : 装備タイプ一覧
+//	
+typeprops .. {
+	key = "eqtype",
+	lbl = "$T.type_eqtype",
+
+	props = [
+		nameiconprop,
+		{
+			pid = "eqctg"
+			lbl = "",
+			type = LIST
+			list = eqctglist
+			defval = 0
+		}
+	],
+};
+
+//	eqslot : 装備スロット一覧
+//	※eqtypeが更新されたときにはbindし直さないといけない！
+typeprops .. {
+	key = "eqslot",
+	lbl = "$T.type_eqslot",
+	
+	props = [
+		nameiconprop,
+		{
+			pid = "eqtypebits"
+			cnt = "cnt5.ui"
+			lbl = "",
+			type = CHECKBITS
+			list = @() ::conf.type.eqtype
+			// defval = @() (1<<length( ::conf.type.eqtype))-1
+			defval = 0
+		}
+	],
+};
+
+//	elem : 属性タイプ一覧
+//	
+typeprops .. {
+	key = "elem",
+	lbl = "$T.type_elem",
+
+	props = [nameiconprop],
+};
+
+//	resistg : 状態グループタイプ一覧
+//	
+typeprops .. {
+	key = "resistg",
+	lbl = "$T.type_resistg",
+
+	props = [nameiconprop],
+};
+
+//	tribe : 種族一覧
+//	
+typeprops .. {
+	key = "tribe",
+	lbl = "$T.type_tribe",
+
+	props = [nameiconprop],
+};
+
+//	eqflag : 専用装備フラグ
+//	
+typeprops .. {
+	key = "eqflag",
+	lbl = "$T.type_eqflag",
+	
+	props = [nameiconprop],
+};
+
+//	jobslot : ジョブスロット一覧
+typeprops .. {
+	key = "jobslot",
+	lbl = "$T.type_jobslot",
+	
+	props = [
+		nameiconprop,
+		{ pid="lock", lbl="", type=LIST, list=[{lbl="$T.lbl_changeable",icon="\ue898",val=0}, {lbl="$T.lbl_unchangeable",icon="\ue897",val=1}], defval=0},
+	],
+};
+
+//	jobflag : 専用ジョブフラグ
+typeprops .. {
+	key = "jobflag",
+	lbl = "$T.type_jobflag",
+	
+	props = [nameiconprop],
+};
+
+//	dmgform : ダメージ式一覧
+//	
+typeprops .. {
+	key = "dmgform",
+	lbl = "$T.type_dmgform",
+	
+	props = [
+		nameprop,
+		{
+			pid = "formula"
+			cnt = "cnt5.ui"
+			lbl = ""
+			type = SCRIPT
+			multiline = true
+			defval = ""
+		},
+	],
+};

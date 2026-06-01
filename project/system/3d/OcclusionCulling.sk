@@ -1,0 +1,141 @@
+﻿
+class OcclusionCulling
+{
+	function cull( cam, displist){}
+	function query( cam, displist){}
+}
+
+local m_1 = Matrix(), m_2 = Matrix(), v_1 = Vector3D(), v_2 = Vector3D();
+
+//	不透明オブジェクトの描画後のdepth bufferを利用したGPUOcclusionCulling
+//	TODO : デプスを縮小バッファにコピーしクエリのフィルを減らしたほうがいい？
+//	TODO : 2フレーム以上のディレイに要対応？スマホで顕著っぽい。
+//	
+class GPUOcclusionCulling extends OcclusionCulling
+{
+	+rnd = Random( skGetTime());
+	
+	qmap = null;			//	table<queryid,RenderNode> : query map
+	// imap = null;			//	table<RenderNode,_> : invisible map
+	vlist = null;			//	RenderNode[] : 
+	
+	occluderm = null;		//	Material : occluder描画用のマテリアル。
+	occludeem = null;		//	Material : occludee描画用のマテリアル。depthも描かない。
+	
+	skipped = false;
+	cnt = 0;
+	sleeped = 0;
+
+	lastcam = Camera();
+	
+	constructor(){
+		qmap = {};
+		// imap = {};
+		vlist = [];
+		occluderm = #Material(){
+			tec = skFXFindTechnique( "occlusion.def"); depthmask = 1; cullface = 0;
+		};
+		occludeem = #Material(){
+			tec = skFXFindTechnique( "occlusion.def"); depthmask = 0;
+		};
+	}
+	
+	//	displist : camでのfrustumカリング済みのディスプレイリスト。displist自身がフィルターされて変更される。
+	function cull( cam, displist){
+		//	最初にクエリが完了しているかチェック
+		//	完了してなかったら前回削除判定のnodeを消去してskipフラグを立てる。
+		if( !skQueryResultAvailable()){
+			do{
+				++sleeped;
+				skSleep( 1);		//	sleepでループを回しちゃう
+				skSkipFlipScreen();	//	flipに連動してクエリ状態は更新される
+			}while( !skQueryResultAvailable());
+		}
+		skipped = false;
+		local t = skGetTime(), w = 0, qlen = length( qmap), dlen = length( displist);
+		//	clearOccludedFlag以下を↓に置き換える。
+		displist.occlusionCull( qmap);
+		if( !((++cnt)&63)){
+			printf( "q time %d culled %S/%S objs %S/%S(%.1f%%) sleeped %d\n", skGetTime( t), length( qmap), qlen, length( displist), dlen, length( displist)*100.0/dlen, sleeped);
+			sleeped = 0;
+		}
+	}
+	
+	function query( cam, displist){
+		//	skipフラグが立ってる場合は前回のクエリの結果を待っているために次のクエリは出さない
+		if( skipped) return;
+		//	occludeeを検索。
+		// local lastv = vlist; vlist = displist.collectOccludees( []);	//	カリング済みでocclusion対象をvlistに保存。
+		local vlist = displist.collectOccludees( #[]);	//	カリング済みでocclusion対象をvlistに保存。
+		foreach( n in vlist){
+			//	occludee判定。ここでは可視のもののクエリとなる。
+			//	前回非表示だった場合か、ランダムで10%の確率でクエリに追加。
+			//	TODO : カメラの移動量でrnd判定の調整。
+			if( n.visible && n.depth >= 6.0 && rnd.nextf() <= n.occrate){
+				local q = OcclusionQuery();
+				qmap[n] <- q;
+			}
+		}
+		vlist.clear();
+		if( length( qmap)){
+			//	cam + (cam-lastcam)で次フレームのカメラを予測。
+			//	※あまり大きな値になったときはカメラが不連続になっている。その場合はdmatは使わないように
+			local dmat = lastcam.viewmat.mult34( cam.viewmat.invert34( m_1), m_1);
+			local r = dmat.getHPB( v_1), t = dmat.getTranslation( v_2);
+			local instnum = 2, vpmat;
+			if( r.length()<0.01 && t.length()<0.05){	//	※q毎に計算したほうが良いか
+				//
+			}else{
+				vpmat = cam.prjmat.mult44( dmat, m_2).mult44( cam.viewmat, m_2);
+				occludeem.miscmat0 = m_1;
+			}
+			// printf( "R %S %S %S (%S)  T %S %S %S (%S)\n", r.x,r.y,r.z,r.length(),  t.x,t.y,t.z, t.length());
+			//	
+			skSetRenderState( SK_COLORMASK, 0);
+			skBindVertexBuffer( null);
+			foreach( n, q in qmap){
+			//	occlusion queryの発行
+				if( n.occludee && n.visible && n.depth>=6.0 && cam.isInside( n.gbnd)){
+					if( vpmat) m_1.set( vpmat).mult44( n.gmat);
+					skBeginQuery( q);
+					skSetMatrix( SK_WORLD, n.gmat);
+					skDrawIndexBuffer( occludeem, SK_TRIANGLES, n.occludee, 0, n.occludee.length, instnum);
+				}else{
+					removei;	//	TODO これdisplist.occlusionCull()でやれるはず
+				}
+			}
+			skEndQuery();
+			skSetRenderState( SK_COLORMASK, 0xffffffff);
+		}
+		lastcam << cam;
+	}
+}
+
+//	オクルージョンカリングの実処理はしないがクエリを発行しているように振る舞う
+//	
+class DummyOcclusionCulling extends OcclusionCulling
+{
+	+rnd = Random( skGetTime());
+
+	qmap = null;			//	table<queryid,RenderNode> : query map
+
+	constructor(){
+		qmap = {};
+	}
+	
+	function cull( cam, displist){
+		Table.clear( qmap);
+	}
+	
+	function query( cam, displist){
+		//	occludeeを検索。
+		local vlist = displist.collectOccludees( #[]);	//	カリング済みでocclusion対象をvlistに保存。
+		foreach( n in vlist){
+			if( n.visible && n.depth >= 6.0 && rnd.nextf() <= n.occrate){
+//			if( n.visible && n.depth >= 6.0 && rnd.nextf(0.5) <= n.occrate){	// cpu culling only では n.occrate は 0.1 一定。変化させた方がいいか？
+				qmap[n] <- 1;
+			}
+		}
+		vlist.clear();
+	}
+}

@@ -1,0 +1,177 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+/////////////////////////////////////////////////////////////////////////////////
+//	
+//	PluginDialog : プラグインリストを管理するダイアログ
+//	プラグイン設定の更新時にはダイアログを出してリロード催促を行う。
+//	
+
+class PluginDialog extends UndoableDialog
+{
+	static PluginData = class {
+		id = null;			//	"rpgtools", "xxx.plugsk"
+		info = null;		//	pluginfo
+		props = null;		//	property list
+		_data = null;		//	prop data
+		
+		function _get( key) _data[key];
+		function _set( key, val) _data[key]=val;
+		function _newslot( key, val, f) _data[key]<-val;
+	}
+
+	DIALOGUIPATH = srcdir.."/ui/plugindialog.ui"
+	
+	op = null;				//	
+	pluglist = null;		//	ListBehavior
+	proplist = null;		//	PropertyListBehavior
+	plugenable = null;		//	menu
+
+	plugs = null;			//	PluginData[]
+	selplug = null;			//	PluginData
+	
+	static function run(){
+		local p = PluginDialog( DIALOGUIPATH);
+		p.show( null);
+	}
+	
+	function init( v){
+		super.init( v);
+		pluglist = ListBehavior( v.findChild( "pluglist"), preferencetypes);
+		pluglist.listview.addEventListener( ITEM_EVENT, listevent);
+		pluglist.setviewfunc = @( la, v, i){	//	i:PluginData
+			v.setValue( "name", i.info.name);
+			v.setValue( "ver", i.info["ver"]||"---");
+			v.findChild( "stat").anime( i._data.enable ? 1:0);
+			v.pickable = false;
+		}
+		proplist = PropertyListBehavior( v.findChild( "proplist"), null, "cntp.ui");
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		plugenable = MenuBehavior( v.findChild( "plugenable"), [{ lbl="$T.lbl_disabled", val=false, }, { lbl="$T.lbl_enabled", val=true, }]);
+		//
+		makePluginList();
+		pluglist.setListItems( plugs);
+		selectPlugin( plugs[0]);
+	}
+	
+	//	プラグイン情報を取得するために/pluginフォルダを全て走査しなおす。
+	function makePluginList(){
+		local plugjson = ::loadconf( "/plugin/plugin.json");
+		::skstudio.fileview.refreshDir( "/plugin");
+		local plugdir = ::getResource( "/plugin");
+		local plugs = this.plugs = [];
+		foreach( r in plugdir.getList()){
+			try{
+				local plug;
+				if( r.isdir){
+					local pr = r.getResource( "plugin.sk");	//	この名前は固定
+					local fn = pr.loadData().compile( pr.path);
+					~(fn,plug={ id=r.name, res=pr });
+				}else{
+					if( !r.name.endsWith( ".plugsk")) continue;	//	プラグインとみなさない
+					local fn = r.loadData().compile( r.path);
+					~(fn,plug={ id=r.name, res=r });
+				}
+				if( plug){
+					if( !plug["pluginfo"] || !plug.pluginfo["name"] || !("order" in plug.pluginfo)) throw Exception( "Invalid pluginfo");
+					local pi = PluginData();
+					pi.id = r.name;
+					pi.info = plug.pluginfo;
+					pi.props = fget( pi.info, "props");
+					pi._data = plugjson[pi.id] || {enable=false};
+					setDefaultProperties( pi.props, pi._data);
+					plugs .. pi;
+				}
+			}catch( ex){
+				printf( "Plugin loading failure... %S\n", r.path);
+				printexception( ex);
+			}
+		}
+	}
+
+	//	
+	function selectPlugin( pi){
+		local props = [{pid="info",lbl="INFO",type=-1302,cnt="cnt5.ui"}];
+		if( length( pi.props)){
+			props .. #{ pid="H", lbl="$T.lbl_properties", type=HEADER};
+			props ... pi.props;
+		}
+		proplist.bindProperties( props);
+		proplist.setParameters( pi);
+		view.setValue( "plugname", pi.info.name);
+		plugenable.selectItem( @( v) v.val==pi.enable);
+		plugenable.view.enabled = !pi.lock;
+		selplug = pi;
+	}
+
+	function refresh(){
+		proplist.setParameters( selplug);
+	}
+
+	//	
+	function isChanged(){
+		return false;
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "plugenable":
+			local data = selplug, oldval = data.enable, val = plugenable.selitem.val;
+			local redo = [@(){ data.enable = val; }];
+			local undo = [@(){ data.enable = oldval; }];
+			submitOp( redo, undo, null);
+			break;
+		}
+		super.actionevent( e);
+	}
+	
+	function listevent( e){
+		if( e.id == ITEM_SELECTED){
+		}
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.selplug;
+			local val = cmd.val;
+			local trk = null;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+		}
+	}
+}
+
+//	プラグイン情報の表示。PropertyListBehaviorで並べるために追加
+//	一枚のデカいSKLabelView。
+class PropertyBehaviors.PluginInfo extends PropertyBehavior
+{
+	static proptype = -1302;
+	static uipath = srcdir .. "/ui/prop_pluginfo.ui"
+	
+	lbl = null;				//	SKLabelView : 
+
+	function init(){
+		lbl = view.findChild( "LABEL");
+	}
+
+	function getParam(){
+		return mapshot;
+	}
+	
+	function setParam( v){
+	}
+	
+	function paramevent( e){
+	}
+}

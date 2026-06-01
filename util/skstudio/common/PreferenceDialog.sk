@@ -1,0 +1,259 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+
+//	※設定は決定ボタンを押したときに全て適用されるようにする。
+//	また、ツールの再起動が必要な項目がある。特に「ツールのセキュリティ」はbat実行が必要で、bat内でyes/noを選択させる？
+
+::preferencetypes <- [
+	{ id="general", lbl="$T.act_setting_general", },
+	// { id="apikey", lbl="APIキー", },	//	プラグインで入れる
+	// { id="debug", lbl="デバッグ", },
+]
+
+::preferenceprops <- [];
+
+::uiscalelist <- [
+	{ lbl="75%", id="uiscale", val=75 }
+	{ lbl="100%", id="uiscale", val=100 }
+	{ lbl="110%", id="uiscale", val=110 }
+	{ lbl="125%", id="uiscale", val=125 }
+	{ lbl="150%", id="uiscale", val=150 }
+	{ lbl="200%", id="uiscale", val=200 }
+];
+
+local iniwindowlist = [
+	{ lbl="$T.iniwindow0", val=0, }
+	{ lbl="$T.iniwindow1", val=1, }
+	{ lbl="$T.iniwindow2", val=2, }
+	{ lbl="$T.iniwindow3", val=3, }
+];
+
+local backuplist = [
+	{ lbl="$T.autobackup0", val=0, }
+	{ lbl="$T.autobackup1", val=6, }
+	{ lbl="$T.autobackup2", val=12, }
+	{ lbl="$T.autobackup3", val=24, }
+	{ lbl="$T.autobackup4", val=72, }
+];
+
+local securelvlist = [
+	{ lbl="$T.securelv0", val="permission_lv0"},
+	{ lbl="$T.securelv1", val="permission_lv1"},
+	{ lbl="$T.securelv2", val="permission_lv2"},
+]
+
+////////////////// general settings
+
+local getws( prop){
+	return ::workspace[prop.pid];
+}
+
+local applyws( prop, val){
+	return ::workspace[prop.pid] <- val;
+}
+
+preferenceprops .. {
+	ctg="general", pid="lang", lbl="$T.lbl_toollang", type=LIST, 
+	list= @() ::sakana.languagelist.map( @( v)({ lbl=v.name, icon=v.icon, val=v.code })),
+	needreload=true,
+	getpref = @() ::workspace["lang"] || ::lang.code,
+}
+
+preferenceprops .. {
+	ctg="general", pid="uiscale", lbl="$T.act_setting_ctxmenu_uiscale", type=LIST, list=uiscalelist, defval=100,
+	applypref = @( prop, val){
+		::rootview.setDisplayResolution( val*0.01);
+		::workspace.uiscale <- val;
+	}
+}
+
+preferenceprops .. {
+	ctg="general", pid="iniwindow", lbl="$T.iniwindow", type=LIST, list=iniwindowlist, defval=1
+}
+
+preferenceprops .. {
+	ctg="general", pid="tabsync", lbl="$T.pref_synctab", type=BOOL, defval = true,
+}
+
+preferenceprops .. {
+	ctg="general", pid="securelv", lbl="$T.securelv", type=LIST, list=securelvlist, 
+	needreload=true,
+	getpref = @() ::sakana.permission
+	applypref = @( prop, val){
+		try{
+			local lv = val[13]-'0', lang = ::lang.code;
+			skChangeSecurityLV( lv, lang);	//	noの場合は単にファイルは更新されない
+		}catch( ex){
+			printexception( ex);
+		}
+	}
+}
+
+preferenceprops .. {
+	ctg="general", pid="autobackup", lbl="$T.autobackup", type=LIST, list=backuplist, defval=24,
+}
+
+preferenceprops .. {
+	ctg="general", pid="backupnum", lbl="$T.lbl_backupnum", type=SCALAR, range=(1,20), defval=8,
+}
+
+preferenceprops .. {
+	ctg="general", pid="canvasrotspd", lbl="$T.lbl_canvasrotspd", type=SCALAR, range=(0,100), defval = 50, ui="bar"
+}
+
+preferenceprops .. {
+	ctg="general", pid="canvaswasdspd", lbl="$T.lbl_canvaswasdspd", type=SCALAR, range=(0,100), defval = 50, ui="bar"
+}
+
+preferenceprops .. {
+	ctg="general", pid="canvasqespd", lbl="$T.lbl_canvasqespd", type=SCALAR, range=(0,100), defval = 50, ui="bar"
+}
+
+preferenceprops .. {
+	ctg="general", pid="renderquality", lbl="$T.lbl_renderquality", type=LIST, defval = 2, list=[
+		{lbl="0:$T.quality0",val=0},
+		{lbl="1:$T.quality1",val=1},
+		{lbl="2:$T.quality2",val=2},
+		{lbl="3:$T.quality3",val=3},
+		{lbl="4:$T.quality4",val=4},
+	]
+}
+
+
+////////////////// apikey settings
+
+// preferenceprops .. {
+// 	ctg="apikey", pid="apikey_googleai", lbl="Google AIのAPIキー", type=STRING, 
+// }
+
+// ////////////////// debug settings
+
+// preferenceprops .. {
+// 	ctg="debug", pid="debuglang", lbl="デバッグの言語", type=LIST, list=@(){
+// 	},
+// }
+
+class PreferenceDialog extends UndoableDialog
+{
+	DIALOGUIPATH = "/skstudio/ui/dialog/prefdialog.ui"
+	
+	op = null;				//	
+	typetabs = null;		//	TabsBehavior
+	proplist = null;		//	PropertyListBehavior
+	props = null;
+	inidata = null;
+	data = null;
+	applyg = null;
+
+	static function run( ctg=null){
+		local p = PreferenceDialog( DIALOGUIPATH, ctg);
+		p.show( null);
+	}
+
+	constructor( v, inictg){
+		super( v);
+		setCategory( inictg);
+		typetabs.selectTab( @( v) v.id==inictg);
+	}
+	
+	function init( v){
+		applyg = v.findChild( "applyg");
+		super.init( v);
+		op = OperationStack();
+		typetabs = TabsBehavior( v.findChild( "typetabs"), [{ lbl="$T.act_setting_all", id=null,}, ...preferencetypes]);
+		typetabs.listview.addEventListener( ACTION_EVENT, typeevent);
+		proplist = PropertyListBehavior( v.findChild( "proplist"), null, "cntp.ui");
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		props = [];
+		data = {};
+		foreach( i, t in preferencetypes){
+			local a = preferenceprops.filter( @( v) v.ctg==t.id);
+			if( length( a)){
+				props .. { pid="H"..t.id, lbl=t.lbl, type=HEADER, ctg=t.id};
+				props ... a;
+				foreach( prop in a){
+					data[prop.pid] <- fget( prop, "getpref") ?? ::workspace[prop.pid] ?? fget( prop, "defval");
+				}
+			}
+		}
+		inidata = deepclone( data);
+	}
+
+	function updateUndoable(){
+		super.updateUndoable();
+		applyg.anime( isChanged() ? 0 : -1);
+	}
+
+	function refresh(){
+		proplist.setParameters( data);
+	}
+
+	function isChanged(){
+		return inidata<>data;
+	}
+
+	function setCategory( ctg){
+		local ctgprops = !ctg ? props : props.filter( @( v) v.ctg==ctg);
+		proplist.bindProperties( ctgprops);
+		refresh();
+	}
+
+	function typeevent( e){
+		if( e.id == ACTION_PERFORMED){
+			setCategory( typetabs.tabitems[e.actioncmd].id);
+		}
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_apply":
+			if( props.find( @( v) v["needreload"] && inidata[v.pid]<>data[v.pid])){
+				if( !Dialogs.confirm( {msg="$T.confirm_setting_reload"})) return;
+				doApply();
+				::skstudio._savews();
+				::skstudio.menuRelaunch( null);
+				return;
+			}else{
+				doApply();
+				::skstudio._savews();
+				close();
+			}
+			break;
+		}
+		super.actionevent( e);
+	}
+	
+	function doApply(){
+		foreach( prop in props){
+			local pid = prop.pid;
+			if( !(inidata[pid]<>data[pid])) continue;
+			if( prop["applypref"]){
+				prop.applypref( prop, data[pid]);
+			}else{
+				::workspace[prop.pid] <- data[pid];
+			}
+		}
+	}
+}
+
+
+

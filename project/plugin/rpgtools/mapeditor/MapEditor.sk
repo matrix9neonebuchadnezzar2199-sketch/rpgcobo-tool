@@ -1,0 +1,540 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+local srcdir = dirname( callee().getSourceName());
+
+//	
+//	
+//	
+//	
+
+class MapEditor extends EditorViewBase
+{
+	static toolids = [
+		"tool_sel", "tool_event", "tool_pen", "tool_carpet", "tool_water", "tool_level", "tool_fence", "tool_plant",
+		"tool_exterior", "tool_interior", "tool_column", "tool_slope", "tool_roof", "tool_tree", "tool_crack", "tool_barrior", "tool_asset"
+	];
+
+	datares = null;			//	Resource : ::conf.maps[mapid]のResource、もしくは::conf._resource.map_asset[assetid]のResource
+	bwres = null;			//	Resource : .bwのresource
+	bw = null;				//	BlockWorld
+	data = null;			//	conf.maps[mapid]のデータ。セーブ時にはconf.map[mapid]に設定して/data/maps.confを書き出す。
+							//	bwがconfとリンクしていない場合はconf関係のデータは書き出されない。。。。
+	mapid = null;			//	bwがマップとリンクしていたら"M000"となる。パスが/data/mapdata/M999.bwのフォーマットの時にリンクとみなす。
+	saveinimap = false;		//	conf.setting.inimapをセーブするべきか。するときはconf.setting丸ごとのセーブになる
+	voxloadseq = 0;			//	
+	
+	//	view
+	canvas = null;			//	MapCanvas
+	mapright = null;		//	SKView : tooloptionsが乗るだけ
+	toollbl = null;			//	SKLabelView : ツール名ラベル
+	tools = null;			//	SKView : ツール一覧パネル。canvasのヘッダ部にもなってる
+	tool = null;			//	MapTool : アクティブなツール。canvas.defeventから呼ばれる
+	placing = null;			//	SKView : ペースト、アセット配置など
+	mapboxsk = null;		//	SK3DObject : マップアセットの場合に表示。
+	
+	mapshottex = null;		//	Texture : refに変化フラグ
+
+	toolmap = null;			//	{id:tool} : 
+	modaledit = null;		//	カスタムイベント編集が入ったり
+
+	static function matches( path){
+		local dbtype = getdbtype( path);
+		if( dbtype=="map") return true;
+		if( path.startsWith( "/.x/map_asset/MA")) return true;
+		return path.endsWith( ".bw");
+	}
+	
+	static function createEditor( path){
+		if( !matches( path)) return null;
+		if( !getResourceContent( path)) return false;
+		local ed = ::loadSKView( srcdir.."/ui/mapeditor.ui", MapEditor);
+		ed.init( path);
+		return ed;
+	}
+
+	//	New File
+	static function newFile( filename, dirpath){
+		local bw = BlockWorld();
+		bw.setSize( 128, 64, 128);
+		bw.fillBlock( IRect3D( 0, 0, 0, 128, 1, 128), 1);	//	
+		local bb = ObjectOutput.encode( bw);
+		return bb;
+	}
+
+	function init( path){
+		toolmap = {};
+		op = OperationStack();
+		canvas = MapCanvas( this);
+		tools = findChild( "tools");
+		tools.addEventListener( ACTION_EVENT, toolsevent);
+		mapright = findChild( "mapright");
+		toollbl = findChild( "toollbl");
+		placing = findChild( "placing");
+		placing.setVisible( false);
+		placing.addEventListener( ACTION_EVENT, placeevnt);
+		voxloadseq = ::voxloadseq;	//	ResEditorMapVox
+		///////////////////////////////////////////////////////////////////////////
+		//	.bwを読み込んでたらdataはnullになる。その場合、選択ツールでのプロパティ設定項目は無くなる
+		//	
+		local w;
+		if( getdbtype( path)=="map"){
+			datares = ::getResource( path);
+			mapid = datares.name;
+			data = deepclone( datares.getContent());
+			//	set default vals...
+			local props = (RPGSystem.stageprops.filter( @( v) v["mapedit"]));
+			setDefaultProperties( props, data);
+			//
+			bwres = ::getResource( `/data/mapdata/${mapid}.bw`);
+			mapshottex = ::getTexture( `/data/mapdata/${mapid}.webp`);
+			mapshottex.ref = false;
+			w = bwres.getContent();
+			bwres.flush();
+		}else
+		if( path.startsWith( "/.x/map_asset/MA")){
+			bwres = ::getResource( path);
+			local d = bwres.getContent();
+			local bb = uncompressZSTD( decodeBASE64( d.bw64, ByteBuffer()));
+			w = ObjectInput.decode( bb);
+
+			tools.findChild( "tool_event").setVisible( false);
+		}
+		//	データセット
+		setBlockWorld( w);
+		canvas.setBackground( data["bg"]);
+		//	カメラワーク
+		local camwork = canvas.camwork;
+		camwork.fovy = 45;
+		camwork.setTo( Vector3D( w.w*0.25, 1, w.d*0.25));
+		camwork.setRotation( Vector3D( 0, 52*Math.DTOR, 0));
+		camwork.setZoom( 15.0);
+		camwork.updateCamera( 1);
+		camwork.updateMatrix();
+		//	メッシュ生成待ち。これやるとロードが長くなるけど見た目的にやったほうがいいかな？
+		canvas.bw3d.checkUpdateInCameraMesh( camwork.cam);
+		while( canvas.bw3d.generateChunkMeshes( 150)){ suspend(); }	//	dt短いとフレーム数がかさんで時間が無駄に伸びる。
+		//	
+		foreach( toolid in toolids){
+			toolmap[toolid] <- MapTool.createTool( this, toolid);
+		}
+	}
+	
+	//	BlockWorldを設定しなおす。サイズ変更、初期化、voxインポートなど、同じBlockWorldを使い続けられない場合にも
+	//	これが呼ばれる。undo/redoからも呼ばれることがある。
+	function setBlockWorld( w){
+		bw = w;
+		canvas.setBlockWorld( w);
+		tool?.refresh();
+		if( !data){
+			mapboxsk?.kill();
+			local prim = ::PrimitiveMeshes;
+			local mb = prim.getMeshBuilder();
+			mb.setMatrix( Matrix.fromTranslate( bw.w*0.25, bw.h*0.25, bw.d*0.25));
+			prim._createWireBox( bw.w*0.25, bw.h*0.25, bw.d*0.25, 0.01, -1);
+			local pm = mb.toPolygonMesh();
+			local m = pm.face[0].m;
+			m.visiblemask = SK_VISIBLE_DECAL;
+			m.blend = SK_MIX;
+			m.Kd = 0xffffff33;
+			mb.clear();
+			mapboxsk = SK3DObject( pm);
+			canvas.scn.addObject( mapboxsk);
+		}
+	}
+
+	function refresh(){
+		tool?.refresh();
+	}
+	
+	function setActive( b){
+		super.setActive( b);
+		if( b && voxloadseq!=::voxloadseq){	//	ブロック定義が変更されたのでリストをリロードする！
+			foreach( tool in toolmap){
+				tool?.reloadBlockList();
+			}
+			voxloadseq = ::voxloadseq;
+		}
+		if( b && !tool){
+			changeTool( "tool_sel");
+		}else{
+			tool?.changeActiveTool( tool);
+		}
+		canvas.view.requestFocus();
+		//	inimapが移動してたら。。。。
+		if( canvas.inimapgizmo && ::conf.setting.inimap["mapid"] != mapid){
+			canvas.removeInimapGizmo();
+		}
+	}
+
+	function isFileChanged(){
+		return op?.isChanged() || modaledit["op"]?.isChanged();
+	}
+
+	function rootevent( e){
+		switch( e.id){
+		case SCREEN_RESIZED:
+			break;
+		}
+	}
+	
+	function execMenu( m){
+		//	最初にモーダルの編集が入ってるかチェック
+		if( modaledit){
+			return modaledit.execMenu( m);
+		}
+		printf( "MapEditor execMenu %S\n", encodeJSON( m));
+		//	ツールで処理できるかチェック
+		if( tool?.execMenu( m)) return true;
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			save();
+			return true;
+		case "editor_map_menu_edit_mapsize":
+			local ret = ::MapEditor.MapSizeDialog.run( null, (bw.w,bw.h,bw.d));
+			if( ret){
+				resizeMap( ret[0], ret[1], ret[2], ret[3], ret[4]);
+			}
+			return true;
+		case "editor_map_menu_edit_mapclear":
+			local ret = ::MapEditor.MapClearDialog.run( null);
+			if( ret){
+				clearMap( ret.h, ret.ev, ret.blk);
+			}
+			return true;
+		case "editor_map_menu_edit_encount":
+			local ret = EncountDialog.run( this, data["encount"]);
+			if( ret && ret<>data["encount"]){
+				setEncountData( ret);
+			}
+		}
+		return false;
+	}
+	
+	//	編集状態を保存する。カメラ、ツール、表示チェックぐらいかな
+	function getEditInfo(){
+		return {
+			cam64 = encodeBASE64( ObjectOutput.encode( canvas.camwork.getCameraData())),	//	バイナリなんでbase64に。。。
+			rsetid = canvas.envmenu.selitem["id"] || null,	//	nullの場合はリンク
+			gridchk = canvas.gridchk.isSelected(),
+			cullchk = canvas.cullchk.isSelected(),
+			colchk = canvas.colchk.isSelected(),
+			infochk = canvas.infochk.isSelected(),
+			skychk = canvas.skychk.isSelected(),
+		}
+	}
+	
+	function save(){
+		op.markSaved();
+		::skstudio.updateChangeFile( this);
+		if( saveinimap){
+			::skstudio.flushEditor( "/.x/game/setting");
+			local r = ::getResource( "/.x/game/setting");
+			r.save( ::conf.setting);
+		}
+		if( datares){
+			//	map.json内に配置されたマップデータ。
+			datares.save( data);
+			local bb = ObjectOutput.encode( bw);
+			bb.pos = 0;
+			bwres.file.save( bb);
+			//	mapshot保存
+			local tex = mapshottex;
+			if( mapshottex["ref"]){
+				local img = RGBAImage( tex.width, tex.height);
+				local old = skGetRenderTarget();
+				skSetRenderTarget( tex);
+				skReadPixels( 0, 0, img.width, img.height, img);
+				skSetRenderTarget( old);
+				//	
+				local fn = bwres.name.substring( 0, bwres.name.indexOf( ".")) .. ".webp";
+				local bb = img.encodeWebp( 75);	//	大きさでquality落とせば多少サイズ差を吸収できるか
+				bb.pos = 0;
+				local imgf = FileRef( bwres.pres.file, fn);
+				imgf.save( bb);
+			}
+			::skstudio.fileview.refreshDir( bwres.pres.path);
+			::skstudio.fileview.refreshDir( datares.pres.path);
+		}else{
+			//	マップアセット。map_asset.jsonにまとめてパックされる
+			local d = deepclone( bwres.getContent());
+			local bb = ObjectOutput.encode( bw);
+			local cbb = compressZSTD( bb, 6);	//	重くても圧縮率高く。。。
+			local bw64 = encodeBASE64( cbb);
+			// printf( "BWWWWW %S => %S => %S %S %S\n", bb.size, cbb.size, length( bw64), bw64, encodeJSON( d, 1));
+			d.bw64 = bw64;
+			bwres.save( d);
+			::skstudio.flushEditor( "/.x/map_asset");
+		}
+	}
+
+	//	全体マップ画像をアップデートする。※保存はメニューの保存時に。。。
+	//	
+	function updateMapShot(){
+		local tex = canvas.captureMapShot();
+		tex.ref = true;
+		mapshottex = tex;
+	}
+
+	function getMapShot(){
+		if( !mapshottex) updateMapShot();
+		return mapshottex;
+	}
+
+	//	ツール系イベント
+	function toolsevent( e){
+		if( e.src["name"]?.startsWith( "tool_")){
+			local toolid = e.src["name"];
+			changeTool( toolid);
+		}
+	}
+
+	//	
+	function changeTool( id){
+		if( canvas.toolfunc){	//	ツール内イベントハンドリングをキャンセル
+			local e = Event(); e.id = ACTION_CANCELED;
+			canvas.toolfunc = canvas.toolfunc( e);
+		}
+		local newtool = toolmap[id];
+		if( tool == newtool) return;
+		if( tool){	//	現在のツールを非アクティブ化
+			tool.changeActiveTool( newtool);
+			tool.optionview?.removeFromParent();
+			tools.findChild( getclassname( tool))?.setSelected( false);
+		}
+		setValue( "toollbl", "$T.editor_map_"..id);
+		tool = newtool;
+		//	options
+		local op = tool.optionview;
+		mapright.addChild( op);
+		// op.bindrect = ((0,0),(mapright.bnd.w,mapright.bnd.h));
+		op.stretchSize( mapright.bnd.w,mapright.bnd.h, true);
+		mapright.updateMatrixAll();
+		//
+		tool.changeActiveTool( newtool);	//	現在のツールをアクティブ化
+		tools.findChild( id)?.setSelected( true);
+	}
+	
+	function resizeMap( w, h, d, align, fill){
+		local self = this, w0 = bw.w, h0 = bw.h, d0 = bw.d;
+		local bw1 = bw.createResized( w, h, d, align, fill), bw0 = bw;
+		local oldmapshot = mapshottex, newmapshot = (null,);
+		//	イベント移動量
+		local dx=0, dy=0, dz=0;
+		switch( align%3){
+		case 1: dx = (w-w0)/2; break;
+		case 2: dx = (w-w0); break;
+		}
+		switch( align/3){
+		case 1: dz = (d-d0)/2; break;
+		case 2: dz = (d-d0); break;
+		}
+		local inimap = ::conf.setting.inimap;
+		local redo = [@(){
+			if( self.data){
+				foreach( ev in self.data.event){ ev.pos[0]+=dx; ev.pos[2]+=dz; }
+				foreach( mk in self.data.marker){ mk.pos[0]+=dx; mk.pos[2]+=dz; }
+				if( inimap.mapid==self.mapid){ inimap.pos[0]+=dx*0.5; inimap.pos[2]+=dz*0.5; }
+			}
+			self.setBlockWorld( bw1);
+			if( self.data){
+				self.data.size = [bw1.w,bw1.h,bw1.d];
+				if( !newmapshot[0]) newmapshot[0] = self.canvas.captureMapShot();	//	redo時に再計算させないように。。。
+				self.mapshottex = newmapshot[0];
+				self.mapshottex.ref = true;
+			}
+		}];
+		local undo = [@(){
+			if( self.data){
+				foreach( ev in self.data.event){ ev.pos[0]-=dx; ev.pos[2]-=dz; }
+				foreach( mk in self.data.marker){ mk.pos[0]-=dx; mk.pos[2]-=dz; }
+				if( inimap.mapid==self.mapid){ inimap.pos[0]-=dx*0.5; inimap.pos[2]-=dz*0.5; }
+			}
+			self.setBlockWorld( bw0);
+			if( self.data){
+				self.data.size = [bw0.w,bw0.h,bw0.d];
+				self.mapshottex = oldmapshot;
+			}
+		}];
+		local synct = {}, self = this;
+		redo .. @() self.tool.syncFBGizmo( synct);
+		undo .. @() self.tool.restoreFBGizmo( synct);
+		//
+		submitOp( redo, undo, null);
+		refresh();
+	}
+	
+	function clearMap( h, ev, blk){
+		local self = this;
+		local bw1 = BlockWorld( bw.w, bw.h, bw.d); bw1.fillBlock( IRect3D( 0, 0, 0, bw.w, h, bw.d), blk);
+		local bw0 = bw;
+		local redo = [@(){ self.setBlockWorld( bw1); }];
+		local undo = [@(){ self.setBlockWorld( bw0); }];
+		submitOp( redo, undo, null);
+		//	TODO  event clear!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	}
+
+	function setEncountData( encount){
+		local old = data["encount"], self = this;
+		local redo = [@(){ self.data.encount <- encount; }];
+		local undo = [@(){ self.data.encount <- old; }];
+		submitOp( redo, undo, null);
+		refresh();
+	}
+
+	////////////////////////////////////////////////
+	//	配置パネル操作
+
+	function setPlacingVisible( b, txt=null){
+		placing.setVisible( b);
+	}
+	
+	//	配置パネルからのイベント。
+	//	※配置パネルはツールにtoolfuncが設定された状態で表示されるものなので、toolfuncのみに反応すればよい
+	function placeevnt( e){
+		if( canvas.toolfunc){
+			canvas.toolfunc = ~(canvas.toolfunc, canvas, e);
+		}
+	}
+}
+
+class MapEditor.MapSizeDialog extends Dialog
+{
+	wval = null;		//	NumInput
+	hval = null;
+	dval = null;
+	alignchk = null;	//	GPUIButton[9]
+	selalign = 4;
+	fillchk = null;
+
+	prop = null;
+
+	constructor( v, p, val){
+		super( v);
+		prop = p;
+		wval = createNumInputBehavior( view.findChild( "wval"));
+		hval = createNumInputBehavior( view.findChild( "hval"));
+		dval = createNumInputBehavior( view.findChild( "dval"));
+		wval.setRange( 4, 1024, 1);
+		hval.setRange( 4, 128, 1);
+		dval.setRange( 4, 1024, 1);
+		alignchk = [];
+		for( local l = 0;l < 9;l ++){
+			alignchk .. view.findChild( "a"..l);
+		}
+		alignchk[4].setSelected( true);
+		fillchk = view.findChild( "fillchk");
+		fillchk.setSelected( true);
+		wval.setValue( val[0]); wval.setRevertText( false);
+		hval.setValue( val[1]); hval.setRevertText( false);
+		dval.setValue( val[2]); dval.setRevertText( false);
+		if( prop["hval"]){
+			view.findChild( "whdg").anime( 1);
+			view.setValue( "cursize", sprintf( "W:%d H:%d D:%d", val[0], val[1], val[2]));
+		}else{
+			view.setValue( "cursize", sprintf( "W:%d D:%d", val[0], val[2]));
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "a0": case "a1": case "a2":
+		case "a3": case "a4": case "a5":
+		case "a6": case "a7": case "a8":
+			local i = e.src.name[1]-'0';
+			if( i != selalign){
+				alignchk[selalign].setSelected( false);
+				alignchk[i].setSelected( true);
+				selalign = i;
+			}
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	static function run( prop, val){
+		local dlg = this( srcdir.."/ui/sizedialog.ui", prop, val);
+		dlg.show();
+		if( dlg.ret){
+			return ( dlg.wval.getValue(), dlg.hval.getValue(), dlg.dval.getValue(), dlg.selalign, dlg.fillchk.isSelected())
+		}
+	}
+}
+
+
+class MapEditor.MapClearDialog extends Dialog
+{
+	hval = null;		//	NumInput
+	evchk = null;		//	
+	selblk = null;
+
+	constructor( v, val){
+		super( v);
+		hval = createNumInputBehavior( view.findChild( "hval"));
+		hval.setRange( 1, 64, 1);
+		hval.setValue( 4);
+		evchk = view.findChild( "evchk");
+		evchk.setSelected( true);
+		//
+		selblk = SelectBlock( view.findChild( "selblock"));
+		selblk.setBlockPages( [1,2]);
+		selblk.selectBlock( 129);	//	todo どれか
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		}
+		super.actionevent( e);
+	}
+
+	static function run( val){
+		local dlg = this( srcdir.."/ui/cleardialog.ui", val);
+		dlg.show();
+		if( dlg.ret){
+			return {
+				h = dlg.hval.getValue();
+				ev = dlg.evchk.isSelected();
+				blk = dlg.selblk.selitem.blk;
+			}
+		}
+	}
+}
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+FileIcons["bw"] <- ("\uf11e",0x77ddddff)
+
+with( skstudio){
+	registerMenu( { parentid="menu_edit", separator="*ui_map0", where=["editor_map"]});
+	registerMenu( { uid="editor_map_menu_edit_mapsize", parentid="menu_edit", lbl="$T.editor_map_menu_edit_mapsize", where=["editor_map"]});
+	registerMenu( { uid="editor_map_menu_edit_mapclear", parentid="menu_edit", lbl="$T.editor_map_menu_edit_mapclear", where=["editor_map"]});
+	registerMenu( { uid="editor_map_menu_edit_hoffset", parentid="menu_edit", lbl="$T.editor_map_menu_edit_hoffset", where=["editor_map"]});
+	registerMenu( { uid="editor_map_menu_edit_encount", parentid="menu_edit", lbl="$T.editor_map_menu_edit_encount", where=["editor_map"]});
+	
+	registerEditor( {
+		uid = "editor_map",
+		matches = MapEditor.matches,
+		createEditor = MapEditor.createEditor,
+		sideview = "side_map",
+
+		// newfile = {
+		// 	icon = FileIcons.bw,
+		// 	name = "$T.filetype_bw",
+		// 	ext = ".bw",
+		// 	func = MapEditor.newFile
+		// },
+	});
+}

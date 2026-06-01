@@ -1,0 +1,383 @@
+
+import VirtualKeyCode;
+import FileDialogMode;
+import PropertyType;
+import GamepadType;
+
+//	なんだかんだで便利になるコマンドを追加していきたい。Alt+Shift+なんか
+//	計算機を実行、スクリプトを実行、マウス上のアイコンのコード、
+
+
+module.hookAction( "editor_postload", @(){
+
+::skstudio.registerCommand( {
+	uid="cmd_openprojdir", lbl="プロジェクトフォルダを開く", icon="\ue89e"
+	func = @(){
+		skOpenURL( "dir://" .. skGetCurrentDir());
+	}
+});
+
+::skstudio.registerCommand( {
+	uid="cmd_opendatadir", lbl="データフォルダを開く", icon="\ue89e"
+	func = @(){
+		skOpenURL( "dir://" .. skGetDataDir());
+	}
+});
+
+::skstudio.registerCommand( {
+	uid="cmd_opencachedir", lbl="キャッシュフォルダを開く", icon="\ue89e"
+	func = @(){
+		skOpenURL( "dir://" .. skGetCacheDir());
+	}
+});
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+//	cmd_iconcode : マウス上のアイコンの文字コードをクリップボードにコピー (Alt+Shift+I)
+//	
+
+::skstudio.registerCommand( {
+	uid="cmd_iconcode", modkey="~_I", lbl="マウス上のアイコンコード", icon="\ueac7",
+	func = @(){
+		local ms = ::rootview.mouses[0];
+		local va = ::rootview.pickall( ms.mousex, ms.mousey, []);
+		local p = Vector3D();
+		foreach( v in va){
+			if( !v.visible) continue;
+			local tb = v["textbox"];
+			if( !tb) continue;
+			p( ms.mousex, ms.mousey, 0.0).transform( v.getInvMatrix());
+			local i = tb.charIndexAt( p.x, p.y);
+			local fa = tb.getAttribute( i);
+			if( fa.font.name != "icon") continue;
+			local c = tb[i];	//	こいつ！
+			Popups.showInfo( "アイコンの文字コードをコピーしました。(%x)" % c, char( c));
+			skPutClipboardData( "%x" % c);
+			break;
+		}
+	}
+})
+
+/////////////////////////////////////////////////////////////////////////////////////////
+//	cmd_embedtips : エディタ、ダイアログ内のTIPSを直接編集。ボタン、PropertyList。(Alt+Shift+A)
+//	
+//	キーが複数。.uiとその中のボタン名かプロパティpid
+//	ja,enだけ取りあえず？ 
+//	
+//	LV1キー --- 子から親へ
+//	- ref.tipskey => PropertyListBehavior, ダイアログ、ポップアップ
+//	- ダイアログ、ポップアップのクラス名もしくはtipskey
+//	- エディタのクラス名もしくはtipskey
+//	- サイドビューのクラス名もしくはtipskey
+//	
+//	LV2キー --- LV1から子へ
+//	- プロパティpid
+//	- ボタン名
+//	
+
+::skstudio.registerCommand( {
+	uid="cmd_embedtips", modkey="~_E", lbl="TIPS埋め込み", icon="\ue887",
+	func = @(){
+		local ms = ::rootview.mouses[0];
+		local va = ::rootview.pickall( ms.mousex, ms.mousey, []);
+		// printf( "--------------------------------------------------\n"); foreach( i, v in va) printf( "%d  %S  %S %S %S %S\n", i, v.name, v, v.ref, v.ref["prop"]["lbl"], v.isVisible());
+		local k1, k1v, ka, k2;
+		foreach( i, v in va){
+			if( !v.visible) continue;
+			k1 = fget( v.ref, "tipskey");
+			if( k1){ k1v = v; ka = va.slice( 0, i).reverse(); break;}
+		}
+		foreach( i, v in ka){
+			if( !v.isVisible()) continue;
+			if( v.ref instanceof PropertyBehavior){
+				k2 = v.ref.prop.lbl;
+				break;
+			}
+			if( v instanceof GPUIButton){
+				local p = v.parent;
+				for( ; p; p = p.parent) if( p.name) break;
+				k2 = sprintf( "%S-%S", p["name"]||"X", v.name);
+				break;
+			}
+		}
+		// printf( "KEY %S %S\n", k1, k2);
+		if( !k2) return;
+		local k = sprintf( "%S::%S", k1, k2);
+		local path = ::workspace["embedjson_path"] || ::TipsRunner.tipsjsonlist[0], data = {ja="",en=""}, hasdata = false;
+		local tipslist = ::TipsRunner.tipsjsonlist.map( @( v) +{
+			lbl=v, tb=::loadconf( v), val=v,
+		});
+		foreach( i, v in tipslist){
+			if( v.tb[k]){ data = v.tb[k]; path = v.val; hasdata = true; break; }
+		}
+		//	ポップアップで編集
+		local p = Popup( ::loadSKView( "/skstudio/ui/dialog/embedtipspopup.ui"));
+		local menu = MenuBehavior( p.view.findChild( "jsonmenu"), tipslist);
+		menu.selectItem( @( v) v.val==path);
+		p.view.setValue( "k", k);
+		p.view.setValue( "edit_ja", data.ja);
+		p.view.setValue( "edit_en", data.en);
+		p.show( null, getMousePos( 0));
+		if( p.ret){
+			local d = {ja=p.view.findChild( "edit_ja").getText(), en=p.view.findChild( "edit_en").getText(), };
+			local npath = menu.selitem.val;
+			if( hasdata && path != npath){	//	path入れ替わった
+				local t = tipslist.find( @( v) v.val==path).tb;
+				delete t[k];
+				local bb = encodeJSON( t, 5, ByteBuffer());	bb.pos = 0;
+				local r = ::getResource( path);
+				r.file.save( bb);
+				r.refresh();
+			}
+			local t = tipslist.find( @( v) v.val==npath).tb;
+			if( length( d.ja) || length( d.en)){
+				t[k] <- d;
+			}else{
+				delete t[k];
+			}
+			local bb = encodeJSON( t, 5, ByteBuffer());	bb.pos = 0;
+			local r = ::getResource( npath);
+			r.file.save( bb);
+			r.refresh();
+			::workspace["embedjson_path"] <- npath;
+		}
+	}
+});
+
+::skstudio.registerCommand( {
+	uid="cmd_capturedialog", modkey="~_C", lbl="ダイアログのSS", icon="\ue412"
+	func = @(){
+		local v = ::rootview.findChild( "dlglayer").children?.last();
+		if( v["ref"] instanceof DialogBase){
+			local b = v.findChild( "dlgbody") || v;
+			local sp = b.capture(), tex = sp.tex0;
+			local img = RGBAImage( tex.width, tex.height);
+			local old = skGetRenderTarget();
+			skSetRenderTarget( tex);
+			skReadPixels( 0, 0, img.width, img.height, img);
+			skSetRenderTarget( old);
+			//
+			skPutClipboardData( img);
+			//
+			Popups.showInfo( "ダイアログのスクリーンショットをコピーしました。");
+		}
+	}
+});
+
+
+::skstudio.registerCommand( {
+	uid="cmd_resetwinsize", /*modkey="~_C",*/ lbl="ウィンドウサイズをリセット", icon="\uea10"
+	func = @(){
+		if( ::workspace["iniwindow"]==2){
+			skCreateScreen( "SKStudio", 1920, 1080, 4);
+		}else{
+			skCreateScreen( "SKStudio", 1600, 900, 4);
+		}
+	}
+});
+
+
+
+::skstudio.registerCommand( {
+	uid="cmd_gamepadmapping", /*modkey="~_C",*/ lbl="$T.lbl_gamepadmap", icon="\uea28"
+	func = @(){
+		GamepadMappingDialog.run();
+	}
+});
+
+}, 0);
+
+class GamepadMappingDialog extends UndoableDialog
+{
+	proplist = null;			//	PropertyListBehavior
+	gpstat = null;				//	SKLabelView
+
+	data = null;
+
+	gp = null;					//	Gamepad : マッピングなし
+	mapping = null;				//	
+
+	static function run(){
+		local p = GamepadMappingDialog( "/skstudio/ui/dialog/gamepadmap.ui");
+		p.show( null);
+	}
+
+	function init( v){
+		super.init( v);
+		proplist = PropertyListBehavior( view.findChild( "proplist"), null, "cntv.ui");
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.ref = this;
+		gpstat = view.findChild( "gpstat");
+
+		data = deepclone( conf._resource.gamepad);
+
+		syncgp();
+	}
+
+	function syncgp(){
+		local a = skScanGamepads(), newgp = a?.find( @( v) v);
+		setGamepad( newgp);
+	}
+
+	function setGamepad( gp){
+		this.gp = gp;
+		if( !gp) return;
+		mapping = data[gp.id];
+		if( !mapping){
+			mapping = (data[gp.id] <- { type=1, axes=[0,1,2,3,4,5], btns=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,-1,-1]});
+		}
+		printf( "GAMEPAD %S %S   %S\n", gp.name, gp.id, encodeJSON( mapping));
+		view.setValue( "gpname", "ID: %S" % (gp.id, gp.name));
+		refresh();
+	}
+	
+	function refresh(){
+		local gp = gp;
+		local showinputpopup( lbl, func){
+			local popsc = ::loadSKView( "/skstudio/ui/dialog/infopopup.ui");
+			popsc.setValue( "lbl", lbl);
+			local retptr = ptr();
+			local pop = Popup( popsc);
+			newthread().start( @(){
+				sleep( 100);
+				while( pop.view.getRoot() == ::rootview){
+					gp.poll();
+					local r = func( gp);
+					if( r != null){
+						retptr << r;
+						pop.close();
+						break;
+					}
+					suspend();
+				}
+			}, this);
+			pop.show( null, ::getMousePos( 0));
+			return ~retptr;
+		}
+		local editfunc( p){
+			p.type <- CUSTOMBUTTON;
+			local i = int( p.pid.substring( 1), 16);
+			if( p.pid[0] == 'a'){
+				p.get <- @( prop, data) data.axes[i];
+				p.tostring <- @( v) ("Axis %d" % v);
+				p.edit <- @( v){
+					gp.poll();
+					local a0 = [gp.axis0,gp.axis1,gp.axis2,gp.axis3,gp.axis4,gp.axis5,gp.axis6,gp.axis7,gp.axis8,gp.axis9];
+					local r = showinputpopup( "Push Axis/Trigger", @( gp){
+						for( local l = 0;l < 10;l ++){
+							local d = gp["axis"..l]-a0[l];
+							if( Math.abs( d) >= 0.5) return l;
+						}
+					});
+					return r;
+				}
+			}else{
+				p.get <- @( prop, data) data.btns[i];
+				p.tostring <- @( v) ("Button %d" % v);
+				p.edit <- @( v){
+					gp.poll();
+					local r = showinputpopup( "Push Button", @( gp) gp.buttonmask ? Math.lsb( gp.buttonmask) : null);
+					return r;
+				}
+			}
+			return p;
+		}
+		local props = [
+			{ pid="type", lbl="$T.lbl_type", type=LIST, list=[{lbl="X-Input",val=1}, {lbl="PS4 Controller",val=2}, {lbl="Switch Controller",val=3}, ], refresh=1, },
+			...[
+				{ pid="a0", lbl="\uee22 L-Stick LR", },
+				{ pid="a1", lbl="\uee20 L-Stick UD", },
+				{ pid="a2", lbl="\uee26 R-Stick LR", },
+				{ pid="a3", lbl="\uee24 R-Stick UD", },
+				{ pid="b0", lbl="\uee00 Button U", },
+				{ pid="b1", lbl="\uee01 Button D", },
+				{ pid="b2", lbl="\uee02 Button L", },
+				{ pid="b3", lbl="\uee03 Button R", },
+				{ pid="b4", lbl="\uee04 Button Start", },
+				{ pid="b5", lbl="\uee05 Button Back", },
+				{ pid="b6", lbl="\uee06 Button LStick", },
+				{ pid="b7", lbl="\uee07 Button RStick", },
+				{ pid="b8", lbl="\uee08 Button L1",  },
+				{ pid="b9", lbl="\uee09 Button R1", },
+				{ pid="ba", lbl="\uee0a Button A / ×", },
+				{ pid="bb", lbl="\uee0b Button B / 〇", },
+				{ pid="bc", lbl="\uee0c Button X / □", },
+				{ pid="bd", lbl="\uee0d Button Y / △", },
+				...mapping.type==3 ? [
+					{ pid="be", lbl="\uee28 Button L2", },
+					{ pid="bf", lbl="\uee29 Button R2", },
+				] : [
+					{ pid="a4", lbl="\uee28 L-Trigger", trig=true, },
+					{ pid="a5", lbl="\uee29 R-Trigger", trig=true, },
+				],
+			].map( @( v) editfunc( v)),
+		];
+		proplist.bindProperties( props);
+		proplist.setParameters( mapping);
+		//	
+		local sb = StringBuffer();
+		local mapping = this.mapping;
+		gpstat.bindValue( @(){
+			sb.clear();
+			gp.poll();
+			for( local l = 0;l < 6;l ++){
+				local mi = mapping.axes[l];
+				if( mi < 0) continue;
+				local v = gp["axis"..mi];
+				local p = props.find( @( v) v.pid==("a"..l));
+				if( p && (p["trig"] ? v >= -0.8 : Math.abs( v) >= 0.2)){
+					if( p) sb .. p.lbl .. "  " .. v .. "\n";
+				}
+			}
+			local b = gp.buttonmask;
+			for( local l = 0;l < 16;l ++){
+				local mi = mapping.btns[l];
+				if( mi>=0 && (b & (1<<mi))){
+					local p = props.find( @( v) v.pid==("b%x"%l));
+					if( p) sb .. p.lbl .. "\n";
+				}
+			}
+			return string( sb);
+		});
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local a, i;
+			if( prop.pid == "type"){
+				a = mapping; i = "type";
+			}else{
+				a = mapping[prop.pid[0]=='a' ? "axes":"btns"]; i = int( prop.pid.substring( 1), 16);
+			}
+			local val = cmd.val, oldval = a[i];
+			local self = this;
+			local redo = [@(){ a[i] = val; }];
+			local undo = [@(){ a[i] = oldval }];
+			submitOp( redo, undo, null);
+			if( prop["refresh"]) refresh();
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "scanbtn":
+			op.clear();	//	undoバッファはクリア
+			syncgp();
+			break;
+		case "copybtn":
+			skPutClipboardData( `"${gp.id}":${encodeJSON( mapping, 4)}`);
+			break;
+		case "savebtn":
+			printf( "save Gamepad Mapping ... %S\n", encodeJSON( data, 5));
+			conf._resource.gamepad = deepclone( data);
+			local f = ::getResource( "/resource/gamepad.json").file;
+			local bb = encodeJSON( data, ByteBuffer()); bb.pos = 0;
+			f.save( bb);
+			op.markSaved();
+			break;
+		}
+		super.actionevent( e);
+	}
+}

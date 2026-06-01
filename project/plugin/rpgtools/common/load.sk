@@ -1,0 +1,18 @@
+runsk( "rpgtooldict.sk");
+runsk( "ConfigResource.sk");
+runsk( "RPGToolMesh.sk");
+runsk( "RPGPropertyBehaviors.sk");
+runsk( "DataSelectPopup.sk");
+runsk( "VariablePopup.sk");
+runsk( "ResourcePreview.sk");
+runsk( "PropertyEditPopupV.sk");
+runsk( "EventCommandItemView.sk");
+runsk( "EventCommandList.sk");
+runsk( "ManualActionDialog.sk");
+runsk( "DBSearch.sk");
+runsk( "PluginDialog.sk");
+
+runsk( "AccountActivity.sk");
+runsk( "SettingActivity.sk");
+runsk( "DebugActivity.sk");
+runsk( "BuildActivity.sk");

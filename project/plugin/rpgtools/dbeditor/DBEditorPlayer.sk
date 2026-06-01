@@ -1,0 +1,669 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorPlayer : プレイヤーのデータ編集エディター
+//	
+
+class DBEditorPlayer extends EditorViewBase
+{
+	//	プレイヤーの基本パラメータ。基本拡張はできない。が、プラグインでここ拡張することは可能。
+	static baseprops1 = [
+		RPGProperties.nameprop,	//	※プレイヤーにはアイコンが無くてOK?
+		RPGProperties.descprop,
+		{ pid="voiceid", lbl="$T.lbl_voiceactor", type=RESID, restype="voice", nullable=true, defval=null },
+	];
+
+	static baseprops2 = [
+		{ pid="mdlid", lbl="$T.lbl_model", type=RESID_PREVIEW, restype=["chara_vox"], defval="CV000" },
+		{ pid="picid", lbl="$T.lbl_picture", type=RESID_PREVIEW, restype=["event_pic"], defval="" },
+	];
+	
+	res = null;				//	Resource : 
+	data = null;			//	P000等のデータのコピー。
+	
+	//	view
+	baseproplist1 = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	baseproplist2 = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	proplist = null;			//	PropertyListBehavior : 
+	lvoptionlist = null;		//	OptionList : 汎用オプションパネル＋LV設定も可能に。
+	lvpreview = null;			//	LVPreview : プレイヤー編集のみで使用
+
+	function init( path){
+		op = OperationStack();
+		baseproplist1 = PropertyListBehavior( findChild( "baseproplist1"), null, "cnt3.ui");
+		baseproplist1.bindProperties( baseprops1);
+		baseproplist1.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist1.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist1.ref = this;
+		
+		baseproplist2 = PropertyListBehavior( findChild( "baseproplist2"), null, "cnt3.ui");
+		baseproplist2.bindProperties( baseprops2);
+		baseproplist2.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist2.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist2.ref = this;
+		
+		local props = ::RPGSystem.playerprops.filter( @(v) !v["lvcurve"]);
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.bindProperties( props);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+
+		lvoptionlist = OptionListWithLV( findChild( "lvoptionlist"), this);
+		lvpreview = LVPreview( findChild( "lvpreview"), this);
+		
+		res = ::getResource( path);
+		data = deepclone( res.getContent()) || {name:""};
+		//	データ補間。存在しないプロパティにデフォルト値を挿入
+		setDefaultProperties( baseprops1, data);
+		setDefaultProperties( baseprops2, data);
+		setDefaultProperties( props, data);
+		if( !data["lvoption"]) data.lvoption <- [];
+		if( !data["lvcurve"]) data.lvcurve <- {};
+		local defcurvp = #{"inival":10, "midval":200, "finval":300, "midlv":30, "grow":60, "rand":1, "seed":0 };
+		local curvprops = ::RPGSystem.playerprops.filter( @(v) v["lvcurve"]);
+		local ctype = data["_meta"]["lvtype"] || 0;
+		local lvtype = ::conf.player._meta.lvtypes.find( @(v) v.id==ctype);
+		foreach( prop in curvprops){
+			if( !data.lvcurve[prop.pid]){
+				local curvp = lvtype.curvpmap[prop.pid] || defcurvp;
+				data.lvcurve[prop.pid] <- createLVCurve( curvp, ::conf.setting.maxlv);
+			}
+		}
+		//
+		refresh();
+	}
+	
+	//	x=LV, y=score
+	static function bezier( x, a, b, c){
+		local mgn = 0.001;	//	そんな精度はいらない
+		local t = 0.5, mint = 0.0, maxt = 1.0;
+		for( ;;){
+			local tx = (1 - t) * (1 - t) * a[0] + 2 * (1 - t) * t * b[0] + t * t * c[0];
+			if( Math.abs( tx-x) < mgn) break;
+			if( tx < x) mint = t; else maxt = t;
+			local dtx = -2 * (1 - t) * a[0] + 2 * (1 - 2 * t) * b[0] + 2 * t * c[0];
+			t -= (tx - x) / dtx;
+			if( t < mint || t > maxt) t = (mint + maxt) * 0.5;
+		}
+		return (1 - t) * (1 - t) * a[1] + 2 * (1 - t) * t * b[1] + t * t * c[1];
+	}
+	
+	//	レベルカーブパラメータを元にスコア配列を生成
+	//	inival, midval, finval : 
+	//	highlv, grow : 成長期LVとそれまでの成長速度傾向。
+	//	rand, seed : ランダムの幅とシード。各valと各レベルでの数値がランダム化。
+	static function createLVCurve( arg, maxlv){
+		local ret = array( maxlv+1, 0);
+		local inival = arg.inival, midval = arg.midval, finval = arg.finval;
+		local midlv = Math.min( arg.midlv, maxlv), dlv = midlv-1.0;
+		local dv = midval-inival;
+		local w = arg.grow / 100.0;		//	grow = 0~100
+		//	前半、後半の2つの2次ベジェ曲線を作成
+		//	(a,b,c), (c,d,e)
+		local a = ( 1, inival);
+		local b = ( 1+dlv*w, inival+dv*(1.0-w) );
+		local c = ( midlv, midval);
+		local d = ( Math.min( maxlv, midlv+dlv*w), Math.min( finval, midval+dv*(1.0-w)));	//	cからそのまま伸ばすような制御点
+		local e = ( maxlv, arg.finval);
+		//	
+		ret[0] = 1;	//	0は参照されないが一応入れておく
+		for( local lv = 1; lv <= maxlv; lv ++){
+			local v = (lv<=midlv) ? bezier( lv, a, b, c) : bezier( lv, c, d, e);
+			ret[lv] = Math.iround( v);
+		}
+		return ret;
+	}
+
+	function refresh(){
+		baseproplist1.setParameters( data);
+		baseproplist2.setParameters( data);
+		proplist.setParameters( data);
+		lvoptionlist.setOptions( data.lvoption);		//	このやり方で良いかな・・・？
+		lvpreview.refresh();
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	//	
+	//	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+			// refresh();	iranai
+		}
+	}
+
+	//	
+	//	
+	function optionevent( e){
+		local oldopt = data.option;
+		local opt = deepclone( lvoptionlist.getOptions());
+		//	
+		local self = this;
+		local redo = [@(){ data.option <- opt; }];
+		local undo = [@(){ data.option <- oldopt; }];
+		submitOp( redo, undo);
+	}
+}
+
+class DBEditorPlayer.LVPreview
+{
+	editor = null;			//	
+	view = null;
+	lvcurvelist = null;		//	GPUIListView
+	lvsellist = null;		//	ListBehavior
+
+	constructor( v, e){
+		view = v;
+		editor = e;
+		lvcurvelist = v.findChild( "lvcurvlist");
+		lvsellist = ListBehavior( v.findChild( "lvsellist"));
+		lvsellist.multisel = true;
+		//	sellist
+		local curvprops = ::RPGSystem.playerprops.filter( @(v) v["lvcurve"]);
+		lvsellist.setListItems( curvprops);
+		v.addEventListener( MOUSE_EVENT, btnwheelevent);
+		v.addEventListener( ACTION_EVENT, actionevent);
+		v.addEventListener( ITEM_EVENT, itemevent);
+	}
+
+	function refresh(){
+		local maxlv = ::conf.setting.maxlv;
+		lvcurvelist.setRowCount( maxlv);
+		local curvprops = ::RPGSystem.playerprops.filter( @(v) v["lvcurve"]);
+		for( local lv = 1; lv <= maxlv; lv ++){
+			local r = lvcurvelist.rows[lv-1];
+			r.setValue( "lv", string( lv));
+			for( local l = 0; ; l ++){
+				local p = r.findChild( "p"..l);
+				if( !p) break;
+				local prop = curvprops[l];
+				local curvp = editor.data.lvcurve[prop["pid"]];
+				p.setText( string( curvp[lv]||""));
+			}
+		}
+	}
+
+	function btnwheelevent( e){
+		switch( e.id){
+		case MOUSE_WHEEL_MOVED:
+			lvcurvelist.gpui.scrollUnit( e.count);
+			break;
+		case MOUSE_PAN:
+			if( lvcurvelist.gpui.scrollDelta( e.dx, e.dy)) e.consume();
+			break;
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "menubtn":
+			showContextMenu( e);
+			break;
+		case "lvsellist":
+			local prop = e.actioncmd;
+			local curvp = editor.data.lvcurve[prop.pid];
+			local lvtype = editor.data._meta["lvtype"] || 0;
+			if( e.isMouseDown( BUTTON1_MASK)){
+				local lvc = LVCurveDialog.run( prop.pid, curvp, lvtype);
+				if( lvc && lvc <> curvp){
+					local ed = editor, self = this, oldlvcurve = ed.data.lvcurve;
+					local redo = [@(){
+						ed.data.lvcurve[prop.pid] = lvc; self.refresh();
+					}];
+					local undo = [@(){
+						ed.data.lvcurve[prop.pid] = curvp; self.refresh();
+					}];
+					ed.submitOp( redo, undo);
+				}
+			}else
+			if( e.isMouseDown( BUTTON2_MASK)){
+				if( !lvsellist.isItemSelected( prop)){
+					lvsellist.setSelectedItem( prop);
+				}
+				showItemContextMenu( e);
+			}
+			break;
+		}
+	}
+
+	//	成長タイプの適用、成長タイプの管理
+	function showContextMenu( e){
+		local menudata = [
+			{ id="apply_", lbl="$T.lbl_apply_lvtype", icon="\ue4fb", submenu=::conf.player._meta.lvtypes.map( @( v){
+				return { lbl:v.name, id:"apply", val:v};
+			}) .. "-" .. { id="manage", lbl="$T.lbl_manage_lvtype", icon="\ue8b8" } },
+			"-",
+			{ id="copytsv", lbl="$T.lbl_copytsv", icon="\ue14d" },
+			{ id="pastetsv", lbl="$T.lbl_pastetsv", icon="\ue14f"},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "apply":
+			applyLvTypeOp( lvsellist.items, ret.val);
+			break;
+		case "manage":
+			DBEditorPlayer.LVTypeDialog.run( null);
+			break;
+		case "copytsv":
+			copyTSV( lvsellist.items);
+			break;
+		case "pastetsv":
+			local t = skGetClipboardData( ClipboardType.CLIPBOARD_TEXT);
+			if( t) pasteTSV( t);
+			break;
+		}
+	}
+
+	function applyLvTypeOp( curvprops, lvtype){
+		local ed = editor;
+		local newlvcurve = deepclone( ed.data.lvcurve);
+		foreach( prop in curvprops){
+			local curvp = lvtype.curvpmap[prop.pid] || defcurvp;
+			newlvcurve[prop.pid] <- ed.createLVCurve( curvp, ::conf.setting.maxlv);
+		}
+		setLVCurveOp( newlvcurve);
+	}
+
+	function showItemContextMenu( e){
+		local props = lvsellist.getSelectedItems();
+		local menudata = [
+			{ id="apply_", lbl="$T.lbl_apply_lvtype", icon="\ue4fb", submenu=::conf.player._meta.lvtypes.map( @( v){
+				return { lbl:v.name, id:"apply", val:v};
+			}) .. "-" .. { id="manage", lbl="$T.lbl_manage_lvtype", icon="\ue8b8" } },
+			"-",
+			{ id="copytsv", lbl="$T.lbl_copytsv", icon="\ue14d" },
+			{ id="pastetsv", lbl="$T.lbl_pastetsv", icon="\ue14f"},
+		];
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "apply":
+			applyLvTypeOp( props, ret.val);
+			break;
+		case "manage":
+			DBEditorPlayer.LVTypeDialog.run( null);
+			break;
+		case "copytsv":
+			copyTSV( props);
+			break;
+		case "pastetsv":
+			local t = skGetClipboardData( ClipboardType.CLIPBOARD_TEXT);
+			if( t) pasteTSV( t);
+			break;
+		}
+	}
+
+	function setLVCurveOp( newlvcurve){
+		local ed = editor, self = this, oldlvcurve = ed.data.lvcurve;
+		local redo = [@(){
+			ed.data.lvcurve = newlvcurve; self.refresh();
+		}];
+		local undo = [@(){
+			ed.data.lvcurve = oldlvcurve; self.refresh();
+		}];
+		ed.submitOp( redo, undo);
+	}
+
+	function copyTSV( curvprops){
+		local sb = StringBuffer();
+		foreach( i, prop in curvprops){
+			if( i) sb .. "\t";
+			sb .. prop.pid;
+		}
+		sb .. "\n";
+		for( local l = 1;l < ::conf.setting.maxlv;l ++){
+			foreach( i, prop in curvprops){
+				local curvp = editor.data.lvcurve[prop["pid"]];
+				if( i) sb .. "\t";
+				sb .. curvp[l];
+			}
+			sb .. "\n";
+		}
+		skPutClipboardData( sb);
+	}
+
+	function pasteTSV( t){
+		local s = 0, e = 0;
+		local pids = [];
+		for( ;; e++){
+			switch( t[e]){
+			case '\t':
+				local pid = t.substring( s, e).trim();
+				pids .. pid;
+				s = e+1;
+				break;
+			case '\n':
+				s = ++e;
+				goto HEADDONE;
+			case '\0':
+				return;
+			}
+		}
+		HEADDONE:
+		local c = 0, lv = 1;
+		local newlvcurve = deepclone( editor.data.lvcurve);
+		for( ;; e++){
+			switch( t[e]){
+			case '\0':
+			case '\t':
+				local pid = pids[c++];
+				local curvp = newlvcurve[pid];
+				if( curvp){
+					local val = int( t.substring( s, e).trim());
+					curvp[lv] = val;
+				}
+				s = e+1;
+				if( !t[e]) goto TSVDONE;
+				break;
+			case '\n':
+				++lv; c = 0; s = e+1;
+				if( lv >= ::conf.setting.maxlv) goto TSVDONE;
+				break;
+			}
+		}
+		TSVDONE:
+		setLVCurveOp( newlvcurve);
+	}
+
+	function itemevent( e){
+	}
+}
+
+class DBEditorPlayer.LVTypeDialog extends UndoableDialog
+{
+	lvtypes = null;			//	conf.player._meta.lvtypesのdeepclone
+	curvprops = null;		
+
+	typelist = null;		//	
+	paramlist = null;		//	
+
+	seltype = null;			//	
+
+	constructor( v, val){
+		super( v);
+		lvtypes = deepclone( ::conf.player._meta.lvtypes);
+		typelist = ListBehavior( view.findChild( "typelist"), lvtypes);
+		typelist.dndfunc = 3;
+		
+		typelist.listview.addEventListener( ITEM_EVENT, typeevent);
+		typelist.listview.addEventListener( ACTION_EVENT, typeevent);
+
+		curvprops = ::RPGSystem.playerprops.filter( @(v) v["lvcurve"]);
+		paramlist = view.findChild( "paramlist");
+		paramlist.setRowCount( length( curvprops));
+		foreach( i, prop in curvprops){
+			local row = paramlist.rows[i];
+			row.ref = Parameter( row, prop, this);
+		}
+		typelist.setSelectedItem( lvtypes[0]);
+		selectType( lvtypes[0]);
+	}
+
+	function refresh(){
+		typelist.setListItems( lvtypes);
+		typelist.setSelectedItem( seltype);
+		selectType( seltype);
+	}
+
+	function selectType( t){
+		seltype = t;
+		foreach( i, v in paramlist.rows){
+			local p = v.ref;
+			local prms = t.curvpmap[p.prop.pid];
+			if( !prms){
+				prms = t.curvpmap[p.prop.pid] <- {"inival":10, "midval":200, "finval":300, "midlv":30, "grow":60, "rand":1};
+			}
+			p.setParameters( prms);
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "menubtn":
+			showContextMenu( e);
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	function showContextMenu( e){
+		local menudata = [
+			{ id="add", lbl="$T.lbl_add_lvtype", icon="\ue145"},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "add":
+		{
+			local self = this;
+			local newtype = deepclone( seltype), oldsel = seltype;
+			newtype.id = lvtypes.reduce( @( v, r) Math.max( v.id+1, r), 0); printf( "i/... %S\n", newtype.id);
+			newtype.name = "";
+			local redo = [@(){ self.lvtypes .. newtype; self.seltype = newtype; }];
+			local undo = [@(){ self.lvtypes.removeValue( newtype); self.seltype = oldsel; }];
+			submitOp( redo, undo);
+			refresh();
+			suspend();
+			//	
+			local iv = typelist.getItemView( seltype);
+			local lbl = iv.findChild( "lbl");
+			local n = Popups.showRename( lbl);
+			if( n == ""){	//	キャンセルもしくは空文字
+				op.undo();
+			}else{
+				newtype.name = n;
+				typelist.refreshItems();
+			}
+			break;
+		}
+		}
+	}
+
+	function typeevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ITEM_SELECTED:
+			selectType( cmd);
+			break;
+		case ITEM_SORT:
+		{
+			local self = this, li = lvtypes;
+			local from = e.actioncmd.from[0], to = e.actioncmd.to, way = e.actioncmd.way;
+			local ins = li[ li.indexOf( to) + Math.max( way, 0)];
+			local oldins = li[li.indexOf( from)+1];
+			local redo = [@(){
+				li.removeValue( from);
+				li[ ins?li.indexOf( ins) : length(li)] <- from;
+			}];
+			local undo = [@(){
+				li.removeValue( from);
+				li[ oldins?li.indexOf( oldins) : length(li)] <- from;
+			}];
+			submitOp( redo, undo);
+			refresh();
+			break;
+		}
+		case ITEM_REMOVE:
+		{
+			removeType( seltype);
+			break;
+		}
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				if( e.actioncmd){
+					typelist.setSelectedItem( e.actioncmd);
+					selectType( e.actioncmd);
+				}
+				showTypeContextMenu( e);
+			}
+			break;
+		}
+	}
+
+	function removeType( lvtype){
+		if( length( lvtypes) <= 1) return;
+		local self = this, idx = lvtypes.indexOf( lvtype);
+		local redo = [@(){ delete self.lvtypes[idx]; self.seltype = self.lvtypes[Math.max( idx-1, 0)]; }];
+		local undo = [@(){ self.lvtypes[idx] <- lvtype; self.seltype = lvtype; }];
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	//	rename, copy, paste, delete
+	function showTypeContextMenu( e){
+		local item = e.actioncmd;
+		local cbdata = getClipboard( "lvtype");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="rename", lbl="$T.lbl_rename", icon="\ue3c9", disable=!item},
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d", disable=!item},
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=!item},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "copy":
+			putClipboard( "lvtype", item);
+			break;
+		case "paste":
+		{
+			local self = this;
+			local newtype = deepclone( item||lvtypes[0]), oldsel = seltype;
+			newtype.id = lvtypes.reduce( @( v, r) Math.max( v.id+1, r), 0);
+			newtype.name = cbdata.name .. "*";
+			while( lvtypes.find( @( v) v.name==newtype.name)){
+				newtype.name = newtype.name .. "*";
+			}
+			foreach( i, v in cbdata.curvpmap){
+				if( newtype.curvpmap[i]) newtype.curvpmap[i] = v;	//	ここで置き換え
+			}
+			local redo = [@(){ self.lvtypes .. newtype; self.seltype = newtype; }];
+			local undo = [@(){ self.lvtypes.removeValue( newtype); self.seltype = oldsel; }];
+			submitOp( redo, undo);
+			refresh();
+			break;
+		}
+		case "rename":
+			local iv = typelist.getItemView( seltype), oldname = seltype.name, type = seltype;
+			local lbl = iv.findChild( "lbl");
+			local n = Popups.showRename( lbl);
+			if( n != oldname){
+				local self = this;
+				local redo = [@(){ type.name = n; }];
+				local undo = [@(){ type.name = oldname; }];
+				submitOp( redo, undo);
+				refresh();
+			}
+			break;
+		case "delete":
+			removeType( seltype);
+			break;
+		}
+	}
+
+	static function run( val){
+		local dlg = this( srcdir.."/ui/lvtypedialog.ui", val);
+		dlg.show();
+		if( dlg.ret){
+			::conf.player._meta.lvtypes = dlg.lvtypes;
+			local r = ::getResource( "/.x/player");
+			r.save();
+			::skstudio.fileview.refreshDir( r.path);
+		}
+	}
+}
+
+class DBEditorPlayer.LVTypeDialog.Parameter
+{
+	view = null;		//	row
+	prop = null;
+	dlg = null;			//	LVTypeDialog
+	prms = null;
+
+	inival = null;		//	NumInputBehavior
+	midval = null;		//	NumInputBehavior
+	finval = null;		//	NumInputBehavior
+	midlv = null;		//	NumInputBehavior
+	grow = null;		//	NumInputBehavior
+	rand = null;		//	NumInputBehavior
+
+	constructor( v, p, d){
+		view = v;
+		prop = p;
+		dlg = d;
+		view.setValue( "propname", p.lbl);
+		inival = createNumInputBehavior( v.findChild( "inival"));
+		inival.setRange( p.range[0], p.range[1], 1);
+		midval = createNumInputBehavior( v.findChild( "midval"));
+		midval.setRange( p.range[0], p.range[1], 1);
+		finval = createNumInputBehavior( v.findChild( "finval"));
+		finval.setRange( p.range[0], p.range[1], 1);
+		midlv = createNumInputBehavior( v.findChild( "midlv"));
+		midlv.setRange( 1, 99, 1);
+		grow = createNumInputBehavior( v.findChild( "grow"));
+		grow.setRange( 0, 100, 1);
+		rand = createNumInputBehavior( v.findChild( "rand"));
+		rand.setRange( 0, 100, 1);
+		v.addEventListener( ACTION_EVENT, actionevent);
+	}
+
+	function setParameters( p){
+		prms = p;
+		inival.setValue( prms.inival);
+		midval.setValue( prms.midval);
+		finval.setValue( prms.finval);
+		midlv.setValue( prms.midlv);
+		grow.setValue( prms.grow);
+		rand.setValue( prms.rand);
+	}
+
+	function actionevent( e){
+		local pid = e.src["name"];
+		if( pid in prms){
+			local self = this, val = this[pid].getValue(), oldval = prms[pid], _prms = prms;
+			local redo = [@(){ _prms[pid] = val; self.dlg.refresh(); }];
+			local undo = [@(){ _prms[pid] = oldval; self.dlg.refresh(); }];
+			dlg.submitOp( redo, undo);
+		}
+	}
+}

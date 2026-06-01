@@ -1,0 +1,223 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+
+//	画像ファイル、動画ファイルを閲覧、編集、エンコードを行う
+//	編集されたデータは画像ファイルそのものではなく、画像メタデータに対して保存される。
+//	メタデータのキーは、パスではなく、ファイル名と画像ファイルの特徴を使う。単にバイナリデータのランダムサンプリング＋ハッシュ化
+//	また、このキーはエンコードテクスチャのパスとしても使われる。
+//	/.texcode/etc2/{hash[0]}/{hash}.ktx
+//	
+//	
+//	・SpriteSheetの画像も表示はできるが、編集はできない。
+//	・ktxはmipmapの変更やエンコードができない。ReadPixelsから変換できるけど。。。
+//	・
+//	
+//	
+//	
+//	編集できるのは以下のパラメータ
+//	blend, wrap(s,t,r), minfilter, magfilter, srgb, stretch, resolution, mipmap
+//	この中でblend,stretch, resolutionはgetSprite時に使われる
+//	
+//	動画も対応する。
+//	
+//	必須のツールではないので後回し、、、、、
+
+//	対応フォーマット
+local exts = {
+	"png":1,
+	"jpg":1,
+	"jpeg":1,
+	"webp":1,
+	"ktx":1,
+	// "mp4":1,		//	ムービーは後回し
+}
+
+class ImageEditor extends EditorViewBase
+{
+	res = null;				//	Resource : 
+	img = null;				//	RGBAImage | KTXImage | ... : SpriteSheetの場合はシート丸ごとのが入る。ピクセル値の取得用。別の方法が良いかも
+	tex = null;				//	
+	
+	//	components
+	canvas = null;			//	ImageEditorCanvas :
+	imgright = null;		//	ImageRightPanel : 
+
+	static function matches( path){
+		return !!exts[path.substring( path.lastIndexOf( ".")+1).toLowerCase()];
+	}
+	
+	static function createEditor( path){
+		if( !ImageEditor.matches( path)) return null;
+		local ed = ::loadSKView( "/skstudio/ui/imgeditor/imgeditor.ui", ImageEditor);
+		ed.init( path);
+		return ed;
+	}
+
+	//	UI File Preview
+	static function createPreview( path){
+		if( !ImageEditor.matches( path)) return null;
+		local pv = ::loadSKView( "/skstudio/ui/parts/preview1.ui");
+		local sp = ::getSprite( path);
+		local imgv = SKImageView( sp);
+		local w = imgv.bnd.w, h = imgv.bnd.h;
+		pv.setValue( "lbl", sprintf("%d x %d ",w,h));
+		imgv.bnd.x = imgv.bnd.y = 0.0;
+		local t = Math.max( w, h);
+		if( t > 320){
+			imgv.imagealign = 12;
+			imgv.setRect( 0, 0, imgv.bnd.w*320/t, imgv.bnd.h*320/t);
+			t = 320.0 / t;
+		}else{
+			t = Math.min( Math.floor( 320.0 / t), 4);
+			imgv.setRect( 0, 0, (w*t)|0, (h*t)|0);
+		}
+		local cw = Math.max( 128, w*t);
+		local ch = Math.max( 128, h*t);
+		imgv.pos( (cw-imgv.bnd.w)>>1, (ch-imgv.bnd.h)>>1, 0.0);
+		if( imgv.sp.tex0.flags & 64){	//	SK_TEXTURE_CUBEMAP
+			imgv.sp.shadersrc = skFXFindTechnique( "toolsprite.cubeex").getShaderSource(0);
+		}else{
+			imgv.sp.tex0.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_POINT, SK_POINT));
+			imgv.sp.blend = SK_MIX;
+		}
+		pv.findChild( "g").addChild( imgv);
+		pv.stretchSize( cw, ch);
+		imgv.updateLayout();
+		return pv;
+	}
+
+	function init( path){
+		canvas = ImageEditorCanvas( this, findChild( "canvas"));
+		// imgright = ImageRightPanel( this, findChild( "imgright"));
+	}
+	
+	function rootevent( e){
+		switch( e.id){
+		case SCREEN_RESIZED:
+			break;
+		}
+	}
+
+	function execMenu( m){
+		printf( "ImageEditor execMenu %S\n", encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			save();
+			return true;
+		}
+	}
+	
+	function save(){
+	}
+}
+
+local iscalelist = [
+	10, 25, 50, 75, 100, 150, 200, 300, 400, 600, 800, 1200, 1600
+];
+
+class ImageEditorCanvas
+{
+	editor = null;
+	view = null;
+	
+	backimg = null;				//	SKImageView
+	img = null;					//	SKImageView
+	iscale = 4;
+
+	moving = false;
+	mx = 0;
+	my = 0;
+
+	constructor( e, v){
+		editor = e;
+		view = v;
+		v.buf.tex0.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_POINT, SK_POINT));
+		
+		local tex = SpriteSheetCanvas.gridtexgen();
+		local backsp = Sprite( tex);
+		backsp.color = 0x333333ff;
+		backsp.bnd.set( 0, 0, 512, 512);
+		backsp.setSubBounds( backsp.bnd);
+		
+		backimg = SKImageView( backsp);
+		view.addChild( backimg);
+		
+		img = SKImageView();
+		view.addChild( img);
+		img.visible = false;
+		
+		view.addEventListener( MOUSE_EVENT, mouseevent);
+	}
+	
+	function setData( d){
+		local i = d.img || editor.getImage();
+		if( i){
+			local spw = i.width, sph = i.height;
+			backimg.setRect( 0, 0, spw, sph);
+			backimg.sp.setSubBounds( backimg.sp.bnd);
+			local tex = Texture();
+			tex.load( i);
+			img.setSprite( Sprite( i));
+			img.sp.blend = SK_MIX;
+			img.setRect( 0, 0, spw, sph);
+			img.visible = true;
+		}
+		iscale = 4;
+	}
+	
+	function setScale( s, cx, cy){
+		local w0 = iscalelist[iscale] * 0.01;
+		iscale = Math.clamp( s, 0, length( iscalelist)-1 );
+		local w = iscalelist[iscale] * 0.01;
+		local mat = Matrix.fromTranslate( cx, cy, 0).scale( w*1.0/w0).translate( -cx, -cy, 0);
+		img.scale( w);
+		img.matdirty = 1;
+		backimg.scale( w);
+		backimg.matdirty = 1;
+		img.pos.transform( mat);
+		backimg.pos << img.pos;
+		view.repaint();
+	}
+	
+	function mouseevent( e){
+		switch( e.id){
+		case MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON3_MASK)){
+				moving = 1;
+				mx = e.x;
+				my = e.y;
+			}else{
+				moving = 0;
+				e.computeLocal( img.getInvMatrix());
+				// selectAt( e.lx, e.ly);
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( moving){
+				img.pos.add( e.x-mx, e.y-my, 0);
+				backimg.pos << img.pos;
+				img.matdirty = 1;
+				backimg.matdirty = 1;
+				view.repaint();
+				mx = e.x;
+				my = e.y;
+			}
+			break;
+		case MOUSE_WHEEL_MOVED:
+			e.computeLocal( view.getInvMatrix());
+			setScale( iscale + e.count, e.lx, e.ly);
+			break;
+		}
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+skstudio.registerEditor( {
+	uid = "editor_image",
+	matches = ImageEditor.matches,
+	// createEditor = ImageEditor.createEditor,		//	後回しーーーーー
+	createPreview = ImageEditor.createPreview,
+});

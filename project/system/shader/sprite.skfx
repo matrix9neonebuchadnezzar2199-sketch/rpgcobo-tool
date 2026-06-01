@@ -1,0 +1,234 @@
+declare sprite;
+
+module mod_math;
+
+//	一般的なスプライト描画
+//	def : 普通に描画
+//	strokefont : ストローク付きのフォント
+//	
+
+param common
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	attribute lowp vec4 in_col <id=COLOR1>;
+	
+	uniform sampler2D coltex1 <id=COLORTEX1>;
+	uniform sampler2D coltex2 <id=COLORTEX2>;
+	
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform mediump mat4 p1 <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	varying lowp vec4 v_col;
+	
+	fragout lowp vec4 fragcolor;
+}
+
+vs def
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv;
+		v_col = in_col;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	default sprite shader
+
+fs def
+{
+	void main(){
+		lowp vec4 pix = $(COLORTEX1) { texture2D( coltex1 , v_uv.xy) * v_col; } : { v_col; }
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.zw);
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique def
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = def;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	sRGB draw
+
+fs srgb
+{
+	void main(){
+		lowp vec4 pix = $(COLORTEX1) { texture2D( coltex1 , v_uv.xy) * v_col; } : { v_col; }
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.zw);
+		$(COLORMAT) pix = colormat * pix;
+		pix.xyz = toSRGB( pix.xyz);
+		fragcolor = pix;
+	}
+}
+
+technique srgb
+{
+	pass {
+		CULLFACE = OFF;
+		using colorspace;
+		
+		param = common;
+		vs = def;
+		fs = srgb;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//	stroke shader
+
+param strokefont
+{
+	uniform lowp vec4 subcolor <id=UNICOLOR1>;
+}
+
+fs strokefont
+{
+	void main(){
+		lowp vec4 pix;
+		$(COLORTEX1) { 
+			lowp vec4 p = texture2D( coltex1 , v_uv.xy);
+			pix = p.x * v_col + p.y * subcolor;
+		} : { 
+			pix = v_col;
+		}
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.zw);
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique strokefont
+{
+	pass {
+		using common;
+		CULLFACE = OFF;
+		
+		param = strokefont;
+		vs = def;
+		fs = strokefont;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	high precision sprite shader ( api >= 30 )
+
+param hp
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	attribute mediump vec4 in_col <id=COLOR1>;
+	
+	uniform mediump sampler2D coltex1 <id=COLORTEX1>;
+	uniform mediump sampler2D coltex2 <id=COLORTEX2>;
+	uniform highp vec2 coltex1scale <id=COLORTEX1_PIX>;
+	
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform mediump mat4 p1 <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	varying mediump vec4 v_col;
+	
+	fragout mediump vec4 fragcolor;
+}
+
+fs hp
+{
+	void main(){
+		mediump vec4 pix = $(COLORTEX1) { texture2D( coltex1 , v_uv.xy) * v_col; } : { v_col; }
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.zw);
+		$(COLORMAT) pix = colormat * pix;
+		fragcolor = pix;
+	}
+}
+
+technique hp
+{
+	pass {
+		CULLFACE = OFF;
+		param = hp;
+		vs = def;
+		fs = hp;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	projection -> view z
+
+fs ptovz
+{
+	void main(){
+		highp float zw = $(COLORTEX1) { vec2( texture( coltex1 , v_uv.xy+p1[1].xy).x*2.0-1.0, 1.0); } : { vec2( 1.0); }
+		highp float z = dot( zw, p1[0].xy);
+		highp float w = dot( zw, p1[0].zw);
+		fragcolor = vec4( p.z / p.w);
+	}
+}
+
+technique ptovz
+{
+	apilevel = 30;
+	
+	pass {
+		CULLFACE = OFF;
+		param = hp;
+		vs = def;
+		fs = ptovz;
+	}
+}
+
+
+
+//////////////////////////////////////////////////////////////////////
+//	
+
+param copy
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	
+	uniform highp sampler2D coltex1 <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP>;
+	uniform highp mat4 col <id=MISC1MAT>;
+	varying highp vec4 v_uv;
+	
+	fragout highp vec4 fragcolor;
+}
+
+vs copy
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv;
+	}
+}
+
+fs copy
+{
+	void main(){
+		highp vec4 pix = $(COLORTEX1) { texture2D( coltex1 , v_uv.xy); } : { col[0]; }
+		fragcolor = pix;
+		gl_FragDepth = pix.x;
+	}
+}
+
+technique copy
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = copy;
+		vs = copy;
+		fs = copy;
+	}
+}

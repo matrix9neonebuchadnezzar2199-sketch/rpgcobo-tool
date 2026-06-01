@@ -1,0 +1,240 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+class PMEditor extends EditorViewBase
+{
+	res = null;				//	Resource : 
+	op = null;				//	DataOperationStack : pmdata(=table)のオペレーションスタック
+	
+	pm = null;
+	pmdata = null;			//	読み込み時のpmdata。dirtyチェックに使う
+	
+	//	view
+	canvas = null;			//	PMCanvas : プレビューキャンバス
+	rightpanel = null;		//	RightPanel : 
+	timeline = null;		//	TimelineBarBehavior : タイムライン
+	
+	static function createEditor( path){
+		if( !path.endsWith( ".pm")) return null;
+		//	
+		local ed = ::loadSKView( "/skstudio/ui/pmeditor/pmeditor.ui", PMEditor);
+		ed.init( path);
+		return ed;
+	}
+	
+	function init( path){
+		canvas = PMCanvas( this);
+		rightpanel = PMRightPanel( findChild( "right"), this);
+		timeline = TimelineBarBehavior( findChild( "timeline"));
+		timeline.view.addEventListener( VALUE_EVENT, timeevent);
+		openResource( ::getResource( path));
+		local self = this;
+		local setpmfunc = @( d){
+			local loader = PolygonMeshLoader( self.res);
+			local func = compilestring( d);
+			local t = func();	//	テーブルにデータが入る
+			loader.load( t)
+			self.setPM( loader.mesh, t);
+		};
+		op = DataOperationStack( setpmfunc, encodePM( pm));
+	}
+	
+	function openResource( r){
+		res = r;
+		r.userdata = null;
+		//	データセット
+		local loader = PolygonMeshLoader( r);
+		loader.load();
+		setPM( loader.mesh, loader.data);
+		
+		/////////////////////////////////////////////////////
+		local editinfo = pmdata["editinfo"] && decodeJSON( pmdata.editinfo);
+		if( editinfo){
+			if( !RenderSettings.getRenderSettingData( editinfo["rsetid"])){
+				editinfo.rsetid <- getDefaultRSetID();
+			}
+			canvas.setRenderSettingID( editinfo.rsetid);
+			canvas.gridchk.setSelected( !!editinfo["gridchk"]);
+			canvas.bndchk.setSelected( !!editinfo["bndchk"]);
+			canvas.bonechk.setSelected( !!editinfo["bonechk"]);
+			canvas.updateChecks();
+		}else{
+			local rsetid = getDefaultRSetID();
+			canvas.setRenderSettingID( rsetid);
+		}
+	}
+
+	function getDefaultRSetID(){
+		local pmispbr = false;
+		foreach( f in pm.face){
+			if( f.m.isPBR()){ pmispbr = true; break; }
+		}
+		local env = canvas.view.renderer.env;
+		local envispbr = env.data.renderpass>=1;
+		if( pmispbr != envispbr){
+			foreach( v in RenderSettings.data){
+				local ispbr = v.renderpass>=1;
+				if( pmispbr == ispbr){
+					return v.id;
+				}
+			}
+		}
+		return RenderSettings.data[0].id;
+	}
+
+	//	DataOperationStack用に引数を変え
+	//	
+	function submitOp( sb, trk=null){
+		op.submit( sb, trk);
+		::skstudio.updateChangeFile( this);
+	}
+	
+	function rootevent( e){
+		switch( e.id){
+		case SCREEN_RESIZED:
+			break;
+		}
+	}
+
+	function execMenu( m){
+		printf( "PMEditor execMenu %S\n", encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			::skstudio.updateChangeFile( this);
+			break;
+		case "menu_edit_redo":
+			op.redo();
+			::skstudio.updateChangeFile( this);
+			break;
+		case "menu_file_save":
+			savePM();
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			break;
+		}
+		return false;
+	}
+
+	function timeevent( e){
+		canvas.sk3d.anime( e.actioncmd, e.actioncmd, 1.0, 0, 0.006);
+	}
+
+	function setPM( p, pmd){
+		pm = p;
+		pmdata = pmd;
+		rightpanel.setPM( p);
+		canvas.setPM( p);
+	}
+
+	function savePM(){
+		local sb = StringBuffer();
+		encodePM( pm, sb);
+		//
+		local s = string( sb);
+		printf("%S\n", s);		
+		
+		local bb = ByteBuffer();
+		bb.putText( s);
+		bb.pos = 0;
+		pm.res.file.save( bb);
+		::skstudio.fileview.refreshDir( pm.res.path);
+
+		// postNotifyEvent( sprintf( ".pm saved - %S", pm.res.file.path));
+	}
+
+	function getEditInfo(){
+		return {
+			rsetid = canvas.view.renderer.env.id,
+			gridchk = canvas.gridchk.isSelected(),
+			bndchk = canvas.bndchk.isSelected(),
+			bonechk = canvas.bonechk.isSelected(),
+		}
+	}
+	
+	///////////////////////////////////////////////////////////////////////
+	//	encode PM
+
+	static blendname = ["SK_OFF","SK_MIX","SK_PMAMIX","SK_ADD","SK_MULT","SK_MIXADD"]
+	static testname  = ["SK_OFF","SK_LESS","SK_LEQUAL","SK_GREATER","SK_GEQUAL","SK_EQUAL","SK_NOTEQUAL","SK_ALWAYS","SK_NEVER"]
+	static cullname  = ["SK_OFF","SK_CW","SK_CCW"]
+	
+	function _texsrc( res, tex){
+		return 	::getRelativePath( res.pres.path, realref( tex.ref).path);
+	}
+	
+	function encodePM( pm, sb=null){
+		local sb = sb||(#StringBuffer()).clear();
+		sb.printf( "///  PolygonMesh written by SKStudio.\n/// \n")
+		sb.printf( "return {\n")
+		sb.printf( "editinfo = \"%S\"\n", encodeESC( encodeJSON( getEditInfo())));
+		sb.printf( "modeldata = \"%S\"\n", pmdata.modeldata);
+		if( pmdata["motiondata"]) sb.printf( "motiondata = \"%S\"\n", pmdata.motiondata);
+		sb.printf( "bnd = [%f,%f,%f,%f,%f,%f]\n", pm.bnd.x, pm.bnd.y, pm.bnd.z, pm.bnd.r, pm.bnd.s, pm.bnd.t);
+		if( pm.shapesets){
+			sb.printf( "\nshapesets = %S\n", encodeJSON( pm.shapesets));
+		}
+		if( pm.rbdataset){
+			sb.printf( "\nrbdataset = [\n");
+			foreach( rb in pm.rbdataset){
+				local t = rb.writeJSON();
+				sb.printf( "\t%S,\n", encodeJSON( t));
+			}
+			sb.printf( "]\n");
+		}
+		sb.printf( "\nmaterial = [\n");
+		foreach( i, f in pm.face){
+			encodeMtl( f.m, sb);
+		}
+		sb.printf("]\n}\n");
+		return string( sb);
+	}
+
+	function encodeMtl( m, sb){
+		local m0 = #Material();		//	基準マテリアル
+		//	basic param
+		sb.printf( "\t{\n")
+		sb.printf( "\t\tname = \"%S\"\n" , m.name)
+		sb.printf( "\t\ttec = \"%S\"\n" , m.tec.name)
+		if( m.tec.tag.contains( "pbr")){
+			sb.printf( "\t\tmtype = %d\n" , m.mtype)
+			sb.printf( "\t\tbasecol = 0x%08X\n" , m.basecol)
+			sb.printf( "\t\trough = %f\n" , m.rough)
+			sb.printf( "\t\tmetal = %f\n" , m.metal)
+			sb.printf( "\t\tmparam = 0x%08X\n" , m.mparam)
+			sb.printf( "\t\ttexmap = 0x%08X\n" , m.texmap)
+		}else{
+			sb.printf( "\t\tKa = 0x%08X\n" , m.Ka)
+			sb.printf( "\t\tKd = 0x%08X\n" , m.Kd)
+			sb.printf( "\t\tKs = 0x%08X\n" , m.Ks)
+			sb.printf( "\t\tKe = 0x%08X\n" , m.Ke)
+			sb.printf( "\t\tshiness = %f\n" , m.shiness)
+		}
+		if( m.blend) sb.printf( "\t\tblend = %S\n" , blendname[m.blend])
+		if( m.depthtest != m0.depthtest) sb.printf( "\t\tdepthtest = %S\n" , testname[m.depthtest])
+		if( m.depthmask != m0.depthmask) sb.printf( "\t\tdepthmask = %S\n", m.depthmask)
+		if( m.alphatest) sb.printf( "\t\talphatest = %S\n" , testname[m.alphatest])
+		if( m.cullface != m0.cullface) sb.printf( "\t\tcullface = %S\n" , cullname[m.cullface])
+		//	texture
+		if( m.tex0) sb.printf( "\t\ttexture0 = \"%S\"\n" , _texsrc( res, m.tex0))
+		if( m.tex1) sb.printf( "\t\ttexture1 = \"%S\"\n" , _texsrc( res, m.tex1))
+		if( m.tex2) sb.printf( "\t\ttexture2 = \"%S\"\n" , _texsrc( res, m.tex2))
+		if( m.tex3) sb.printf( "\t\ttexture3 = \"%S\"\n" , _texsrc( res, m.tex3))
+		if( m.uvbits) sb.printf( "\t\tuvbits = %d\n" , m.uvbits)
+		if( m.texw0 != 1.0) sb.printf( "\t\ttexw0 = %f\n" , m.texw0)
+		if( m.texw1 != 1.0) sb.printf( "\t\ttexw1 = %f\n" , m.texw1)
+		if( m.texw2 != 1.0) sb.printf( "\t\ttexw2 = %f\n" , m.texw2)
+		if( m.texw3 != 1.0) sb.printf( "\t\ttexw3 = %f\n" , m.texw3)
+		if( m.visiblemask != DEFAULT_VISIBLEMASK) sb.printf( "\t\tvisiblemask = 0x%x\n", m.visiblemask)
+		sb.printf( "\t}\n");
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+skstudio.registerEditor( {
+	uid = "editor_pm",
+	matches = @( path){ return path.endsWith( ".pm"); }
+	createEditor = PMEditor.createEditor,
+});

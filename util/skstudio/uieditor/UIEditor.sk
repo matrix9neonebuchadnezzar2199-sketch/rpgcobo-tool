@@ -1,0 +1,1398 @@
+import SKViewPropertyID;
+import VirtualKeyCode;
+import ModifiersMask;
+import UIOP;
+
+::uiclipboard <- null;		//	putClipboard対応は後回し、、、
+::uikeyclipboard <- null;
+
+class UIEditor extends EditorViewBase
+{
+	static widgetfactory = [];
+	
+	view = null;			//	
+	res = null;				//	Resource : 
+	op = null;				//	OperationStack : uiのオペレーションスタック
+	
+	sellist = null;			//	SKView[] : selection.sellist
+	tflist = null;			//	SKView[] : transform list
+	
+	toppanel = null;
+	canvas = null;
+	uiright = null;
+	timeline = null;
+
+	widgetwindow = null;
+	widgetlist = null;		//	ListBehavior
+
+	zoomlbl = null;			//	
+	
+	static function createEditor( path){
+		if( !path.endsWith( ".ui")) return null;
+		//	
+		local ed = ::loadSKView( "/skstudio/ui/uieditor/uieditor.ui", UIEditor);
+		ed.init( path);
+		return ed;
+	}
+
+	//	UI File Preview
+	static function createPreview( path){
+		if( !path.endsWith( ".ui")) return null;
+		local pv = ::loadSKView( "/skstudio/ui/parts/preview1.ui");
+
+		local ui = ::loadSKView( path);
+		local w = ui.bnd.w, h = ui.bnd.h;
+		pv.setValue( "lbl", sprintf("%d x %d ",w,h));
+		ui.bnd.x = ui.bnd.y = 0.0;
+		local t = Math.max( w, h);
+		if( t > 320){
+			t = 320.0 / t;
+			ui.scale( t, t, 1.0);
+		}else{
+			t = 1.0;
+		}
+		local cw = Math.max( 128, w*t);
+		local ch = Math.max( 128, h*t);
+		pv.stretchSize( cw, ch);
+		pv.findChild( "g").addChild( ui);
+		pv.findChild( "g").setBuffer( 2);
+		return pv;
+	}
+
+	//	New File
+	static function newFile( filename, dirpath){
+		local d = SKViewData(); d.init();
+		local bb = ObjectOutput.encode( d);
+		return bb;
+	}
+
+	function init( path){
+		op = OperationStack();
+		sellist = [];
+		tflist = [];
+		
+		canvas = UICanvas( findChild( "canvas"), this);
+		uiright = UIRightPanel( findChild( "uiright"), this);
+		timeline = TimelineBarBehavior( findChild( "timeline"));
+		timeline.view.addEventListener( VALUE_EVENT, timeevent);
+		timeline.view.addEventListener( ACTION_EVENT, timeevent);
+		timeline.setTimeRange( -10, 1000);
+		
+		widgetwindow = findChild( "widgetwindow");
+		widgetwindow.setVisible( false);
+		widgetlist = ListBehavior( findChild( "widgetlist"), widgetfactory);
+		widgetlist.dndfunc = 1;
+		
+		zoomlbl = findChild( "zoomlblbtn.lbl");
+		
+		openResource( ::getResource( path));
+		
+		addEventListener( ACTION_EVENT, actionevent);
+	}
+
+	//	リロードしてundoバッファをクリア。手動でもできるし
+	function reload(){
+		res.flush();
+		local path = res.path;
+		local outermap = collectOuterResources( canvas.root, {});
+		local dirmap = {};
+		dirmap[res.pres.path] <- 1;	//	自分のとこも
+		foreach( p, v in outermap){
+			p = p.substring( 0, p.lastIndexOf( "/"));
+			dirmap[p] <- 1;
+		}
+		foreach( p, _ in dirmap){
+			::skstudio.fileview.refreshDir( p);
+		}
+		setSelection([]);
+		openResource( ::getResource( path));
+	}
+
+	//	非アクティブ化時に、参照しているファイルの一覧を退避する。
+	//	アクティブ化時にこれらの参照ファイルが変化していたら、再読み込みか、そのまま続行を選ぶ。
+	//	自動で置き換えるのが出来たらよかったが、undoの時に昔のリソースに戻しちゃう場合がある。
+	function setActive( b){
+		super.setActive( b);
+		if( !b){
+			canvas.exitScriptRun();
+			// local vv = collectOuterResources( canvas.root, {});
+			// printf( "VV! %S\n", encodeJSON( vv, 1));
+		}else{
+		}
+	}
+
+	static outerrespids = (IMAGE,IMAGELIST,ROWPATH,BARPATH,SDPATH);
+
+	static function outerres( path){
+		return ::getResource( path)["rev"]||0;
+	}
+
+	//	外部リソースを収集する。パスとリソースの更新チェック用のハッシュ的なものを取得しておく。
+	//	viewdata.link及び、IMAGE,IMAGELIST,ROWPATH,BARPATH,(SDPATH) 
+	//	SDPATHは、その中にあるリソースまでは収集しない。
+	//	FileResource = file.updated
+	//	SpriteSheetClip = clip.writeJSON().hash() ? pres.srcres.file.updated ?
+	//	
+	function collectOuterResources( v, ret){
+		local li = v.viewdata["link"];
+		if( li && !ret[li]){
+			ret[li] <- outerres( li);
+		}
+		foreach( pid in outerrespids){
+			local v = v.getParam( pid);
+			if( typeof( v)==SS_STRING && v!="" && !ret[v]){
+				ret[v] <- outerres( v);
+			}else
+			if( typeof( v)==SS_ARRAY){
+				foreach( s in v){
+					if( typeof( s)==SS_STRING && s!="" && !ret[s]){ ret[s] <- outerres( s); }
+				}
+			}
+		}
+		foreach( c in v.children){
+			collectOuterResources( c, ret);
+		}
+		return ret;
+	}
+	
+	function getFrameTime(){
+		return timeline.getTime();
+	}
+
+	function rootevent( e){
+		switch( e.id){
+		case SCREEN_RESIZED:
+			break;
+		case KEY_PRESSED:
+		case KEY_REPEATED:
+		case KEY_RELEASED:
+			canvas.selection.tool.procevent( e);	//	uu-m toolはどこにあるべきか
+			break;
+		}
+	}
+	
+	function execMenu( m){
+		printf( "UIEditor execMenu %S\n", encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			writeUI();
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_revert":
+			reload();
+			return true;
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_cut":
+			if( copySelection()){
+				deleteSelection();
+			}
+			return true;
+		case "menu_edit_copy":
+			copySelection();
+			return true;
+		case "menu_edit_paste":
+			if( ::uiclipboard){
+				pasteUI( ::uiclipboard);
+			}
+			return true;
+		case "editor_ui_menu_edit_group":
+			if( length( tflist)){
+				groupSelection();
+			}
+			return true;
+		case "editor_ui_menu_edit_ungroup":
+			if( length( sellist)==1){
+				ungroupSelection();
+			}
+			return true;
+		case "editor_ui_menu_edit_to_button":
+		case "editor_ui_menu_edit_to_textedit":
+			if( length( sellist)==1 && (sellist[0] instanceof SKGroupView || sellist[0] instanceof SKLibView)){
+				setUIFunction( sellist[0], m["uid"]=="editor_ui_menu_edit_to_button" ? "GPUIButton" : "GPUITextEdit");
+			}
+			return true;
+		case "editor_ui_menu_edit_to_multiimage":
+			if( length( sellist)==1 && (sellist[0] instanceof SKImageView)){
+				toMultiImage( sellist[0]);
+			}
+			return true;
+		case "editor_ui_menu_edit_order_upmost":
+			return true;
+		case "editor_ui_menu_edit_order_up":
+			levelShift( 1);
+			return true;
+		case "editor_ui_menu_edit_order_down":
+			levelShift( -1);
+			return true;
+		case "editor_ui_menu_edit_order_downmost":
+			return true;
+		case "editor_ui_menu_edit_uitest":
+			if( canvas.scproot){
+				canvas.exitScriptRun();
+			}else{
+				canvas.enterScriptRun();
+			}
+			return true;
+		case "editor_ui_menu_edit_clipboardimg":
+			pasteClipboardImage();
+			return true;
+		}
+		return false;
+	}
+
+	function timeevent( e){
+		switch( e.id){
+		case VALUE_CHANGED:
+			canvas.setFrameTime( timeline.getTime());
+			uiright.refreshParams();
+			canvas.updateSelection( sellist);
+			op.untrack();
+			break;
+		case ACTION_PERFORMED:
+			//	右クリックメニュー
+			local m = [
+				{ lbl:"$T.timeline_ctxmenu_cut", val=0, icon="\ue14e" }
+				{ lbl:"$T.timeline_ctxmenu_copy", val=1, icon="\ue14d" }
+				{ lbl:"$T.timeline_ctxmenu_paste", val=2, icon="\ue14f" }
+				"-"
+				{ lbl:"$T.timeline_ctxmenu_del", val=3, icon="\ue872" }
+			];
+			local c = e.actioncmd;
+			local ret = MenuPopup.run( m);
+			if( ret){
+				switch( ret.val){
+				case 0:
+					if( copyKeys( c.selfrom, c.selto)){
+						deleteKeys( c.selfrom, c.selto);
+						refresh();
+						updateSelectionTimeline();
+					}
+					break;
+				case 1:
+					copyKeys( c.selfrom, c.selto);
+					break;
+				case 2:
+					if( pasteKeys( timeline.getTime())){
+						refresh();
+						updateSelectionTimeline();
+					}
+					break;
+				case 3:
+					deleteKeys( c.selfrom, c.selto);
+					refresh();
+					updateSelectionTimeline();
+					break;
+				}
+			}
+			e.consume();
+		}
+	}
+
+	function copyKeys( s, e){
+		local a = [];
+		foreach( v in sellist){
+			local ma = [];
+			foreach( prop in v.getProperties()){
+				if( prop["anime"]){
+					local mot = v.getMotion( prop.pid);
+					if( mot){
+						local ka = [], k = mot.key;
+						while( k){
+							if( k.time >= s && k.time <= e){
+								ka .. { time=k.time, p=k.p, tween=k.tween };
+							}
+							k = k.next;
+						}
+						if( length( ka)) ma .. { pid=prop.pid, keys=ka };
+					}
+				}
+			}
+			if( length( ma)) a .. { mots=ma, selfrom=s, selto=e };
+		}
+		if( length( a)){
+			::uikeyclipboard = ObjectOutput.encode( a);
+			printf("copy keys --- %S\n", encodeJSON( a, 1));
+			return true;
+		}
+	}
+
+	function deleteKeys( s, e){
+		if( !length( sellist)) return;
+		local a = [];
+		foreach( v in sellist){
+			foreach( mot in v.motion){
+				local k = mot.key, b = false;
+				while( k){
+					if( k.time >= s && k.time <= e){
+						printf("delete key .. %S %S %S\n",v.name,mot.pid,k.time);
+						a .. { view=v, pid=mot.pid, key=k};
+					}
+					k = k.next;
+				}
+			}
+		}
+		if( length( a)){
+			local redo = [OP_DeleteSKViewMotionKeys( a), OP_MoveTime( this, timeline.getTime()), OP_SelectSKViews( this, clone sellist)];
+			local undo = [OP_PutSKViewMotionKeys( a), OP_MoveTime( this, timeline.getTime()), OP_SelectSKViews( this, clone sellist)];
+			submitOp( redo, undo);
+		}
+	}
+
+	function pasteKeys( s){
+		local cbdata = ObjectInput.decode( ::uikeyclipboard);
+		printf("pasteKeys sels:%d, clipboards:%d\n", length( sellist), length( cbdata));
+		local redo = [], undo = [];
+		if( length( sellist) == 1 && length( cbdata) == 1){
+			//	シングルモーションコピー
+			local v = sellist[0], cb = cbdata[0];
+			//	ぺーすと
+			local newmot = clone v.motion, offs = s - cb.selfrom;
+			foreach( i, m in cb.mots){
+				if( !v.getProperty( m.pid)) continue;
+				local mot = v.getMotion( m.pid), _m = clone mot;
+				foreach( k in m.keys){
+					_m.put( k.time+offs, k.p, k.tween);
+				}
+				_m.build();
+				newmot[v.motion.indexOf( mot)] = _m;
+			}
+			redo .. OP_SetSKViewMotions( v, newmot);
+			undo .. OP_SetSKViewMotions( v, v.motion);
+		}else{
+			//	マルチモーションコピー
+			foreach( v in sellist){
+				local cb = null;
+				local vstr = string( v);
+				foreach( b in cbdata){
+					if( b.view == vstr){ cb = b; break;}		//	u--m...
+				}
+				if( !cb) continue;
+				//	ぺーすと
+				local newmot = clone v.motion, offs = s - cb.selfrom;
+				foreach( i, m in cb.mots){
+					if( !v.getProperty( m.pid)) continue;
+					local mot = v.getMotion( m.pid), _m = clone mot;
+					foreach( k in m.keys){
+						_m.put( k.time+offs, k.p, k.tween);
+					}
+					_m.build();
+					newmot[v.motion.indexOf( mot)] = _m;
+				}
+				redo .. OP_SetSKViewMotions( v, newmot);
+				undo .. OP_SetSKViewMotions( v, v.motion);
+			}
+		}
+		redo .. OP_MoveTime( this, timeline.getTime()) .. OP_SelectSKViews( this, clone sellist);
+		undo .. OP_MoveTime( this, timeline.getTime()) .. OP_SelectSKViews( this, clone sellist);
+		submitOp( redo, undo);
+	}
+
+	function pasteClipboardImage(){
+		if( skCheckClipboardType( ClipboardType.CLIPBOARD_IMAGE)){
+			local img = skGetClipboardData( ClipboardType.CLIPBOARD_IMAGE);
+			local imgbb = img.encodeWebp( 95); imgbb.pos = 0;
+			//
+			local rpos = Vector3D(0,0,0);//v_1(x,y,0).transform( root.getInvMatrix());
+			local v = SKEmbedImageView();
+			v.name = "embedimg";
+			v.setParam( IMAGEDATA, imgbb);
+			v.setParam( SIZE, [img.width, img.height]);
+			canvas._viewdropped( v, rpos);
+		}
+	}
+
+	function openResource( r){
+		res = r;
+		r.userdata = null;
+		//	データセット
+		local d = r.getContent();
+		op.clear();
+		canvas.setData( d);
+		uiright.setData( d);
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "hidewidgetbtn":
+			widgetwindow.setVisible( false);
+			break;
+		case "showwidgetbtn":
+			widgetwindow.setVisible( true);
+			break;
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////
+	//	refresh something
+
+	function refresh(){
+		canvas.refresh();
+		uiright.refresh();
+		updateSelectionTimeline();
+	}
+
+	function updateSelectionTimeline(){
+		local bb = ByteBuffer( 2048);
+		bb.size = 2048;
+		bb.fill( 0);
+		bb.pos = 0;
+		for( local l = 0;l < 500;l ++){
+			foreach( v in sellist){
+				foreach( mot in v.motion){
+					local k = mot.key && mot.keyAt( l-10);
+					if( k["time"] == l-10){ bb[l] = 1; goto DONE; }
+				}
+				foreach( fx in v.fxlist){
+					foreach( mot in fx.motion){
+						local k = mot.key && mot.keyAt( l-10);
+						if( k["time"] == l-10){ bb[l] = 1; goto DONE; }
+					}
+				}
+			}
+			DONE:
+			;
+		}
+		local keyedfunc = @( t){
+			return !!bb[t+10];
+		};
+		timeline.setKeyFrame( keyedfunc);
+	}
+
+	function updatetflist(){
+		treefilter( sellist, tflist);
+	}
+
+	//	親が選択されている場合にその子の選択をフィルターする。
+	function treefilter( a, out=null){
+		if( !out) out = []; else out.clear();
+		local root = canvas.root;
+		foreach( v in a){
+			local pv = v.parent;
+			while( pv){
+				if( a.contains( pv)) goto FILTERED;
+				pv = pv.parent;
+			}
+			out .. v;
+		FILTERED:
+			;
+		}
+		return out;
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////
+	//	selection
+
+	function setSelection( a){
+		sellist.clear();
+		sellist ... a;
+		canvas.updateSelection( a);
+		uiright.updateSelection( a);
+		updateSelectionTimeline();
+		updatetflist();
+	}
+
+	function addSelection( v){
+		local i = sellist.indexOf( v);
+		if( i < 0){
+			sellist[0] <- v;
+			canvas.updateSelection( sellist);
+			uiright.updateSelection( sellist);
+			updateSelectionTimeline();
+			updatetflist();
+		}
+	}
+	
+	function removeSelection( v){
+		local i = sellist.indexOf( v);
+		if( i >= 0){
+			delete sellist[i];
+			canvas.updateSelection( sellist);
+			uiright.updateSelection( sellist);
+			updateSelectionTimeline();
+			updatetflist();
+		}
+	}
+
+	function isSelecting( v){
+		return sellist.contains( v);
+	}
+
+	static function _serializeorder( a, ret){
+		foreach( v in a){
+			ret .. v;
+			if( v.children) _serializeorder( v.children, ret);
+		}
+		return ret;
+	}
+	
+	//	階層で整列してソートしたものを返す
+	//	削除系の処理のundoを正しい処理順行うために使う。
+	//	シーケンシャルに並べてindexOfでソートが一番楽かな？？？？？
+	function sortOrder( a){
+		a = clone a;
+		local oa = _serializeorder( canvas.root.children, []);
+		a.sort( @( v) oa.indexOf( v));
+		return a;
+	}
+	
+	//	選択しているviewを消す
+	function deleteSelection(){
+		if( !length( sellist)) return false;
+		local redo = [OP_SelectSKViews( this, [])];
+		local undo = [OP_SelectSKViews( this, clone sellist)]
+		local tfsort = sortOrder( tflist);
+		foreach( i,v in tfsort){
+			redo[0] <- OP_RemoveSKView( v.parent, v);
+			undo .. OP_AddSKView( v.parent, v, v.parent.children.indexOf( v));
+		}
+		submitOp( redo, undo);
+		canvas.selection.mouseon = null;
+		return true;
+	}
+	
+	static function _viewdepth( v){
+		local c = 0; while( v){ ++c; v = v.parent; } return c;
+	}
+	
+	static function _digparent( a, b){
+		if( a == b) return a;
+		if( a.contains( b)) return a;
+		if( b.contains( a)) return b;
+		return _viewdepth( a) < _viewdepth( b) ? a.parent : b.parent;
+	}
+	
+	function getSelectionParent(){
+		if( !length( sellist)) return canvas.root;
+		local p = sellist[0].parent;
+		for( local l = 1;l < length( sellist);l ++){
+			local v = sellist[l];
+			p = _digparent( p, v.parent);
+		}
+		return p;
+	}
+
+	//	選択をグループ化
+	function groupSelection(){
+		local p = getSelectionParent();
+		local va = [];
+		local redo = [], undo = [];
+		//	new SKGroupView
+		local g = SKGroupView();
+		g.name = "GROUP";
+		//	move selection
+		local bb = Rect2D(10000,10000,-20000,-20000), r_1 = Rect2D();
+		local pinv = p.getInvMatrix();
+		//	gのバウンディングを計算して設定。
+		foreach( i,v in sellist){
+			local b = r_1.set( 0, 0, v.bnd.w, v.bnd.h).transform( pinv.mult44( v.mat));
+			bb << (bb|b);
+		}
+		local _x = Math.round( bb.x + bb.w*0.5), _y = Math.round( bb.y + bb.h*0.5);
+		g.bnd.set( Math.round( -bb.w*0.5), Math.round( -bb.h*0.5), Math.round( bb.w), Math.round( bb.h));
+		g.pos( _x, _y);
+		markSKViewMotions( g);
+		local ginv = Matrix( p.mat).translate( g.pos.x+g.bnd.x, g.pos.y+g.bnd.y, 0.0).invert44();
+		//	shift position
+		local tfsort = sortOrder( tflist);
+		foreach( i,v in tfsort){
+			local vd = toSKViewEntityData( v);
+			vd.motion = deepclone( vd.motion);		//	toSKViewEntityDataは中身までコピーしない。したければdeepcloneかencodeするべし
+			local mot = vd.getMotion( POSITION);
+			for( local k = mot.key; k; k = k.next){
+				local p1 = Vector3D( k.p[0], k.p[1], k.p[2]).transform( ginv.mult44( v.parent.mat));
+				k.p = (Math.round( p1.x), Math.round( p1.y));
+			}
+			local cv = vd.createSKView();
+			g.addChild( cv);
+			//
+			redo .. OP_RemoveSKView( v.parent, v);
+			undo .. OP_AddSKView( v.parent, v, v.parent.children.indexOf( v));
+		}
+		redo .. OP_AddSKView( p, g);	//	全部消し去った後にgを足す！
+		undo[0] <- OP_RemoveSKView( p, g);
+		//
+		redo .. OP_SelectSKViews( this, [g]);
+		undo .. OP_SelectSKViews( this, clone sellist);
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	//	選択のグループ解除。
+	//	グループを上に展開、SKLibViewの展開、ボタンやテキストエディットの解除
+	function ungroupSelection(){
+		local v = sellist[0];
+		if( v instanceof GPUIButton || v instanceof GPUITextEdit || v instanceof SKScalingLayoutView){
+			return dispelUIFunction( v);
+		}else
+		if( v instanceof SKLibView){
+			libToGroup( v);
+		}else
+		if( v instanceof SKGroupView){
+			return extractView( v, v.parent);
+		}
+	}
+
+	//	SKLibViewをSKGroupViewに変換する
+	//	この時ストレッチをしっかりと適用する。
+	function libToGroup( lv){
+		local redo = [], undo = [];
+		local fn( v, first){
+			local vd = toSKViewEntityData( v, false);
+			if( first) vd.link = null;
+			if( v.stretchsize && vd.getStatic( SIZE_STATIC)){
+				vd.setStatic( SIZE_STATIC, (Math.round( v.bnd.w)|0, Math.round( v.bnd.h)|0));
+			}
+			vd.motion = deepclone( vd.motion);		//	toSKViewEntityDataは中身までコピーしない。したければdeepcloneかencodeするべし
+			if( v.alignpos){
+				local ap = v.alignpos;
+				for( local k = vd.getMotion( POSITION)?.key; k; k = k.next){
+					k.p = (Math.round( k.p[0]+ap[0]), Math.round( k.p[1]+ap[1]));
+				}
+				if( v.stretchalign&16)
+				for( local k = vd.getMotion( PIVOT)?.key; k; k = k.next){
+					k.p = (Math.round( k.p[0]-ap[0]), Math.round( k.p[1]-ap[1]));
+				}
+			}
+			if( first || (v["isdir"] && length( v.children))){	//	isdir以外は子Viewは書き出さない
+				local ca = vd.children = [];
+				foreach( cv in v.children){
+					local cd = fn( cv, false);
+					if( cd) ca .. cd;
+				}
+			}
+			return vd;
+		};
+		local vd = fn( lv, true);
+		local gv = vd.createSKView( ::SKGroupView), lvi = lv.parent.childIndexOf( lv);
+		gv.name = lv.name;
+		redo .. OP_SetSKView( lv.parent, gv, lvi) .. OP_SelectSKViews( this, [gv]);
+		undo .. OP_SetSKView( lv.parent, lv, lvi) .. OP_SelectSKViews( this, [lv]);
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	//	vを展開してtoに追加する
+	function extractView( g, to){
+		local vmat = to.getInvMatrix().mult44( g.mat);
+		local redo = [], undo = [];
+		local va = [];
+		//	shift position
+		foreach( i,c in g.children){
+			local vd = toSKViewEntityData( c);
+			vd.motion = deepclone( vd.motion);		//	toSKViewEntityDataは中身までコピーしない。したければdeepcloneかencodeするべし
+			local mot = vd.getMotion( POSITION);
+			for( local k = mot.key; k; k = k.next){
+				local p1 = Vector3D( k.p[0], k.p[1], k.p[2]).transform( vmat);
+				k.p = (Math.round( p1.x), Math.round( p1.y));
+			}
+			local v = vd.createSKView();
+			redo .. OP_AddSKView( to, v, -1);
+			undo .. OP_RemoveSKView( to, v);
+			va .. v;
+		}
+		redo .. OP_RemoveSKView( g.parent, g);
+		undo .. OP_AddSKView( g.parent, g, g.parent.childIndexOf( g));
+		//	
+		redo .. OP_SelectSKViews( this, va);
+		undo .. OP_SelectSKViews( this, [g]);
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	//	ボタンなんかを剥がす
+	function dispelUIFunction( btn){
+		local data = toSKViewEntityData( btn);
+		data.cls = data.link ? "SKLibView" : null;
+		local v = data.createSKView();
+		local p = btn.parent, i = p.children.indexOf( btn);
+		local redo = [OP_ReplaceSKView( p, i, v), OP_SelectSKViews( this, [v])];
+		local undo = [OP_ReplaceSKView( p, i, btn), OP_SelectSKViews( this, [btn])];
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	//	"GPUIButton", "GPUIButton"
+	function setUIFunction( v, clsname){
+		local data = toSKViewEntityData( v);
+		data.cls = clsname;
+		local btn = data.createSKView();
+		local p = v.parent, i = p.children.indexOf( v);
+		local redo = [OP_ReplaceSKView( p, i, btn), OP_SelectSKViews( this, [btn])];
+		local undo = [OP_ReplaceSKView( p, i, v), OP_SelectSKViews( this, [v])];
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	function toMultiImage( img){
+		if( !(img instanceof SKImageView)) return;
+		//	SKImageViewからSKMultiImageViewに変換。逆の変換はいらない。
+		local data = toSKViewEntityData( img);
+		data.cls = "SKMultiImageView";
+		local v = data.createSKView();
+		local pathlist = [img.imageref,"","",""];
+		v.setParam( IMAGELIST, pathlist);
+		//	IMAGEFRAMEのキーを打つ
+		local mot = v.getMotion( IMAGEFRAME);
+		mot.put( 0, 0.0, 1);
+		mot.build();
+		//
+		local p = img.parent, i = p.children.indexOf( img);
+		local redo = [OP_ReplaceSKView( p, i, v), OP_SelectSKViews( this, [v])];
+		local undo = [OP_ReplaceSKView( p, i, img), OP_SelectSKViews( this, [img])];
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	function levelShift( way){
+		if( !length( tflist)) return false;
+		foreach( v in tflist){
+			local i = v.parent.children.indexOf( v);
+			if( !v.parent.children[i+way]) return false;
+		}
+		local a = clone tflist;
+		a.sort( @( _a, _b) (_a.parent.childIndexOf( _a) - _b.parent.childIndexOf( _b)) * way );
+		local redo = [], undo = [];
+		foreach( i, v in a){
+			local p = v.parent, i = p.childIndexOf( v);
+			local oldprev = i-1;
+			local newprev = i-1+way;
+			redo[0] <- OP_MoveSKView( p, v, newprev);
+			undo .. OP_MoveSKView( p, v, oldprev);
+		}
+		local _sels = clone sellist;
+		redo .. OP_SelectSKViews( this, _sels);
+		undo .. OP_SelectSKViews( this, _sels);
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	function moveViews( a, to, way){
+		local tfa = sortOrder( treefilter( a));
+		local prev;
+		if( way){
+			prev = to.parent.children[ to.parent.children.indexOf( to) + Math.min( way, 0)];
+			to = to.parent;
+		}else{
+			prev = to.children? to.children.last() : null;
+		}
+		//	移動元が移動先を含んでいないか確認
+		foreach( from in tfa){
+			if( from.contains( to)){
+				printf( "FROM CONTAINS TO......\n"); return;
+			}
+		}
+		local undo = [], redo = [];
+		foreach( v in tfa){
+			local oldp = v.parent, oldprev = oldp.children[oldp.children.indexOf( v)-1];
+			redo[0] <- OP_MoveSKView( to, v, prev);
+			undo .. OP_MoveSKView( oldp, v, oldprev);
+		}
+		redo .. OP_SelectSKViews( this, a);
+		undo .. OP_SelectSKViews( this, a);
+		submitOp( redo, undo);
+		refresh();
+	}
+
+	////////////////////////////////////////////////////////////////
+	//	copy / paste / move
+
+	function copySelection(){
+		if( !length( tflist)) return false;
+		local a = [];
+		foreach( i,v in tflist){	//	子も一緒に書き出すからこれでok
+			a .. toSKViewEntityData( v);
+		}
+		::uiclipboard = ObjectOutput.encode( a);
+		return true;
+	}
+	
+	function pasteUI( bb){
+		local data = ObjectInput.decode( bb);
+		local p = getSelectionParent(), i = length( p.children);
+		local va = [], redo = [], undo = [];
+		foreach( vd in data){
+			local v = vd.createSKView();
+			redo .. OP_AddSKView( p, v, i);
+			undo[0] <- OP_RemoveSKView( p, v, i);
+			va .. v;
+			++i;
+		}
+		redo .. OP_SelectSKViews( this, va);
+		undo .. OP_SelectSKViews( this, clone sellist);
+		submitOp( redo, undo);
+		refresh();
+	}
+	
+	////////////////////////////////////////////////////////////////
+	//	parameter
+
+	function setSKViewParamOP( view, pid, time, val, tween=null){
+		local prop = view.getProperty( pid);
+		//	mot param
+		local undoop, redoop;
+		if( prop["anime"]){
+			if( tween==null) tween = prop.anime-1;
+			local mot = view.getMotion( pid);
+			local k0 = mot.existingkey( time);
+			if( k0){
+				undoop = OP_SetSKViewMotionParam( view, pid, k0);
+			}else{
+				undoop = OP_RemoveSKViewMotionParam( view, pid, time);
+			}
+			if( val != undefined){
+				local k = MotionKey();
+				k.time = time;
+				k.tween = tween;
+				k.p = clone val;
+				redoop = OP_SetSKViewMotionParam( view, pid, k);
+			}else{
+				redoop = OP_RemoveSKViewMotionParam( view, pid, time);
+			}
+		}else{
+			//	static param
+			undoop = OP_SetSKViewStaticParam( view, pid, view.getParam( pid));
+			redoop = OP_SetSKViewStaticParam( view, pid, clone val);
+		}
+		return ([redoop], [undoop]);
+	}
+	
+	function setSKViewFXParamOP( view, fx, pid, time, val, tween=null){
+		local prop = fx.getProperty( pid);
+		//	mot param
+		local undoop, redoop;
+		if( prop["anime"]){
+			if( tween==null) tween = prop.anime-1;
+			local mot = fx.getMotion( pid);
+			local k0 = mot.existingkey( time);
+			if( k0){
+				undoop = OP_SetSKViewFXMotionParam( view, fx, pid, k0);
+			}else{
+				undoop = OP_RemoveSKViewFXMotionParam( view, fx, pid, time);
+			}
+			if( val != undefined){
+				local k = MotionKey();
+				k.time = time;
+				k.tween = tween;
+				k.p = val;
+				redoop = OP_SetSKViewFXMotionParam( view, fx, pid, k);
+			}else{
+				redoop = OP_RemoveSKViewFXMotionParam( view, fx, pid, time);
+			}
+		}else{
+			undoop = OP_SetSKViewFXStaticParam( view, fx, pid, fx.getParam( pid));
+			redoop = OP_SetSKViewFXStaticParam( view, fx, pid, clone val);
+		}
+		return ([redoop], [undoop]);
+	}
+	
+	///////////////////////////////////////////////////////////////
+	//	save
+
+	function writeUI(){
+		local d = SKViewData();
+		d.rootdata = toSKViewEntityData( canvas.root);
+		
+		local bb = ObjectOutput.encode( d);
+		res.file.save( bb);
+		res.userdata = null;
+		::skstudio.fileview.refreshDir( res.path);
+		
+		// postNotifyEvent( sprintf( ".ui saved - %S", res.file.path));
+	}
+
+	function toSKViewEntityData( v, recurs=true){
+		local d = SKViewEntityData();
+		if( v["noexportcls"]){
+		}else{
+			d.cls = getclassname( v);
+			d.link = v.viewdata["link"] || null;
+		}
+		d.name = v.name;
+		d.layerflags = v.layerflags;
+		{
+			local sa = [], ma = [];
+			foreach( prop in v.getProperties()){
+				if( prop["anime"]){
+					local mot = v.getMotion( prop.pid);
+					if( mot) ma .. mot;
+				}else{
+					sa .. [ prop.pid, v.getParam( prop.pid)];
+				}
+			}
+			if( length( v.actionmap)){
+				sa .. [ ACTIONMAP, v.actionmap];
+			}
+			if( length( sa)) d.staticparams = sa;
+			if( length( ma)) d.motion = ma;
+			if( recurs && v["isdir"] && length( v.children)){	//	isdir以外は子Viewは書き出さない
+				local ca = d.children = [];
+				foreach( cv in v.children){
+					local cd = toSKViewEntityData( cv);
+					if( cd) ca .. cd;
+				}
+			}
+		}
+		if( v.fxlist){
+			local fxdata = array( length( v.fxlist));
+			foreach( i, fx in v.fxlist){
+				local sa = [], ma = [];
+				local fxd = fxdata[i] = {
+					fxclass = getclassname( fx)
+				};
+				foreach( prop in fx.getProperties()){
+					if( prop["anime"]){
+						local mot = fx.getMotion( prop.pid);
+						if( mot) ma .. mot;
+					}else{
+						sa .. [ prop.pid, fx.getParam( prop.pid)];
+					}
+				}
+				if( length( sa)) fxd.staticparams <- sa;
+				if( length( ma)) fxd.motion <- ma;
+			}
+			d.fxdata = fxdata;
+		}
+		return d;
+	}
+}
+
+//
+//
+class UIEditorRootView extends SKGroupView
+{
+	static icontype = "sysdir"
+	static isdir = true;
+	static nostretchinner = true;
+
+	static locktextedit = true;		//	GPUITextEditでみられる。。。
+	
+	sp = null;
+	bgcolor = 0x222222ff;
+	grid = 8;
+	sizechangeable = true;
+	exports = "";			//	外部エクスポートパラメータ。[name,param,name,param,...]
+	metadata = "";			//	※実際にメタデータを取得するときにはSKViewDataのstaticparamから取得する。。。。。
+	enabletype = 1;
+
+	ccc = 0;
+	
+	constructor(){
+		local tex = ToolMesh.gridtexgen();
+		sp = Sprite( tex);
+		sp.color = 0x222222ff;
+	}
+	
+	function updateLayout(){
+		local w = bnd.w, h = bnd.h;
+		sp.bnd.set( 0, 0, w, h);
+		sp.setSubBounds( sp.bnd);
+	}
+	
+	//	レイアウトビューでオーバーライド
+	function setStretchRect( x, y, w, h){
+	}
+
+	function render(){
+		skDrawSprite( sp);
+	}
+	
+	function getProperties(){
+		return #[
+		( SKVP[SIZE_STATIC]),
+		( SKVP[PIVOT_STATIC]),
+		( SKVP[ENABLED_STATIC]),
+		( SKVP[EDITOR_BGCOLOR]),
+		( SKVP[EDITOR_GRID]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[SIZE_CHANGEABLE]),
+		( SKVP[EXPORTS]),
+		( SKVP[METADATA]),
+	]
+	}
+	
+	function getParam( pid){
+		switch( pid){
+		case EDITOR_BGCOLOR : return sp.color;
+		case EDITOR_GRID : return grid;
+		case SIZE_CHANGEABLE : return sizechangeable;
+		case EXPORTS: return exports;
+		case METADATA: return metadata;
+		case ENABLED_STATIC: return enabletype;
+	//	case 9999: return ccc;
+		default : return super.getParam( pid);
+		}
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case EDITOR_BGCOLOR :
+			sp.color = Math.lerpcolor( p0, p1, w);
+			repaint();
+			break;
+		case EDITOR_GRID : 
+			grid = p0;
+			break;
+		case SIZE_CHANGEABLE :
+			sizechangeable = p0;
+			break;
+		case EXPORTS :
+			exports = p0;
+			break;
+		case 9999:
+			return ccc = p0;
+		case METADATA:
+			return metadata = p0;
+		case ENABLED_STATIC: return enabletype = p0;
+		default:
+			super.setParam( pid, p0, p1, w);
+			break;
+		}
+	}
+}
+
+class SKEditorScriptRootView extends SKGroupView
+{
+	sp = null;
+	resizemode = 0;
+	mx = 0;
+	my = 0;
+	pbnd = null;
+	
+	bndsp = null;
+	
+	static sscale = (null, (-1,-1),(0,-1),(1,-1), (-1,0),(1,0), (-1,1),(0,1),(1,1));
+	static pscale = (null, (1,1),(0,1),(0,1), (1,0),(0,0), (1,0),(0,0),(0,0));
+	
+	constructor(){
+		local tex = ToolMesh.gridtexgen();
+		sp = Sprite( tex);
+		sp.color = 0x222222ff;
+		addEventListener( MOUSE_EVENT, mouseevent);
+		modal = true;
+		bndsp = [
+			::getSprite( "/skstudio/img/ui/corner0.png"),
+			Sprite(),
+			::getSprite( "/skstudio/img/ui/corner1.png"),
+			Sprite(),
+			Sprite(),
+			::getSprite( "/skstudio/img/ui/corner2.png"),
+			Sprite(),
+			::getSprite( "/skstudio/img/ui/corner3.png"),
+		]
+	}
+	
+	function updateLayout(){
+		local w = bnd.w, h = bnd.h;
+		sp.bnd.set( 0, 0, w, h);
+		sp.setSubBounds( sp.bnd);
+		bndsp[0].bnd.set( -8, -8, 6, 6);
+		bndsp[1].bnd.set( 4, -8, w-8, 2);
+		bndsp[2].bnd.set( w+2, -8, 6, 6);
+		bndsp[3].bnd.set( -8, 4, 2, h-8);
+		bndsp[4].bnd.set( w+6, 4, 2, h-8);
+		bndsp[5].bnd.set( -8, h+2, 6, 6);
+		bndsp[6].bnd.set( 4, h+6, w-8, 2);
+		bndsp[7].bnd.set( w+2, h+2, 6, 6);
+	}
+	
+	function setresizemode( m){
+		if( m==resizemode) return;
+		if( resizemode) bndsp[resizemode-1].color = 0xffffffff;
+		if( m) bndsp[m-1].color = 0xffcc00ff;
+		resizemode = m;
+		repaint();
+	}
+	
+	function render(){
+		skDrawSprite( sp);
+		skDrawSprites( bndsp);
+	}
+	
+	function mouseevent( e){
+		local canvas = parent["ref"];
+		e.computeLocal( getInvMatrix());
+		//	まずはカメラワークに処理させる
+		camevent( e);
+		if( e.consumed){
+			pos << canvas.root.pos;
+			scale << canvas.root.scale;
+			matdirty = true;
+			repaint();
+			return;
+		}
+		switch( e.id){
+		case MOUSE_MOVED:
+		case MODAL_MOUSE_MOVED:
+			local m = 0;
+			if( e.lx >= -32 && e.ly >= -32 && e.lx-bnd.w<32 && e.ly-bnd.h<32){
+				local _l = Math.abs( e.lx) <= 32;
+				local _t = Math.abs( e.ly) <= 32;
+				local _r = Math.abs( e.lx-bnd.w) <= 32;
+				local _b = Math.abs( e.ly-bnd.h) <= 32;
+				if( _t){
+					m = _l ? 1 : _r ? 3 : 2;
+				}else
+				if( _b){
+					m = _l ? 6 : _r ? 8 : 7;
+				}else{
+					m = _l ? 4 : _r ? 5 : 0;
+				}
+			}
+			setresizemode( m);
+			break;
+		case MOUSE_PRESSED:
+		case MODAL_MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON1_MASK)){
+				if( resizemode){
+					mx = e.x; my = e.y;
+					pbnd = clone bnd;
+				}else
+				if( e.id == MODAL_MOUSE_PRESSED){
+					parent.ref.exitScriptRun();
+				}
+			}
+			break;
+		case MOUSE_DRAGGED:
+		case MODAL_MOUSE_DRAGGED:
+			if( resizemode){
+				local dx = e.x - mx;
+				local dy = e.y - my;
+				local dv = Vector3D( dx, dy, 0.0).transform0( canvas.root.getInvMatrix());
+				dx = dv.x; dy = dv.y;
+				local ss = sscale[resizemode], ps = pscale[resizemode];
+				stretchSize( pbnd.w + dx*ss[0], pbnd.h + dy*ss[1]);
+				bnd.x = pbnd.x + dx*ps[0];
+				bnd.y = pbnd.y + dy*ps[1];
+				updateMatrix();
+				repaint();
+			}
+			break;
+		case MOUSE_RELEASED:
+			break;
+		}
+		e.consume();
+	}
+
+	function camevent( e){
+		local canvas = parent["ref"];
+		switch( e.id){
+		case MOUSE_PRESSED:
+		case MODAL_MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON3_MASK)){
+				mx = e.x; my = e.y;
+				e.consume();
+			}
+			break;
+		case MOUSE_DRAGGED:
+		case MODAL_MOUSE_DRAGGED:
+			if( e.isMouseDown( BUTTON3_MASK)){
+				canvas.scrollfor( e.x-mx, e.y-my);
+				mx = e.x; my = e.y;
+				e.consume();
+			}
+			break;
+		case MOUSE_WHEEL_MOVED:
+			canvas.zoomfor( e.x, e.y, e.count);
+			e.consume();
+			break;
+		case MOUSE_PINCH:
+			canvas.zoomfor( e.x, e.y, e.dx/100);
+			e.consume();
+			break;
+		case MOUSE_PAN:
+			canvas.scrollfor( e.dx, e.dy);
+			e.consume();
+			break;
+		}
+	}
+}
+
+
+///////////////////////////////////////////////////////////////////////
+//	motion用機能
+
+function markSKViewMotions( v){
+	local pa = v.getProperties();
+	local ma = [];
+	foreach( p in pa){
+		if( !p["anime"]) continue;
+		local m;
+		if( !(m=v.getMotion( p.pid, false))){
+			local val = v.getParam( p.pid);
+			if( val != null){
+				m = MotionTimeline();
+				m.pid = p.pid;
+				m.put( 0, val, p.anime-1);
+				m.build();
+				ma .. m;
+			}
+		}
+	}
+	v.motion = ma;
+}
+
+function markSKViewFXMotions( fx){
+	local pa = fx.getProperties();
+	local ma = [];
+	foreach( p in pa){
+		if( !p["anime"]) continue;
+		local m;
+		if( !(m=fx.getMotion( p.pid, false))){
+			m = MotionTimeline();
+			m.pid = p.pid;
+			m.put( 0, fx.getParam( p.pid), p.anime-1);
+			m.build();
+		}
+		ma .. m;
+	}
+	fx.motion = ma;
+}
+
+function putSKViewMotion( v, pid, time, p, tween){
+	local mot = v.getMotion( pid, false);
+	mot.put( time, p, tween);
+	mot.build();
+	v.setParam( pid, p);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//	widgets
+
+
+UIEditor.widgetfactory ... [
+	{
+		name = "GROUP", 
+		icon = FileIcons.dir,
+		func = @(){
+			local v = SKGroupView();
+			v.bnd.set( 0, 0, 256, 128);
+			return v;
+		}
+	},
+	{
+		name = "LABEL", 
+		icon = FileIcons.ttf,
+		func = @(){
+			local v = SKLabelView("LABEL");
+			v.bnd.set( 0, 0, 128, 20);
+			return v;
+		}
+	},
+	{
+		name = "SPLABEL", 
+		icon = FileIcons.ttf,
+		func = @(){
+			local v = SKSpriteLabelView();
+			v.bnd.set( 0, 0, 128, 32);
+			return v;
+		}
+	},
+	{
+		name = "3DVIEW", 
+		icon = FileIcons.cube,
+		func = @(){
+			local v = SK3DView();
+			v.bnd.set( 0, 0, 256, 256);
+			return v;
+		}
+	},
+	{
+		name = "LIST", 
+		icon = FileIcons.list,
+		func = @(){
+			local v = GPUIListView();
+			v.bnd.set( 0, 0, 256, 256);
+			return v;
+		}
+	},
+	{
+		name = "SCALELAYOUT", 
+		icon = FileIcons.scale,
+		func = @(){
+			local v = SKScalingLayoutView();
+			v.bnd.set( 0, 0, 256, 256);
+			return v;
+		}
+	},
+	{
+		name = "CONTAINLAYOUT", 
+		icon = FileIcons.scale,
+		func = @(){
+			local v = SKContainLayoutView();
+			v.bnd.set( 0, 0, 256, 256);
+			return v;
+		}
+	},
+	{
+		name = "FRAMELAYOUT", 
+		icon = FileIcons.frame,
+		func = @(){
+			local v = SKFrameLayoutView();
+			v.bnd.set( 0, 0, 256, 256);
+			return v;
+		}
+	},
+	{
+		name = "TILEIMAGE", 
+		icon = FileIcons.png,
+		func = @(){
+			local v = SKTileImageView();
+			v.bnd.set( 0, 0, 64, 64);
+			return v;
+		}
+	}
+];
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+with( skstudio){
+	registerMenu( { uid="editor_ui_menu_edit_clipboardimg", parentid="menu_edit", block="*2", lbl="$T.editor_ui_menu_edit_clipboardimg", where=["editor_ui"],
+		disable = @() !skCheckClipboardType( ClipboardType.CLIPBOARD_IMAGE),
+	});
+	registerMenu( { parentid="menu_edit", separator="*ui_edit0", block="*2", where=["editor_ui"]});
+	registerMenu( { uid="editor_ui_menu_edit_group", parentid="menu_edit", block="*2", lbl="$T.editor_ui_menu_edit_group", defkey="^G", where=["editor_ui"]});
+	registerMenu( { uid="editor_ui_menu_edit_ungroup", parentid="menu_edit", block="*2", lbl="$T.editor_ui_menu_edit_ungroup", defkey="^_G", where=["editor_ui"]});
+	registerMenu( { uid="editor_ui_menu_edit_order", parentid="menu_edit", block="*2", lbl="$T.editor_ui_menu_edit_order", where=["editor_ui"],
+		submenu = [
+			{ uid="editor_ui_menu_edit_order_upmost", lbl="$T.editor_ui_menu_edit_order_upmost", icon="\ue25a", defkey="^_Up"},
+			{ uid="editor_ui_menu_edit_order_up", lbl="$T.editor_ui_menu_edit_order_up", icon="\ue5d8", defkey="^Up"},
+			{ uid="editor_ui_menu_edit_order_down", lbl="$T.editor_ui_menu_edit_order_down", icon="\ue5db", defkey="^Down"},
+			{ uid="editor_ui_menu_edit_order_downmost", lbl="$T.editor_ui_menu_edit_order_downmost", icon="\ue258", defkey="^_Down"},
+		]
+	});
+	registerMenu( { uid="editor_ui_menu_edit_to", parentid="menu_edit", block="*2", lbl="$T.editor_ui_menu_edit_to", where=["editor_ui"],
+		submenu = [
+			{ uid="editor_ui_menu_edit_to_button", lbl="$T.editor_ui_menu_edit_to_button"},
+			{ uid="editor_ui_menu_edit_to_textedit", lbl="$T.editor_ui_menu_edit_to_textedit"},
+			{ uid="editor_ui_menu_edit_to_multiimage", lbl="$T.editor_ui_menu_edit_to_multiimage"},
+		]
+	});
+	registerMenu( { parentid="menu_edit", separator="*ui_edit1", block="*2", where=["editor_ui"]});
+	registerMenu( { uid="editor_ui_menu_edit_uitest", parentid="menu_edit", block="*2", lbl="$T.editor_ui_menu_edit_uitest", defkey="^R", where=["editor_ui"]});
+
+	
+	registerEditor( {
+		uid = "editor_ui",
+		matches = @( path){ return path.endsWith( ".ui"); }
+		createEditor = UIEditor.createEditor,
+		createPreview = UIEditor.createPreview,
+		
+		newfile = {
+			icon = FileIcons.ui,
+			name = "$T.filetype_ui",
+			ext = ".ui",
+			func = UIEditor.newFile
+		}
+	});
+}

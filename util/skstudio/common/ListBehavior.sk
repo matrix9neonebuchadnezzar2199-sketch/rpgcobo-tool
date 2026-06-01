@@ -1,0 +1,902 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+local r_1 = Rect2D();
+
+//	SKStudioで使われるリスト項目の標準実装。ツール用であってゲームではおそらく不使用。
+//	
+//	選択状態を示すためにアニメフレーム0~3を使用。ビット1:マウス|カーソル, ビット2:選択状態
+//	設定するitemsは単純なarray。
+//	※ListBehaviorを継承してカスタマイズは無し。setviewfuncだけ変わればすべてのリストに対応できる
+//	TreeBehaviorはListBehaviorのサブクラス。あとインデントと選択状態をanimeで分離できるか
+//	↑$indent.anime( c)とする。ボタン内にindent領域を作る。
+//	
+class ListBehavior
+{
+	listview = null;		//	GPUIListView
+	multisel = false;		//	bool
+	dndfunc = 0;			//	0:select 1:dnd 2:sort
+	keyenable = true;		//	キー操作を受け付ける
+	selectable = true;		//	選択可能か
+	enteraction = true;		//	VK_ENTERでACTION_PERFORMED
+	flipmode = false;
+
+	items = null;			//	リストに入れる要素リスト。内部は基本的に自由に入れ替えたり
+	setviewfunc = null;		//	@( view, item) : 基本的にプログラムで実装を変えるのはここだけ？
+
+	curidx = -1;			//	
+	mouseidx = -1;			//	
+	shiftidx = -1;			//	追加選択の基準位置
+	selects = null;			//	{item:1,...} : アイテムのセット。
+
+	//	drag select
+	selmode = 1;			//	1:選択, 0:解除
+	mx0 = -1;
+	my0 = -1;
+	dragstat = 0;			//	ドラッグ状態。 0:無効(dnd中) 1:リスト項目選択中
+	oldsels = null;			//	
+
+	//	drag & drop
+	dragitemsp = null;
+	dropidx = -1;				//	ドロップで挿入するポイント
+	dropway = 0;				//	dropidxから挿入する方向。-1だと前、+1だと後ろ、0だとそのもの（フォルダに入れるなどの操作）。
+	dragitems = null;
+	dragseal = null;			//	SKView : ドラッグ中にdragitemsの元の位置を覆うように配置される。
+
+	ref = null;				//	なにかと
+
+	static function defaultsetview( la, v, i){
+		local lbl = i["name"] || i["lbl"];
+		if( lbl) v.setValue( "lbl", lbl);
+		local ic = i["icon"];
+		v.setValue( "icon", ic||null);
+		v.pickable = false;
+		v.tips = i["tips"] || null;
+		//	例えばlock,visibleなんかは拡張してやる
+	}
+	
+	constructor( lv, itms=null){
+		listview = lv;
+		setviewfunc = defaultsetview;
+		selects = {};
+		lv.content.addEventListener( ACTION_EVENT, actionevent);
+		//	GPUIListViewのリスナーはwindowにあるのでこっちが先に実行される
+		lv.content.addEventListener( MOUSE_EVENT, listuievent);
+		lv.content.addEventListener( KEY_EVENT, listuievent);
+		lv.content.addEventListener( DRAGSOURCE_EVENT, listuievent);
+		lv.content.addEventListener( DROPTARGET_EVENT, listuievent);
+		if( itms){
+			setListItems( itms);
+		}
+		lv.content.dragsource = this;
+	}
+
+	function setListItems( itms){
+		items = itms;
+		refreshItems();
+	}
+
+	function setSelectable( b){
+		selectable = b;
+		if( !b) clearSelection();
+	}
+
+	function clearSelection(){
+		curidx = -1;
+		foreach( v in listview.rows){
+			v.inneranime( 0);
+		}
+		Table.clear( selects);
+	}
+
+	function _refreshanime( i){
+		local f;
+		if( dragitemsp){
+			if( dropidx==i){
+				f = dropway<0 ? 4 : dropway>0 ? 5 : 1;
+			}else{
+				f = 0;
+			}
+		}else{
+			f = (selects[items[i]]?2:0) | ((curidx==i|mouseidx==i)?1:0);
+		}
+		listview.rows[i]?.inneranime( f);
+	}
+
+	//	指定した1項目を選択状態にしてカーソルを移動する。
+	//	マルチセレクト中でも他の項目は選択解除される。
+	function setSelectedIndex( i){
+		local t = selects;
+		if( items[i]) t[items[i]] <- 1;
+		if( items[curidx]) t[items[curidx]] <- 1;	//	リフレッシュ用テーブル
+		selects = items[i]?{[items[i]]=1}:{};
+		curidx = i;
+		foreach( i,_ in t){ if( i) _refreshanime( items.indexOf( i)); }
+	}
+
+	function scrollSelectionsToVisible(){
+		local cnt = listview.content;
+		local r = r_1.set( 100000, 100000, -100000, -100000), vr = #Rect2D();
+		foreach( i,_ in selects){
+			local v = getItemView( i);
+			vr.set( 0, 0, v.bnd.w, v.bnd.h).transform( v.mat).transform( cnt.getInvMatrix());
+			r.expand( vr);
+		}
+		listview.gpui.scrollRectToVisible( cnt, r, 0);
+	}
+
+	function setSelectedItem( item){
+		local i = items.indexOf( item);
+		if( i >= 0){
+			setSelectedIndex( i);
+			return i;
+		}
+		return -1;
+	}
+
+	function selectAll(){
+		if( !multisel) return;
+		selects = {};
+		foreach( v in items) selects[v] <- 1;
+		refreshItems();
+	}
+
+	function deselectAll(){
+		// if( !multisel) return;
+		selects = {};
+		refreshItems();
+	}
+
+	function getSelectedItems( sort=0){
+		if( !length( selects)) return null;
+		local a = Table.keys( selects), items = this.items;
+		if( sort){
+			a.sort( @( v) items.indexOf( v));
+		}
+		return a;
+	}
+
+	function setSelectedItems( a){
+		selects = {};
+		foreach( item in a){
+			selects[item] <- 1;
+		}
+		refreshItems();
+	}
+
+	function isItemSelected( item){
+		return !!selects[item];
+	}
+
+	//	siからeiへと範囲を指定して選択もしくは解除する。curidxも移動する
+	//	multiselでない場合は終端のeiのみ選択する。
+	function rangeSelect( si, ei, mode){
+		if( multisel){
+			//	oldselsの状態に戻したうえでsi-eiの範囲をbにする。。。
+			if( oldsels){
+				Table.clear( selects);
+				if( mode != 2) selects ... oldsels;
+			}
+			//	
+			if( ei < si){ local _si=si; si=ei; ei=_si; }
+			for( local l = si; l <= ei;l ++){
+				local item = items[l];
+				if( mode){ selects[item] <- 1; }else{ delete selects[item]; }
+			}
+			if( mode) curidx = ei;
+			for( local l = 0;l < length( items);l ++) _refreshanime( l);
+		}else{
+			setSelectedIndex( ei);
+		}
+	}
+	
+	//	マウスオーバーしている項目を設定する。描画のみに使用
+	function setMouseIndex( i){
+		if( i != mouseidx){
+			local old = mouseidx;	mouseidx = i;
+			_refreshanime( old);
+			_refreshanime( i);
+			return true;
+		}
+	}
+
+	function getMouseItem(){
+		return items[mouseidx];
+	}
+
+	function setCursorIndex( i){
+		if( i != curidx){
+			local old = curidx;	curidx = i;
+			_refreshanime( old);
+			_refreshanime( i);
+			return true;
+		}
+	}
+
+	//	
+	function getViewIndexAt( x, y){
+		y = listview.ori? x:y;
+		local Y = listview.Y, H = listview.H;
+		if( y < 0) return -1;
+		foreach( i, r in listview.rows){	//	計算でも出せるけど念のためループで全要素を走査。
+			if( y < r.pos[Y]+r.bnd[Y]+r.bnd[H]) return i;
+		}
+		return -2;	//	下にはみ出した
+	}
+
+	//	
+	function getItemAt( x, y){
+		local vi = getViewIndexAt( x, y);
+		return vi==-1 ? items[0] : vi==-2 ? items.last() : items[vi];
+	}
+
+	function _clampidx( i){
+		return i==-2 ? length( listview.rows)-1 : i<0 ? 0 : i;
+	}
+
+	function getItemView( item){
+		foreach( r in listview.rows){
+			if( r.ref == item) return r;
+		}
+		return null;
+	}
+
+	function scrollIndexToVisible( idx){
+		local v = listview.rows[idx];
+		if( v) listview.gpui.scrollViewToVisible( v, 0);
+	}
+	
+	function scrollItemToVisible( item){
+		scrollIndexToVisible( items.indexOf( item));
+	}
+	
+	//	
+	function refreshItems(){
+		foreach( item, _ in selects){
+			if( !items.contains( item)) removei;
+		}
+		listview.setRowCount( length( items));
+		foreach( i, r in listview.rows){
+			r.ref = items[i];
+			setviewfunc( this, r, items[i]);
+			_refreshanime( i);
+		}
+		listview.updateLayout();
+	}
+
+	//	内容が変化したアイテムで表示を更新する
+	//	※すでにあるviewはそのまま
+	function refreshItem( item){
+		local i = items.indexOf( item);
+		if( i >= 0) refreshIndex( i);
+	}
+
+	function refreshIndex( i){
+		setviewfunc( this, listview.rows[i], items[i]);
+		_refreshanime( i);
+	}
+
+	//	※リストUI処理はマウスもキーもドラッグも全てここで行う
+	//	modifierで右クリック、シフトクリックがある
+	//	また、アクションイベントも
+
+	function listuievent( e){
+		local src = e.src, cnt = listview.content, bnd = cnt.bnd;
+		if( src != cnt && src["parent"] != cnt) return;
+		e.computeLocal( cnt.getInvMatrix());
+		local xinbnd = listview.ori ? (e.ly >= 0 && e.ly < cnt.bnd.h) : (e.lx >= 0 && e.lx < cnt.bnd.w);
+		switch( e.id){
+		case MOUSE_ENTERED:
+		case MOUSE_MOVED:
+		case MOUSE_EXITED:
+			local mi = xinbnd&&e.id!=MOUSE_EXITED ? getViewIndexAt( e.lx, e.ly) : -1;
+			if( setMouseIndex( mi)){
+				postEvent( ITEM_HOVER, items[mouseidx]||null, e.modifiers);
+			}
+			break;
+		case MOUSE_PRESSED:
+			{
+				local idx = getViewIndexAt( e.lx, e.ly);
+				local disable = items[idx]["disable"];
+				if( !cnt.focused && keyenable) cnt.requestFocus();
+				dragstat = 0;
+				if( !selectable) break;
+				if( e.isMouseDown( BUTTON2_MASK) && !disable){
+					postEvent( ACTION_PERFORMED, items[idx], e.modifiers);
+					break;
+				}
+				if( !e.isMouseDown( BUTTON1_MASK)) break;
+				dragstat = 1; selmode = 0;
+				oldsels = clone selects;	//	現在の選択状態を保存。
+				mx0 = e.lx; my0 = e.ly;
+				if( multisel){
+					local item = items[idx];
+					if( e.isShiftDown()){
+						selmode = 1;
+					}else
+					if( e.isAltDown()){
+						selmode = 0;
+					}else
+					if( e.isCommandDown() || flipmode){
+						selmode = (selects[item]) ? 0 : 1;
+					}else{
+						if( !selects[item]){
+							setSelectedIndex( idx);
+							selmode = 2;	//	このモードだとクリック時には単選択になる
+						}else{
+							if( !dndfunc){
+								setSelectedIndex( idx);
+							}
+							curidx = idx;
+							selmode = 2;	//	このモードだとクリック時には単選択になる
+						}
+						if( idx >= 0 && (dndfunc & 3)){	//	選択したものをドラッグするモード
+							dragstat = 0;
+						}
+					}
+				}
+			}
+			//	cont
+		case MOUSE_DRAGGED:
+			if( dragstat){	//	範囲選択モード。
+				local ei = getViewIndexAt( e.lx, e.ly);
+				local disable = items[ei]["disable"];
+				if( src == cnt) setMouseIndex( xinbnd ? ei : -1);
+				if( ei >= 0 && !disable){
+					local si = getViewIndexAt( mx0, my0);
+					rangeSelect( _clampidx( si), _clampidx( ei), selmode);	//	rangeSelectでcuridx=eiに変わる
+				}
+				e.consume();
+			}
+			if( !listview.gpui.dragscroll){ listview.gpui.startDragScroll( e); }
+			break;
+		case MOUSE_RELEASED:
+			e.consume();
+			if( selmode >= 0){
+				if( selmode == 2 && e.isClicked()){
+					setSelectedIndex( curidx);
+				}
+				if( multisel){	//	shift起点操作
+					local sels = getSelectedItems( 1), idx = items.indexOf( sels[0]);
+					if( e.isShiftDown()){
+						if( shiftidx >= 0){
+							local ei = getViewIndexAt( e.lx, e.ly);
+							if( e.isClicked() && ei>=0){
+								rangeSelect( shiftidx, ei, 2);
+							}
+						}else{
+							shiftidx = idx;
+						}
+					}else
+					if( selmode>=1){
+						shiftidx = idx;
+					}else{
+						shiftidx = -1;
+					}
+					// printf( "shiftidx %S  %S\n", shiftidx, sel0);
+				}
+				local b = false;
+				foreach( item, _ in oldsels){
+					if( !selects[item]){ postEvent( ITEM_DESELECTED, item, e.modifiers); b = true; }
+				}
+				foreach( item, _ in selects){
+					if( !oldsels[item]){ postEvent( ITEM_SELECTED, item, e.modifiers); b = true; }
+				}
+				if( b){
+					postEvent( ITEM_SELECTIONS, Table.keys( selects), e.modifiers);
+				}
+				if( curidx >= 0 && !(e.count&1)){
+					local idx = getViewIndexAt( e.lx, e.ly);
+					if( curidx == idx && !(e.modifiers & (SHIFT_MASK|ALT_MASK|CTRL_MASK|BUTTON2_MASK|BUTTON3_MASK))){
+						doubleClicked( curidx, e);
+					}
+				}
+			}
+			selmode = 0;
+			oldsels = null;
+			break;
+		//	キーイベント。フォーカス時に要素を移動する。
+		case KEY_PRESSED:
+		case KEY_REPEATED:
+			keypressed( e);
+			break;
+		//	ソート用にドロップイベントを取得。リストスクロールもしっかり対応！
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			setInsertPosition( e.lx, e.ly);
+			setMouseIndex( (!dropway && xinbnd) ? getViewIndexAt( e.lx, e.ly) : -1);
+			listview.gpui.dndevent( e);	//	GPUIScrollGroup側のリストスクロール処理にパス
+			e.consume();
+			break;
+		case TARGET_DRAG_EXIT:
+			dropidx = -1;
+			e.consume();
+			break;
+		case TARGET_DROP:
+			if( curidx != dropidx){
+				local a = dragitems, li = items;
+				a.sort( @( v) li.indexOf( v));
+				postEvent( ITEM_SORT, { from=a, to=items[dropidx], way=dropway, curidx=curidx}, e.modifiers);
+			}
+			dragitems = null;
+			dropidx = -1;
+			e.consume();
+			refreshItems();
+			break;
+		case SOURCE_DRAG_BEGIN:
+			postEvent( ITEM_HOVER, null, 0);
+			break;
+		case SOURCE_DROP:
+			dragitemsp = null;
+			dragseal?.removeFromParent();
+			dragseal = null;
+			e.consume();
+			refreshItems();
+			break;
+		}
+	}
+	
+	function setInsertPosition( x, y){
+		local i = getViewIndexAt( x, y), w = 0;
+		if( i == -1){ i = 0; }
+		if( i == -2){ i = length( items)-1; }
+		local v = listview.rows[i];
+		local it = items[i];
+		local p = (y-v.pos.y) / v.bnd.h;
+		if( it["isdir"] && p>=0.25 && p<=0.75){
+			w = 0;
+		}else{
+			w = (p<=0.5) ? -1 : 1;
+		}
+		if( i != dropidx || w != dropway){
+			local oldi = dropidx;
+			dropidx = i;
+			dropway = w;
+			_refreshanime( dropidx);
+			if( oldi != dropidx) _refreshanime( oldi);
+		}
+	}
+	
+	function doubleClicked( idx, e){
+		postEvent( ACTION_PERFORMED, items[idx], e.modifiers);
+	}
+
+	function _incidx( ci, di){
+		local len = length( items);
+		ci += di;
+		for( ;(ci&0x7fffffff) < len; ci += di){
+			if( !items[ci]["disable"]) return ci;
+		}
+		return -1;
+	}
+	
+	function keypressed( e){
+		switch( e.keycode){
+		case VK_UP:
+		case VK_DOWN:
+			local ci = _incidx( curidx, e.keycode==VK_UP ? -1 : 1);
+			if( ci >= 0){
+				if( flipmode){
+					setCursorIndex( ci);
+				}else{
+					foreach( item, _ in selects){ postEvent( ITEM_DESELECTED, item, e.modifiers); }
+					setSelectedIndex( ci);
+					postEvent( ITEM_SELECTED, items[ci], e.modifiers);
+				}
+				scrollIndexToVisible( ci);
+			}
+			e.consume();
+			break;
+		case VK_PAGE_UP:
+		case VK_PAGE_DOWN:
+			local sc = e.keycode==VK_PAGE_UP?-1:1;
+			local iv = listview.rows[curidx], w = listview.window, c = listview.content;
+			local ci = getViewIndexAt( w.bnd.w, Math.clamp( iv.pos.y + sc*w.bnd.h, 0, c.bnd.h-1));
+			listview.gpui.pageScroll( null, -1*sc);
+			if( ci >= 0){
+				if( flipmode){
+					setCursorIndex( ci);
+				}else{
+					foreach( item, _ in selects){ postEvent( ITEM_DESELECTED, item, e.modifiers); }
+					setSelectedIndex( ci);
+					postEvent( ITEM_SELECTED, items[ci], e.modifiers);
+				}
+			}
+			break;
+		case VK_ENTER:
+			if( enteraction){
+				if( e.id==KEY_PRESSED && selects[items[curidx]]){
+					postEvent( ACTION_PERFORMED, items[curidx], e.modifiers);
+				}
+				e.consume();
+			}
+			break;
+		case VK_DELETE:
+			if( e.id==KEY_PRESSED && selects[items[curidx]]){
+				postEvent( ITEM_REMOVE, getSelectedItems( 1), e.modifiers);
+			}
+			e.consume();
+			break;
+		}
+	}
+
+	function getParentItemView( v){
+		local cnt = listview.content;
+		do{
+			if( v.parent == cnt) return v;
+			v = v.parent;
+		}while( v);
+		return null;
+	}
+	
+	//	アイテム内のボタン等を押したときにイベントを付け替えてlistviewのイベントとしてポスト
+	function actionevent( e){
+		local iv = getParentItemView( e.src);
+		if( !iv) return;
+		local i = listview.rows.indexOf( iv);
+		local cmd = { item=items[i], itemview=iv, src=e.src, idx=i};
+		postEvent( e.id, cmd, e.modifiers);
+		e.consume();
+	}
+
+	function postEvent( id, cmd, mod){
+		local e = Event();
+		e.id = id;
+		e.src = listview;
+		e.actioncmd = cmd;
+		e.modifiers = mod;
+		::rootview.postEvent( e);
+	}
+
+	//	DragSource
+	
+	//	ドラッグ中描画処理
+	function dndrender( m){
+		skDrawSprite( dragitemsp, m.mousex, m.mousey);
+	}
+	
+	//	ドラッグ有効チェック
+	//	複数選択のドラッグ表示。。。ウィンドウのバッファをうまく使うとか
+	function acceptDrag( e){
+		dragitems = null;
+		if( !(dndfunc&1)) return false;
+		if( e.modifiers & (SHIFT_MASK|ALT_MASK|CTRL_MASK|BUTTON2_MASK|BUTTON3_MASK)) return false;
+		local cnt = listview.content;
+		e.computeLocal( cnt.getInvMatrix());
+		local idx = getViewIndexAt( e.lx, e.ly);
+		if( idx < 0) return false;
+		if( !selects[items[idx]]){
+			setSelectedIndex( idx);
+		}
+		dragitems = getSelectedItems();
+		local v1 = listview.rows[curidx];
+		dragitemsp = v1.capture();
+		dragitemsp.color = 0x99999999;
+		local p0 = Vector3D( 0).transform( v1.mat).sub( e.x, e.y, 0.0);
+		dragitemsp.bnd.x = p0.x;
+		dragitemsp.bnd.y = p0.y;
+		refreshItems();
+		dragseal = DragSealView.place( this, dragitems);
+		return true;
+	}
+	
+	//	DropTarget
+	
+	function acceptDrop( ds, x, y){
+		if( (dndfunc&2) && ds == this){	//	自分自身
+			return true;
+		}else{
+			return false;
+		}
+	}
+}
+
+class ListBehavior.DragSealView extends SKView
+{
+	splist = null;
+
+	static function place( list, dragitems){
+		local sp0 = #Sprite(){
+			blend = SK_MULT;
+			color = 0x555555ff;
+		};
+		local cnt = list.listview.content;
+		local v = ListBehavior.DragSealView();
+		local a = [];
+		foreach( v in dragitems){
+			local iv = list.getItemView( v);
+			local sp = clone sp0;
+			sp.bnd = Rect2D( 0, 0, iv.bnd.w, iv.bnd.h).transform( iv.mat).transform( cnt.getInvMatrix());
+			a .. sp;
+		}
+		v.splist = a;
+		v.enabled = false;
+		cnt.addChild( v);
+		return v;
+	}
+
+	function render(){
+		skDrawSprites( splist);
+	}
+}
+
+
+//	リストアダプタを拡張してツリーを表現できるようにする。
+//	itemtreeを
+//	
+//	ツリーの展開や収縮でitems配列を動的に変化させるため、items配列は直接操作してはいけない。
+//	
+class TreeBehavior extends ListBehavior
+{
+	itemtree = null;
+	expands = null;
+	indents = null;			//	計算されたインデントのキャッシュ。
+
+	filterfunc = null;		//	ツリーの展開時のフィルター
+	
+	static function defaultsetview( la, v, i){
+		local lbl = i["name"] || i["lbl"];
+		if( lbl) v.setValue( "lbl", lbl);
+		local ic = i["icon"];
+		if( ic) v.setValue( "icon", ic);
+		v.tips = i["tips"] || null;
+		v.pickable = false;
+		//	例えばlock,visibleなんかは拡張してやる
+		local ex = v.findChild( "expand");
+		if( i["isdir"] && length( fget( i, "children"))){
+			ex.setVisible( true);
+		}else{
+			ex.setVisible( false);
+		}
+		//	indent
+		v.findChild( "indent").anime( la.getIndent( i));
+	}
+	
+	constructor( lv, itmt=null){
+		super( lv, null);
+		expands = {};
+		indents = {};
+		items = [];
+		if( itmt){
+			setItemTree( itmt);
+		}
+	}
+
+	function setItemTree( itmt){
+		itemtree = itmt;
+		refreshItems();
+	}
+
+	function refreshItems(){
+		Table.clear( indents);
+		items.clear();
+		extractNode( itemtree, items);
+		return super.refreshItems();
+	}
+
+	//	指定したアイテムを展開する。既にツリー上に存在するアイテムで更にディレクトリになっている場合のみ有効。
+	//	
+	function expandItem( item, anim=false){
+		local v = getItemView( item);
+		if( !v || !item["isdir"]) return false;
+		if( expands[ item]){
+			//	noop
+		}else{
+			local ex = v.findChild( "expand");
+			ex.setSelected( true);
+			expandTreeNode( listview.rows.indexOf( v), anim);
+		}
+		return true;
+	}
+
+	//	指定したアイテムを折りたたむ。
+	//	
+	function shrinkItem( item){
+		if( !item["isdir"]) return false;
+		local i = items.indexOf( item);
+		return i>=0 ? shrinkTreeNode( i) : false;
+	}
+
+	//	指定したアイテムまで再帰的に展開する。※このメソッドはアイテムにparentフィールドが存在する場合のみ使用可能。
+	//	
+	function expandToItem( item){
+		if( item==itemtree || items.indexOf( item)>=0){
+			return false;	//	展開されてる
+		}
+		if( item["parent"]){
+			expandToItem( item.parent);
+			expandItem( item.parent, false);
+			return true;
+		}
+		return false
+	}
+
+	function expandAll( n=null){
+		if( !n) n = itemtree;
+		if( n["isdir"]){
+			expandItem( n, false);
+			foreach( i, v in fget( n, "children")) expandAll( v);
+		}
+	}
+
+	function expandTreeNode( i, anim=true){
+		local o = items[i];
+		local k = o;		//	
+		if( expands[k]) return false;
+		local a = [];
+		expands[k] <- true;
+		// refreshItems();
+		extractNode( o, a);
+		insertList( i+1, a, anim);
+		return true;
+	}
+	
+	//	指定したツリーノードを畳む。
+	function shrinkTreeNode( i){
+		local o = items[i];
+		local k = o;
+		if( !expands[k]) return false;
+		delete expands[k];
+		//	oが展開したlistの要素を全消し。
+		removeRegion( i+1, getLastChildIndex( i));
+		return true;
+	}
+	
+	//	iの位置のノードの最後の子ノードの位置
+	function getLastChildIndex( i){
+		local n = length( items);
+		local indent = getIndent( items[i]);
+		for( local l = i+1;l < n;l ++){
+			if( getIndent( items[l]) <= indent){	//	要素の深さがoと同列以下であれば範囲打ち切り
+				return l-1;
+			}
+		}
+		return n-1;
+	}
+
+	function extractNode( n, a){
+		if( !n["isdir"]) return;
+		foreach( i, v in fget( n, "children")){
+			if( !filterfunc || filterfunc( n, v)){
+				a .. v;
+				if( expands[v]) extractNode( v, a);
+			}
+		}
+	}
+
+	//	※構造上の変化を与えるのではなくあくまで見た目で変化を与えるためのもの
+	function insertList( i, a, anim=true){
+		if( anim){
+			local func = function(){
+				local si = i;
+				local t = 14;
+				for( local l = length( a)-1;l >= 0;l --){
+					insertItem( i, a[l]);
+					scrollIndexToVisible( si++);
+					scrollIndexToVisible( i-1);
+					if( t > 1) sleep( (t=t-1)/2);
+				}
+			}
+			listview.startMethod( func.bindenv( this));
+			listview.waitForMethod();
+		}else{
+			local si = i;
+			for( local l = length( a)-1;l >= 0;l --){
+				insertItem( i, a[l]);
+				// scrollIndexToVisible( si++);
+				// scrollIndexToVisible( i-1);
+			}
+			refreshItems();
+		}
+	}
+	
+	//	
+	function insertItem( i, v){
+		local cnt = listview.content, rows = listview.rows;
+		local r = listview.rowedata.createSKView( ::SKLibView); r.layerflags |= 1;
+	//	r.stretchalign = listview.rowstretch;
+		cnt.insertChild( i, r);
+		rows[i] <- r;
+		items[i] <- v;
+		r.ref = v;
+		for( local l = i; l < length( rows);l ++){	//	名前も整列。。。
+			rows[l].name = "row"..l;
+		}
+		listview.updateLayout();
+		listview.updateMatrixAll();	//	matもこのタイミングで更新
+		refreshIndex( i);
+	}
+	
+	function removeRegion( s, e){
+		local func = function(){
+			local t = 14;
+			for( local l = e-s;l >= 0;l --){
+				removeItem( s);
+				if( t > 1) sleep( (t=t-1)/2);
+			}
+		}
+		listview.startMethod( func.bindenv( this));
+		listview.waitForMethod();
+	}
+	
+	function removeItem( i){
+		local cnt = listview.content, rows = listview.rows;
+		rows[i].removeFromParent();
+		delete rows[i];
+		delete items[i];
+		for( local l = i; l < length( rows);l ++){	//	名前も整列。。。
+			rows[l].name = "row"..l;
+		}
+		listview.updateLayout();
+	}
+
+	function getIndent( o){
+		if( o in indents) return indents[o];
+		if( o["parent"]){
+			if( o.parent == itemtree) return indents[o] <- 0;
+			return (indents[o] <-getIndent( o.parent) + 1);
+		}
+		local i = items.indexOf( o);
+		for( local l = i-1; l >= 0;l --){
+			local po = items[l];
+			if( po["isdir"] && fget( po, "children").contains( o)) return (indents[o] <-getIndent( po) + 1);
+		}
+		return indents[o] <- 0;
+	}
+
+	function doubleClicked( idx, e){
+		super.doubleClicked( idx, e);
+		local v = listview.rows[idx];
+		local ex = v.findChild( "expand");
+		if( expands[ items[idx]]){
+			ex.setSelected( false);
+			shrinkTreeNode( idx);
+		}else{
+			ex.setSelected( true);
+			expandTreeNode( idx);
+		}
+	}
+
+	function actionevent( e){
+		local v = e.src;
+		if( v["name"] == "expand"){
+			local iv = getParentItemView( v);
+			local i = listview.rows.indexOf( iv);
+			if( expands[ items[i]]){
+				v.setSelected( false);
+				shrinkTreeNode( i);
+			}else{
+				v.setSelected( true);
+				expandTreeNode( i);
+			}
+			e.consume();
+			return;
+		}
+		super.actionevent( e);
+	}
+}
+
+function applyItemSort( list, e){
+	local a = e.actioncmd.from, to = e.actioncmd.to, way = e.actioncmd.way;
+	local ins = list[ list.indexOf( to) + Math.max( way, 0)];
+	foreach( v in a){
+		list.removeValue( v);
+		list[ ins?list.indexOf( ins) : length(list)] <- v;
+	}
+	return list;
+}
+
+//	スワップ式にアイテムソート。
+function applyItemSwap( list, e){
+	local cmd = e.actioncmd;
+	local a = cmd.from, to = cmd.to;
+	local idx = list.indexOf( a[0]) + (list.indexOf( to)-cmd.curidx);
+	foreach( v in a){
+		local vi = list.indexOf( v);
+		local d = list[idx];
+		list[vi] = d;
+		list[idx] = v;
+		idx++;
+	}
+	return list;
+}

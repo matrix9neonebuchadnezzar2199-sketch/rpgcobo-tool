@@ -1,0 +1,150 @@
+declare defaults;
+
+module mod_transform;
+
+param def
+{
+	attribute mediump vec4 in_uv <id=UV1>;
+	attribute lowp vec4 in_col <id=COLOR1>;
+	
+	uniform sampler2D coltex1 <id=COLORTEX1>;
+	uniform lowp float alpharef<ID=ALPHAREF>;
+	uniform lowp vec4 envcol <id=ENVCOLOR>;
+	
+	varying highp vec4 v_wvp;
+	varying mediump vec4 v_uv;
+	varying lowp vec4 v_col;
+	
+	//	fragment param
+	fragout highp vec4 fragcolor;
+}
+
+vs def
+{
+	void main(){
+		highp mat4 transmat = getTransformedVectors();
+		highp vec4 wvp = transmat[0];
+		v_wvp = wvp;
+		gl_Position = pmat * wvp;
+		v_uv = in_uv;
+		$(COLOR1) v_col = in_col;
+	}
+}
+
+fs depth
+{
+	void main(){
+		$(ALPHATEST && COLORTEX1){
+			highp vec4 pix = texture2D( coltex1 , v_uv.xy);
+			if( pix.w < alpharef) discard;
+		}
+		// fragcolor = vec4( v_wvp.z);
+	}
+}
+
+technique def
+{
+	tag = "default depth shadow select";
+	
+	pass(depth) {
+		using transform;
+		BLEND = OFF;
+		
+		param = def;
+		vs = def;
+		fs = depth;
+	}
+	
+	pass(shadow) {
+		using transform;
+		BLEND = OFF;
+		
+		param = def;
+		vs = def;
+		fs = depth;
+	}
+}
+
+//////////////////////////////// z buffer /////////////////////////////////
+
+param zblur
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <ID=UV1>;
+	uniform highp sampler2D ztex <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp vec2 duv <id=COLORTEX1_PIX, scale=1.0>;
+	uniform highp mat4 dotzwmat <id=MISC1MAT>;
+	uniform highp mat4 normzmat <id=MISC2MAT>;
+	
+	varying highp float v_casnum;	//	w/h
+	varying highp vec2 v_uv;
+	varying highp vec4 v_uvmin;
+	varying highp vec4 v_uvmax;
+	fragout mediump uint fragcolor;
+}
+
+vs zblur
+{
+	void main(){
+		gl_Position = in_pos;
+		highp vec2 u = in_pos.xy * 0.5 + 0.5;
+		v_uv = u;
+		v_uvmin = in_uv.xyxy; v_uvmax = in_uv.zwzw;
+		v_casnum = floor( duv.x / duv.y + 0.5);	//	h/w (COLORTEX1_PIX = 1.0/wh)
+	}
+}
+
+fs zblur
+{
+	#define TEXZ( UV) (texture2D( ztex, UV).x)
+	
+	void main(){
+		highp uint pix;
+		$(COLORTEX1) {
+			int i = int( v_uvmin.y * v_casnum);
+			highp vec4 dotzw = dotzwmat[i];
+			highp vec4 normz = normzmat[i];
+#if( APILV >= 31)
+			highp vec4 z0 = textureGather( ztex, v_uv+duv*vec2( -1.0, -1.0), 0);
+			highp vec4 z1 = textureGather( ztex, v_uv+duv*vec2(  1.0, -1.0), 0);
+			highp vec4 z2 = textureGather( ztex, v_uv+duv*vec2( -1.0,  1.0), 0);
+			highp vec4 z3 = textureGather( ztex, v_uv+duv*vec2(  1.0,  1.0), 0);
+			highp float zw = dot( z0, vec4( 1.0)) + dot( z1, vec4( 1.0)) + dot( z2, vec4( 1.0)) + dot( z3, vec4( 1.0));
+			zw = zw*(1.0/16.0) * 2.0 - 1.0;
+			highp float z = dot( vec2( zw, 1.0), dotzw.xy);
+			highp float w = dot( vec2( zw, 1.0), dotzw.zw);
+			pix = uint( ((z / w - normz.y) * normz.x) * 65535.0);
+#else
+			//	OES3.0, WebGL2.0 quality>=1
+			highp float zw = 0.0;
+			for( int y = -1; y <= 1; y ++){
+				for( int x = -1; x <= 1; x ++){
+					zw += TEXZ( v_uv + duv*vec2( x, y));
+				}
+			}
+			zw = zw*(1.0/9.0) * 2.0 - 1.0;
+			highp float z = dot( vec2( zw, 1.0), dotzw.xy);
+			highp float w = dot( vec2( zw, 1.0), dotzw.zw);
+			pix = uint( ((z / w - normz.y) * normz.x) * 65535.0);
+#endif	//	quality=0 no blur
+			// highp float zw = TEXZ( v_uv) * 2.0 - 1.0;
+			// highp float z = dot( vec2( zw, 1.0), dotzw.xy);
+			// highp float w = dot( vec2( zw, 1.0), dotzw.zw);
+			// pix = uint( clamp( ((z / w - normz.y) * normz.x + 0.008), 0.0, 1.0) * 65535.0);
+		} : {
+			pix = 65535u;
+		}
+		fragcolor = pix;
+	}
+}
+
+technique zblur
+{
+	apilevel = 30, 31;
+	
+	pass {
+		param = zblur;
+		vs = zblur;
+		fs = zblur;
+	}
+}

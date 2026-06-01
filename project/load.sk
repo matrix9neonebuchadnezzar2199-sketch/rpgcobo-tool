@@ -1,0 +1,30 @@
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	プロジェクト全体のプログラム、コンフィグを読み込む。
+//	ゲーム本体からもツールからも呼ばれる。
+//	プラグインの読み込みも最初にここで行われる。
+//	※このファイルは基本的に全てのプロジェクトで同一のものを使う。特殊な初期化をする場合に編集する。
+
+//	1. プログラム読み込み
+runsk( "src/load.sk");
+
+//	2. プラグイン読み込み
+module.dispatchAction( "plugin_preload");	//	このフックはプラグインからは利用不能
+local pt = decodeJSON( ::getResourceContent( "/plugin/plugin.json"));
+module.loadPlugins( pt);
+module.dispatchAction( "plugin_postload");
+
+//	3. conf読み込み
+module.dispatchAction( "conf_preload");
+override( conf._map, loadconf( "/conf/load.conf"));
+module.dispatchAction( "conf_postload");
+//	3-1. 翻訳適用
+// if( conf.setting.projlang != lang.code){
+// 	//
+// }
+//	3-2. dict適用
+::T.merge( conf["_sysdict"]);
+::T.merge( conf["dict"]);
+
+//	4. ポストロードフック
+module.dispatchAction( "post_load");

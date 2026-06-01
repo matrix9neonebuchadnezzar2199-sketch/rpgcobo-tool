@@ -1,0 +1,181 @@
+﻿/////////////////////////////////////////////////////////////////////////////
+//	テストプレイ
+
+//	言語選択。workspaceから設定取ってきちゃうかな～
+local ws = decodeJSON( FileRef( ".sakana.ws")?.load() || "{}");
+local sysset = loadconf( "/data/setting.json");
+local lt = chooseLanguage( ws["debuglang"] || sysset.projlang);
+::lang = Language( lt);
+
+module.hookAction( "conf_postload", @(){
+	if( lang.code != sysset.projlang){
+		local tres = getResource( `/data/trans/${lang.code}.trns`);
+		if( tres){
+			local trans = decodeJSON( tres.loadData());
+			override( conf._map, trans.transdict, false);
+		}
+		local f = FileRef( "tmp/x.json");
+		local bb = encodeJSON( conf._map, 5, ByteBuffer()); bb.pos = 0;
+		f.save( bb);
+	}
+}, -9999);
+
+
+//	テストプレイ環境はWindowsでProgram Files外にあるはずなので、カレント/savedataに保存する
+::savedir <- FileRef( skGetCurrentDir().."/savedata"); ::savedir.mkdirs();
+
+runsk( "/ClientConfig.sk");
+if( !clientconf.screen.fullscreen){
+	local wh = clientconf.screen.reso_window.split( "x");	//	"1920x1080"のような文字列
+	skCreateScreen( "RPG-Cobo TestPlay", int( wh[0]), int( wh[1]), 5|16);
+}else{
+	local wh = clientconf.screen.reso_screen.split( "x");
+	if( !skSupportsDisplaySize( int( wh[0]), int( wh[1]))) wh = ["1280","720"];
+	skCreateScreen( "RPG-Cobo TestPlay", int( wh[0]), int( wh[1]), 0);
+}
+
+skBeginRender();
+skClearParam( #ClearParam( 0.0, 0.0, 0.0, 1.0));
+
+runsk( "/load.sk");
+if( ws["debugtouch"]) GPUI.emuosname <- "Android";		//	タッチデバッグの時はAndroidってことにする
+::soundmanager.setBGMVolume( clientconf.sound.bgmvol * 0.008);	//	BGMはちょっと小さめに。。。
+::soundmanager.setSEVolume( clientconf.sound.sevol * 0.012);	//	SEは大き目。。。
+
+
+RPGMain.setupUI();
+::rootview.setValue( "apptitle", conf.setting.title);
+//	ロゴから起動しない。設定を直に読み込んで
+RPGMain.loadSetting();
+
+local recfx = arguments.contains( "-recfx");	//	使用したシェーダーを記録
+local prof = null;
+if( ::arguments.contains( "-skprof")) (prof = SKProfiler()).start();
+
+{
+	//	起動モードの判定
+	local slot = -2, args = ::arguments, i;
+	if( (i=args.indexOf( "-slot")) >= 0){
+		slot = int( args[i+1]);
+	}
+	switch( slot){
+	case -2:	//	title
+		if( !args.contains( "-map") && !args.contains( "-battle")){
+			RPGMain.goTitle();
+			if( ws["debugitems"]) rpgstat.addAllItems();
+			goto SKIP;
+		}
+	case -1:	//	newgame
+		(::rpgstat = RPGState()).newGame();
+		local d = ::conf.setting.inimap;
+		local sstat = ::rpgstat.stagemap[d.mapid] <- RPGStageState();
+		sstat.enter( d.mapid, d, rpgvar.REMAPID);
+		break;
+	default:	//	save slot
+		local f = RPGMain._savefile( slot);
+		local ns = ObjectInput.decode( f.load());
+		ns.saveslot = slot;
+		ns.savetime = f.lastmodified;
+		::rpgstat = ns;
+		break;
+	}
+	if( ws["debugitems"]) rpgstat.addAllItems();
+	
+	//	セーブ前データの置き換え。bwとconfを置き換えれる
+	if( (i=args.indexOf( "-bw")) >= 0){
+		local mapid = args[args.indexOf( "-map")+1], path = args[i+1];
+		local res = getResource( "/data/mapdata/%S.bw" % mapid);
+		res.file = FileRef( path);	//	ファイルを置き換えちゃう
+	}
+	//	{ map.M001: {...} }のような形式。
+	if( (i=args.indexOf( "-conf")) >= 0){
+		local t = decodeJSON( FileRef( args[i+1]).load());
+		foreach( i, v in t){
+			putField( ::conf, i, v);
+		}
+	}
+	//	
+	if( (i=args.indexOf( "-map")) >= 0){
+		local mapid = args[i+1], pos = decodeJSON( args[i+2]);
+		local portal = { mapid=mapid, pos=pos};
+		local sstat = ::rpgstat.stagemap[mapid] || (::rpgstat.stagemap[mapid] <- RPGStageState());
+		sstat.enter( mapid, portal, ++rpgvar.REMAPID);
+		::rpgstat.mapid = mapid;
+		local stg = RPGStage( rpgstat.mapid);
+		stg.launch();
+	}else
+	if( (i=args.indexOf( "-battle")) >= 0){
+		local emapid = args[i+1], gid = int( args[i+2]);
+		local cmd = ::conf.map[emapid].encount.find( @( v) v.gid==gid);
+		local mapid = cmd.mapid;
+		local skillid = ((i=args.indexOf( "-skill")) >= 0) ? args[i+1] : null;
+		//	
+		//	コマンドを拡張してマップ移動をバトルにする
+		local cmd_ = {
+			...cmd,	//	enemies, escape, bgm など必要な情報のために展開しておく
+			//	マップ移動先指定
+			dest = { mapid=cmd.mapid, pos=(8,null,8), },
+			//	以下バトル起動用の関数類。
+			startfunc = @( st, opt){	//	opt==cmd_自身
+				st.battle = skillid? SkillTestBattleRunner( st, {...opt, skillid=skillid}) : TurnBattleRunner( st, opt);
+				st.battle.start( st);
+			},
+			//	バトル終了時のコールバック
+			endfunc = @( bt){
+			},
+		};
+		local sstat = ::rpgstat.stagemap[mapid];
+		if( !sstat) sstat = ::rpgstat.stagemap[mapid] <- RPGStageState();
+		sstat.enter( mapid, cmd_.dest, rpgvar.REMAPID);
+		local stg = RPGStage( cmd_.mapid);
+		stg.launch( cmd_);
+	}else{
+		local stg = RPGStage( rpgstat.mapid);
+		stg.launch();
+	}
+SKIP:
+	;
+}
+
+newthread().start( @(){
+	for( ;;){
+		flushStdOut(); suspend();
+	}
+}, this);
+
+RPGMain.mainloop();
+
+if( prof){
+	prof.stop();
+	local fs = FileRef( "log/prof.json").open( "w");
+	prof.write( fs);
+	fs.close();
+}
+
+//	使用したシェーダーを記録。gamemainのpreloaShaders()で読み込む。
+if( recfx){
+	local tecbits = {};
+	local f = FileRef( skGetCodebase() .. "/resource/skfxload.json");
+	if( f.exists()) tecbits = decodeJSON( f.load());	//	前回の結果を上書き。消えたシェーダーが残り続ける問題あり。
+	foreach( efx in skFXGetEffects()){
+		foreach( tec in efx){
+			local tecname = tec.name, tb = tecbits[tecname] || [], bitsnum = 0;
+			for( local l = 0; tec.getShaderSource( l); l ++){
+				local ss = tec.getShaderSource( l);
+				local sb = tb[l]; if( !sb) tb .. (sb=[]);
+				foreach( bits in ss.getCompiledShaderBits()){
+					if( sb.indexOf( bits) < 0) sb .. bits;
+				}
+				bitsnum += length( sb);
+			}
+			if( bitsnum){
+				tecbits[tecname] <- tb;
+			}
+		}
+	}
+	local bb = encodeJSON( tecbits, 5, ByteBuffer());
+	bb.pos = 0;
+	f.save( bb);
+}
+
+skEndRender();

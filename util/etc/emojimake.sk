@@ -1,0 +1,153 @@
+
+//	入力は絵文字画像の入ったフォルダ
+//	
+//	
+//	
+//	出力のファイルは2つ。この2つを使ってEmojiクラスを初期化する。
+//	emoji.json : 絵文字のインデクスデータ。
+//	emoji.bin  : 絵文字のpngがシリアルに並んでいる
+//	
+//	[
+//		{
+//			cp = 123152, ei = 0,
+//			nexts = [
+//				{ cp = 123124, ei = 1}
+//			]
+//		}
+//	]
+//	
+
+class emojinode
+{
+	cp = 0;
+	emidx = -1;
+	offs = 0;
+	size = 0;
+	w = 0;
+	h = 0;
+	
+	submap = null;
+	
+	
+	function getNode( _cp){
+		if( submap[_cp]) return submap[_cp];
+		local n = emojinode();
+		n.cp = _cp;
+		if( !submap){
+			submap = { [_cp]=n};
+		}else{
+			submap[_cp] <- n;
+		}
+		return n;
+	}
+	
+	
+	function toJSON(){
+		local t = { cp = cp};
+		// if( emidx >= 0){ t.idx <- emidx}
+		if( size){ t.offs <- offs; t.size <- size; t.w <- w; t.h <- h; }
+		if( submap){
+			local sa = (t.nexts <- []);
+			foreach( n in submap){
+				sa .. n.toJSON();
+			}
+		}
+		return t;
+	}
+}
+
+class emojimake
+{
+	srcdir = null;
+	outdir = null;
+	fname = "emoji";
+	
+	emnum = 0;						//	絵文字数と次のEmoji index
+	
+	rootemoji = null;				//	table< cp, emojimap> : 
+	databuf = null;					//	ByteBuffer
+	
+	
+	
+	
+	constructor( sd, od, fn){
+		srcdir = sd;
+		outdir = od;
+		fname = fn;
+		od.mkdirs();
+		
+		rootemoji = emojinode();
+		databuf = ByteBuffer();
+	}
+	
+	
+	
+	//	ファイルを追加する。pngのデコードは不要
+	//	1f1f8-1f1f9.png, 1f3ca-1f3fb-200d-2642-fe0f.png のようなファイルがくる
+	//	
+	function addEmoji( f){
+		local str = f.name.substring( 0, length( f.name)-4);	//	.pngを消す
+		local n = rootemoji, cp = 0;
+		for( ;;){
+			local i = str.indexOf( '-');
+			cp = int( i<0? str : str.substring( 0, i), 16);
+			printf( " %S ", cp);
+			n = n.getNode( cp);
+			if( i < 0) break;
+			str = str.substring( i+1);
+		}
+		n.emidx = emnum++;		//	すでにemidx入ってる場合はダブり。
+		//	ファイル読んでdatabufに連結していく
+		local bb = f.load();
+		local img = skLoadImage( bb);
+		bb.pos = 0;
+		n.offs = databuf.size;
+		n.size = bb.size;
+		n.w = img.width;
+		n.h = img.height;
+		databuf.putBuffer( bb);
+		bb.dispose();
+		//
+		printf( "emoji %S   %S\n", f.name, n.emidx);
+	}
+	
+	
+	function build(){
+		local list = srcdir.getList();
+		foreach( f in list){
+			if( f.name.endsWith( ".png") || f.name.endsWith( ".webp")) addEmoji( f);
+		}
+		//	rootemojiからテーブル化
+		local t = rootemoji.toJSON().nexts;
+		//	emoji.json出力
+		local idxfile = FileRef( outdir, fname..".json");
+		local bb = encodeJSON( t, 4, ByteBuffer()); bb.pos = 0;
+		idxfile.save( bb);
+		//	emoji.bin出力
+		local datafile = FileRef( outdir, fname..".bin");
+		databuf.pos = 0;
+		datafile.save( databuf);
+		//	ok
+	}
+}
+
+//	parse args
+{
+	local srcdir, outdir;
+	
+	local a = ::arguments;
+	for( local l = 0;l < length( a);l ++){
+		local arg = a[l];
+		if( arg == "-srcdir"){
+			local curdir = FileRef( skGetCurrentDir());
+			srcdir = FileRef( curdir, a[++l]);
+			if( !outdir) outdir = FileRef( srcdir, "..");
+		}
+	}
+	
+	if( !(srcdir?.isDirectory())){
+		throw Exception( "no srcdir : " .. srcdir.path);
+	}
+	local p = emojimake( srcdir, outdir, srcdir.name);
+	p.build();
+}

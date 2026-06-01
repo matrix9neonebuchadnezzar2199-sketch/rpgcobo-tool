@@ -1,0 +1,116 @@
+﻿//
+//	プラグインのIDはフォルダ名もしくは、pluginフォルダにskが直接入っている場合は${plugin_id}.skとなる。
+//	
+//	プラグインはロードはあるがアンロードは無い。また、エディターモードでロードされたあと
+//	ゲームモードでロードされるようなこともなく、プログラム起動時に一度だけロードされる。
+//	
+//	plugin.skは基本的に、skをロードしただけで直ちにグローバルなステートに副作用を及ぼすような構造にしてはいけない。
+//	loadPlugin()を呼び出したタイミングでロードが走る。
+//	pluginfo.order順にロードされる。
+//	
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+//	RPGツール用のエディタ類を全て追加するプラグイン。ゲームには追加されない（と良いが必須ではない）
+//	
+pluginfo <- {
+	name : { "ja":"RPG-Cobo ツール","en":"RPG-Cobo Tools"}
+	auther : "djkotori"
+	ver : "0.1.0"
+	tags : ["editor"]
+	icon : srcdir.."/icon.png"
+	order : 0
+	lock : true
+	readme : srcdir.."/readme.txt"
+	props : [
+		// { pid="condid", lbl="${T.condition}", type=DATAID, datatype=["cond"], defval="K000" },
+		// { pid="val", lbl="上昇量", type=SCALAR, range=(-100, 100), defval=0 },
+	]
+}
+
+//	optはpluginfo.propsの情報が来る。{id:val,...}のテーブルで来る。
+function loadPlugin( args, opt){
+	if( !::["SKStudio"]){	//	ゲーム実行時にはこのプラグインは読んではいけない。
+		return false;
+	}
+	if( !getResource( "/data/setting.json")){	//	プロジェクトセットアップ前の状態。
+		module.hookAction( "editor_postload", @(){
+			::runsk( srcdir.."/common/InstallTemplate.sk");	//	/common/load.skからはこれは読まない
+		}, -9999);
+		return true;
+	}
+	//	とりあえずフォルダは作っておく
+	FileRef( "build").mkdirs();
+	FileRef( "backup").mkdirs();
+	FileRef( "log").mkdirs();
+	FileRef( "tmp").mkdirs();
+	
+	::runsk( "/ClientConfig.sk");
+	::runsk( srcdir.."/common/load.sk");
+	::runsk( srcdir.."/voxeditor/load.sk");
+	::runsk( srcdir.."/mapeditor/load.sk");
+	::runsk( srcdir.."/dbeditor/load.sk");
+	::runsk( srcdir.."/reseditor/load.sk");
+	loadskfx( getResource( srcdir.."/shader"));
+
+	FileIcons.rpglist <- ("\ue8ef",0xddcc44ff);
+	FileIcons.chrprev <- ("\uea22",0xddcc44ff);
+	FileIcons.evpic <- ("\ue416",0xddcc44ff);
+	FileIcons.circle <- ("\uef4a",0xddcc44ff);
+
+	module.hookAction( "editor_postload", @(){
+		::skstudio.titlebar.setTitle( "RPG-Cobo : %S" % ::conf.setting.projname);
+		::TipsRunner.tipsjsonlist .. "/plugin/rpgtools/rpgtips.json";
+		::UIEditor.widgetfactory ... [
+			{
+				name = "RPGLIST",
+				icon = FileIcons.rpglist,
+				func = @(){
+					local v = RPGListView();
+					v.bnd.set( 0, 0, 256, 256);
+					return v;
+				}
+			},
+			{
+				name = "CharaPreview",
+				icon = FileIcons.chrprev,
+				func = @(){
+					local v = CharaPreview();
+					v.bnd.set( 0, 0, 128, 128);
+					return v;
+				}
+			},
+			{
+				name = "EventPicture",
+				icon = FileIcons.evpic,
+				func = @(){
+					local v = EventPicView();
+					return v;
+				}
+			},
+			{
+				name = "CircleHit", 
+				icon = FileIcons.circle,
+				func = @(){
+					local v = SKCircleHitGroupView();
+					v.bnd.set( 0, 0, 128, 128);
+					return v;
+				}
+			},
+		];
+		if( !length( ::workspace["tabs"])){
+			::workspace.tabs <- ["/.x/map/M001"];
+			::workspace.currenttab <- "/.x/map/M001";
+		}
+	}, 0);
+
+	return true;
+}
+
+//	指定したパスのリソースをインストールパッケージに含めるか返す。プラグイン内のリソースについて呼ばれる
+//	rpgtoolsは何もインストールしない
+function doPakckagePath( path){
+	return false;
+}

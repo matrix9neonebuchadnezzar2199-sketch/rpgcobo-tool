@@ -1,0 +1,159 @@
+declare mod_pbrg;
+
+/*
+	f0 : R, G, B, gsel
+	u1 : N23(11,11,1) P5 M4
+	u2 : P32 ↓
+*/
+//	0 STANDARD  : rough6 metal6 ao8 emit8 push8(u1+)
+//	1 DECAL     : 									//	no params
+//	2 SSS       : rough6 metal6 tint18 tick5(u1)	//	tint=rgb666 thickness?
+//	3 SHEEN     : rough6 metal6 tint18 srough5(u1)
+//	4 CLEARCOAT : rough5 metal5 nxy19 amt3 crough5(u1) //	nxy:内部のn(9,9,1)。※nにはclearcoat外部のnが入る。pixelin_clearcoatで入れ替え
+//	5 TRANSPAR  : rough6 metal6 refr8 ior8			//	
+//	6 ANISOTRO  : rough5 metal5 rot15 amt5			//	rot=(0,1,0)を基準にhpp回転を5bitずつ
+//	7 CLOTH     : --------
+//	
+//	N = dot( uvec3( n*vec3(1023.0,1023.0,0.9999)+vec3(1024.0,1024.0,1.0)), uvec3( 1, 2048, 2048*2048))
+//	
+//	un = (uvec3( N)>>uvec3( 0, 11, 22)) & uvec3( 2047, 2047, 1);
+//	n.xy = vec2( un.xy) * (1.0/1023.0) - 0.5
+//	n.z = sqrt( 1.0-dot( n.xy, n.xy)) * float( un.z*2-1);
+//	
+
+param g
+{
+	struct G {
+		mediump vec4 col;		//	color + alpha
+		mediump float rough;
+		mediump float metal;
+		lowp uint mtype;		//	0,1,2,3,...
+		lowp float gsel;		//	G-Buffer Selector ID
+		mediump vec4 mparam;	//	mtype ni yoru
+		mediump vec3 n;			//	normal
+		//	outer input
+		highp vec3 wvp;			//	GBufferには書き出されない。ライティングパス用の入力
+		highp vec2 uv;			//	screen uv
+		//	precompute
+		mediump float rough2;	//	rough^2
+		mediump vec3 vn;		//	normlize( wvp)
+		mediump vec3 difcol;
+		mediump vec3 f0;		//  specular color
+		mediump vec3 dfg;
+		mediump vec3 energyCompensation;
+		mediump float NoV;
+		mediump vec3 reflected;
+		mediump vec4 etc;				//  clear coat normal, anisotropic refvec etc...
+	};
+}
+
+fs packg
+{
+	highp uint packn( in highp vec3 n){
+		// highp uvec3 un = uvec3( n*vec3(1023.0,1023.0,0.9999)+vec3(1024.0,1024.0,1.0))<<uvec3(0,11,22); return un.x|un.y|un.z;
+		// return uint( dot( floor( n*vec3(1023.0,1023.0,0.9999)+vec3(1024.0,1024.0,1.0)), vec3( 1.0, 2048.0, 2048.0*2048.0)));
+		return uint( dot( floor( n*vec3(1023.4999,1023.4999,0.9999)+vec3(1023.4999,1023.4999,1.0)), vec3( 1.0, 2048.0, 2048.0*2048.0)));
+	}
+
+	void packg_error( const G g, out mediump vec4 f0, out highp uint u1, out highp uint u2){
+		f0 = vec4( 1.0, 0.0, 1.0, 1.0);
+		u1 = packn( g.n) | ((g.mtype<<29u) | (63u<<23u));
+		u2 = uint( (63<<26) | (0<<20) | (255<<8) | 255);
+	}
+
+	void packg_standard( const G g, out mediump vec4 f0, out highp uint u1, out highp uint u2){
+		f0 = vec4( g.col.xyz, g.gsel);
+		u1 = packn( g.n) | (uint( g.rough*63.5)<<23u);	//	| (0<<29)
+		highp uvec4 u = uvec4( vec4( g.metal, g.mparam.xyz) * vec4( 63.5, 255.5, 255.5, 255.5)) << uvec4( 26, 16, 8, 0);
+		u2 = u.x|u.y|u.z|u.w;
+	}
+
+	void packg_decal( const G g, out mediump vec4 f0, out highp uint u1, out highp uint u2){
+		//	exp( -5.0) ~ exp( 5.0)
+		mediump float v = max( g.col.x, max( g.col.y, g.col.z))+0.0001;
+		f0 = vec4( g.col.xyz/v, g.gsel);
+		u1 = packn( g.n) | ((1u<<29u) | (63u<<23u));
+		u2 = floatBitsToUint( v);
+	}
+
+	void packg_subsurf( const G g, out mediump vec4 f0, out highp uint u1, out highp uint u2){
+		f0 = vec4( g.col.xyz, g.gsel);
+		u1 = packn( g.n) | (2u<<29u) | (uint( g.rough*63.5)<<23u);
+		highp uvec2 u = uvec2( vec2( g.metal, g.mparam.w) * 63.5) << uvec2( 26, 20);
+		highp uint tint = uint( dot( floor( g.mparam.xyz*63.5), vec3( 1.0, 64.0, 64.0*64.0)));
+		u2 = u.x|u.y|tint;
+	}
+
+	void packg_switch( const G g, out mediump vec4 f0, out highp uint u1, out highp uint u2){
+		switch( g.mtype){
+		case 0u: packg_standard( g, f0, u1, u2); break;
+		case 1u: packg_decal( g, f0, u1, u2); break;
+		case 2u: packg_subsurf( g, f0, u1, u2); break;
+		default: packg_error( g, f0, u1, u2); break;
+		}
+	}
+}
+
+param unpackg
+{
+	uniform highp mat4 p1 <id=MISC1MAT>;
+	
+	uniform sampler2D gtex0 <id=GTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp usampler2D gtex1 <id=GTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp usampler2D gtex2 <id=GTEX3, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump usampler2D uztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+}
+
+fs unpackg
+{
+	void readg3( const mediump ivec2 uv, out lowp vec4 f0, out highp uint u1, out highp uint u2){
+		f0 = texelFetch( gtex0, uv, 0);
+		u1 = texelFetch( gtex1, uv, 0).x;
+		u2 = texelFetch( gtex2, uv, 0).x;
+	}
+
+	mediump vec3 unpackn( highp uint u1){
+		const mediump vec3 S = vec3( 1.0/1023.5, 1.0/1023.5, 1.0), T = -vec3( 1.0);
+		mediump vec3 un = vec3( (uvec3( u1)>>uvec3( 0, 11, 21)) & uvec3( 2047, 2047, 2)) * S + T;
+		return vec3( un.xy, sqrt( clamp( 1.0-dot( un.xy, un.xy), 0.0, 1.0)) * un.z);
+	}
+
+	void unpackg_common( out G g, const highp vec4 wvpp, const lowp vec4 f0, const highp uint u1){
+		highp vec2 uv = wvpp.xy*0.5 + 0.5;
+		g.wvp = reconstructWVPtex( uztex, uv, p1[0]);
+		g.col = vec4( f0.xyz, 1.0);
+		g.gsel = f0.w;	//	irankedo...
+		g.n = normalize( unpackn( u1));
+		g.mtype = u1>>29u;
+		g.rough = float( (u1>>23u)&63u) / 63.0;
+		g.uv = uv;
+	}
+
+	void unpackg_standard( out G g, const highp vec4 wvpp, const lowp vec4 f0, const highp uint u1, const highp uint u2){
+		//	common
+		unpackg_common( g, wvpp, f0, u1);
+		//	standard
+		mediump vec4 f = vec4( (uvec4( u2)>>uvec4( 26, 16, 8, 0)) & uvec4( 63, 255, 255, 255)) * vec4( 1.0/63.0, 1.0/255.0, 1.0/255.0, 1.0/255.0);
+		g.metal = f.x;
+		g.mparam.xyz = f.yzw;	//	emit, ao, bump
+	}
+
+	void unpackg_decal( out G g, const highp vec4 wvpp, const lowp vec4 f0, const highp uint u1, const highp uint u2){
+		//	common
+		unpackg_common( g, wvpp, f0, u1);
+		g.metal = 0.0;
+		g.mparam = vec4( 0.0);
+		highp float v = uintBitsToFloat( u2);
+		g.col.xyz *= v;
+	}
+
+	void unpackg_subsurf( out G g, const highp vec4 wvpp, const lowp vec4 f0, const highp uint u1, const highp uint u2){
+		//	common
+		unpackg_common( g, wvpp, f0, u1);
+		//	subsurf
+		mediump vec2 f = vec2( (uvec2( u2)>>uvec2( 26, 20)) & 63u) * (1.0/63.0);
+		mediump vec3 tint = vec3( (uvec3( u2)>>uvec3( 0, 6, 12)) & 63u) * (1.0/63.0);
+		g.metal = f.x;
+		g.mparam = vec4( tint, f.y);
+	}
+}

@@ -1,0 +1,649 @@
+import ModifiersMask;
+import VirtualKeyCode;
+import UIOP;
+
+
+class UIRightPanel
+{
+	editor = null;			//	UIEditor
+	view = null;			//	uiright
+	root = null;
+	
+	tabs = null;
+	tabmenu = null;			//	MenuBehavior
+
+	//	object tree
+	viewtree = null;		//	TreeBehavior
+	
+	//	property list
+	proplist = null;
+	propview = null;		//	fxでも使うか
+	
+	//	fx list
+	fxproplist = null;
+
+	//	script list
+	actionedit = null;			//	UIActionEdit
+	
+	//	buttons
+	addbtn = null;
+	playbtn = null;
+
+	tabselview = null;		//	prop, fxprop, action
+	
+	constructor( v, e){
+		view = v;
+		editor = e;
+		
+		//	object list
+		local vt = v.findChild( "viewtree");
+		viewtree = TreeBehavior( vt);
+		viewtree.multisel = true;
+		viewtree.dndfunc = 3;
+		viewtree.keyenable = false;
+		// viewtree.filterfunc = @( n, v){ return !(v.layerflags&8); }
+		viewtree.setviewfunc = @( la, v, i){
+			defaultsetview( la, v, i);
+			
+			local ic = FileIcons[i["icontype"]];
+			if( ic) v.setValue( "icon", ic);
+			v.findChild( "visichk").setSelected( i.layerflags & 1);
+			v.findChild( "lockchk.tgl").anime( ((i.layerflags>>1) & 3) * 10.0);
+			v.pickable = false;
+		}
+		viewtree.listview.addEventListener( ACTION_EVENT, viewtreeevent);
+		viewtree.listview.addEventListener( ITEM_EVENT, viewtreeevent);
+		//
+		tabs = TabsBehavior( v.findChild( "tabs"), ["$T.editor_ui_tab_property","$T.editor_ui_tab_fx","$T.editor_ui_tab_action"]);
+		tabs.listview.addEventListener( ACTION_EVENT, tabevent);
+		
+		// //	property list
+		proplist = PropertyListBehavior( v.findChild( "proplist"), null, "cnt0.ui");
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = e;
+		tabselview = proplist.listview;
+		
+		// //	fx list
+		fxproplist = PropertyListBehavior( v.findChild( "fxlist"), null, "cnt0.ui");
+		fxproplist.listview.addEventListener( ACTION_EVENT, fxpropevent);
+		fxproplist.listview.addEventListener( ITEM_EVENT, fxpropevent);
+		fxproplist.listview.setVisible( false);
+		fxproplist.ref = e;
+		
+		//	script edit
+		actionedit = UIActionEdit( v.findChild( "scpedit"), this);
+		actionedit.view.setVisible( false);
+		actionedit.view.addEventListener( ACTION_EVENT, scpevent);
+		
+		addbtn = view.findChild( "addbtn");
+		addbtn.addEventListener( ACTION_EVENT, addevent);
+		playbtn = view.findChild( "playbtn");
+		playbtn.addEventListener( ACTION_EVENT, playevent);
+	}
+	
+	function setData( d){
+		root = editor.canvas.root;
+		viewtree.setItemTree( root);
+		updateSelection( null);
+	}
+	
+	// function setScript( scp){
+	// 	local a = [];
+	// 	foreach( i,v in scp){
+	// 		a .. i;
+	// 	}
+	// 	a.sort();
+	// 	local adapt =  SKListAdaptor( a);
+	// 	adapt.cellheight = 24;
+	// 	scplist.setListAdaptor( adapt);
+	// }
+	
+	function refresh(){
+		viewtree.refreshItems();
+		syncListSelection();
+		//	※propviewが存在しない場合あり。その場合は選択の1つめかrootになる
+		refreshParams();
+		actionedit.setSelectedView( propview);
+	}
+	
+	function refreshParams(){
+		local t = editor.getFrameTime();
+		local prms = {}, v = propview;
+		local props = v.getProperties(), tweenkeymap = {};
+		foreach( p in props){
+			prms[p.pid] <- v.getParam( p.pid);
+			local key = v.getMotion( p.pid)?.existingkey( t);
+			if( key) tweenkeymap[p.pid] <- key.tween;
+		}
+		proplist.setParameters( prms);
+		proplist.setTweenKeys( tweenkeymap);
+		//
+		local fxprops = getFXProperties( v), fxtweenkeymap = {};
+		fxproplist.bindProperties( fxprops);	//	fxpropsはundo/redoみたいな操作でも入れ替わるので毎回bindする。。。
+		foreach( p in fxprops){
+			prms[p.pid] <- getFXParam( p.pid);
+			local key = getFXMotion( p.pid)?.existingkey( t);
+			if( key) fxtweenkeymap[p.pid] <- key.tween;
+		}
+		fxproplist.setParameters( prms);
+		fxproplist.setTweenKeys( fxtweenkeymap);
+	}
+
+	function tabevent( e){
+		local v = null;
+		switch( e.actioncmd){
+		case 0: v = proplist.listview; break;
+		case 1: v = fxproplist.listview; break;
+		case 2: v = actionedit.view; break;
+		}
+		tabselview?.setVisible( false);
+		v?.setVisible( true);
+		tabselview = v;
+		//
+		addbtn.setVisible( isaddvisible());
+		playbtn.setVisible( isplayvisible());
+	}
+
+	function isaddvisible(){
+		return actionedit.view.visible || (isFXEnabled( propview) && fxproplist.listview.visible);
+	}
+
+	function isplayvisible(){
+		return actionedit.view.visible;
+	}
+	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		local view = propview;
+		local pid = cmd.prop.pid;
+		local time = editor.getFrameTime();
+		local tween = cmd.tween;
+		local val = cmd.val;
+		
+		local contkey = ""..view.."-"..pid;
+		
+		// printf( "CMD %S contkey %S\n", encodeJSON( cmd), contkey);
+		switch( cmd.cmd){
+		case "key": case "prop":
+			if( cmd.cmd=="key" && tween<0) val = undefined;	//	キー消し用
+			else if( tween < 0) tween = null;
+			local ops = editor.setSKViewParamOP( view, pid, time, val, tween);
+			editor.submitOp( ops[0], ops[1], contkey);
+			break;
+		case "pivot":
+			if( tween < 0) tween = null;
+			local ops = pivotop( view, cmd.cmdarg, time, tween);
+			break;
+		}
+		// //	parentがラベルなら親からレイアウトの変更が必要。
+		// if( pid == SKViewPropertyID.STRETCHALIGN && (view.parent instanceof SKLabelView)){
+		// 	view.parent.updateInnerLayout();
+		// }
+		// view.updateMatrix();
+		// view.repaint();
+		// editor.updateSelectionTimeline();
+		editor.canvas.selection.updateSelection();	//	u-mmmm
+		editor.updateSelectionTimeline();	//	u-mmmmmmmm
+	}
+
+	function pivotop( view, v, time, tween){
+		//	
+		local px = ((v%3) * view.bnd.w)>>1;
+		local py = ((v/3) * view.bnd.h)>>1;
+		local dx = -view.bnd.x - px;
+		local dy = -view.bnd.y - py;
+		local piv = (px, py);
+		local pos = (view.pos.x-dx, view.pos.y-dy);
+		local ops = editor.setSKViewParamOP( view, SKViewPropertyID.PIVOT, time, piv, tween);
+		local ops2 = editor.setSKViewParamOP( view, SKViewPropertyID.POSITION, time, pos, tween);
+		//
+		ops[0] ... ops2[0];
+		ops[1] ... ops2[1];
+		editor.submitOp( ops[0], ops[1], null);
+		refreshParams();
+	}
+	
+	function fxpropevent( e){
+		local cmd = e.actioncmd;
+		if( !cmd["prop"]) return;	//	header時
+		local view = propview;
+		local fx = view.fxlist[cmd.prop.pid/100000];
+		local pid = cmd.prop.pid % 100000;
+		local time = editor.getFrameTime();
+		local tween = cmd.tween;
+		local val = cmd.val;
+		
+		local contkey = ""..view.."-"..cmd.prop.pid;
+		// printf( "FX %S PID %S %S   %S\n", fx, pid, cmd.prop.id, view.fxlist);
+		
+		switch( cmd.cmd){
+		case "key": case "prop":
+			if( cmd.cmd=="key" && tween<0) val = undefined;	//	キー消し用
+			local ops = editor.setSKViewFXParamOP( view, fx, pid, time, val, tween);
+			editor.submitOp( ops[0], ops[1], contkey);
+			break;
+		case "menu":
+			switch( val["id"]){
+			case "up":
+			case "down":
+				break;
+			case "delete":
+				delFX( view, fx);
+				break;
+			}
+			break;
+		}
+		editor.updateSelectionTimeline();	//	u-mmmmmmmm
+	}
+
+	function scpevent( e){
+		switch( e.src["name"]){
+		case "testuibtn":
+			local canvas = editor.canvas;
+			if( canvas.scproot){
+				canvas.exitScriptRun();
+			}else{
+				canvas.enterScriptRun();
+			}
+			break;
+		}
+	}
+
+	function viewtreeevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		// case ITEM_HOVER:
+		// 	local v = e.actioncmd;
+		// 	printf( "V? %S  %S\n", v, v);
+		// 	break;
+		// case ITEM_SELECTED:
+		// 	editor.addSelection( cmd);
+		// 	break;
+		// case ITEM_DESELECTED:
+		// 	editor.removeSelection( cmd);
+		// 	break;
+		case ITEM_SELECTIONS:
+			editor.setSelection( cmd);
+			break;
+		case ITEM_SORT:
+		{
+			editor.moveViews( cmd.from, cmd.to, cmd.way);
+			refresh();
+			break;
+		}
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showRename( cmd);
+			}
+			//	リストアイテムをダブルクリックしたらそのアイテムがactiomcmd
+			//	チェックボックスなんかだと{"idx":4,"src":"GPUIButton:0x000001EC62F3D410","item":"SKGroupView:0x000001EC60ECA020","itemview":"SKLibView:0x000001EC62F3E020"}
+			local src = e.actioncmd["src"];
+			if( src){
+				local v = e.actioncmd.item;
+				local redo = [], undo = [];
+				local lflags = v.layerflags;
+				if( src["name"] == "visichk"){
+					lflags = lflags ^ 1;
+				}
+				if( src["name"] == "lockchk"){
+					lflags = (lflags&~6) | ((((lflags>>1)+1)%3)<<1);
+				}
+				redo .. OP_SKViewFlags( v, lflags);
+				undo .. OP_SKViewFlags( v, v.layerflags);
+				editor.submitOp( redo, undo);
+				refresh();
+				editor.canvas.refresh();
+			}
+			break;
+		}
+	}
+
+	function showRename( view){
+		local oldname = view.name;
+		local cnt = viewtree.getItemView( view), root = ::rootview;
+		local lbl = cnt.findChild( "lbl");
+		local n = Popups.showRename( lbl);
+		if( n != oldname){
+			local redo = [OP_Rename( view, n)];
+			local undo = [OP_Rename( view, oldname)];
+			editor.submitOp( redo, undo);
+			refresh();
+		}
+	}
+	
+	static fxreg = [
+		SKViewBlurFX, SKViewMotionBlurFX, SKViewZoomBlurFX, SKViewUniversalMaskFX, 
+		SKViewHaloFX, SKViewSolidShadowFX, SKViewCubicLensFX, SKViewEdgeHaloFX, SKViewCircleMaskFX,
+		SKViewStrokeFX, SKViewShineFX, SKViewWaveFX, SKViewSliceFX,
+	];
+
+	function addevent( e){
+		if( actionedit.view.visible){
+			actionedit.showAddAction();
+		}else{
+			local menudata = [];
+			foreach( f in fxreg){
+				menudata .. { lbl=f.fxname, cls=f };
+			}
+			local sel = MenuPopup.run( menudata);
+			if( sel){
+				addFX( propview, sel.cls);
+			}
+		}
+	}
+
+	function playevent( e){
+
+	}
+	
+	function addFX( view, cls){
+		local fx = cls();
+		::markSKViewFXMotions( fx);
+		fx.moveFrame( null, editor.timeline.getTime());
+		local redo = [OP_AddSKViewFX( view, fx)];
+		local undo = [OP_RemoveSKViewFX( view, fx)];
+		if( !view.buf){
+			redo[0] <- OP_SetSKViewStaticParam( view, SKViewPropertyID.BUFFER, true);
+			undo .. OP_SetSKViewStaticParam( view, SKViewPropertyID.BUFFER, false);
+		}
+		editor.submitOp( redo, undo);
+		refresh();
+	}
+	
+	function delFX( view, fx){
+		local redo = [OP_RemoveSKViewFX( view, fx)];
+		local undo = [OP_AddSKViewFX( view, fx)];
+		editor.submitOp( redo, undo);
+		refresh();
+	}
+	
+	function moveFX( view, fx, dir){
+		local redo = [OP_MoveSKViewFX( view, -dir)];
+		local undo = [OP_MoveSKViewFX( view, dir)];
+		editor.submitOp( redo, undo);
+		refresh();
+	}
+	
+	//	リストの選択状態をキャンバスの選択状態と一致させる
+	//	キャンバスやショートカット操作で選択状態が変わった時に呼び出す
+	function syncListSelection(){
+		viewtree.setSelectedItems( editor.sellist);
+	}
+	
+	//	
+	function updateSelection( a){
+		local v = root;
+		if( length( a)){
+			v = a[0];
+			// if( viewtree.setSelectedItem( v) < 0){	//	選択状態がわやくちゃになるのでここでは変更しない。。。syncListSelectionを別途呼び出す
+			// 	viewtree.expandItem( v, true);
+			// }
+		}else{
+			// viewtree.setSelectedIndex( -1);
+		}
+		propview = v;
+		local props = v.getProperties();
+		proplist.bindProperties( props);
+		// local fxprops = getFXProperties( v);
+		// fxproplist.bindProperties( fxprops);		//	refreshParamsでやったほうが良い
+		refreshParams();
+		addbtn.setVisible( isaddvisible());
+		playbtn.setVisible( isplayvisible());
+		actionedit.setSelectedView( v);
+		proplist.listview.gpui.scrollToScrollBounds();		//	スクロールが下に行き過ぎてるのを上に戻す
+		fxproplist.listview.gpui.scrollToScrollBounds();
+		//
+		if( v){
+			local ic = FileIcons[v["icontype"]];
+			if( ic) view.setValue( "bodyhead.icon", ic);
+			view.setValue( "bodyhead.lbl", v==root?editor.res.name : v.name);
+		}
+	}
+
+	function isFXEnabled( v){
+		return !!v.getProperty( SKViewPropertyID.BUFFER);
+	}
+
+	function getFXProperties( v){
+		local a = [];
+		if( !v) return a;
+		foreach( i, f in v.fxlist){
+			a .. { pid=i*100000, lbl=f.fxname, type=PropertyType.HEADER, menu=[
+				{ id="up", lbl="$T.editor_ui_menu_edit_order_up", icon="\ue5d8"},
+				{ id="down", lbl="$T.editor_ui_menu_edit_order_down", icon="\ue5db"},
+				"*",
+				{ id="delete", lbl="$T.menu_edit_del", icon="\ue872" },
+			] }
+			local props = f.getProperties();
+			foreach( p in props){
+				p = clone p;
+				p.pid += i*100000;
+				a .. p;
+			}
+		}
+		return a;
+	}
+
+	function getFXParam( pid){
+		if( typeof( pid) != SS_INTEGER) return null;
+		local view = propview;
+		local fx = view.fxlist[pid/100000];
+		return fx.getParam( pid%100000);
+	}
+
+	function getFXMotion( pid){
+		if( typeof( pid) != SS_INTEGER) return null;
+		local view = propview;
+		local fx = view.fxlist[pid/100000];
+		return fx.getMotion( pid%100000, false);
+	}
+
+	function setFXParam( pid, p0, p1=null, w=0.0){
+		local view = propview;
+		local fx = view.fxlist[pid/100000];
+		return fx.setParam( pid%100000, p0, p1, w);
+	}
+}
+
+class UIRightPanel.UIActionEdit
+{
+	uiright = null;
+	view = null;
+	actlist = null;					//	ListBehavior
+	acteditor = null;				//	ActionListEditor
+
+	actionmap = null;
+	selname = null;					//	
+	
+	constructor( v, rp){
+		view = v;
+		uiright = rp;
+		actlist = ListBehavior( v.findChild( "actlist"), []);
+		actlist.multisel = true;
+		actlist.listview.addEventListener( ITEM_EVENT, actlistevent);
+		actlist.listview.addEventListener( ACTION_EVENT, actlistevent);
+		acteditor = ActionListEditor( v, SKViewActions);
+		v.addEventListener( ACTION_EVENT, actionevent);
+	}
+
+	function setSelectedView( v){
+		if( actionmap == v.actionmap) return;
+		actionmap = v.actionmap;
+		local a = setActionMap( actionmap);
+		selectAction( a[0]["lbl"]);
+	}
+
+	function setActionMap( m){
+		local a = [];
+		foreach( i, v in m){ a .. { lbl=i, val=v}; }
+		a.sort( @( v) v.lbl);
+		actlist.setListItems( a);
+		return a;
+	}
+
+	function selectAction( n, listsel=true){
+		selname = n;
+		view.setValue( "actname", n || "");
+		if( n){
+			local i = actlist.items.findi( @( v) v.lbl==n);
+			if( listsel) actlist.setSelectedIndex( i);
+			acteditor.setEnabled( true);
+			acteditor.setActions( deepclone( actionmap[n]));
+		}else{
+			actlist.deselectAll();
+			acteditor.setEnabled( false);
+			acteditor.setActions( []);
+		}
+	}
+
+	function playAction( actname){
+		local v = uiright.propview;
+		if( v){
+			//	※crootからvのクローンを探さないといけない。。。無理やり名前を一時的に変えてやる
+			local vn = v.name; v.name = "*TMP*";
+			uiright.editor.canvas.enterScriptRun();
+			local croot = uiright.editor.canvas.scproot;
+			local cv = croot.findChild( "*TMP*") || croot;
+			cv.action( actname);
+			v.name = vn;
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "actplaybtn":
+			break;
+		case "actmenubtn":
+			showContextMenu( e);
+			break;
+		case "actlistmenu":
+			selectAction( e.actioncmd.lbl);
+			break;
+		case "scpedit":
+		{
+			local n = selname, newact = deepclone( acteditor.actionitems), oldact = actionmap[n];
+			local self = this;
+			local n = selname, oldact = actionmap[n];
+			local redo = [@(){
+				self.actionmap[n] = newact;
+				self.setActionMap( self.actionmap);
+				self.selectAction( n);
+			}];
+			local undo = [@(){
+				self.actionmap[n] <- oldact;
+				self.setActionMap( self.actionmap);
+				self.selectAction( n);
+			}];
+			uiright.editor.submitOp( redo, undo);
+			break;
+		}
+		}
+	}
+
+	function showAddAction( n0="action", newact=null){
+		newact = newact || [];
+		local n = n0;
+		for( local l = 0;;l++){
+			if( !actionmap[n]) break;
+			n = n0.."-"..(l+1);
+		}
+		local oldname = selname, self = this;
+		local redo = [@(){
+			if( !self.actionmap){ self.actionmap = self.uiright.propview.actionmap = {}; }
+			self.actionmap[n] <- newact;
+			self.setActionMap( self.actionmap);
+			self.selectAction( n);
+		}];
+		local undo = [@(){
+			delete self.actionmap[n];
+			self.setActionMap( self.actionmap);
+			self.selectAction( oldname);
+		}];
+		uiright.editor.submitOp( redo, undo);
+	}
+
+	function actlistevent( e){
+		switch( e.id){
+		case ITEM_SELECTED:
+			selectAction( e.actioncmd.lbl, false);
+			break;
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				if( e.actioncmd) selectAction( e.actioncmd.lbl);
+				showContextMenu( e);
+			}else{
+				playAction( e.actioncmd.lbl);
+			}
+			break;
+		}
+	}
+
+	function pasteAction( n, act){
+
+	}
+
+	function showContextMenu( e){
+		local cbdata = getClipboard( "uiaciton");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="rename", lbl="$T.lbl_rename", icon="\ue3c9", disable=!e.actioncmd},
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d", disable=!e.actioncmd},
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata },
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=!e.actioncmd},
+		]
+		local ret = MenuPopup.run( menudata);
+		local self = this;
+		switch( ret["id"]){
+		case "copy":
+		{
+			putClipboard( "uiaciton", { name=selname, data=actionmap[selname]});
+			break;
+		}
+		case "paste":
+		{
+			showAddAction( cbdata.name, deepclone( cbdata.data));
+			break;
+		}
+		case "rename":
+		{
+			if( !selname) break;
+			local lbl = actlist.getItemView( e.actioncmd).findChild( "lbl");
+			local n = Popups.showRename( lbl);
+			if( n != selname){
+				local oldname = selname, act = actionmap[oldname];
+				local redo = [@(){
+					delete self.actionmap[oldname]; self.actionmap[n] <- act;
+					self.setActionMap( self.actionmap);
+					self.selectAction( n);
+				}];
+				local undo = [@(){
+					delete self.actionmap[n]; self.actionmap[oldname] <- act;
+					self.setActionMap( self.actionmap);
+					self.selectAction( oldname);
+				}];
+				uiright.editor.submitOp( redo, undo);
+			}
+			break;
+		}
+		case "delete":
+		{
+			if( !selname) break;
+			local n = selname, oldact = actionmap[n];
+			local redo = [@(){
+				delete self.actionmap[n];
+				self.setActionMap( self.actionmap);
+				self.selectAction( self.actlist.items[0]["lbl"]);
+			}];
+			local undo = [@(){
+				self.actionmap[n] <- oldact;
+				self.setActionMap( self.actionmap);
+				self.selectAction( n);
+			}];
+			uiright.editor.submitOp( redo, undo);
+			break;
+		}
+		}
+	}
+}

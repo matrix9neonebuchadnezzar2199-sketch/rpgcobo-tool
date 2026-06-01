@@ -1,0 +1,123 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+local srcdir = dirname( callee().getSourceName());
+
+//	リソースの各タイプをリストにする。ダブルクリックでそのまま編集画面へ。
+//	シークレットリソース
+//	/-/resource/chara_vox 
+//	
+class ResourceSideView extends SKView
+{
+	static restypelist = [ 
+		"chara_vox", /*"obj_vox",*/ "equip_vox", "*", "enemy_pic", "event_pic", /*"enemy_pm",*/ "efx", "*", "map_vox", "map_asset", "*", "icon", "uimap", "*", "bgm", "snd", "voice",
+	];
+	
+	reslist = null;			//	ListBehavior : 
+
+	static function createSideView(){
+		local v = ::loadSKView( srcdir.."/ui/resourceview.ui", ResourceSideView);
+		v.init();
+		return v;
+	}
+
+	function init(){
+		reslist = ListBehavior( findChild( "LIST"), []);
+		reslist.setviewfunc = @( la, v, i){
+			local lbl = v.findChild( "lbl"), icon = v.findChild( "icon"), sep = v.findChild( "sep");
+			if( i.type == "*"){
+				lbl.visible = icon.visible = false;
+				sep.visible = true;
+				v.tips = null;
+			}else{
+				lbl.visible = icon.visible = true;
+				sep.visible = false;
+				lbl.setValue( i.lbl);
+				icon.setValue( i.icon);
+				v.tips = i["tips"] || null;
+			}
+		};
+		reslist.listview.addEventListener( ACTION_EVENT, listevent);
+		
+		updateResourceList();
+	}
+
+	function updateResourceList(){
+		local a = [];
+		foreach( type in restypelist){
+			if( type == "*"){
+				a .. { type="*"};
+			}else{
+				a .. {
+					type = type,
+					lbl = "$T.side_res_"..type,
+					icon = GameResourceResource.resiconmap[type],
+					tips = "AODWJOFJAWOWJAOFJAWOWJFOWAJOFJOWJA"
+					res = ::getResource( "/.x/" ..type);
+				};
+			}
+		}
+		reslist.setListItems( a);
+	}
+
+	function countResources( t){
+	}
+
+	function setCurrentPath( path){
+		if( path.startsWith( "/.x/map_asset/MA")) path = "/.x/map_asset";
+		local restype = getrestype( path);
+		local r = getResource( path);
+		local i = reslist.items.findi( @( v) v["res"]==r);
+		updateMatrixAll();
+		reslist.setSelectedIndex( i);
+	}
+
+	function listevent( e){
+		switch( e.id){
+		case ACTION_PERFORMED:
+			::skstudio.openEditor( e.actioncmd.res.path);
+			break;
+		}
+	}
+}
+
+//	/-/resource dir
+class ResourceEditDir extends Resource
+{
+	constructor(){
+		isdir = true;
+		list = [];
+		foreach( type in restypelist){
+			local r = ResourceEditItem();
+			r.name = type;
+			r.pres = this;
+			list .. r;
+		}
+	}
+}
+
+class ResourceEditItem extends Resource
+{
+	function load( i = 1){
+		if( !cache){
+			local t = ::RES[name];		//	ロードされたresources.json。どこにロードするべきか？？？
+			cache = deepclone( t);		//	RESと完全分離するために
+		}
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+with( skstudio){
+	registerActivity( {uid:"act_resource", order:-70, sideview="side_resource", icon="\uf089", tips="$T.side_resource", slbl="$T.lbl_resource"});
+	registerSideView( {
+		uid:"side_resource", lbl="$T.side_resource", icon="\uf089", createSideView:ResourceSideView.createSideView, defkey="^_G" 
+		matches = @( path){
+			if( path.startsWith( "/.x/map_asset/MA")) return true;	//	マップアセットを直接エディットする場合も？
+			return !!getrestype( path);
+		}
+	});
+}
+
+

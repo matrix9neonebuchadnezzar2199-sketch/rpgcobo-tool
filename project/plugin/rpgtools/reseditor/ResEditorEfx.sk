@@ -1,0 +1,189 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorEfx : エフェクト
+//	
+//	
+//	
+
+local efxplacelist = [
+	"center", "top", "bottom", "attack", "screen",
+];
+
+//	
+class ResEditorEfx extends ResEditor
+{
+	static RESSLOTUI = "/ui/resslot3.ui";
+
+	static props = [
+		{ pid="name", lbl="$T.lbl_name", type=LANGSTRING, defval=null }
+		{ pid="efx", lbl="$T.lbl_model", type=GRAPHIC, dir="/resource/efx", restype="efx", nullable=true, defval=null }
+		{ pid="place", lbl="$T.lbl_place", type=LIST, list=efxplacelist, defval=0 }
+		{ pid="hsv", lbl="$T.lbl_hsv", type=VEC3, ui="bar", range=((-180,180),(-100,100),(-100,100)) defval=[0,0,0]}
+		{ pid="pos", lbl="$T.lbl_position", type=VEC3, range=(-10.0,10.0), q=100, defval=[0,0,0] }
+		{ pid="hpb", lbl="$T.lbl_rotation", type=VEC3, range=(-180,180), defval=[0,0,0] }
+		{ pid="scale", lbl="$T.lbl_scale", type=SCALAR, range=(0.1,4.0), q=10, defval=1.0, ui="bar" }
+		{ pid="speed", lbl="$T.lbl_playspeed", type=SCALAR, range=(0.1,2.0), q=10, defval=1.0, ui="bar" }
+		{ pid="billboard", lbl="$T.lbl_billboard", type=BOOL, defval=false }
+		{ pid="ovfx", lbl="$T.lbl_ovfx", type=PROPERTYLIST, propdef=OverlayEffect.ovfxpropdef, defval={} }
+		{ pid="eventuse", lbl="$T.lbl_eventuse", type=BOOL, defval=false },
+		{ pid="waittime", lbl="$T.lbl_waittime", type=SCALAR, range=(0,4000), defval=500, ui="bar", barrange=(0,1000,10) }
+	];
+	
+	function init( path){
+		super.init( path);
+		resdirpath = ::resroot.file.path .. "/resource/efx";
+	}
+	
+	function itemSelected( v){
+		local d = v.data;
+		if( !d) d = v.data = data[v.id] <- { name=""};
+		setDefaultProperties( props, d);
+		//
+		proplist.bindProperties( props);
+		proplist.setParameters( d);
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd.cmd != "prop") return;
+		local pid = cmd.prop.pid, val = cmd.val;
+		switch( pid){
+		default:
+			setParamOp( selitem.id, cmd.prop, val);
+			break;
+		}
+	}
+
+	function rootevent( e){
+		switch( e.id){
+		case KEY_PRESSED:
+			if( e.keycode == VK_SPACE){
+				local resid = selitem.id, d = data[resid];
+				preview.startEffect( d);
+			}
+			break;
+		}
+	}
+
+	function showItemContextMenu( e){
+		local resid = selitem.id, d = data[resid];
+		local r = ::getResource( d["efx"]);
+		local cbdata = getClipboard( "resitem");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="editptd", lbl="$T.lbl_edit", icon="\ue745", disable=!r  },
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!isPastable( cbdata)},
+			"-",
+			{ id="sort", lbl="$T.lbl_idsort", icon="\ue240"},
+			{ id="dir", lbl="$T.lbl_openresdir", icon="\ue89e"},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "copy":
+			copy();
+			break;
+		case "paste":
+			paste( cbdata);
+			break;
+		case "editptd":
+			::skstudio.openEditor( r.path);
+			break;
+		case "sort": return showIDSortDialog();
+		case "dir": return skOpenURL( "dir://"..resdirpath);
+		}
+	}
+
+	function itemAction( e){
+		// local d = e.actioncmd["data"];
+		// local r = ::getResource( d["efx"]);
+		// if( r) ::skstudio.openEditor( r.path);
+		local resid = selitem.id, d = data[resid];
+		preview.startEffect( d);
+	}
+}
+
+class ResEditorEfx.ResPreview
+{
+	view = null;
+	editor = null;
+	resid = null;
+
+	canvas = null;		//	CanvasBehavior
+	envmenu = null;		//	MenuBehavior
+	animenu = null;		//	MenuBehavior
+	datamenu = null;
+	playbtn = null;		//	GPUIButton
+	// loopchk = null;
+	pntchk = null;
+
+	sk3d = null;
+	efxsk = null;
+
+	constructor( v, e){
+		editor = e;
+		canvas = CanvasBehavior( v.findChild( "3d"), v);
+		canvas.view.renderer.setEnvironment( ::RenderSettings.getEnvironment( "pbr_fw"));
+		playbtn = v.findChild( "playbtn");
+		playbtn.setVisible( true);
+		datamenu = v.findChild( "datamenu");
+		datamenu.setVisible( true);
+		setResourceID( "CE000");
+		v.addEventListener( ACTION_EVENT, actionevent);
+	}
+
+	function setResourceID( rid){
+		resid = rid;
+		local r = RPGResource.getResource( rid);
+		datamenu.setValue( "lbl", sprintf( "%S: %S", rid, lang( r.name)));
+		// setResourceData( rid, r);
+		local mdl = { mdlid = rid};
+		local restype = ::RPGResource.getResourceType( mdl.mdlid);
+		local mm = ::conf._resource[restype][mdl.mdlid];
+		//
+		sk3d?.kill();
+		if( mm["preview"]){
+			local pm = ::PrimitiveMeshes.createBox( 0.5, 0.5, 0.5);
+			local m = pm.face[0].m;
+			m.fillmode = SK_LINE;
+			m.tec = skFXFindTechnique( "pbr.basic");
+			sk3d = RPG3DObject();
+			sk3d.setSource( pm);
+			sk3d.pos( 0, 0.502, 0);
+		}else{
+			sk3d = RPG3DObject.create3DObject( mdl);
+		}
+		sk3d.setDir( Math.PI);
+		canvas.scn.addObject( sk3d);
+		canvas.view.repaint();
+	}
+	
+	function startEffect( v){
+		efxsk?.kill();
+		efxsk = sk3d.effect( v)["sk"];
+	}
+	
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "playbtn":
+			local resid = editor.selitem.id, d = editor.data[resid];
+			startEffect( d);
+			break;
+		case "datamenu":
+			local ret = ResourceSelectDialog.run( e, { restype = ["chara_etc", "chara_vox", "enemy_pic"] }, resid);
+			if( ret){
+				setResourceID( ret);
+			}
+			break;
+		}
+	}
+}

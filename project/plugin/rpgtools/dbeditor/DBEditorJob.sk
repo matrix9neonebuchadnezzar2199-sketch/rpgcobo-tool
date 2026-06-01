@@ -1,0 +1,167 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorJob : ジョブ編集
+//	
+
+class DBEditorJob extends EditorViewBase
+{
+	//	ジョブの基本パラメータ。基本拡張はできない。が、プラグインでここ拡張することは可能。
+	static baseprops = [
+		RPGProperties.nameiconprop,
+		RPGProperties.descprop,
+		{ pid="jobslotbits", lbl="$T.type_jobslot", type=CHECKBITS, list=@() typelist( "jobslot"), defval=1 }
+		{ pid="jobflag", lbl="$T.type_jobflag", type=LIST, list=@() [{ lbl="$T.lbl_none", val=-1, }, ...typelist( "jobflag")], defval=-1 }
+	];
+
+	//////////////////////////////////////////////////////////////////////////////////////
+
+	res = null;				//	Resource : 
+	data = null;			//	S000等のデータのコピー。
+	
+	//	view
+	baseproplist = null;
+	proplist = null;
+	optionlist = null;			//	OptionList : 汎用オプションパネル
+	lvoptionlist = null;		//	OptionList : 汎用オプションパネル＋jxp設定も可能に。
+
+	function init( path){
+		op = OperationStack();
+		baseproplist = PropertyListBehavior( findChild( "baseproplist"), null, "cnt3.ui");
+		baseproplist.bindProperties( baseprops);
+		baseproplist.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist.ref = this;
+
+		proplist = PropertyListBehavior( findChild( "proplist"), null, "cnt3.ui");
+		proplist.bindProperties( baseprops);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		
+		optionlist = OptionList( findChild( "optionlist"), this);
+		lvoptionlist = OptionListWithLV_Own( findChild( "lvoptionlist"), this);
+		
+		res = ::getResource( path);
+		data = deepclone( res.getContent()) || {};
+		//	データ補間。存在しないプロパティにデフォルト値を挿入
+		setDefaultProperties( baseprops, data);
+		setDefaultProperties( ::RPGSystem.jobprops, data);
+		if( !data["option"]) data.option <- [];
+		if( !data["lvoption"]) data.lvoption <- [];
+		//
+		bindJobProperties();
+		refresh();
+	}
+
+	function bindJobProperties(){
+		proplist.bindProperties( ::RPGSystem.jobprops);
+	}
+
+	function refresh(){
+		baseproplist.setParameters( data);
+		proplist.setParameters( data);
+		optionlist.setOptions( data.option);		//	このやり方で良いかな・・・？
+		lvoptionlist.setOptions( data.lvoption);	//	このやり方で良いかな・・・？
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	//	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+		}
+	}
+}
+
+
+class OptionListWithLV_Own extends OptionList
+{
+	static ITEMUIPATH = srcdir .. "/ui/optionitem2.ui";
+
+	static function setviewfunc( la, v, i){
+		local lbl = ::OptionList.optiondesc( i);
+		if( i["perma"]) lbl = lbl .. "  \uf81d";
+		v.setValue( "lbl", lbl);
+		local opt = ::RPGSystem.option[i.opttype];
+		v.setValue( "icon", opt["icon"]);
+		v.setValue( "pnt", sprintf( "LV.%S", i["LV"]||0));
+		v.findChild( "visichk").setSelected( !i["hide"]);
+		v.pickable = false;
+	}
+
+	function createOptionData( opt){
+		local opd = super.createOptionData( opt);
+		opd.LV <- 1;
+		local opt = ::RPGSystem.option[opd.opttype];
+		if( opt["ownable"]) opd.perma <- false;
+		return opd;
+	}
+	
+	//	
+	function showOptionEdit( opd0, isnew=false){
+		local opt = ::RPGSystem.option[opd0.opttype];
+		local props = clone fget( opt, "props", opt, opd0);
+		props[0] <- #{ pid="LV", lbl="$T.LV", type=SCALAR, range=(1,999), }
+		props[1] <- #{ pid="G1", lbl="", type=HEADER, cnt="header0.ui"};
+		if( opt["ownable"]){
+			props .. #{ pid="G2", lbl="", type=HEADER, cnt="header0.ui"};
+			local condid = editor.res.name;
+			props  .. { pid="perma", lbl="$T.lbl_ownable", type=BOOL, }
+		}
+		//	
+		local propdef = {
+			name = opt.name, icon = opt.icon,
+			props = props,
+		}
+		local opd = PropertyEditPopup.run( null, propdef, opd0);
+		if( opd && opd<>opd0){
+			local li = optionitems;
+			local redo = [@(){ li[li.indexOf( opd0)] = opd; }];
+			local undo = [@(){ li[li.indexOf( opd)] = opd0; }];
+			if( isnew) editor.mergeOp( redo, undo); else editor.submitOp( redo, undo);
+			optionlist.refreshItems();
+		}
+	}
+}

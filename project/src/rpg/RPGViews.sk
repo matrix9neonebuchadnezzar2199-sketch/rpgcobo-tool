@@ -1,0 +1,683 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import SKViewPropertyID;
+import PropertyType;
+import RPGPropertyType;
+import MoveScreenFlags;
+import GamepadButtonCode;
+
+local v_0 = Vector3D(), v_1 = Vector3D(), v_2 = Vector3D(), v_3 = Vector3D(), m_0 = Matrix();
+local r2_0 = Rect2D(), r2_1 = Rect2D(), r3_1 = Rect3D();
+
+//	RPG用に追加実装が必要なUI部品
+//	マルチカラムリスト ... 
+//	3Dプレビュー ... キャラやアイテムなんかのプレビュー用表示。setValueでmdlを与えられる。※SK3DViewに直接newslotしちゃう！
+//	3Dターゲット選択 ... GPUIボタン、敵は名前ラベル表示、味方はステータスリストをフォーカス。さらに3Dモデルにアウトラインを表示
+//	バルーン ... エモーション的なバルーン。3Dモデルの頭上に付く。距離によってサイズが変わる。※これパーティクルの方が良いか
+//	調べるヒント ... 調べるが可能な際にプレイヤーの下に表示。
+//	ダメージポップ ... ダメージや回復の数値。3Dモデルの中心から放射状にランダムな位置から表示。
+//	バーチャルパッド ... 移動パッド、A,Bボタン、メニュー、オート。オートは戦闘時のみ表示。
+//	丸いinnerpick ... 当たり判定が〇型になってるSKGroupView。バーチャルパッドで使う
+//	小マップ ... 
+
+
+
+//	SK3DViewにキャラのプレビュー表示を加える
+//	※モンスター図鑑なんかに対応するためにRPGPlayer, RPGEnemy両方ありにするかなー
+//	
+class CharaPreview extends SK3DView
+{
+	icontype = "chrprev";
+	rp3d = null;			//	RPG3DObject
+
+	rsetid = "pbr_draft";
+	
+	constructor( s = null, r = null){
+		super( s, r);
+		// renderer.bgpass.enabled = false;
+		setParam( CAMERADATA, SK3DCameraData());
+		//	ツール時は分かりやすいようにデフォルトキャラ表示を行う。
+		if( ::["SKStudio"]){
+			setModelData({ mdlid="CV000"});
+		}
+		renderer.setEnvironment( ::RenderSettings.getEnvironment( rsetid));
+	}
+
+	//	data : モデルデータが入ったテーブルなら何でも良し。mdlid, mdl
+	function setModelData( data){
+		if( rp3d) scn.removeObject( rp3d);
+		rp3d = RPG3DObject.create3DObject( data);
+		rp3d.setDir( Math.PI);
+		scn.addObject( rp3d);
+		return rp3d;
+	}
+
+	//	p : RPGPlayer コンディションの表示も行う。
+	function setRPGPlayer( p){
+		setModelData( p.data);
+		rp3d.rpgobj = p;
+		rp3d.anime2( {id="stand"});
+	}
+
+	function updateScene( dt){
+		super.updateScene( dt);
+		local cam = renderer.camera;
+	}
+
+	function setValue( a, b=undefined){
+		if( b==undefined){
+			if( a instanceof RPGPlayer){
+				return setRPGPlayer( a);
+			}
+			if( a["data"]["mdlid"] || a["data"]["mdl"]){
+				return setModelData( a.data);
+			}
+		}
+		return super.setValue( a, b);
+	}
+	
+	function hitSkill( skill){
+		local act = skill["hitact"];
+		// local func = @(){
+		// 	efx( hitefx);
+		// 	snd( hitsnd);
+		// }
+		rp3d.effect( act["hitefx"]);
+	}
+}
+
+//	イベントピクチャ表示用。
+//	
+/*
+	"PC000":{
+		"animap":[],
+		"aniuv":[1,1],
+		"cntpos":[0.5,0.5],
+		"pic":"/resource/event_pic/rpgcobo-icon.webp",
+		"scale":1.0,
+		"blend":5
+	},
+*/
+class EventPicView extends SKView
+{
+	static icontype = "evpic";
+	static picidprop = { pid=6678, lbl="$T.side_res_event_pic", type=RESID, restype=["event_pic"], nullable=true, };
+	static animprop = { pid=6679, type=LIST, list=[], };
+	
+	picid = null;				//	PC000
+	picdata = null;
+	sp = null;
+	spcolor = 0xffffffff;	//	
+
+	//	アニメーションフレーム
+	aniu = 1; aniv = 1;
+	
+	constructor(){
+		setPicID( null);
+		enabled = false;
+	}
+
+	function setValue( a, b=undefined){
+		if( b==undefined){
+			setPicID( b);
+		}
+	}
+
+	function setPicID( pi){
+		picid = pi;
+		local pc = picdata = ::conf._resource.event_pic[pi] || ::conf._resource.event_pic["PC000"];
+		local tex = ::getTexture( pc.pic);
+		if( pc["aniuv"]){
+			aniu = Math.max( 1, pc.aniuv[0]);
+			aniv = Math.max( 1, pc.aniuv[1]);
+		}
+		local w = tex.width / aniu, h = tex.height / aniv;
+		sp = Sprite( tex);
+		sp.setSubBounds( Rect2D( 0, 0, w, h));
+		sp.blend = pc.blend;
+		sp.bnd.scale( pc.scale, pc.scale);
+		bnd.set( -(w*pc.cntpos[0])|0, -(h*pc.cntpos[0])|0, w, h).scale( pc.scale, pc.scale);
+		matdirty = true;
+		repaint();
+	}
+
+	//	addUpdateFuncで追加
+	function updateAnime( dt){
+	}
+
+	function render(){
+		skDrawSprite( sp);
+	}
+
+
+	function getColor(){
+		return spcolor;
+	}
+	
+	function setColor( c){
+		spcolor = c;
+		sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+	}
+	
+	function getProperties(){
+		return #[
+		( SKVP[VISIBLE]),
+		picidprop,
+		( SKVP[POSITION]),
+		( SKVP[SCALE]),
+		( SKVP[ROTATION]),
+		( SKVP[STRETCHALIGN]),
+		( SKVP[IMAGECOLOR]),
+		( SKVP[ENABLED]),
+		]
+	}
+	
+	function getParam( pid){
+		switch( pid){
+		case IMAGE : return imageref;
+		case IMAGECOLOR : return spcolor;
+		case IMAGEBLEND : return sp.blend;
+		case IMAGESTRETCH : 
+			local s = sp.streach;
+			return s?[s.x|0,s.y|0,s.w|0,s.h|0,sp.punch?1:0]:null;
+		case IMAGEALIGN: return imagealign;
+		}
+		return super.getParam( pid);
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case IMAGECOLOR :
+			spcolor = Math.lerpcolor( p0, p1, w);
+			sp.color0 = (sp.blend==SK_PMAMIX) ? Math.lerpcolor( spcolor&0xff, spcolor, (spcolor&0xff)/255.0) : spcolor;
+			repaint();
+			break;
+		default:
+			super.setParam( pid, p0, p1, w);
+		}
+	}
+}
+
+//	::loadSKView( path, RPG3DPopupView)のように作る。
+//	SK3DViewにaddChildされる。
+//	スケール、回転の調整が可能。また、カメラ範囲に入るように移動調整も可能。ただ、裏に回られると無理。
+//	バトル中は常にaddされた状態。
+//	
+//	選択には、主ターゲットと副ターゲットがある。GPUIの選択は主ターゲット状態で、スキル範囲に収まっている場合は副ターゲット状態。
+//	リストと3DターゲットそれぞれbindValueで基本的には問題なく表現できるはず。
+//	※ターゲットUIはloadSKView( uipath, RPG3DPopupView)として生成する？そうするとプロパティはどう入れるべきか
+//	　フォーカス時の挙動、GPUI選択可能か、sk3dに追従するか、
+//	↑メタデータにjsonテキストで入れておいてやるとか。。。？ターゲット、バルーン、ダメージ、調べるぐらいだし。あと勝利時にexpゲージ、levelup表示もか
+//	
+class RPG3DPopupView extends SKLibView
+{
+	rp3d = null;			//	アタッチされているRPG3DObject。
+	tpos = 2;				//	getEffectPositionの値。デフォルトでは2(bottom)
+
+	function setTarget( s){
+		rp3d = ref = s;
+	}
+
+	//	
+	function setTargetPoint( tp){
+		tpos = tp;
+	}
+
+	//	rp3dを完全に囲うようにposとstretch。posは左上揃え。
+	//	※アクション中の激しい動きでピッキングできないのはいけないのでbaseposの場所に配置される。ボクセルもピクチャーも同様。
+	function updateFunc( dt){
+		if( !rp3d) return true;
+		local cam = parent.renderer.camera;	//	parent -> SK3DView
+		local p = v_0( rp3d.getEffectPosition( tpos)).transform( rp3d.mat);
+		local w = p.transform( cam.viewmat).transformw( cam.prjmat);
+		pos( p.x, p.y, 0.0).scale( 0.5/w, -0.5/w, 1.0).add( 0.5, 0.5, 0.0).scale( parent.bnd.w, parent.bnd.h, 1.0);
+		matdirty = true;
+		layerflags |= 1;
+		repaint();
+		return true;
+	}
+}
+
+
+//	GPUIのカーソル選択が可能なターゲット選択View。
+//	ピッキングはrpg3dから取れる画像に対して行う。
+//	↑の場合、b3Bodyのビルボード化が必要。
+//	
+//	GPUIの矩形重なり問題はgetCursorBoundsで対応すれば問題は起きないはず。
+//	
+class RPG3DTargetView extends SKLibView
+{
+	rp3d = null;			//	アタッチされているRPG3DObject。
+	selected = 0;
+
+	constructor(){
+		local t = GPUI3DTarget();
+		t.setGPUIView( this);
+	}
+
+	function setTarget( s){
+		rp3d = ref = s;
+	}
+
+	//	rp3dを完全に囲うようにposとstretch。posは左上揃え。
+	//	※アクション中の激しい動きでピッキングできないのはいけないのでbaseposの場所に配置される。ボクセルもピクチャーも同様。
+	function updateFunc( dt){
+		local r = rp3d.projectBounds();
+		if( r){
+			stretchSize( r.w|0, r.h|0);
+			pos( r.x|0, r.y|0, 0.0);
+			matdirty = true;
+			layerflags |= 1;
+		}else{
+			layerflags &= ~1;	//	ターゲットがカメラの裏に回ったら表示不能
+		}
+		repaint();
+		return true;
+	}
+	
+	//	bndはビルボードの場合ごく薄い
+	function projectBounds( b, mat, vmat, pmat){
+		local sa = #(
+			Vector3D(-1,-1,-1), Vector3D( 1,-1,-1), Vector3D(-1, 1,-1), Vector3D( 1, 1,-1), 
+			Vector3D(-1,-1, 1), Vector3D( 1,-1, 1), Vector3D(-1, 1, 1), Vector3D( 1, 1, 1), 
+		);
+		local r = #Rect2D(), v = #Vector3D();
+		r.set( 10000, 10000, -20000, -20000);
+		foreach( s in sa){
+			v.set( b.r, b.s, b.t).scale( s).add( b.x, b.y, b.z);
+			local w = v.transform( mat).transform( vmat).transformw( pmat);
+			if( w <= 0.0) continue;		//	カメラ手前。。。
+			local s = 1.0 / w * 0.5;
+			v.scale( s, -s, s).add( 0.5);
+			r.expand( r2_1.set( v.x,v.y,0,0));
+		}
+		return r;
+	}
+	
+	//	SKView.pickで矩形内部でピック可能かをチェックする。
+	//	※真中辺りはGPUIのマウスチェックがスカらないようにtrue返すようにする
+	function innerpick( lx, ly){
+		local img = rp3d.getPickingImage();
+		if( img){	//	imgがある場合は画像のピクセルを取得。
+			local u = lx / bnd.w, v = ly / bnd.h;
+			local c = img.texture2d( u, v);
+			return (c>>>24) > 63;	//	ABGRになってる
+		}else{
+			return true;	//	imgが無い場合（キャラなど）は常にOK。もしくはgbndにレイテストでもする？
+		}
+	}
+}
+
+
+//	
+class RPG3DTargetView.GPUI3DTarget extends GPUITarget
+{
+	entered = false;
+
+	function setGPUIView( v){
+		super.setGPUIView( v);
+		view.addEventListener( MOUSE_EVENT, mouseevent);
+		view.addEventListener( GPUI_EVENT, gpuievent);
+	}
+
+	//	カーソル被りを防ぐために最小サイズ
+	function getCursorBounds(){
+		local v = view;
+		return r2_0.set( v.bnd.w*0.5-12, v.bnd.h*0.5-12, 24, 24).transform( v.mat);
+	}
+	
+	function gpuievent( e){
+		switch( e.id){
+		case GPUI_PRESSED:
+			if( e.keycode == BTN_A){
+				view.action( "clicked");
+				view.postActionEvent( view.rp3d, 1, e.modifiers);	//	actioncmdにはrp3dを入れる？rp3d.rpgobj?
+			}
+			break;
+		case GPUI_SELECTED:
+			if( !entered){
+				entered = true;
+				view.action( "entered");
+			}
+			break;
+		case GPUI_DESELECTED:
+			if( entered && view.enabled){	//	!enabledの時はbackupCursor状態
+				entered = false;
+				view.action( "exited");
+			}
+			break;
+		}
+	}
+
+	function mouseevent( e){
+		e.computeLocal( view.parent.getInvMatrix());	//	parent座標系で？
+		switch( e.id){
+		case MOUSE_ENTERED:	//	主選択(2)をオン
+			local b = view.contains( e.src);
+			if( !entered && b){
+				entered = b;
+				view.action( "entered");
+				if( cursmovable) ::gpui.setGPUITarget( this);
+			}
+			break;
+		case MOUSE_EXITED:	//	主選択(2)をオフ
+			local b = view.contains( e.dst);
+			if( entered && !b){
+				entered = b;
+				view.action( "exited");
+			}
+			break;
+		//	※GPUIButtonのアイテムと同様の動作にする！！！
+		case MOUSE_PRESSED:	//	アクションイベント
+			view.action( "clicked");
+			view.postActionEvent( view.rp3d, 1, e.modifiers);	//	actioncmdにはrp3dを入れる？rp3d.rpgobj?
+			break;
+		case MOUSE_RELEASED:
+			break;
+		}
+	}
+}
+
+
+//	マルチカラムに対応。選択の移動はGPUIのカーソルで行われる
+//	アニメ再生も、行ごとにディレイして再生などを可能に
+//	
+class RPGListView extends GPUIListView
+{
+	icontype = "rpglist";
+	colnum = 1;			//	カラム数。c0,c1,c2,...と続く。カラムがボタンになってると選択可能に。
+	items = null;		//	展開されるアイテムリスト。
+	
+	function setRowPath( p){
+		super.setRowPath( p);
+		if( rowedata){
+			for( local l = 0;;l ++){	//	※最低でもc0は無いといけない
+				local vd = rowedata.findChild( "c"..l);
+				if( !vd){ colnum = l; break; }
+			}
+		}
+	}
+
+	//	リスト項目をセットする。functionの値はバインド状態になる
+	function setListItems( a){
+		local rownum = (length( a)+colnum-1) / colnum;
+		setRowCount( rownum);
+		local num = rownum * colnum;
+		for( local l = 0;l < num;l ++){
+			local v = a[l];
+			local c = rows[l/colnum].children[l%colnum];	//.findChild( "c"..(l%colnum));
+			c.ref = v;
+			c.findChild( "body")?.setVisible( !!v);		//	アイテムが存在しなくてもカーソルは移る
+			if( v["_name"]) c.name = v._name;			//	_nameで名前を付けられる。この機能はリストのみ。
+			else c.name = name..l;	//	自分の名前+idx
+			if( v) c.bindValues( v);
+			else c.bindValues( #{lbl="", rlbl="", icon=""});	//	とりあえずクリアしておきたい。。
+		}
+		// gpui._moveto( 0.0, 0.0, 0);
+	}
+
+	function setValue( a, b=undefined){
+		if( b==undefined){
+			if( a instanceof ::ptr){
+				setSKViewValue( a);
+			}else
+			if( typeof( a) == SS_ARRAY){
+				setListItems( a);
+				local v = ::gpui.gpuitarget["view"];
+				if( contains( v)){	//	選択表示を更新するためGPUI_SELECTEDをpost
+					::rootview.postEvent( Event().setGPUIEvent( v, GPUI_SELECTED, 0));
+				}
+			}
+		}else{
+			return super.setValue( a, b);
+		}
+	}
+	
+	function getItemView( i){
+		foreach( r in rows){
+			for( local l = 0;l < colnum;l ++){
+				local c = r.findChild( "c"..l);
+				if( c.ref == i) return c;
+			}
+		}
+		return null;
+	}
+
+	function focusItem( i){
+		local v = getItemView( i);
+		if( v){
+			gpui.scrollViewToVisible( v, 0);
+			if( v.gpui) ::gpui.moveCursorTo( v.gpui);
+		}
+	}
+	
+	function scrollItemToVisible( i){
+		local v = getItemView( i);
+		if( v) gpui.scrollViewToVisible( v, 0);
+	}
+
+	function getProperties(){
+		return #[
+			( SKVP[VISIBLE]),
+			( SKVP[ORIENT]),
+			( SKVP[SIZE_STATIC]),
+			( SKVP[POSITION]),
+			( SKVP[STRETCHALIGN]),
+			( SKVP[ROWPATH]),
+			( SKVP[BARPATH]),
+			( SKVP[ENVPATH]),
+			( SKVP[INSET]),
+			( SKVP[LISTALIGN]),
+			( SKVP[ROWSTRETCH]),
+			( SKVP[LOOPCURS]),
+			( SKVP[ENABLED]),
+			( SKVP[BUFFER]),
+			( SKVP[BUFFERCOLOR]),
+			( SKVP[PREVIEROWWNUM]),
+		];
+	}
+}
+
+//	ウィジェットに追加。見た目は無し。
+//	
+class SKCircleHitGroupView extends SKGroupView
+{
+	static noexportcls = false;
+	
+	icontype = "circle";
+
+	function innerpick( lx, ly){
+		lx = lx / bnd.w * 2.0 - 1.0;	//	lx,lyをそれぞれ-1~1にマップ
+		ly = ly / bnd.h * 2.0 - 1.0;
+		return lx*lx+ly*ly <= 1.0;
+	}
+}
+
+//	stage.uiに配置されたミニマップ
+//	
+class RPGMinimapBehavior
+{
+	
+	
+
+}
+
+
+
+//	Windows用。
+//	
+class RPGTitleLayer
+{
+	view = null;	//	rpgroot/titlelayer
+
+	mx0 = 0;
+	my0 = 0;
+	winmoving = false;
+
+	constructor( v){
+		view = v;
+		v.addEventListener( ACTION_EVENT, actionevent);
+		local bar = v.findChild( "titlebar");
+		bar.addEventListener( MOUSE_EVENT, barevent);
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_winmax":
+			toggleMaximize();
+			break;
+		case "btn_winclose":
+		{
+			local e = Event();
+			e.id = QUIT_REQUESTED;
+			e.src = ::rootview;
+			::rootview.postEvent( e);
+			break;
+		}
+		}
+	}
+
+	function barevent( e){
+		switch( e.id){
+		case MOUSE_ENTERED:
+			view.action( "show");
+			break;
+		case MOUSE_EXITED:
+			view.action( "hide");
+			break;
+		case MOUSE_PRESSED:
+			mx0 = e.x; my0 = e.y;
+			if( e.count == 2){
+				toggleMaximize();
+			}else{
+				if( !isMaximized()) winmoving = true;
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( winmoving){
+				local mx = e.x, my = e.y;
+				if( mx != mx0 || my != my0){
+					skMoveScreen( { flags=MOVESCREEN_DELTA, x = mx-mx0, y = my-my0 });
+				}
+			}
+			break;
+		case MOUSE_RELEASED:
+		case MOUSE_CANCELLED:
+			winmoving = false;
+			break;
+		}
+	}
+
+	function isMaximized(){
+		return view.findChild( "btn_winmax").isSelected();
+	}
+
+	function toggleMaximize(){
+		local btn = view.findChild( "btn_winmax");
+		local sel = btn.isSelected();
+		skMoveScreen( { flags=sel?MOVESCREEN_RESTORE:MOVESCREEN_MAXIMIZE});
+		btn.setSelected( !sel);
+	}
+}
+
+//	指定したSKViewをバーチャルパッド化する。Gamepadとして動作する。サブクラスでは無いけど互換。
+//	※中のボタン類はGPUIButtonではない。マウスイベントを取ってbuttonmask,axis0~を直接操作する。
+//	::virtualpadにこのインスタンスを設定することでGPUIはバーチャルパッドの接続を検知。ただし、
+//	ゲームパッドが接続されていたらそちらを優先する。
+//	
+class VirtualPad
+{
+	view = null;
+	axis_l = null;
+	btn_a = null;
+	btn_b = null;
+	btn_x = null;
+	btn_start = null;
+	btn_auto = null;
+
+	//	Gamepad fields
+	id = "aaaa:bbbb";
+	type = 9;			//	9=GAMEPAD_VIRTUAL
+	buttonmask = 0;
+	connected = true;
+	axis0 = 0.0;
+	axis1 = 0.0;
+	axis2 = 0.0;
+	axis3 = 0.0;
+	axis4 = 0.0;
+	axis5 = 0.0;
+
+	visible = true;
+
+	mapping = null;			//	マッピング設定は入らない
+
+	constructor( v){
+		view = v;
+		setupAxis( axis_l = view.findChild( "vpad_stick"));
+		setupButton( btn_a = view.findChild( "vpad_a"), BTN_A);
+		setupButton( btn_b = view.findChild( "vpad_b"), BTN_B);
+		setupButton( btn_x = view.findChild( "vpad_x"), BTN_X);
+		setupButton( btn_start = view.findChild( "vpad_menu"), BTN_START);
+		setupButton( btn_auto = view.findChild( "vpad_auto"), BTN_X);
+	}
+
+	function setVisible( b){
+		if( visible = b) view.layerflags |= 1; else view.layerflags &= ~1;
+		view.parent.repaint();
+	}
+
+	function poll( dt){}	//	何もしないで良い
+	
+	function setupButton( v, btnid){
+		local bit = 1<<btnid;
+		v.multitouch = true;
+		local self = this;
+		local mfunc( e){
+			switch( e.id){
+			case MOUSE_PRESSED:
+				v.anime( 1.0, 100.0);
+				self.buttonmask |= bit;
+				break;
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				self.buttonmask &= ~bit;
+				v.anime( 0.0, 100.0);
+				break;
+			}
+		}
+		v.addEventListener( MOUSE_EVENT, mfunc);
+	}
+
+	function setupAxis( v){
+		v.multitouch = true;
+		local self = this;
+		local changeaxis( e){
+			e.computeLocal( v.getInvMatrix());
+			local ax =   (e.lx / v.bnd.w)*2.0-1.0;
+			local ay = -((e.ly / v.bnd.h)*2.0-1.0);
+			local a = Math.sqrt( ax*ax + ay*ay);
+			if( a >= 0.1){
+				self.axis0 = ax/a; self.axis1 = ay/a;
+				local r8 = (Math.mod2( Math.atan2( ax, ay)+Math.PI2/16.0, 0.0, Math.PI2) / Math.PI2 * 8.0) & 7;
+				v.anime( 1.0 + r8);
+			}else{
+				self.axis0 = self.axis1 = 0.0;
+				v.anime( 10.0);
+			}
+		}
+		local mfunc( e){
+			switch( e.id){
+			case MOUSE_PRESSED:
+			case MOUSE_DRAGGED:
+				changeaxis( e);
+				break;
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				self.axis0 = self.axis1 = 0.0;
+				v.anime( 0.0);
+				break;
+			}
+		}
+		v.addEventListener( MOUSE_EVENT, mfunc);
+	}
+}

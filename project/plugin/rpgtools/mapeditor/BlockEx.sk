@@ -1,0 +1,186 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import BlockFlagID;
+
+/*
+	Block, FreeBlockを編集用に柔軟化する。
+	cls毎に編集用のパラメータ
+*/
+
+////////////////////////////////////////////////////////////////////////////////////
+//	SK3DBlockWorldにデバッグ描画用のインターフェイスを追加。
+
+with SK3DBlockWorld
+{
+	voxtec <- null;
+
+	local _setBlockWorld = this.setBlockWorld;
+
+	function setBlockWorld( w){
+		_setBlockWorld( w);
+		voxtec = skFXFindTechnique( "vox.basic");
+	}
+
+	function setVoxelTec( tec){
+		if( voxtec == tec) return;
+		voxtec = tec;
+		foreach( ch in vchunkmap){
+			foreach( f in ch.mesh["face"]){
+				f.m.tec = tec;
+			}
+		}
+	}
+}
+
+with SK3DVoxelChunk
+{
+	local _setMesh = this.setMesh;
+	
+	function setMesh( vmd){
+		_setMesh( vmd);
+		local tec = skbw.voxtec;
+		foreach( f in mesh["face"]){
+			f.m.tec = tec;
+		}
+	}
+}
+
+with Block
+{
+	function isClass( b, cls){
+		return ::blks[b&31]["cls"] == cls;
+	}
+
+	function getFenceHeight( b){
+		local bv = ::blks[b&31].variations[(b>>5)&0xff];
+		local vcvp = bv.vcvp[0], vc = ::g_vc[vcvp[0]], vp = vc.partsAt( vcvp[1]).findChild( "0");
+		return vp.vd8.h / 8;
+	}
+}
+
+with FreeBlock
+{
+	function conf(){
+		return ::fblks[fbtype];
+	}
+
+	function cls(){
+		return ::fblks[fbtype].cls;
+	}
+
+	function findModel( name){
+		local fbt = conf(), va = fbt.variations[fbparam&0x3ff];
+		local vcvp = va.vcvp[0], vc = ::g_vc[vcvp[0]], vp = vc.partsAt( vcvp[1]);
+		return vp.findChild( name)["vd8"];
+	}
+
+	function hasWHD(){
+		switch( cls()){
+		case "column": return 2;		//	H
+		case "slope": return 5;			//	W,D
+		case "roof": return 7;			//	W,H,D
+		}
+		return 0;
+	}
+
+	function getRoofDiv(){
+		return findModel( "mid").d/8;
+	}
+	
+	//	brはunrotate済みのワールド座標系
+	//	リサイズできないものはnullを返す
+	function reshape( br, rot){
+		switch( cls()){
+		case "column": return reshapeColumn( br, rot);
+		case "slope": return reshapeSlope( br, rot);
+		case "roof": return reshapeRoof( br, rot);
+		}
+	}
+
+	//	柱、アーチなどの大きさを変更して、新しいFreeBlockを作り返す。
+	//	hのみ作用する。
+	//	brはunrotate済みのローカル矩形。
+	function reshapeColumn( br, rot){
+		local fbt = conf(), va = fbt.variations[fbparam&0xfff];
+		local vcvp = va.vcvp[0], vc = ::g_vc[vcvp[0]], vp = vc.partsAt( vcvp[1]);
+		if( va["ctype"] != 2){
+			local toph = (vp.findChild( "top")["vd8"]["h"]||0)/8;
+			local btmh = (vp.findChild( "btm")["vd8"]["h"]||0)/8;
+			local minh = Math.max( 2, toph+btmh), maxh = 31, _h = Math.clamp( br.h, minh, maxh);
+			local _x = x+br.x+br.w/2, _y = y+br.y+br.h/2, _z = z+br.z+br.d/2;
+			local _fbp = (fbparam&0xfff) | (_h<<26);
+			return FreeBlock.create({
+				fbtype:fbtype, fbparam:_fbp,
+				pos:( _x, _y, _z),
+				rot:rot,
+			});
+		}else{
+			local topw = (vp.findChild( "top")["vd8"]["w"]||0)/8;
+			local btmw = (vp.findChild( "btm")["vd8"]["w"]||0)/8;
+			local minw = Math.max( 2, topw+btmw), maxw = 31, _w = Math.clamp( br.w, minw, maxw);
+			// local rr = IMat( rot).transform( IRect3D( br));
+			// local _x = x+rr.x+rr.w/2, _y = y+br.y+br.h/2, _z = z+rr.z+rr.d/2;
+			local _x = x, _y = y+br.y+br.h/2, _z = z, sc=(rot==1||rot==2)?-1:1;
+			if( rot&1){
+				_z = z+(br.x+br.w/2)*sc;
+			}else{
+				_x = x+(br.x+br.w/2)*sc;
+			}
+			local _fbp = (fbparam&0xfff) | (_w<<26);
+			return FreeBlock.create({
+				fbtype:fbtype, fbparam:_fbp,
+				pos:( _x, _y, _z),
+				rot:rot,
+			});
+		}
+	}
+
+	//	坂、階段などの大きさを変更して、新しいFreeBlockを作り出す。
+	//	wは自由で+-1又は0マージン。dとhはリンクしており、dに合わせられる。dは+-1マージン。フロントがあるもののため。
+	/*
+		local rw = x+br.x+br.w/2, rd = z+br.z+br.d/2;
+		if( rot&1){ local t = rw; rw = rd; rd = t}
+		local _x = rw, _y = y+br.y+(br.h+dz)/2, _z = rd;
+
+		local rr = IMat( rot).transform( IRect3D( br));
+		local _x = x+rr.x+rr.w/2, _y = y+br.y+(br.h+dz)/2, _z = z+rr.z+rr.d/2;
+	*/
+	function reshapeSlope( br, rot){
+		local fbt = conf(), va = fbt.variations[fbparam&0xfff];
+		local mid = findModel( "mid");
+		local _w = Math.clamp( br.w, 2, 30);
+		local div = mid.d==24?2:1;	//	緩い坂の場合2
+		local _d = Math.clamp( br.d/div*div, div+2, 30)-2;
+		//	dの大きさ変化でyが変わる。。。
+		local dz = (_d-(this.ir.d-2))/div;
+		//	回転によって端数を足さないとズレる。。。
+		local rr = IMat( rot).transform( IRect3D( br)), rx=int(rot==2||rot==3), rz=int(rot==1||rot==2);
+		local _x = x+rr.x+(rr.w+rx)/2, _y = y+br.y+(br.h+dz)/2, _z = z+rr.z+(rr.d+rz)/2;
+		local _fbp = (fbparam&0xfff) | (_w<<20)|(_d<<26);
+		return FreeBlock.create({
+			fbtype:fbtype, fbparam:_fbp,
+			pos:( _x, _y, _z),
+			rot:rot,
+		});
+	}
+	
+	//	屋根の大きさを変更して、新しいFreeBlockを作り返す。
+	//	屋根の形状は統一されており、wdに+-1、hはw,dの大きな方/2か/4で三角屋根は+1。
+	//	緩い屋根の場合dは2の倍数。
+	function reshapeRoof( br, rot){
+		local fbt = conf(), va = fbt.variations[fb.fbparam&0xfff];
+		local vcvp = va.vcvp[0], vc = ::g_vc[vcvp[0]], vp = vc.partsAt( vcvp[1]);
+		local minh = 3, maxh = _max( br.w/2-1, br.d/2-1)+1;	//	xzマージン引いて-yマージン足すと0に。。
+		local _w = Math.clamp( br.w-2, 1, 31);	//	マージンを取り除く
+		local _h = Math.clamp( br.h, minh, maxh);
+		local _d = Math.clamp( br.d-2, 1, 31);	//	マージンを取り除く
+		//
+		local _x = br.x+br.z/2, _y = br.y+br.h/2, _z = br.z+br.d/2;
+		local _fbp = (fb.fbparam&0xfff) | (_w<<14)|(_h<<20)|(_d<<26);
+		return FreeBlock.create({
+			fbtype:fb.fbtype, fbparam:_fbp,
+			pos:( _x, _y, _z),
+			rot:rot,
+		});
+	}
+}

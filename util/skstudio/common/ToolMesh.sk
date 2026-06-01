@@ -1,0 +1,240 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import MoveScreenFlags;
+
+
+
+class ToolMesh
+{
+	//	XYのライン描画用メッシュ
+	function createSquareLineMesh(){
+		local mb = PolygonMeshBuilder();
+		local mate = Material();
+		mate.visiblemask = SK_VISIBLE_DECAL;
+		mate.tec = skFXFindTechnique( "decal.def");
+		mate.Kd = 0xff9900ff;
+		mate.cullface = 0;
+		mate.depthtest = 0;
+		mb.setMaterial( mate);
+		mb.begin( SK_LINESTRIP);
+		mb.vertex( 0.001, 0.001, 0);
+		mb.vertex( 0.999, 0.001, 0);
+		mb.vertex( 0.999, 0.999, 0);
+		mb.vertex( 0.001, 0.999, 0);
+		mb.vertex( 0.001, 0.001, 0);
+		mb.end();
+		return mb.toPolygonMesh();
+	}
+	
+	//	
+	function createGridMesh( w, div){
+		local mb = PolygonMeshBuilder();
+		local m = Material();
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.tec = skFXFindTechnique( "decal.def");
+		m.depthmask = 0;
+		mb.setMaterial( m);
+		mb.begin( SK_LINES);
+		for( local x = -div; x <= div; x ++){
+			//	z線
+			mb.color( x?0x4A4A4Aff:0x168416ff);
+			mb.vertex( x*w, 0.0, -w*div);
+			mb.vertex( x*w, 0.0,  w*div);
+			//	x線
+			mb.color( x?0x4A4A4Aff:0x841616ff);
+			mb.vertex( -w*div, 0.0, x*w);
+			mb.vertex(  w*div, 0.0, x*w);
+		}
+		//	y線
+		mb.color( 0x002DB2ff);
+		mb.vertex( 0.0, 0.0, 0.0);
+		mb.vertex( 0.0, w*div,  0.0);
+		//	z線
+		mb.color( 0x168416ff);
+		mb.vertex(  0.0, 0.0, w*div);
+		mb.vertex(  0.0, 0.0, w*div+w);
+		mb.vertex(  0.0, 0.0, w*div+w);
+		mb.vertex(  w*0.25, 0.0, w*div);
+		mb.vertex(  0.0, 0.0, w*div+w);
+		mb.vertex(  -w*0.25, 0.0, w*div);
+		//	x線
+		mb.color( 0x841616ff);
+		mb.vertex(  w*div, 0.0, 0.0);
+		mb.vertex(  w*div+w, 0.0, 0.0);
+		mb.vertex(  w*div+w, 0.0, 0.0);
+		mb.vertex(  w*div, 0.0, w*0.25);
+		mb.vertex(  w*div+w, 0.0, 0.0);
+		mb.vertex(  w*div, 0.0, -w*0.25);
+		mb.end();
+		return mb.toPolygonMesh();
+	}
+
+	function createWireBoundsMesh( r){
+		local mb = PolygonMeshBuilder();
+		local m = Material();
+		m.tec = skFXFindTechnique( "decal.def");
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.depthtest = 0;
+		local x1 = r.x-r.r, x2 = r.x+r.r;
+		local y1 = r.y-r.s, y2 = r.y+r.s;
+		local z1 = r.z-r.t, z2 = r.z+r.t;
+		//m.depthtest = SK_LESS;
+		mb.setMaterial( m);
+		mb.begin( SK_LINES);
+		//	x sen
+		mb.vertex(  x1, y1, z1);	mb.vertex(  x2, y1, z1);
+		mb.vertex(  x1, y2, z1);	mb.vertex(  x2, y2, z1);
+		mb.vertex(  x1, y1, z2);	mb.vertex(  x2, y1, z2);
+		mb.vertex(  x1, y2, z2);	mb.vertex(  x2, y2, z2);
+		//	y sen
+		mb.vertex(  x1, y1, z1);	mb.vertex(  x1, y2, z1);
+		mb.vertex(  x2, y1, z1);	mb.vertex(  x2, y2, z1);
+		mb.vertex(  x1, y1, z2);	mb.vertex(  x1, y2, z2);
+		mb.vertex(  x2, y1, z2);	mb.vertex(  x2, y2, z2);
+		//	z sen
+		mb.vertex(  x1, y1, z1);	mb.vertex(  x1, y1, z2);
+		mb.vertex(  x2, y1, z1);	mb.vertex(  x2, y1, z2);
+		mb.vertex(  x1, y2, z1);	mb.vertex(  x1, y2, z2);
+		mb.vertex(  x2, y2, z1);	mb.vertex(  x2, y2, z2);
+		mb.end();
+		return mb.toPolygonMesh();
+	}
+
+	function createWireTarget(){
+		local mb = PolygonMeshBuilder();
+		local m = Material();
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.tec = skFXFindTechnique( "decal.def");
+		m.depthtest = 0;
+		mb.setMaterial( m);
+		mb.begin( SK_LINES);
+		//	x sen
+		mb.vertex( -1, 0, 0);	mb.vertex(  1, 0, 0);
+		mb.vertex( 0, -1, 0);	mb.vertex(  0, 1, 0);
+		mb.vertex( 0, 0, -1);	mb.vertex(  0, 0, 1);
+		mb.end();
+		mb.begin( SK_TRIANGLES);
+		local w = 0.4;
+		mb.vertex( 0, -w, 0); mb.vertex(-w, 0, 0); mb.vertex( 0, 0,-w);
+		mb.vertex( 0, -w, 0); mb.vertex( 0, 0,-w); mb.vertex( w, 0, 0);
+		mb.vertex( 0, -w, 0); mb.vertex( w, 0, 0); mb.vertex( 0, 0, w);
+		mb.vertex( 0, -w, 0); mb.vertex( 0, 0, w); mb.vertex(-w, 0, 0);
+		mb.vertex( 0,  w, 0); mb.vertex( 0, 0,-w); mb.vertex(-w, 0, 0);
+		mb.vertex( 0,  w, 0); mb.vertex( w, 0, 0); mb.vertex( 0, 0,-w);
+		mb.vertex( 0,  w, 0); mb.vertex( 0, 0, w); mb.vertex( w, 0, 0);
+		mb.vertex( 0,  w, 0); mb.vertex(-w, 0, 0); mb.vertex( 0, 0, w);
+		mb.end();
+		return mb.toPolygonMesh();
+	}
+
+	function createArrow(){
+		local mb = PolygonMeshBuilder();
+		local m = Material();
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.tec = skFXFindTechnique( "decal.def");
+		m.depthtest = SK_ALWAYS;
+		m.depthmask = SK_OFF;
+		m.blend = SK_MIX;
+		m.Kd = 0xffffff77;
+		mb.setMaterial( m);
+		mb.begin( SK_LINES);
+		mb.color( 0xffffffff);
+		local v = 0.1, h = 0.2
+		mb.vertex(  0.0, 0.0, 0.0); mb.vertex(  v, v, h);
+		mb.vertex(  0.0, 0.0, 0.0); mb.vertex( -v, v, h);
+		mb.vertex(  0.0, 0.0, 0.0); mb.vertex( -v,-v, h);
+		mb.vertex(  0.0, 0.0, 0.0); mb.vertex(  v,-v, h);
+		mb.vertex(  0.0, 0.0, 1.0); mb.vertex(  v, v, h);
+		mb.vertex(  0.0, 0.0, 1.0); mb.vertex( -v, v, h);
+		mb.vertex(  0.0, 0.0, 1.0); mb.vertex( -v,-v, h);
+		mb.vertex(  0.0, 0.0, 1.0); mb.vertex(  v,-v, h);
+		mb.end();
+		return mb.toPolygonMesh();
+	}
+
+	function createArrowShape(){
+		local v = 0.1, h = 0.2
+		return b3Shape.createConvexCloud([
+			0.0 , 0.0, 0.0,
+			v,    v,   h,
+			-v,    v,   h,
+			-v,   -v,   h,
+			v,   -v,   h,
+			0.0 , 0.0, 1.0,
+		]);
+	}
+
+	function createCap(){
+		local mb = PolygonMeshBuilder();
+		local m = Material();
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.tec = skFXFindTechnique( "decal.def");
+		m.depthtest = SK_ALWAYS;
+		m.depthmask = SK_OFF;
+		m.blend = SK_MIX;
+		m.Ka = 0;
+		m.Ke = 0;
+		m.Kd = 0xffffff77;
+		mb.setMaterial( m);
+		mb.begin( SK_LINES);
+		mb.color( 0xffffffff);
+		local v = 0.05;
+		mb.vertex( -v,-v, 0.0); mb.vertex(  0.0, 0.0,  v);
+		mb.vertex(  v,-v, 0.0); mb.vertex(  0.0, 0.0,  v);
+		mb.vertex( -v, v, 0.0); mb.vertex(  0.0, 0.0,  v);
+		mb.vertex(  v, v, 0.0); mb.vertex(  0.0, 0.0,  v);
+		mb.vertex( -v,-v, 0.0); mb.vertex(  0.0, 0.0, -v);
+		mb.vertex(  v,-v, 0.0); mb.vertex(  0.0, 0.0, -v);
+		mb.vertex( -v, v, 0.0); mb.vertex(  0.0, 0.0, -v);
+		mb.vertex(  v, v, 0.0); mb.vertex(  0.0, 0.0, -v);
+		//
+		mb.vertex( -v,-v, 0.0); mb.vertex( -v, v, 0.0);
+		mb.vertex(  v,-v, 0.0); mb.vertex(  v, v, 0.0);
+		mb.vertex( -v,-v, 0.0); mb.vertex(  v,-v, 0.0);
+		mb.vertex( -v, v, 0.0); mb.vertex(  v, v, 0.0);
+		mb.end();
+		return mb.toPolygonMesh();
+	}
+
+	function createCapShape(){
+		local v = 0.05;
+		return b3Shape.createBox( v, v, v);
+	}
+
+	function createBoneAxis(){
+		local mb = PolygonMeshBuilder();
+		local m = Material();
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.tec = skFXFindTechnique( "decal.def");
+		m.depthtest = SK_ALWAYS;
+		m.depthmask = SK_OFF;
+		m.blend = SK_MIX;
+		m.Ka = 0;
+		m.Ke = 0;
+		m.Kd = 0xffffffff;
+		mb.setMaterial( m);
+		mb.begin( SK_LINES);
+		mb.color( 0xff0000ff);
+		mb.vertex( 0, 0, 0); mb.vertex(  0.5, 0, 0);
+		mb.color( 0x00ff00ff);
+		mb.vertex( 0, 0, 0); mb.vertex(  0, 0.5, 0);
+		mb.color( 0x0000ffff);
+		mb.vertex( 0, 0, 0); mb.vertex(  0, 0, 0.5);
+		mb.end();
+		return mb.toPolygonMesh();
+	}
+
+
+	
+	function gridtexgen(){
+		return #(@(){
+			local img = RGBAImage( 16, 16);
+			for( local l = 0;l < 256;l ++){
+				local b = ((l&15)>=8)^(l>=128);
+				img[l] = 0xff909090 + int( b) * 0xff6f6f6f;
+			}
+			local t = Texture(); t.load( img);
+			return t;
+		}());
+	}
+}

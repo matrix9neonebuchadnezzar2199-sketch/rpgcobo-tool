@@ -1,0 +1,15 @@
+
+runsk( "BlockEx.sk");
+runsk( "MapCanvas.sk");
+runsk( "MapEditor.sk");
+runsk( "MapTool.sk");
+runsk( "MapToolBlock.sk");
+runsk( "MapToolFreeBlock.sk");
+runsk( "MapToolSel.sk");
+runsk( "MapToolEvent.sk");
+runsk( "MapToolEtc.sk");
+runsk( "BlockOperation.sk");
+runsk( "MapSideView.sk");
+runsk( "MapPropertyBehaviors.sk");
+runsk( "EncountDialog.sk");
+runsk( "CustomEventEditor.sk");

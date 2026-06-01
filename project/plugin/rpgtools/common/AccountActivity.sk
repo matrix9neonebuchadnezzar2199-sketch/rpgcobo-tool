@@ -1,0 +1,443 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ユーザーアカウントを管理するアクティビティ。
+//	.rpgcobo.authに保存されるアカウント情報は、全てのRPG-Coboアプリ、RPG-Cobo portalで共有される。
+//	
+
+enum AccountState
+{
+	ACCOUNT_NONE = 0,			//	未ログイン時。
+	ACCOUNT_VALID = 1,			//	有効。
+	ACCOUNT_UNAVAIL = 2,		//	サーバーに確認できてない状態。
+	ACCOUNT_INVALID = -1,		//	tokenは読み込めたが無効化されている。
+	ACCOUNT_LOADERROR = -2,		//	rpgcobo.authにエラーが起きた。PCの構成が変更されたなど。
+};
+
+import AccountState;
+
+::account <- null;
+
+local urlenv = {
+	url_user = "https://user.rpg-cobo.com",
+}
+
+{	//	.rpgcobo-env.local
+	local f = FileRef( ".rpgcobo-env.local");
+	if( f.exists()) urlenv ... decodeJSON( f.load());
+}
+
+//	ユーザーアカウント
+//	$datadir/.rpgcoboに保存される。
+//	
+class Account extends Serializable
+{
+	static SerialUID = 40;
+
+	//	ブラウザでページを開くときはブラウザでログインしてない事が多々あるのでtokenを渡して
+	static pagemap = {
+		applogin = urlenv.url_user.."/applogin?reqid=$reqid"	//	要言語指定。ウェブのログイン画面とは違う。チケットはクライアントで発行。steamはここからではログイン不能。
+		home = urlenv.url_user.."/api/appjump?page=home&token=$token"		//	トップページに移動する。nextjs的にapiからのリダイレクト
+		license = urlenv.url_user.."/api/appjump?page=license&token=$token"	//	steamは購入ボタンでPOTALに購入UIが表示される。nextjs的にapiからのリダイレクト
+		ticket = urlenv.url_user.."/api/appjump?page=ticket&token=$token"	//	ビルドチケットをダイレクトで買う。nextjs的にapiからのリダイレクト
+	};
+	
+	//	apiを呼ぶときはtokenがある際はAuthorization: Bearer <token>を指定して認証を行う
+	//	checkloginはログイン前なのでAuthorizationヘッダ無し。
+	//	ビルド関係は全てPOSTリクエスト
+	static apimap = {
+		checkapplogin = urlenv.url_user.."/api/checkapplogin?reqid=$reqid"	//	user
+		userinfo = urlenv.url_user.."/api/userinfo?token=$token"			//	user
+		buildserv = urlenv.url_user.."/api/buildserv?token=$token"			//	user
+		build_init = "${buildserv}/init"
+		build_upload = "${buildserv}/upload/$session"		//	PUT
+		build_status = "${buildserv}/status/$session"
+		build_download = "${buildserv}/download/$session"
+		build_clean = "${buildserv}/close/$session"
+	};
+
+	<ser_o> uid = null;			//	email | steamid
+	<ser_o> provider = null;	//	"google", "steam", "discord", "github"
+	<ser_o> iconbb = null;		//	ByteBuffer : profile iconのエンコード済み画像データ。
+	<ser_o> nickname = null;	//	nickname
+	<ser_o> token = null;		//	※流出注意。https://user.rpg-cobo.com/api/userinfo?token=xxxで検証可能
+	<ser_o> ticket_d = 0;		//	デイリーチケット。毎日10に回復。
+	<ser_o> ticket_x = 0;		//	追加チケット。購入可能。
+	<ser_o> license = null;		//	licenseは定期的にチェックする必要あり。一応ファイルにセーブはしておく
+	<ser_o> apikeymap = null;	//	保存済みのAPI_KEYのマップ。ワークスペースではなくしっかり暗号化したこっちに保存。これは流出厳禁。
+	<ser_o> etc0 = null;
+	<ser_o> etc1 = null;
+	
+	<ser_o> status = 0;			//	未ログイン、ログイン済み、要再ログイン、ロードエラー
+	<ser_o> chktime = null;		//	long : 前回userinfoをチェックした時間。1日に1回でもやれば十分。
+	
+	<ser_o> etc2 = null;
+	
+	filetime = null;			//	long : ファイルの更新チェック用
+	netretry = 0;
+	
+	//	
+	function accountfile(){
+		return FileRef( skGetCacheDir().."/rpgcobo.auth");
+	}
+
+	//	ファイルから読み込む。起動時と、skstudioウィンドウがアクティブ化した時に呼ぶ
+	//	例えば、ハブや別のプロジェクトでログアウトした後はファイルが更新されてこのskstudioも連動して
+	//	ログアウト状態にならないといけない。
+	static function load(){
+		local f = accountfile();
+		// printf( "loadAccountloadAccountloadAccountloadAccountloadAccount %S %S\n", f.path, f.flags);
+		if( !f.exists()) return null;
+		try{
+			local bb = f.load();
+			bb.ucrypt( 0x5712937F);
+			local code = bb.geti();
+			if( code != 0xC5762783){	//	最初の4バイトにマジックコード
+				throw Exception( "Account.load() Invalid Magic code. %x\n" % code);	//	cryptkeyが変化したときは読み込みが失敗する。再ログインが必要。
+			}
+			local o = ObjectInput.decode( bb);
+			o.filetime = f.lastmodified;
+			return o;
+		}catch( ex){
+			printexception( ex);
+			return null;
+		}
+	}
+
+	//	保存
+	function save(){
+		local bb = ByteBuffer();
+		bb.puti( 0xC5762783);
+		ObjectOutput.encodeInto( this, bb);
+		bb.pos = 0;
+		bb.ucrypt( 0x5712937F);
+		local f = accountfile();
+		f.save( bb);		//	test...
+		filetime = accountfile().lastmodified;
+	}
+	
+	function postAccountChange(){
+		::rootview.broadcastEvent( {cmd="account_changed", account=this});
+	}
+	
+	//	ログインが成功したら呼び出す。以下のURL
+	//	・https://user.rpg-cobo.com/api/checklogin?reqid=xxx
+	//	　↑ログイン画面をブラウザから開き、その時指定したセッションIDを指定してログイン状態を追跡する。
+	//	・https://user.rpg-cobo.com/api/userinfo?token=xxx
+	//	　↑token取得後に呼び出すと最新のアカウント情報を取得できる。アイコンは更新されない。
+	function setAccount( t, islogin=false){
+		printf( "setAccount userinfo=%S\n", encodeJSON( t, 5));
+		local data = t["data"];	//decodeJSON( t["data"]||"{}");	decodeされた状態が来る
+		if( t["token"]) token = t.token;	//	userinfoではtokenは返ってこない
+		uid = t.uid;
+		provider = t.provider;
+		nickname = data.name;
+		license = t["license"] || null;	//	id, ticket, iroiro
+		ticket_d = data["ticket_d"]||0;	//	デイリーチケット
+		ticket_x = data["ticket_x"]||0;	//	追加チケット
+		if( data["image"] && (islogin || !iconbb)){
+			try{
+				local bb = HTTPClient().get( data.image);
+				local img = skLoadImage( bb);
+				bb.pos = 0;
+				iconbb = bb;// data["icon"];	//	アイコンはURLもしくはbase64化したpngバイナリ。
+			}catch( ex){}	//	アイコンの画像は無くても害はない
+		}
+		chktime = Date.currentTime() + 30 * 60;	//	30分ごとぐらい
+		status = ACCOUNT_VALID;
+		postAccountChange();
+	}
+
+	//	ログインに失敗したら呼び出す。
+	//	※ネットワークエラーの場合はこれを呼ばない。これを呼ぶとログアウト状態になるため。
+	function setError( err){
+		status = ACCOUNT_INVALID;
+		postAccountChange();
+	}
+
+	//	ログアウトしてもtoken以外は一応残しておく。
+	//	特にapikeymapはそのままにしておいたほうが良いかな？少なくとも同一個人が使うはずだし、
+	function logout(){
+		local f = accountfile();
+		f.deleteFile();
+		status = ACCOUNT_NONE;
+		token = null;
+		save();
+		postAccountChange();
+	}
+
+	function getIcon(){
+		try{
+			iconbb.pos = 0;
+			local img = skLoadImage( iconbb);
+			iconbb.pos = 0;
+			return img;
+		}catch( ex){
+			return null;
+		}
+	}
+
+	//	
+	function openWeb( t){
+		local urlfunc = compiletemplate_c( pagemap[t.page]);
+		local url = ~(urlfunc, t);	//	※URIエンコードしないと
+		skOpenURL( url);
+	}
+
+	//	user server / build server に対してAPIを実行する。
+	function requestAPI( t){
+		local method = t["method"] || "GET";
+		local http = HTTPClient();
+		http.try_connect = 1;
+		if( t["listener"]) http.listener = t.listener;
+		// if( token) http.addHeader( "Authorization", "Bearer " .. token);	//	いらない
+		local urlfunc = compiletemplate_c( apimap[t.api]);
+		local url = ~(urlfunc, t);	//	※URIエンコードしないと
+		local bb;
+		switch( method){
+		case "POST":
+			http.verbose = true;
+			http.addHeader( "Content-Type", "application/json");
+			// bb = http.request( url, method, t.params, null);
+			bb = http.request( url, method, encodeJSON( t.params), null);
+			break;
+		case "PUT":	//	ファイルのアップロード。fileにアップロードのFileRefを指定。
+			http.addHeader( "Content-Type", "application/octet-stream");
+			local sender = HTTPFileSender( t.file);
+			bb = http.request( url, method, sender, null);
+			break;
+		default:
+			bb = http.request( url, method, t["params"], null);
+			break;
+		}
+		return decodeJSON( bb);
+	}
+
+	//	大きいファイルのダウンロード用。ビルド結果を直接ファイルにダウンロードするときに使う。
+	function requestDownload( t){
+		local http = HTTPClient();
+		if( t["listener"]) http.listener = t.listener;
+		if( token) http.addHeader( "Authorization", "Bearer " .. token);
+		local urlfunc = compiletemplate_c( apimap[t.api]);
+		local url = ~(urlfunc, t);	//	※URIエンコードしないと
+		local file = t.file, dir = FileRef( file, "..");	//	親dirはmkdirsする。
+		dir.mkdirs();
+		file = http.request( url, "GET", null, HTTPFileReceiver( file));	//	readsize見れば進捗がわかる
+		return file;
+	}
+
+	//	アカウントの状態更新をチェックする。アプリがアクティブになった時、または5分に一回程度呼ばれる。ネットエラー時には5秒ぐらいで呼び出す。
+	function checkAccountState( force=false){
+		local f = accountfile();
+		local now = Date.currentTime();
+		// printf( "checkAccountState file %S %S, chktime %S <= %S (%S)\n", filetime, f.lastmodified, chktime, t, t>=chktime);
+		if( filetime <> f.lastmodified){	//	ファイルの変更があった！別プロジェクトやポータル。
+			::account = Account.load() || Account();
+			::account.postAccountChange();
+			chktime = now + long( 900);
+		}else
+		if( status == ACCOUNT_VALID || status == ACCOUNT_UNAVAIL){
+			if( now >= chktime || force){
+				chktime = now + long( 900);
+				local st = status;
+				try{
+					local res = requestAPI( {api="userinfo", token=token, });
+					netretry = 0;	//	requestAPIが実行されればnetretryはリセット
+					if( res.result=="OK"){
+						setAccount( res.data);
+						save();
+					}else{
+						//	tokenが不正、セッションがリセットされた、などなどアカウント情報は破棄され、再ログインが必要になる。
+						setError( res.error);
+						save();
+					}
+				}catch( ex){
+					printexception( ex);
+					//	この状態はhttpが届かなかったりした時に起きる。エラーではあるが接続が回復したらtokenは正常な可能性があるので現状のままで進める。
+					status = ACCOUNT_UNAVAIL;
+					if( ++netretry < 5) chktime = Date.currentTime() + 5;	//	5秒後にリトライ
+				}
+				if( st != status) postAccountChange();
+			}
+		}
+	}
+}
+
+class LoginDialog extends Dialog
+{
+	static piconmap = {google="\uf83a",discord="\uf838",github="\uf839"};
+	static colmap = { "free"="#92FE26", "indie"="#FFD24D", "pro"="#99E5FF"};
+	
+	//	個別スレッドで立ち上がる。
+	//	checkloginのURLを定期的にポーリングして状況を確認する。
+	//	↑5秒に1回。フォアグラウンドに切り替わった瞬間。
+	function logincheck(){
+		sleep( 1000);
+		local reqid = "%x%x" % (skGetTime()^hashcode( skGetUserName()),Random().nexti());	//	※被るとまずいのでちゃんとランダムに。
+		::account.openWeb({ page="applogin", reqid=reqid, });
+		local fore = true;
+		while( view.getRoot() == ::rootview){
+			for( local l = 0;l < 50;l ++){
+				sleep( 100);
+				local f = skIsForeProcess();
+				if( f != fore){ if( fore = f) break; }	//	アプリがアクティブになったらbreak
+			}
+			local ret = ::account.requestAPI({ api="checkapplogin", reqid=reqid, });
+			// printf( "checkapplogin.............. result:%S\n", encodeJSON( ret, 5));
+			if( ret["result"] == "OK"){
+				::account.setAccount( ret.data, true);
+				setDone( ::account);
+				::account.save();
+				break;
+			}
+		}
+	}
+
+	function setDone( a){
+		local ic = a.getIcon();
+		local li = a["license"], lid = li.id;
+		//
+		view.bindValues({
+			userid=`${piconmap[a.provider]} $a.uid`,
+			license=rtf( `[${colmap[lid]}]${T["license_"..lid]}`),
+			uicon = ic,
+		});
+		view.findChild( "dlgbody").action( "done");
+	}
+
+	static function run(){
+		local dlg = this( "/plugin/rpgtools/common/ui/logindialog.ui");
+		dlg.view.findChild( "dlgbody").action( "checking");
+		newthread( "LoginDialog CheckThread").start( dlg.logincheck, dlg);
+		dlg.show();
+	}
+}
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////
+//	以下アクティビティ
+
+//	
+class AccountPopup extends Popup
+{
+	constructor( v){
+		super( v);
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "menubtn":
+			showContextMenu( e);
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	function showContextMenu( e){
+		local menudata = [
+			{ id="mypage", lbl="$T.lbl_mypage", icon="\ue88a"},
+			"-",
+			{ id="logout", lbl="$T.lbl_logout", icon="\ue9ba"},
+		];
+		switch( MenuPopup.run( menudata, e.src)["id"]){
+		case "mypage":
+			::account.openWeb({ page="home", token=::account.token, });
+			break;
+		case "logout":
+			if( Dialogs.confirm( {msg="$T.confirm_logout"})){
+				::account.logout();
+				close();
+			}
+			break;
+		}
+	}
+
+	static function run( p){
+		//
+		local pop = this( ::loadSKView( "/plugin/rpgtools/common/ui/accountpopup.ui"));
+		local a = ::account, li = a["license"], lid = li.id;
+		local piconmap = LoginDialog.piconmap;
+		local colmap = LoginDialog.colmap;
+		pop.view.bindValues({
+			userid=`${piconmap[a.provider]} $a.uid`,
+			uicon=a.getIcon(),
+			license=rtf( `[${colmap[lid]}]${T["license_"..lid]}`),
+			ticket_d="$T.ticket_daily: %S / %S" % (a.ticket_d, li.ticket_d),
+			ticket_x="$T.ticket_extra: %S" % (a.ticket_x),
+		});
+		pop.poplayout = 4;	//	左右中
+		pop.show( null, p);
+	}
+}
+
+//	
+local showAccountMenu( btn){
+	switch( account.status){
+	case ACCOUNT_VALID:
+		AccountPopup.run( btn);
+		break;
+	case ACCOUNT_UNAVAIL:	//	ネットワークエラーなどで一時的にアカウントが確認できていない。
+		// break;
+	default:
+		local menudata = [
+			{ id="login", lbl=tmpl( T.tmpl_loginto_v, {v="RPG-Cobo"}), icon="\uea77"},
+		];
+		switch( MenuPopup.run( menudata, btn)["id"]){
+		case "login": LoginDialog.run(); break;
+		}
+		break;
+	}
+}
+
+//	account activity
+local activity = {
+	uid="act_account",
+	place="bottom",
+	order=80,
+	icon="\uf03e",
+	badge=null,
+	tips="$T.act_account"
+	
+	func=showAccountMenu;
+}
+
+::skstudio.registerActivity( activity);
+
+local updateActivity(){
+	local status = ::account.status;
+	activity.icon = status>0 ? "\ue853" : "\uf03e";
+	activity.badge = (status&&status!=ACCOUNT_VALID) ? ("\ue002",0xff6600ff) : null,
+	::skstudio.refreshActivity( "act_account");	//	アクティビティの状態を更新
+}
+
+//	フックでアカウント情報をロード。ウェブに対して実際に有効かチェックするのは後にしてよい。
+local loadAccount(){
+	::account = Account.load() || Account();
+	updateActivity();
+	//
+	::rootview.addEventListener( BROADCAST_EVENT, @( e){
+		local bc = e["actioncmd"];
+		switch( bc["cmd"]){
+		case "app_active":
+			local c = bc.state;
+			if( c == 1) newthread().start( account.checkAccountState, account);
+			break;
+		case "account_changed":
+			updateActivity();
+			break;
+		}
+	});
+	setInterval( @(){
+		if( skIsForeProcess()) newthread().start( account.checkAccountState, account);
+	}, 5*1000);
+}
+
+module.hookAction( "editor_postload", loadAccount, 700);
+
+module.hookAction( "editor_closing", @(){
+	//	保存。でも毎回やるからフックでやらないで良いかも
+}, 700);

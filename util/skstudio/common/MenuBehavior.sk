@@ -1,0 +1,375 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+
+//	メニューは以下のようなフォーマット。treeviewのように双方向のツリーになってなくて良い。
+//	[
+//		{ lbl="Undo", id=1, icon="/img/ui1/undo.png", },
+//		{ lbl="Redo", id=2, icon=Icons.redo, },
+//		"-",
+//		{ lbl="Appearance", submenu=[
+//			{ lbl="FullScreen", id=3, icon=Icons.fullscreen, },
+//		]},
+//	]
+
+//	ボタンにプルダウンメニューの機能を加える。
+//	
+class MenuBehavior
+{
+	view = null;			//	SKView : 
+	menuitems = null;			
+	syncmode = true;		//	選択したメニューと同期する。基本プルダウンメニューはこれ。
+	selitem = null;
+	
+	constructor( v, tb=null, sync=true){
+		view = v;
+		v.addEventListener( ACTION_EVENT, actionevent);
+		syncmode = sync;
+		if( tb){
+			setMenu( tb);
+		}
+	}
+
+	function setMenu( tb){
+		menuitems = tb;
+		if( syncmode){ selectItem( menuitems[0]);}
+	}
+
+	static function _finditem( ma, fn){
+		foreach( m in ma){
+			if( m["submenu"]){
+				local ma = fget( m, "submenu");
+				m = _finditem( ma, fn);
+				if( m) return m;
+			}else{
+				if( fn( m)) return m;
+			}
+		}
+	}
+
+	function selectItem( m){
+		if( m instanceof SS_CLOSURE) m = _finditem( menuitems, m);
+		// if( !(selitem <> m)) return;
+		selitem = m;
+		MenuPopup.setviewfunc( null, view, m);
+		return !!m;
+	}
+
+	function actionevent( e){
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( e.src == view && !e.actioncmd){
+				e.consume();
+				local r = MenuPopup.pulldown( menuitems, view, selitem);
+				if( r){
+					selitem = r;
+					view.postActionEvent( r, e.count, e.modifiers);
+					if( syncmode) view.setValues( r);
+				}
+			}
+			break;
+		}
+	}
+}
+
+//	
+//	サブメニューの表示は子のMenuAdaptorを作っていく
+//	プルダウンメニューに対応するべくITEMUIPATH,POPUPUIPATHを
+//	
+class MenuPopup extends Popup
+{
+	POPUPUIPATH = "/skstudio/ui/parts/menupopup.ui"
+	SEPARATORUIPATH = "/skstudio/ui/parts/separator.ui"
+	
+	// itemuipath = "/skstudio/ui/parts/menuitem.ui"
+	itemuidata = null;		//	SKViewEntityData
+
+	listview = null;		//	
+	maxshownum = 20;		//	リストで最大の表示数。これ以上はスクロールが付く
+	menus = null;			//	まずsetMenuでこれを指定
+
+	iniitem = null;			//	表示時に選択されていたアイテム
+	selitem = null;			//	プレス、ドラッグで入る TODO カーソルでメニュー選択もできるように！！！
+	selmode = -1;			//	0:カーソルが乗ってるだけ 1:選択されてる
+	mousein = false;
+
+	rootmenu = null;		//	ルートのMenuPopup
+	parentmenu = null;
+	submenu = null;			//	MenuPopup : 開かれたサブメニュー。サブメニューはモーダルではなくparentと同階層の後ろにaddされる
+
+	//	ポップアップを表示してメニューの選択を実行する。
+	//	操作がすべて完了するまでブロックする。
+	//	※setMenuを行った後に幅が足りない場合はストレッチする。
+	static function run( menus, posview=null, iniitem=null){
+		if( !posview){
+			posview = ::getMousePos( 0);
+			posview.add( 4, 4, 0);
+		}
+		local pv = ::loadSKView( POPUPUIPATH);
+		local mp = MenuPopup( pv);
+		mp.itemuidata = ::getResourceContent( "/skstudio/ui/parts/menuitem.ui").rootdata;
+		mp.iniitem = iniitem;
+		mp.rootmenu = mp;		//	rootmenuは自身
+		mp.setMenu( menus);
+		if( (posview["layerflags"]||0) & 256) mp.poplayout = 3;	//	左右上に表示
+		local menuroot = null;
+		mp.show( menuroot, posview);
+		return mp.ret;	//	選択されたアイテムはrootmenu.retに入っている
+	}
+	
+	//	ブルダウンメニューからの表示。itemuipathが変化。
+	//	さらにメニューの幅がposviewの幅と同じくなる。
+	static function pulldown( menus, posview, iniitem=null){
+		local pv = ::loadSKView( POPUPUIPATH);
+		local mgn = 8;	//	コンテント領域へのマージン。決め打ちはいけない。。。
+		pv.stretchSize( posview.bnd.w+mgn*2, pv.bnd.h);	//	横幅矯正
+		local mp = MenuPopup( pv);
+		local itemui = posview.findChild( "menuitem");//["viewdata"]["link"];
+		if( itemui){
+			mp.itemuidata = itemui.viewdata;
+		}else{
+			mp.itemuidata = ::getResourceContent( "/skstudio/ui/parts/menuitem.ui").rootdata;
+		}
+		mp.iniitem = iniitem;
+		mp.rootmenu = mp;		//	rootmenuは自身
+		mp.setMenu( menus);
+		if( (posview["layerflags"]||0) & 256) mp.poplayout = 3;	//	左右上に表示
+		local menuroot = null;
+		mp.show( menuroot, posview);
+		return mp.ret;	//	選択されたアイテムはrootmenu.retに入っている
+	}
+
+	static function setviewfunc( m, v, mi){
+		//	名前
+		v.setValue( "lbl", mi["lbl"]);
+		//	キーショートカット
+		if( mi["rlbl"]){
+			v.setValue( "key", fget( mi, "rlbl") ?? "---");
+		}else{
+			local modkey = fget( mi, "modkey");
+			v.setValue( "key", modkey ? RichText( "[+3]"..getModifierKeyName( modkey)) : "");
+		}
+		//	アイコン
+		v.setValue( "icon", mi["icon"]||null);
+		//	サブメニュー
+		v.findChild( "sub")?.setVisible( !!mi["submenu"]);
+
+		local dis = fget( mi, "disable");
+		if( dis){ v.anime( 10); v.enabled = false; }else{ v.anime( 0); v.enabled = true; }
+
+		//	初期選択
+		if( mi["checked"] || (mi && m["iniitem"] == mi)){
+			local chk = v.findChild( "chk");
+			if( chk) chk.layerflags |= 1;
+		}
+	}
+
+	//	メニューを指定する
+	function setMenu( m){
+		local menuitemd = itemuidata;//::getResourceContent( itemuipath);
+		local separatord = ::getResourceContent( SEPARATORUIPATH);
+		local v = view;
+		listview = v.findChild( "LIST");
+		menus = m;
+		listview.clearRows();
+		foreach( v in m){
+			if( typeof( v) == SS_STRING || v["separator"]){	//	separator
+				local row = separatord.createSKView();
+				listview.addRow( row);
+			}else
+			if( typeof( v) == SS_TABLE && !fget( v, "hide")){
+				local row = menuitemd.createSKView( ::SKLibView);
+				setviewfunc( this, row, v);
+				row.ref = v;
+				listview.addRow( row);
+			}
+		}
+		listview.updateLayout();
+		//
+		//	最終的にはview.bnd.hをstretchSizeする
+		local viewh = view.bnd.h, listh = listview.bnd.h, lastrow = listview.rows.last();
+		local cnth = lastrow ? lastrow.pos.y + lastrow.bnd.h : 24;
+		if( length( listview.rows) > maxshownum){
+			cnth = listview.rows[maxshownum].pos.y;
+		}
+		//	lbl,rlblの幅がはみ出してないかチェック。
+		local vieww = view.bnd.w, cntw = listview.bnd.w, maxw = cntw;
+		foreach( r in listview.rows){
+			local lbl = r.findChild( "lbl"), rlbl = r.findChild( "key");
+			if( lbl && rlbl){
+				maxw = Math.max( maxw, lbl.pos.x + lbl.textbox.bnd.w + rlbl.textbox.bnd.w + 32);
+			}
+		}
+		view.stretchSize( vieww-cntw+maxw, viewh-listh+cnth);
+		listview.content.addEventListener( MOUSE_EVENT, mouseevent);
+	}
+
+	//	グローバル座標
+	function getMenuItemAt( x, y){
+		local p = (#Vector3D()) ( x, y, 0.0);
+		local cnt = listview.content;
+		p.transform( cnt.getInvMatrix());
+		if( p.x < 0.0 || p.x >= cnt.bnd.w) return null;
+		local ly = p.y;
+		foreach( r in listview.rows){
+			if( !r.ref) continue;	//	セパレーター飛ばし
+			if( !r.enabled) continue;	//	無効メニュー
+			if( ly >= r.pos.y && ly < r.pos.y+r.bnd.h) return r;	//	bnd.xy==0が条件。。。
+		}
+		return null;
+	}
+
+	function setSelectedItem( v, mode){
+		if( selitem != v){
+			selitem?.anime( 0);
+		}else
+		if( selmode == mode){
+			return;				//	変化なし
+		}
+		selitem = v;
+		selmode = mode;
+		v?.anime( mode+1);
+	}
+
+	function closeAll(){
+		rootmenu.close();
+	}
+
+	//	全てのサブメニューを閉じる
+	function closeSubmenus(){
+		if( submenu) submenu.close();
+	}
+
+	function close(){
+		canceldelayfunc();
+		closeSubmenus();
+		super.close();
+		parentmenu?.submenuClosed( this);
+	}
+
+	//	指定したメニューアイテムのサブメニューを開く
+	function openSubmenu( v){	//	v:SKView
+		if( submenu) return printf( "submenu already opened....\n");
+		canceldelayfunc();
+		local p = MenuPopup( view.viewdata.createSKView());
+		p.modal = 0;
+		p.itemuidata = itemuidata;
+		p.rootmenu = rootmenu;
+		p.parentmenu = this;
+		p.poplayout = 3;
+		local ma = fget( v.ref, "submenu");
+		p.setMenu( ma);
+		submenu = p;
+		p.show( view.parent, v);	//	※※※ここまたモーダルになっちゃう
+	}
+
+	function submenuClosed( sm){
+		submenu = null;
+	}
+	
+	//	元のイベントハンドリングは無くし
+	function keyevent( e){
+		if( e.id != KEY_PRESSED) return;
+		e.consume();	//	全部consumeしちゃう
+		switch( e.keycode){
+		case VK_UP:
+		case VK_DOWN:
+			break;
+		case VK_LEFT:
+		case VK_RIGHT:
+			break;
+		case VK_ENTER:
+		case VK_ESCAPE:
+			rootmenu.ret = null;
+			closeAll();
+			break;
+		}
+	}
+
+	//
+	function hoverchange( mi){
+		local self = this, sel = selitem, mimenu = mi["ref"]["submenu"];
+		if( submenu){
+			if( submenu.menus != mimenu){
+				setdelayfunc( @(){
+					if( self.submenu && self.submenu.menus != mimenu) self.closeSubmenus();
+					if( mimenu) self.openSubmenu( mi);
+				});
+			}
+		}else{
+			if( mimenu){
+				local self = this;
+				setdelayfunc( @(){
+					if( self.selitem == sel) self.openSubmenu( mi); 
+				});
+			}
+		}
+	}
+
+	intr = null;
+	function setdelayfunc( fn, d=400){
+		if( intr) clearInterval( intr);
+		local self = this;
+		if( fn) intr = setTimeout( @(){ self.intr = null; ::rootview.callInEventThread( fn, self); }, d);
+	}
+
+	function canceldelayfunc(){
+		if( intr) clearInterval( intr);
+	}
+
+	//	
+	function mouseevent( e){
+		switch( e.id){
+		case MOUSE_EXITED:
+			mousein = false;
+			setSelectedItem( null, 0);
+			canceldelayfunc();
+			break;
+		case MOUSE_MOVED:
+		case MOUSE_PRESSED:
+		case MOUSE_DRAGGED:
+			local mi = getMenuItemAt( e.x, e.y), oldmi = selitem;
+			setSelectedItem( mi, e.id==MOUSE_MOVED? 0 : 1);
+			if( mi && mi != oldmi) hoverchange( mi);
+			e.consume();
+			//
+			if( e.id != MOUSE_MOVED && !listview.gpui.dragscroll){ listview.gpui.startDragScroll( e); }
+			break;
+		case MOUSE_RELEASED:
+			if( selitem["ref"]["submenu"]){	//	サブメニュー付きはreleaseでも閉じない
+				if( submenu["menus"] != selitem["ref"]["submenu"]){
+					closeSubmenus();
+					openSubmenu( selitem);
+				}
+			}else
+			if( selitem["ref"]){	//	メニュー選択でclose
+				rootmenu.ret = selitem.ref;	//	メニューのテーブルを結果にセット
+				closeAll();
+			}else
+			if( !mousein){
+				rootmenu.close();
+			}
+			e.consume();
+			break;
+		case MOUSE_CANCELLED:	//	他のサブメニューがrequestDragを読んだときに呼ばれる
+			setSelectedItem( null, -1);
+			canceldelayfunc();
+			e.consume();
+			break;
+		//	他のリストなどと違ってMOUSE_ENTEREDで他のドラッグを奪う。
+		case MOUSE_ENTERED:
+			mousein = true;
+			if( e.isMouseDown( BUTTON1_MASK | BUTTON2_MASK)){
+				local mi = getMenuItemAt( e.x, e.y);
+				if( mi){
+					setSelectedItem( mi, 1);
+					listview.content.requestDrag( e);
+					listview.content.requestFocus( e);
+				}
+				hoverchange( mi);
+			}
+			e.consume();
+			break;
+		}
+	}
+}

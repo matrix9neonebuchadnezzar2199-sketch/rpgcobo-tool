@@ -1,0 +1,523 @@
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	ぽりごん
+//
+
+class SK3DModifier
+{
+	order = 0;
+
+	function start( o){
+	}
+
+	function modify( o, dt){
+		return false;
+	}
+
+	function interrupt( o){
+	}
+
+	function clear(){
+	}
+}
+
+class KillTimerModifier extends SK3DModifier
+{
+	order = 1;
+	time = 0;
+
+	constructor( t){
+		time = t;
+	}
+
+	function modify( o, dt){
+		local b = (time-=dt)>0;
+		if( !b) o.alive = false;
+		return b;
+	}
+
+	function interrupt( o){
+		o.alive = false;
+	}
+}
+
+class TimeFadeModifier extends SK3DModifier
+{
+	time = 0.0;
+	totaltime = 100.0;
+
+	function modify( o, dt){
+		local w1 = time / totaltime;
+		if( (time+=dt) >= totaltime){
+			modifyw( o, w1, 1.0);
+			return false;
+		}else{
+			modifyw( o, w1, time / totaltime);
+			return true;
+		}
+	}
+
+	function modifyw( o, w1, w2){
+	}
+}
+
+class ColorFadeModifier extends TimeFadeModifier
+{
+	order = 10;
+
+	mate = null;			//	target materials
+	idx = "Kmul";			//	target index
+	color1 = 0xffffffff;	//	color from
+	color2 = 0xffffffff;	//	color to
+
+	constructor( o, c2, t, i="Kmul"){
+		totaltime = t+0.0;
+		mate = o.getMaterials();
+		color2 = c2;
+		idx = i;
+	}
+
+	function start( o){
+		color1 = mate[0][idx];
+	}
+
+	function interrupt( o){
+		modifyw( o, 1.0, 1.0);
+	}
+
+	function modifyw( o, w1, w2){
+		local c = Math.lerpcolor( color1, color2, w2);
+		foreach( m in mate){
+			m[idx] = c;
+		}
+	}
+}
+
+class ColorFadeLoopModifier extends TimeFadeModifier
+{
+	static PI = 3.141592;
+	loopcnt = 1;
+	periodicity = 1.0;
+
+	order = 10;
+
+	mate = null;			//	target materials
+	idx = "Kmul";			//	target index
+	color0 = 0xffffffff;	//	color origin
+ 	color1 = 0xffffffff;	//	color from
+	color2 = 0xffffffff;	//	color to
+
+
+	constructor( o, c1, c2, t, loopc, i="Kmul"){
+		totaltime = t+0.0;
+		if( loopc <= 1.0) loopc = 1.0; //最低一回
+		periodicity = totaltime/loopc;
+		mate = o.getMaterials();
+		color1 = c1;
+		color2 = c2;
+		idx = i;
+		loopcnt = loopc;
+	}
+
+	function start( o){
+		color0 = mate[0][idx];
+	}
+
+	function interrupt( o){
+		modifyset( o, color0); // 元に戻す
+	}
+
+	function modify( o, dt){
+		local w1 = time / totaltime;
+		if( (time+=dt) >= totaltime){
+			modifyset( o, color0); // 元に戻す
+			return false;
+		}else{
+			local w = Math.abs(Math.sin(time/periodicity*PI));
+			modifyw( o, w1, w);
+			return true;
+		}
+	}
+
+	function modifyset( o, c) {
+		foreach( m in mate){
+			m[idx] = c;
+		}
+	}
+
+	function modifyw( o, w1, w2){
+		local c = Math.lerpcolor( color1, color2, w2);
+		foreach( m in mate){
+			m[idx] = c;
+		}
+	}
+}
+
+class ColorFlushModifier extends TimeFadeModifier
+{
+	order = 10;
+
+	mate = null;			//	target materials
+	idx = "Ke";				//	target index
+//	color1 = 0;				//	color from
+	color2 = 0xffffffff;	//	color to
+	freq = 0;				//	frequency
+
+	orgcolors = null;		//	colors from
+
+	constructor( o, c2, f, t, i="Ke"){
+		totaltime = t+0.0;
+		mate = o.getMaterials();
+		color2 = c2;
+		freq = f+0.0;
+		idx = i;
+	}
+
+	function start( o){
+//		color1 = mate[0][idx];
+		orgcolors = array( mate.len());
+		foreach( i,m in mate){
+			orgcolors[i] = m[idx];
+		}
+	}
+
+	function interrupt( o){
+		foreach( i,m in mate){
+//			m[idx] = color1;
+			m[idx] = orgcolors[i];
+		}
+	}
+
+	function modifyw( o, w1, w2){
+		if( w2 == 1.0){
+			foreach( i,m in mate){
+//				m[idx] = color1;
+				m[idx] = orgcolors[i];
+			}
+		}else{
+			local w = (w2*freq)%1.0;
+//			local c = w<0.5?color2:color1;
+//			foreach( m in mate){
+//				m[idx] = c;
+//			}
+			foreach( i,m in mate){
+				local c = w<0.5?color2:orgcolors[i];	//	毎度対応するorgcolor引っ張ってくるのはなんだかなぁ...
+				m[idx] = c;
+			}
+		}
+	}
+}
+
+class AlphaFadeModifier extends TimeFadeModifier
+{
+	order = 11;
+
+	mate = null;			//	target materials
+	alpha1 = 1.0;			//	alpharef from
+	alpha2 = 0.0;			//	alpharef to
+
+	constructor( o, a1, a2, t){
+		totaltime = t+0.0;
+		mate = o.getMaterials();
+		alpha1 = a1;
+		alpha2 = a2;
+	}
+
+	function modifyw( o, w1, w2){
+		local a = (alpha1 + (alpha2-alpha1)*w2);
+		foreach( m in mate){
+			m.alpharef = a;
+			m.alphatest = 1;
+		}
+	}
+}
+
+class AlphaFadeModifier2 extends TimeFadeModifier
+{
+	order = 11;
+
+	mate = null;			//	target materials
+	alpha1 = 1.0;			//	alpharef from
+	alpha2 = 0.0;			//	alpharef to
+
+	constructor( o, a1, a2, t){
+		totaltime = t+0.0;
+		mate = o.getMaterials();
+		alpha1 = a1;
+		alpha2 = a2;
+	}
+
+	function modifyw( o, w1, w2){
+			if( w1 == 0.0){
+				foreach( m in mate) m.alphatest++;
+			}
+			local a = (alpha1 + (alpha2-alpha1)*w2);
+			foreach( m in mate){
+				m.alpharef = a;
+			}
+			if( w2 == 1.0){
+				foreach( m in mate) m.alphatest--;	//alphatestを元の状態に戻す
+			}
+		}
+}
+
+class BlinkModifier extends TimeFadeModifier
+{
+	order = 12;
+
+	freq = 0;				//	frequency
+	wt = 0.5;				//	weight
+
+	constructor( o, f, t, w=0.5){
+		totaltime = t+0.0;
+		freq = f+0.0;
+		wt = w;
+	}
+
+	function start( o){
+	}
+
+	function interrupt( o){
+		o.setVisible( true);
+	}
+
+	function modifyw( o, w1, w2){
+		if( w2 == 1.0){
+			o.setVisible( true);
+		}else{
+			local w = (w2*freq)%1.0;
+			local c = w<wt?false:true;
+			o.setVisible( c);
+		}
+	}
+}
+
+local xyzvec = Vector3D( 1, 1, 1);
+
+class VibeModifier extends SK3DModifier
+{
+	order = 100;
+
+	mag = 1.0;				//	float : magnitude
+	xyz = null;				//	Vector3D
+	falloff = 0.0;			//
+	time = 300;				//	残り時間
+
+	constructor( m, v, t, fo=0.0){
+		mag = m;
+		time = t;
+		xyz = v || xyzvec;
+		falloff = fo;
+	}
+
+	function modify( o, dt){
+		o.matdirty = true;
+		if( (time-=dt) > 0){
+			o.getModTransform().translate( xyz * Vector3D.fromRandom( -mag, mag));
+			mag = Math.max( mag - falloff * dt, 0.0);
+			return true;
+		}else{
+			return false;
+		}
+	}
+}
+
+class SpinModifier extends SK3DModifier
+{
+	order = 101;
+
+	v = null;
+	time = 300;
+	accel = 0;
+
+	constructor( _v, t, a=0){
+		v = _v;
+		time = t;
+		accel = 0;
+	}
+
+	function modify( o, dt){
+		local len = v.length();
+		o.matdirty = true;
+		if( (time-=dt) > 0){
+			o.rot.synthesize( Quaternion.fromAxis( len*dt*0.001, v/len));
+			return true;
+		}else{
+			o.rot.synthesize( Quaternion.fromAxis( len*(dt+time)*0.001, v/len));
+			return false;
+		}
+	}
+
+}
+
+class RotateModifier extends SK3DModifier
+{
+	order = 101;
+
+	q0 = null;		//	Quaternion : from
+	q1 = null;		//	Quaternion : to
+	time = 300;
+	w = 1.0;
+	easing = null;
+
+	constructor( _q0, _q1, t, e=null){
+		q0 = _q0;
+		q1 = _q1;
+		time = t;
+		w = 1.0 / t;
+		easing = e || Easing.easeLinear;
+	}
+
+	function modify( o, dt){
+		if( (time-=dt) > 0){
+			o.rot << q1.slerp( q0, easing( time*w));
+			o.matdirty = true;
+			return true;
+		}else{
+			o.rot << q1;
+			o.matdirty = true;
+			return false;
+		}
+	}
+}
+
+class MoveForModifier extends TimeFadeModifier
+{
+	order = 102;
+
+	vec = null;				//	Vector3D : 移動ベクトル。
+
+	constructor( v, t){
+		vec = v;
+		totaltime = t+0.0;
+	}
+
+	function modifyw( o, w1, w2){
+		o.pos << o.pos + (vec*(w2-w1));
+		o.matdirty = true;
+	}
+
+	function interrupt( o){
+		modifyw( o, time / totaltime, 1.0);
+	}
+}
+
+class MoveToModifier extends TimeFadeModifier
+{
+	order = 102;
+
+	p0 = null;				//	Vector3D : 初期位置
+	p1 = null;				//	Vector3D : 目標位置
+	easing = null;
+
+	constructor( a, b, t, e){
+		p0 = a;
+		p1 = b;
+		totaltime = t+0.0;
+		easing = ::Easing.presets[e||1];
+	}
+
+	function modifyw( o, w1, w2){
+		o.pos << p0.lerp( p1, easing( w2));
+		o.matdirty = true;
+	}
+}
+
+class ZoomModifier extends TimeFadeModifier
+{
+	order = 103;
+
+	s1 = null;
+	s2 = null;
+
+	constructor( _s1, _s2, t){
+		s1 = _s1;
+		s2 = _s2;
+		totaltime = t+0.0;
+	}
+
+	function modifyw( o, w1, w2){
+		o.scale << s1.lerp( s2, w2);
+		o.matdirty = true;
+	}
+
+	function interrupt( o){
+		modifyw( o, 1.0, 1.0);
+	}
+}
+
+
+class MorphModifier extends TimeFadeModifier
+{
+	order = 104;
+
+	ss1 = null;		//	ShapeState :
+	ss2 = null;		//	ShapeState :
+	dst = null;		//	ShapeState :
+
+	constructor( _s1, _s2, _d, t){
+		ss1 = _s1;
+		ss2 = _s2;
+		dst = _d;
+		totaltime = t+0.0;
+	}
+
+	function modifyw( o, w1, w2){
+		ss1.interpolate( ss2, w2, dst);
+		o.animating = true;
+	}
+}
+
+local v1 = Vector3D( 1, 1, 1);
+
+class GummyZoomModifier extends TimeFadeModifier
+{
+	order = 105;
+
+	s1 = null;
+	s2 = null;
+	ease = null;		//	function
+
+	constructor( _s2, t){
+		s2 = _s2;
+		totaltime = t+0.0;
+		ease = Easing.easeIn( 0.6).easing;
+	}
+
+	function modifyw( o, w1, w2){
+		local _w = ease( ( w2<0.5?w2:(1.0-w2)) * 2.0);
+		o.getModTransform().scale( v1.lerp( s2, _w));
+		o.matdirty = true;
+	}
+}
+
+
+class UVScrollModifier extends SK3DModifier
+{
+	order = 30;
+
+	u = 0.0;
+	v = 0.0;
+	mate = null;
+
+	constructor( o, _u, _v){
+		foreach( m in (mate = o.getMaterials())){
+			if( !m.uvmat) m.uvmat = Matrix();
+		}
+		u = _u;
+		v = _v;
+	}
+
+	function modify( o, dt){
+		local udt = u*dt*0.001;
+		local vdt = v*dt*0.001;
+
+		foreach( m in mate){
+			local uvmat = m.uvmat;
+			uvmat[12] += udt;
+			uvmat[13] += vdt;
+			return true;
+		}
+	}
+}

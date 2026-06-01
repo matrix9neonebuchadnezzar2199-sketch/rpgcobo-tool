@@ -1,0 +1,1346 @@
+
+local v3_1 = Vector3D();
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	ぽりごん
+//
+
+//	アタッチフィールド
+Camera.name <- null;
+Camera.linkto <- null;
+
+
+with( Light)
+{
+	linkto <- null;
+}
+
+with AnimationLayer
+{
+	wfunc <- null;
+	
+	function update( dt){
+		local b = updateAnime( dt);
+		if( wfunc){ if( !wfunc( dt)){ wfunc = null; }; b = true; }
+		return b;
+	}
+}
+
+class AnimationLayers
+{
+	static tf_0 = Transform();
+	layers = null;			//	AnimationLayer[] : 0,1はメインアニメ、フェードアウトアニメと使用用途が決まってる
+	
+	constructor(){
+		layers = (null,null);
+	}
+	
+	function resize( n){
+		local len = length( layers);
+		if( n != len){
+			local a = tuple( n);
+			for( local l = Math.min( len, n)-1;l >= 0;l --) a[l] = layers[l];
+			layers = a;
+		}
+	}
+	
+	function mixPoses( n, tf){
+		local c = 0;
+		foreach( lyr in layers){ c |= lyr?.mixPose( n, tf); }
+		return c;
+	}
+	
+	function integrateBonePoses( bones, gmat, reflectdynamic){
+		local tf = tf_0;
+		if( reflectdynamic){
+			foreach( b in bones){
+				if( mixPoses( b.name, tf)) b.setTransform( tf, gmat);
+			}
+		}else{
+			foreach( b in bones){
+				if( !b.dynamic && mixPoses( b.name, tf)) b.setTransform( tf, gmat);
+			}
+		}
+	}
+	
+	function markAnimating(){
+		if( layers[0]) layers[0].animating = 1;
+	}
+	
+	function update( dt){
+		local b = false;
+		foreach( i, lyr in layers){
+			if( lyr){
+				b |= lyr.update( dt);
+				if( lyr.weight < 0.00001){ layers[i] = null; b = true; }
+			}
+		}
+		return b;
+	}
+}
+
+local m_1 = Matrix();
+local tf = Transform();		//	final Transform ... pos,scale,rot,modtfを基準にmodifiersで最終的に計算する
+local v_zinv = Vector3D( 1.0, 1.0, -1.0);
+
+function SK3DRenderNode::render( cam, visiblemask){	//	camじゃなくてなんか良い引数を
+	if( mesh){
+		skSetMatrix( SK_WORLD, gmat);
+		if( billboard) skBillboardMatrix( billboardbank);
+		mesh.render( visiblemask);
+	}else
+	if( ptc){
+		skDrawParticleGroups( ptc.groups);
+	}
+}
+
+class SK3DObject extends SK3DRenderNode
+{
+	name = "";				//
+	
+	//	node
+	scn = null;				//	attached scene
+	parentbone = null;		//	parent Bone
+	bones = null;			//	Bone[] ...
+	appendbones = null;		//	Bone[] ... shadowした際に追加されるBone
+	generatedby = null;		//	weakref( SK3DObject) ... generate元
+	// lock = false;			//	
+	// lockscp = false;		//	
+//	parent = null;			//	parent scene object
+//	children = null;		//	list of child Object3D
+	
+	//	groups ... color,alpha,mixtureなどの変化を共通化するグループ
+	groups = null;			//
+	groupparent = null;		//
+	
+	materials = null;		//	このSK3DObjectが持つすべてのマテリアルの一覧
+	
+	//	attached obj
+	res = null;				//	related resouce
+//	mesh = null;			//	PolygonMesh
+//	ptc = null;				//	Particle
+	
+	//
+	alive = true;			//
+	autokill = false;		//	TODO : もっとしっかりしたフラグを
+	animating = false;		//
+	panimating = false;		//	一個前
+	timescale = 1.0;		//	タイムスケール
+	animescale = 1.0;		//	アニメーション再生のタイムスケール
+	
+	//	transform
+	+pos = Vector3D();		//	base position (inline)
+	+scale = Vector3D( 1.0);//	base scale (inline)
+	+rot = Quaternion();	//	base rotation (inline)
+	+mat = Matrix();		//	parent space Matrix (inline)
+	+bnd = Rect3D( 0.0, 0.0, 0.0, 0.1, 0.1, 0.1);		//	local bounding box (inline)
+	+srttf = Transform();	//	pos, scale, rotで計算されるTransform (inline)
+	modtf = null;			//	modifier Transform ... vibe等の局所的なTransformはこっちで・・・いる？
+	tflayers = null;		//	[] Transform.integrate
+	pivot = null;			//	Transform || Matrix || Vector3D
+	matdirty = true;		//	need to update matrix
+//	gmat = null;			//	global matrix
+//	gbnd = null;			//	global bounding box
+	
+//	billboard = false;		//	billboard
+//	billboardbank = 0.0;	//
+//	drawedge = false;		//
+	
+	//	visibility
+	layer = 0;				//
+	
+	//	motion
+	// shapetarget = null;		//	ShapeTarget ...
+	motion = null;			//	current BoneMotion
+	animlayers = null;		//	AnimationLayers
+	// shapemotion = null;		//	ShapeStateTimeline
+	
+	//	modifier, method
+	scprunner = null;		//	ScriptRunner
+	modifiers = null;		//	SK3DModifier[]
+	
+	//	sound
+	sndgain = 1.0;			//	0.0でミュート
+	trackingsounds = null;	//	SoundPlayable[]
+	
+	//	b3d
+	//	b3body.isDynamicならsimurateの後のupdatePhysicalBones前に適用される。そうでなければ、b3bodyにモデルのgmatが入る
+	//	scaleは無視される。b3body.shpに予めsetLocalScalingを入れる。
+	rbdata = null;			//	RigidBodyData : 
+	b3body = null;			//	b3Body : rbdataから生成される。
+	enablepbone = false;	//	ボーンの物理シミュレーション
+	mutepbone = false;		//	ボーンの物理シミュレーションミュート
+	
+	//	SK3DSceneData.Entity
+	entity = null;
+
+	ref = null;
+	
+	constructor( src=null){
+		visiblemask = SK_VISIBLE_OPAQUE;
+		// srttf = Transform();
+		tflayers = [srttf];
+		// pos = Vector3D();
+		// scale = Vector3D( 1.0);
+		// rot = Quaternion();
+		// mat = Matrix();
+		// gmat = Matrix();
+		// bnd = Rect3D();
+		// gbnd = Rect3D();
+		if( src) setSource( src);
+	}
+
+	function _nexti( itr){
+		if( itr[0]) return null;
+		itr[0] = 1;
+		itr[1] = 0;
+		itr[2] = this;
+		return itr;
+	}
+	
+	////////////////////////////////////////////////////////////////////////////
+	//	データセット
+
+	function setSource( src){
+		if( typeof( src) == SS_STRING){
+			local r = res?(res.getResource( src)):(::getResource( src));
+			if( !r) throw Exception( "source path not found : " .. src);
+			src = r;
+		}
+		if( src instanceof Resource){
+			res = src;
+			local name = src.name;
+			if( name.endsWith(".pm")){
+				src = ::getPolygonMesh( src);
+			}else
+			if( name.endsWith(".ptd")){
+				src = ::ParticleEffect.getParticleEffect( src);
+			}else{
+				src = src.getContent();
+			}
+		}
+		if( src instanceof ParticleEffect){
+			setParticle( src);
+		}else
+		if( src["face"] && src["vtx"]){	//	instanceof PolygonMeshだとエディタでおかしくなる場合がある。暫定
+			setPolygonMesh( src);
+		}
+	}
+
+	function setParticle( p){
+		ptc = p;
+		p.setSK3DObject( this);
+		layer = p.layer;
+		updateSortOffset();
+		materials = null;
+	}
+	
+	function startParticle( _autokill=true){
+		if( ptc){
+			autokill = _autokill;
+			ptc.start();
+		}
+	}
+	
+	//	ParticleEffectのアクションがanchorを実行したかどうか
+	function isParticleRunning(){
+		if( ptc){
+			return ptc.alive;
+			// return ptc.isActionRunning();
+		}
+	}
+	
+	function setPolygonMesh( m){
+		mesh = m;
+		if( m.pivot) setPivot( m.pivot);
+		if( m){
+			motion = m.motion;
+			bnd << m.bnd;
+		}else{
+			motion = null;
+			visiblemask = 0;
+		}
+		if( motion){
+//			printf(" setPolygonMesh motion %S\n", motion);
+			createBones();
+			if( mesh){
+				assignBonesToPolygonMesh( mesh);
+				if( !animlayers) animlayers = AnimationLayers();
+				//	使用しているレイヤ数をカウント
+				local lyrnum = 1;
+				foreach( parts in motion.partsmap){
+					local mixw = parts.getMixWeights( #[]);
+					for( local l = 1; l < 8;l++){
+						local w = mixw[l];
+						if( w == 1.0) continue;
+						lyrnum = Math.max( l+1, lyrnum);
+					}
+				}
+				animlayers.resize( lyrnum * 2);
+				tanime( #{ st=0.0 });
+				updateMotion(0);
+			}
+		}else{
+			bones = null;
+		}
+		updateSortOffset();
+		materials = null;
+	}
+	
+	function getMotion( s){
+		local mot = null;
+		if( s instanceof SS_STRING){
+			local res = ::getResource( mot);
+			// if( !res) println( "WARNING!! motion file is not found. path=".. mot);
+			mot = ::getMotionData( res);
+		}
+		return mot || motion;
+	}
+	
+	function setMotion( mot){
+		if( motion){
+			motion = mot;
+		}else{
+			motion = mot;
+			createBones();
+			if( mesh) assignBonesToPolygonMesh( mesh);
+			if( !animlayers) animlayers = AnimationLayers();
+			tanime( #{ st=0.0 });
+			updateMotion(0);
+		}
+	}
+	
+	function findBone( name){
+		if( typeof( name) == SS_INTEGER){
+			foreach( b in bones) if( b.parts.id == name) return b;
+		}else{
+			foreach( b in bones) if( b.name == name) return b;
+		}
+		return null;
+	}
+	
+	function createBones(){
+		bones = array( length( motion.parts));
+		foreach( i, p in motion.parts){
+			local b = Bone();
+			b.name = p.name;
+			b.parts = p;
+			b.invbindpose = p.invbindpose;
+			b.mat = Matrix();
+			if( p.parentid >= 0){
+				for( local j = 0; j < i;j ++){
+					if( bones[j].parts.id == p.parentid){ b.parentbone = bones[j]; break; }
+				}
+				if( !b.parentbone){
+					throw Exception( sprintf( "bone[id=%d,name=%S,parentid=%d] parent not found.", p.id,p.name,p.parentid));
+				}
+			}
+			bones[i] = b;
+		}
+	}
+
+	function assignBonesToPolygonMesh( m){
+		local wn = m.wmapname;
+		if( !wn) return;
+		local bones = array( length( wn));
+		foreach( l, n in wn){
+			local j = findBone( n);
+			bones[l] = j;
+		}
+		if( m.bones) m.bones.resize(0);
+		m.bones = bones;
+	}
+
+	function shadowBonesTo( src){
+		local oldb = bones;
+		bones = src.bones;
+		appendbones = [];
+		//	追加Joint
+		if( motion && src.motion){
+			bones = clone bones;
+			local srcmot = src.motion;
+			foreach( p in motion.parts){
+				if( p.name in srcmot.partsmap) continue;	//	既に存在するparts
+				local b = Bone();
+				b.name = p.name;
+				b.parts = p;
+				b.invbindpose = p.invbindpose;
+				b.mat = Matrix();
+				b.parentbone = p.parentid<0?null:findBone( motion.parts[p.parentid].name);	//	boneは検索しなおし
+				bones .. b;
+				appendbones .. b;
+			}
+		}
+		if( length( appendbones) == 0){
+			motion = null;
+		}
+		assignBonesToPolygonMesh( mesh);
+	}
+	
+	/**
+	 * childrenも含めてオブジェクト数を返します。
+	 * @param bool findChildren chiledrenを含めるか
+	 * @return int 
+	 */
+	function countObjects( findChildren=true){
+		 local count = 1;
+		 if( !findChildren) return count;
+		 foreach( c in children) count += c.countObjects();
+		 return count;
+	}
+	
+	/**
+	 * childrenも含めてポリゴン数を返します。
+	 * @param bool findChildren chiledrenを含めるか
+	 * @return int 
+	 */
+	function countPolygons( findChildren=true){
+		local count = 0;
+		// 自分の分
+		foreach( face in mesh["face"]) {
+			count += (face.len-face.offs);
+		}
+		count /= 3;
+		if( !findChildren) return count;
+		//子供の分
+		foreach( c in children) count += c.countPolygons();
+		return count;
+	}
+	
+	////////////////////////////////////////////////////////////////////////////
+	//	シーン追加、削除
+
+	function addedToScene( s){
+		scn = s;
+		if( !s.disablesimulation){
+			enablePhysicalBones();
+		}
+		if( b3body && s.b3world){
+			s.b3world.addBody( b3body);
+		}
+		update( 0, true);
+		foreach( c in children){
+			c.addedToScene( s);
+		}
+	}
+
+	function removedFromScene( s){
+		disablePhysicalBones();
+		foreach( c in children){
+			c.removedFromScene( s);
+		}
+		if( b3body){
+			s.b3world.removeBody( b3body);
+		}
+		scn = null;
+	}
+
+	function kill( dt=0){
+		if( dt > 0){
+			addModifier( KillTimerModifier( dt));
+		}else{
+			alive = false;
+		}
+	}
+
+	////////////////////////////////////////////////////////////////////////////
+	//	オブジェクト追加、削除
+
+
+	function addChild( sk3d, boneid=null){
+		sk3d.parent = this;
+		if( boneid != null){
+			if( boneid instanceof Bone){
+				if( bones && bones.indexOf( boneid)>=0) sk3d.parentbone = boneid;
+			}else{
+				sk3d.parentbone = findBone( boneid);
+			}
+		}
+		if( !children) children = [sk3d];
+		else children .. sk3d;
+		sk3d.setLayer( layer);
+		if( scn){
+			sk3d.addedToScene( scn);
+		}
+	}
+
+	//	updateループ外からの消去。updateループ内で行うと危ない感じが
+	function removeChild( sk3d){
+		if( sk3d && sk3d.parent==this){
+			foreach( i, v in children){
+				if( sk3d==v){
+					delete children[i];
+					if( scn) sk3d.removedFromScene( scn);
+					return;
+				}
+			}
+		}
+	}
+	
+	// function finishChildren( force=false){
+	// 	foreach( i, v in children){
+	// 		if( v.lock) continue;
+	// 		if( !force && m.lockscp) continue;
+	// 		if( !v.startScript("end")){
+	// 			v.kill();
+	// 		}
+	// 	}
+	// }
+	
+	function clearChildren(){
+		if( children){
+			if( scn) foreach( i, v in children){
+				v.removedFromScene( scn);
+			}
+			children.clear();
+		}
+	}
+	
+	function removeFromParent(){
+		if( parent){
+			parent.removeChild( this);
+		}else
+		if( scn){
+			scn.removeObject( this);
+		}
+	}
+
+	function addGroup( sk3d){
+		if( sk3d.groupparent){
+			sk3d.groupparent.removeGroup( sk3d);
+		}
+		if( groups){
+			groups .. sk3d;
+		}else{
+			groups = [sk3d];
+		}
+		sk3d.groupparent = this;
+		materials = null;
+	}
+
+	function removeGroup( sk3d){
+		if( groups){
+			groups.removeValue( sk3d);
+			sk3d.groupparent = null;
+		}
+		materials = null;
+	}
+
+	function getMaterials( cache=true){
+		local ma = materials;
+		if( !materials){
+			ma = [];
+			if( cache) materials = ma;
+			foreach( f in mesh["face"]){ ma .. f.m; }
+			foreach( f in ptc["groups"]){ ma .. f.m; }
+			foreach( go in groups){
+				foreach( f in go.mesh["face"]){ ma .. f.m; }
+				foreach( f in go.ptc["groups"]){ ma .. f.m; }
+			}
+		}
+		return ma;
+	}
+	
+	////////////////////////////////////////////////////////////////////////////
+	//	アップデート
+
+	function update( dt, pmatdirty=true){
+		animating = !!modifiers;
+		if( scprunner["running"]){
+			scprunner.update( dt);
+		}
+		modtf?.clear();
+		foreach( mod in modifiers){
+			if( !mod.modify( this, dt)){
+				if( length( modifiers) == 1){ modifiers = null; }
+				removei;
+			}
+		}
+		local matchanged = runMatrix( pmatdirty);
+		updateMotion( dt * animescale, matchanged);		//	updateMotionはinactiveの時もやっといたほうが良い
+		if( ptc){
+			if( ptc.update( dt)){
+				animating = true;
+				(gbnd << (bnd<<ptc.gbnd));
+				// printf( "g? %S %S %S %S %S %S\n", gbnd.x,gbnd.y,gbnd.z,gbnd.r,gbnd.s,gbnd.t);
+			}else{
+				if( autokill){
+					ptc = null;
+					alive = false;
+				}else{
+					(gbnd << (bnd<<ptc.gbnd));
+				}
+			}
+		}
+		animating |= panimating;
+		panimating = false;
+		return alive;
+	}
+
+	function runMatrix( pmatdirty=true){
+		local ret = false;
+		if( b3body?.isDynamic() && !scn["disablesimulation"]){	//	scnがシミュレーションをoffしてるときはrunMatrixが走る！！！
+			return matdirty = animating = true;
+		}
+		if( matdirty){
+			updateSRT();
+			mat.integrate( tflayers);
+			matdirty = false;
+			pmatdirty = true;
+		}
+		if( pmatdirty || (parentbone&&parent.animating)){
+			gmat.set( mat);
+			if( parent){
+				if( parentbone){ if( parent.motion["zinvert"]){ gmat.lscale( v_zinv); }; parentbone.mat.mult34( gmat, gmat); }
+				parent.gmat.mult34( gmat, gmat);
+			}
+			b3body?.setTransform( gmat);
+			ret = animating = true;
+			(gbnd<<bnd).transform( gmat);
+		}
+		return ret;
+	}
+
+	function updateMatrix(){
+		parent?.updateMatrix();
+		local dyn = b3body?.isDynamic() && !scn["disablesimulation"];	//	scnがシミュレーションをoffしてるときはupdateMatrixが走る！！！
+		if( matdirty || dyn){
+			if( !dyn){
+				updateSRT();
+				mat.integrate( tflayers);
+				gmat.set( mat);
+				if( parent){
+					if( parentbone){ if( parent.motion["zinvert"]){ gmat.lscale( v_zinv); }; parentbone.mat.mult34( gmat, gmat); }
+					parent.gmat.mult34( gmat, gmat);
+				}
+				b3body?.setTransform( gmat);
+				matdirty = false;
+				(gbnd<<bnd).transform( gmat);
+			}
+			panimating = true;
+			foreach( c in children) c.matdirty = true;	//	直下の子供は全てダーティーに
+		}else
+		if( animating){
+			foreach( c in children){
+				if( c.parentbone) c.matdirty = true;	//	直下の子供でボーンに紐づけられているものはダーティーに
+			}
+		}
+	}
+
+	function updateSRT(){
+		srttf.setSRT( pos, scale, rot);
+	}
+
+	//	※毎フレーム全オブジェクトを線形走査してるが無駄。
+	function updatePhysicalMatrix(){
+		if( b3body?.isDynamic()){
+			//	スケールが入ると変になる。親のスケールも込みで
+			b3body.getTransform( gmat);
+			(gbnd<<bnd).transform( gmat);
+		}
+		foreach( c in children) c.updatePhysicalMatrix();
+	}
+
+	function updateMotion( dt, matchanged=false){
+		
+		if( !animlayers || (!animlayers.update( dt) && !appendbones)){	//	TODO:この判定が適当過ぎ
+			if( enablepbone){
+				skBonePoseToPhysicalList( gmat, appendbones?appendbones:bones, true);
+			}
+			return;
+		}
+		
+		//	以下の場合はアニメーションをボーンに
+		//	物理無し  : 常時
+		//	static    : 常時
+		//	dynamic   : mute時、disablesimulation時
+		animlayers.integrateBonePoses( appendbones?appendbones:bones, gmat, mutepbone||(scn&&scn.disablesimulation));
+		//	アニメーションによるバウンディングを更新するのはここ。※シミュレーションの結果は前のフレームのものになる。。。botu
+		// Bone.calcPartsLocalBounds( bones, bnd);
+		
+		//	shapeline
+		local sl;
+		if( sl = mesh["shapeline"]){
+			local layers = animlayers.layers, l0 = layers[0], l1 = layers[1];
+			if( l1){
+				local w = l1.weight;
+				sl.evaluate2( mesh.shapetarget, l0.frametime, l1.frametime, w);
+			}else{
+				sl.evaluate2( mesh.shapetarget, l0.frametime);
+			}
+		}
+		animating = true;
+	}
+
+	function calcBonePoses(){
+		animlayers?.integrateBonePoses( appendbones?appendbones:bones, gmat, mutepbone||(scn&&scn.disablesimulation));
+	}
+	
+	function setPivot( pv){
+		if( pivot) tflayers.removeValue( pivot);
+		pivot = pv;
+		if( pv) tflayers .. pv;
+	}
+	
+	function getModTransform(){
+		return modtf || (tflayers[ tflayers.indexOf( srttf)+1] <- (modtf=Transform()));
+	}
+	
+	////////////////////////////////////////////////////////////////////////////
+	//	スクリプト
+
+	function execScript( fname){
+		return scprunner?scprunner._exec_( fname) : false;
+	}
+
+	function startScript( fname){
+		return scprunner?scprunner._start_( fname) : false;
+	}
+
+	function startScriptv( fname, ...){
+		return scprunner?scprunner._starta_( fname, varguments()) : false;
+	}
+
+	function pushScript( fname){
+		return scprunner?scprunner._push_( fname) : false;
+	}
+
+	function stopScript(){
+		if( scprunner) scprunner._stop_();
+	}
+
+	////////////////////////////////////////////////////////////////////////////
+	//	アニメーション／モーフィング
+	
+	//	old func
+	function anime( st, en=null, spd=null, lp=false, ft=0.0){
+		local t = #{ st=0.0, en=null, spd=null, loop=false };
+		t.st = st;
+		if( spd){
+			t.en = en;
+			t.spd = spd;
+			t.loop = lp;
+		}else{
+			t.en = null;
+			ft = en;
+		}
+		return tanime( t, ft);
+	}
+	
+	static function _fadeinfunc( ft){
+		local spd = 0.001 / ft;	//	ftで1.0->0.0になる速度
+		return function( dt){ weight = Math.min( 1.0, weight+dt*spd); return weight<1.0; };
+	}
+	
+	static function _fadeoutfunc( ft){
+		local spd = 0.001 / ft;	//	ftで1.0->0.0になる速度
+		return function( dt){ weight = Math.max( 0.0, weight-dt*spd); return weight>0.0; };
+	}
+	
+	static function _fadetofunc( ft, w){
+		local spd = 0.001 / ft;	//	spdは0.0-1.0に対するスピード。これで良い？
+		return function( dt){
+			local _w = weight;
+			_w = _w<w ? Math.min( _w+dt*spd, w) : Math.max( _w-dt*spd, w);
+			return (weight=_w)!=w;
+		};
+	}
+	
+	//	new func
+	function tanime( t, ft=0.0, lyr=0){
+		if( !animlayers) animlayers = AnimationLayers();
+		local al = AnimationLayer();
+		local mot = getMotion( t["mot"]);
+		if( mot) al.partsmap = mot.partsmap;
+		al.mixtype = ("mix" in t) ? t.mix : lyr;
+		//	アニメーションをセット
+		local st = t.st, en=t["en"], spd, lp, time;
+		if( t["spd"] || t["time"]){
+			if( "time" in t){
+				time = t.time;			spd  = Math.abs( en-st) * 1000.0 / time;
+			}else{
+				spd = t["spd"]||1.0;	time = Math.abs( en-st) * 1000.0 / spd;
+			}
+			lp = t["loop"];
+		}else{
+			en = st;
+			spd = lp = 0.0;
+			time = t["time"] || 100;
+		}
+		al.setAnime( st, en, spd, lp);
+		//	レイヤーをセット
+		local layers = animlayers.layers;
+		local l0 = lyr*2, l1 = l0+1;
+		if( ft){
+			local al0 = layers[l0], al1 = layers[l1];
+			if( al0["weight"]){
+				if( al1 && al1.weight > 0.8){
+					al1.wfunc = _fadeoutfunc( ft);
+				}else{
+					al0.wfunc = _fadeoutfunc( ft); layers[l1] = al0;
+				}
+			}else
+			if( l0){ // layer0以外はフェードイン。さらに明示的にanifade( w, ft, lyr)をしない限り残る。
+				al.weight = 0.0;
+				al.wfunc = _fadeinfunc( ft);
+			}
+			layers[l0] = al;
+		}else{
+			layers[l0] = al;
+			layers[l1] = null;
+		}
+		return al;
+	}
+	
+	function anifade( w=0.0, ft=0.0, lyr=1){
+		if( !animlayers) return;
+		local layers = animlayers.layers;
+		local l0 = lyr*2, l1 = l0+1;
+		local w0 = layers[l0]["weight"]||0.0;
+		if( ft && w != w0){
+			layers[l0].wfunc = _fadetofunc( ft, w);
+			if( layers[l1]["weight"]) layers[l1].wfunc = _fadeoutfunc( ft);
+		}else{
+			if( w && layers[l0]){ layers[l0].weight = w; }else{ layers[l0] = null; }
+			layers[l1] = null;
+		}
+	}
+	
+	function morph( t, time=0){
+		if( mesh){
+			local _t = typeof( t)==SS_STRING?mesh.shapesets[t]:t;
+			if( mesh.shapetarget){
+				local ss1 = mesh.shapetarget;
+				local ss2 = ShapeState();
+				ss2.shapekeys = ss1.shapekeys;
+				ss2.assign( _t);
+				if( time){
+					local dst = mesh.shapetarget = clone ss1;
+					addModifier( MorphModifier( ss1, ss2, dst, time));
+				}else{
+					mesh.shapetarget = ss2;
+				}
+			}
+			if( _t["uvscroll"]){
+				foreach( i,v in _t["uvscroll"]){
+					mesh.face[i].m.uvmat = v?Matrix.fromTranslate( v[0], v[1], 0.0):null;
+				}
+			}else{
+				foreach( f in mesh.face){
+					f.m.uvmat = null;
+				}
+			}
+			panimating = true;
+		}
+	}
+	
+	function setTimeScale( s){
+		timescale = s;
+		foreach( c in children){
+			c.setTimeScale( s);
+		}
+	}
+	
+	////////////////////////////////////////////////////////////////////////////
+	//	modifier
+
+	function addModifier( m){
+		if( modifiers){
+			local o;
+			if( o = m.order){
+				foreach( i, v in modifiers){
+					if( o == v.order){
+						//	置き換え
+						v.interrupt( this);
+						modifiers[i] = m;
+						m.start( this);
+						return;
+					}else
+					if( o > v.order){
+						modifiers[i] <- m;
+						m.start( this);
+						return;
+					}
+				}
+			}
+			m.start( this);
+			modifiers .. m;
+		}else{
+			m.start( this);
+			modifiers = [m];
+		}
+	}
+
+	function removeModifierOrder( o){
+		foreach( i,v in modifiers){
+			if( v.order == o){
+				v.interrupt( this);
+				return delete modifiers[i];
+			}
+		}
+	}
+
+	function removeModifierClass( c){
+		foreach( i,v in modifiers){
+			if( v instanceof c){
+				v.interrupt( this);
+				return delete modifiers[i];
+			}
+		}
+	}
+
+	function getModifierOf( c){
+		foreach( i,v in modifiers){
+			if( v instanceof c){
+				return v;
+			}
+		}
+	}
+
+	function clearModifiers(){
+		if( modifiers){
+			foreach( v in modifiers){
+				v.interrupt();
+			}
+			modifiers.resize( 0);
+			modifiers = null;
+		}
+	}
+
+	////////////////////////////////////////////////////////////////////////////
+	//	マテリアル系
+
+	function setVisible( b){
+		visible = b;
+	}
+
+	function isVisible(){
+		if( groupparent){
+			return visible && groupparent.isVisible();
+		}else{
+			return visible;
+		}
+	}
+
+	function setBlend( b, changedepth=1){
+		foreach( m in getMaterials()){
+			m.blend = b;
+			if( changedepth){
+				if( b){
+					m.depthtest = SK_LESS; m.depthmask = 0;
+				}else{
+					m.depthtest = SK_LESS; m.depthmask = 1;
+				}
+			}
+		}
+		updateSortOffset();
+		foreach( go in groups){
+			go.updateSortOffset();
+		}
+	}
+
+	//	hsv=[-180~180,-100~100,-100~100]
+	function setHSV( hsv){
+		local cm = null;
+		if( hsv[0] || hsv[1] || hsv[2]){
+			local hv = Math.lerp( -Math.PI, Math.PI, hsv[0]/360.0+0.5);
+			local sv = Math.lerp( 0.0, 2.0, hsv[1]/200.0 + 0.5);
+			local vv = Math.lerp( 0.0, 2.0, hsv[2]/200.0 + 0.5);
+			cm = Matrix.fromHSV( hv, sv, vv);
+		}
+		foreach( m in getMaterials()){
+			if( m.colormat){
+				cm.mult44( m.colormat, m.colormat);		//	どんどん掛けられていっちゃう。。。
+			}else{
+				m.colormat = cm;
+			}
+		}
+	}
+
+	//	G-BufferのセレクタIDをセットする。デフォルトは255。※GTEX1にはRGBAのAは不要なので、代わりにこれを書き込む。
+	function setGSelectorID( gsel){
+		foreach( m in getMaterials()){
+			m.gsel = gsel;
+		}
+	}
+	
+	function setLayer( l){
+		layer = l;
+		updateSortOffset();
+		foreach( c in children){
+			c.setLayer( l);
+		}
+	}
+	
+	function updateSortOffset(){
+		local b = updateVisibleMask();
+		if( b){
+			sortoffset = layer*1000.0 + 1999.0;
+			sortscale = -1.0;
+		}else{
+			sortoffset = layer*1000.0 + 1.0;
+			sortscale = 1.0;
+		}
+	}
+	
+	function updateVisibleMask(){
+		local b = false;
+		local vs = 0;
+		foreach( f in mesh?mesh.face:ptc?ptc.groups:null){
+			if( !f.m.depthmask){ b = true; }
+			vs |= f.m.visiblemask;
+		}
+		if( (vs & SK_VISIBLE_TRANSPARENT) && inwater){
+			vs = (vs^SK_VISIBLE_TRANSPARENT) | SK_VISIBLE_TRANSPARENT_INWATER;
+		}
+		visiblemask = vs;
+		return b;
+	}
+	
+	function setBillboard( b, bb=0.0){
+		billboard = b;
+		billboardbank = bb;
+	}
+	
+	function setEntity( e){
+		entity = e;
+		if( length( e.name)) name = e.name;
+	}
+	
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	さうんど
+
+	//	サウンドの種類、相対位置、追従モードを指定してサウンドを再生する。
+	//	シーンが3Dサウンドでは無い場合もある。その時は単純に再生する。
+	//	追従モードにした場合はサウンドがキャラの移動についてくる。
+	function playSound( sid, relpos=null){
+		if( sndgain <= 0.0) return null;
+		local sm = scn.sk3dsound;
+		if( !sm) return; //{ ::playSound( sid); return; }	//	SK3DSoundManagerが無効な場合は再生しない！！！！！！
+		local sp = ::soundmanager.getSoundPlayable( sid);
+		if( !sp) return;
+		if( !sp.src3d){	//	3Dサウンド無し
+			sp.gain *= sndgain;
+			sp.play();
+			return sp;
+		}
+		if( !relpos) relpos = v3_1( bnd.x, bnd.y, bnd.z);	//	relpos未指定の場合はバウンディングの中心から
+		else if( typeof( relpos) == SS_STRING){
+			local b = findBone( relpos); relpos = b ? b.mat.getTranslation( v3_1) : null;	//	ボーン位置から
+		}
+		if( sp.track3d){	//	追従モードは重いので、一定以上遠い音については無理やり追従を解除する。
+			if( sm.cam.hypot( (v_2<<relpos).transform( gmat)) >= 30.0) sp.track3d = false;
+		}
+		local sndmergerate = 0.5;
+		if( sm.setup3DSound( sp, this, relpos, sndmergerate)){
+			sp.gain *= sndgain;
+			sp.play();	//	thread
+			if( sp.track3d){ if( trackingsounds) trackingsounds..sp; else trackingsounds = [sp]; }
+			return sp;
+		}
+	}
+
+	//	追従している音を消す。
+	function stopSounds(){
+		foreach( sp in trackingsounds){ sp.stop(); }
+		trackingsounds = null;
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	ぶつり
+
+	//	b3bodyをこのSK3DObject自身にセットする。
+	function setRigidBodyData( d){
+		rbdata = d;
+	}
+
+	//	物理シミュレーションを有効化する
+	//	ボーンの物理シミュレーションとは別個に指定する。
+	//	
+	function enableRidigBody(){
+		if( b3body ) return;
+		if( !scn || !scn.getB3World() ) return;
+		//
+		local d = rbdata;
+		if( !d || !d.shapes ) return;
+		local gscale = gmat.getScale();
+		local b3 = data.createRigidBody( this, null, gscale);
+		b3.ref = this;
+		b3world.addBody( b3);
+		//	constraint どっちかがphysicalでない場合は繋げちゃダメらしい
+		local consdatas = d.constraints;
+		if( length( d.constraints)){
+			local rbconstraints = [];	//	※どっかに保存しとかないとGCされる！
+			foreach( consdata in d.constraints){
+				// 接続先ジョイントを検索
+				local pairbody, pd;
+				// if( pairpartsname == null || pairpartsname == "" ){
+				// 	pairbone = b.parentbone;
+				// 	if( !pairbone ) pairbone = parentbone;	// 親ボーンがなければ、親SK3DObjectに接続中のボーンに接続
+				// }else{
+				//	pairbone = findBone( pairpartsname);
+				// }
+				// 接続できるかチェック
+				if( !pd || (!d.dynamic && !pd.dynamic) ){
+					continue;
+				}
+				// Constraint作成。ボーン位置で結合。これでよい？1.スケールが入ってる。2.pairbone基準の座標系
+				// bodyの逆行列*bone行列で、各body座標系で接続地点boneの位置を取得する。
+				pairbody.getTransform().invert34().mult34( gmat, frame1);
+					  b3.getTransform().invert34().mult34( gmat, frame2);
+				//	b3Constraint生成！
+				local cons = consdata.createConstraint( pairbone.rigidbody, b.rigidbody, frame1, frame2);
+				rbconstraints .. cons;
+				b3world.addConstraint( cons);
+			}
+		}
+	}
+
+	function disableRidigBody(){
+		if( b3body){
+			scn.b3world.removeBody( b3body);
+			b3body = null;
+		}
+	}
+
+	/**
+	 * ボーンの物理シミュレーションをＯＦＦにする
+	 */
+	function disablePhysicalBones(){
+		if( enablepbone){
+			if( scn){
+				local b3world = scn.b3world;
+				local _bones = appendbones?appendbones:bones;	//	shadowBonesで共有化した場合appendbonesのみが対象になる
+				foreach( b in _bones ){
+					if( b3world && b.rigidbody ){
+						b3world.removeBody( b.rigidbody);		//	rbconstraintsはremoveBodyで一緒に消える
+					}
+					b.rbconstraints = null;
+					b.rigidbody = null;
+					b.dynamic = 0;
+					b.r2bmat = null;
+					b.b2rmat = null;
+					b.deflpos = null;
+				}
+				scn.removePhysicalBoneObject( this);
+			}
+			enablepbone = false;
+			mutepbone = false;
+			animlayers?.markAnimating();
+			updateMotion(0);			//	OK?
+		}
+	}
+
+	/**
+	 * ボーンの物理シミュレーションをミュートにする
+	 */
+	function mutePhysicalBones(){
+		if( enablepbone && !mutepbone ){
+			if( scn){
+				local _bones = appendbones?appendbones:bones;	//	shadowBonesで共有化した場合appendbonesのみが対象になる
+				foreach( b in _bones ){
+					if( b.rigidbody ){
+						b.rigidbody.mute( true);
+					}
+					b.dynamic = 0;
+				}
+				scn.removePhysicalBoneObject( this);
+			}
+			mutepbone = true;
+		}
+	}
+
+	/**
+	 * ボーンの物理シミュレーションリセット
+	 */
+	function resetPhysicalBones() {
+		mutePhysicalBones();
+		enablePhysicalBones();
+	}
+
+	//	ボーンの物理シミュレーションを有効化する
+	//	
+	function enablePhysicalBones(){
+		if( enablepbone && !mutepbone ) return;
+		if( !scn || !scn.getB3World() ) return;
+		if( !mesh || !mesh.rbdataset) return;
+		enablepbone = true;
+		mutepbone = false;
+
+		updateMatrix();
+		
+		// SK3DSceneに登録するシミュレーション対象のJointリストを準備
+		local rbdataset = mesh.rbdataset;
+		local _pbones = null;
+		
+		// RigidBodyを作成
+		local b3world = scn.b3world;
+		local created = false;
+		local gscale = gmat.getScale(); //getGlobalScale(); ok?
+		local _bones = appendbones?appendbones:bones;	//	shadowBonesで共有化した場合appendbonesのみが対象になる
+		//	※上記の場合、あらかじめshadowBones元のSK3DObjectがenablePhysicalBones()を呼び出しておく必要がある。
+
+		foreach( b in _bones ){
+			local data = rbdataset[b.name];
+			if( !data || !data.shapes ) continue;
+			if( !b.rigidbody ){
+				b.rigidbody = data.createRigidBody( this, b, gscale);
+				b3world.addBody( b.rigidbody);
+				created = true;
+				b.rbrecovercount = 2;			//	最初暴れるんで。初期位置が変
+			}else{
+				b.rigidbody.mute( false);
+				b.rbrecovercount = 4;
+			}
+			b.dynamic = data.dynamic;
+			// シミュレーション対象のJointとして登録
+			if( b.dynamic ){
+				if( _pbones) _pbones .. b; else _pbones = [b];
+			}
+		}
+		//	RigidBody同士をコンストレインして繋げる
+		if( created){
+			local vec1 = Vector3D();
+			local vec2 = Vector3D();
+			local frame1 = Matrix();
+			local frame2 = Matrix();
+			foreach( b in _bones ){
+				//	どっちかがphysicalでない場合は繋げちゃダメらしい
+				local data = rbdataset[b.name];
+				if( !b.rigidbody || !data ) continue;
+				local consdatas = data.constraints;
+				if( consdatas && length( consdatas) > 0 ){
+					b.rbconstraints = [];
+					foreach( consdata in consdatas ){
+						// 接続先ジョイントを検索
+						local pairpartsname = consdata.pairpartsname;
+						local pairbone;
+						if( pairpartsname == null || pairpartsname == "" ){
+							pairbone = b.parentbone;
+							if( !pairbone ) pairbone = parentbone;	// 親ボーンがなければ、親SK3DObjectに接続中のボーンに接続
+						}else{
+							pairbone = findBone( pairpartsname);
+						}
+						// 接続できるかチェック
+						if( !pairbone || !pairbone.rigidbody || (!b.dynamic && !pairbone.dynamic) ){
+							continue;
+						}
+						// Constraint作成。ボーン位置で結合。これでよい？1.スケールが入ってる。2.pairbone基準の座標系
+						// bodyの逆行列*bone行列で、各body座標系で接続地点boneの位置を取得する。
+						local gbmat = gmat.mult34( b.mat);
+						if( b.mat.abs() < 0.0) gbmat.scale( 1.0, 1.0, -1.0);
+						pairbone.rigidbody.getTransform().invert34().mult34( gbmat, frame1);
+						       b.rigidbody.getTransform().invert34().mult34( gbmat, frame2);
+						//	b3Constraint生成！
+						local cons = consdata.createConstraint( pairbone.rigidbody, b.rigidbody, frame1, frame2);
+						if( consdata.isDeflpos() ){
+							pairbone.mat.invert34().mult34( b.mat, gbmat);	//	gbmatを使いまわし。。。
+							b.deflpos = gbmat.getTranslation();
+						}
+						b.rbconstraints .. cons;
+						b3world.addConstraint( cons);
+					}
+				}
+			}
+			// SK3DSceneにシミュレーション対象のBoneグループを登録
+			if( _pbones){
+				local g = SK3DScene.PhysicalBoneGroup( this, _pbones);
+				scn.addPhysicalBoneGroup( g);
+			}
+		}
+	}
+}
+
+
+local _pos = Vector3D(), _scale = Vector3D(), _rot = Quaternion();
+
+function generateSK3DObject( gen, parentsk3d, scn, script=null){
+	if( !("view" in gen)) return null;
+	local r;
+	if( parentsk3d["res"]){
+		r = parentsk3d.res.getResource( gen.view);
+	}else{
+		r = ::getResource( gen.view);
+	}
+	if( !r) return null;
+
+	local v;
+	if( v=gen["pos"]  ){ _pos( v); } else { _pos( 0.0); }
+	if( v=gen["scale"]){ _scale( v); } else { _scale( 1.0); }
+	if( v=gen["hpb"]  ){ _rot.setHPB( v[0]*Math.DTOR, v[1]*Math.DTOR, v[2]*Math.DTOR); } else { _rot( 0.0, 0.0, 0.0, 1.0); }
+	
+	//	pre scene culling
+	//local forcegen = gen["forcegen"];
+	
+	//	create
+	local sk3d = SK3DObject( r);
+	if( "name" in gen) sk3d.name = gen.name;
+	sk3d.pos   << _pos;
+	sk3d.scale << _scale;
+	sk3d.rot   << _rot;
+
+	//	property set
+	if( "billboard" in gen){ sk3d.billboard = gen.billboard; }
+	if( "billboardbank" in gen){ sk3d.billboardbank = gen.billboardbank*Math.DTOR; }
+	if( "depthoffset" in gen){ sk3d.depthoffset = gen.depthoffset; }
+
+	if( "lock" in gen){ sk3d.lock = !!gen.lock; }
+	
+	if( parentsk3d){
+		if( gen["connect"]){
+			parentsk3d.addChild( sk3d, "parts" in gen ? gen.parts : null);
+			if( gen["shadowbones"]) {
+				sk3d.shadowBonesTo( parentsk3d);
+			}
+			if( gen["group"]){
+				if( parentsk3d.groupparent){
+					parentsk3d.groupparent.addGroup( sk3d);
+				}else{
+					parentsk3d.addGroup( sk3d);
+				}
+			}
+			sk3d.updateMatrix();
+		}else{
+			sk3d.updateMatrix();
+			local m = sk3d.mat;
+			local parts = gen["parts"];
+			if( parts != undefined){
+				local b = parentsk3d.findBone( parts);
+				if( b) { 
+					if( parentsk3d.motion["zinvert"]){ m.lscale( v_zinv); };
+					b.mat.mult34( m, m);
+				}
+			}
+			parentsk3d.gmat.mult34( m, m);
+			m.getTranslation( sk3d.pos);
+			m.getScale( sk3d.scale);
+			m.getRotation( sk3d.rot);
+			if( scn) {
+				scn.addObject( sk3d);
+			}
+			sk3d.matdirty = true;
+		}
+		sk3d.generatedby = weakref( parentsk3d);
+	}else{
+		sk3d.matdirty = true;
+		sk3d.updateMatrix();
+		if( scn) {
+			scn.addObject( sk3d);
+		}
+	}
+
+	local scp = script || gen["script"];
+	if( scp){
+		sk3d.startScript( scp);
+	}else{
+		if( !sk3d.startScript( "start")){
+			if( sk3d.ptc && (gen["autostart"]==undefined || gen["autostart"])){
+				local autokill = (gen["autokill"]==undefined || gen["autokill"]);
+				sk3d.startParticle( autokill);
+			}
+		}
+	}
+
+	return sk3d;
+}

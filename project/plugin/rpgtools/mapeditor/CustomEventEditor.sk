@@ -1,0 +1,305 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+local runmodelist = [
+	{ lbl="$T.lbl_runmode0", val=0, }
+	{ lbl="$T.lbl_runmode1", val=1, }
+	{ lbl="$T.lbl_runmode2", val=2, }
+];
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	CustomEventEditView : カスタムイベント編集
+//	
+
+class CustomEventEditor
+{
+	editor = null;
+	view = null;
+
+	op = null;				//	OperationStack
+	roledef = null;			//	RPGSystem.eventrole.custom
+	data = null;			//	table : イベントデータ
+	page = null;			//	table : ページデータ
+	pageidx = 0;
+	
+	//	view
+	proplist = null;		//	PropertyListBehavior : 
+	pageproplist = null;	//	PropertyListBehavior : 
+	cmdlist = null;			//	EventCommandList : 
+	pagelist = null;		//	GPUIListView
+
+	pagecmdblockmap = null;	//	EventCommandBlockView[] : 
+	
+	savefunc = null;		//	Ctrl+Sに対応する
+
+	constructor( e, v, c){
+		editor = e;
+		view = v;
+		v.ref = this;
+		v.modal = true;
+		v.addEventListener( KEY_EVENT, keyevent);
+		v.addEventListener( ACTION_EVENT, actionevent);
+		
+		roledef = RPGSystem.eventrole.custom;
+		data = deepclone( c);
+		op = OperationStack();
+		proplist = PropertyListBehavior( v.findChild( "proplist"), null);
+		proplist.bindProperties( roledef.baseprops);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+
+		pageproplist = PropertyListBehavior( v.findChild( "pageproplist"), null)
+		pageproplist.listview.addEventListener( ACTION_EVENT, pagepropevent);
+		pageproplist.listview.addEventListener( ITEM_EVENT, pagepropevent);
+		pageproplist.ref = this;
+
+		cmdlist = EventCommandList( v.findChild( "cmdlist"));
+		cmdlist.listview.addEventListener( ACTION_EVENT, cmdevent);
+		cmdlist.ref = this;
+		
+		pagelist = v.findChild( "pagelist");
+		pagelist.addEventListener( DRAGSOURCE_EVENT, pagedndevent);
+		pagelist.addEventListener( DROPTARGET_EVENT, pagedndevent);
+
+		pagecmdblockmap = {};
+		proplist.setParameters( data);
+		setPageNum( length( data.page));
+		setPage( 0);
+	}
+	
+	function setPageNum( n){
+		pagelist.setRowCount( n);
+		for( local l = 0;l < n;l ++){
+			local r = pagelist.rows[l];
+			r.setValue( "icon", char( 0xf123+1+l));
+			local b = r.findChild( "aipagebtn");
+			b.ref = l;
+			b.setSelected( l==pageidx);
+			r.ref = b;
+			if( !b.dragsource) b.dragsource = PageDragSource( b);
+		}
+		pagelist.updateLayout();
+	}
+
+	function setPage( i){
+		if( i != pageidx){
+			pagelist.rows[pageidx]?.ref.setSelected( false);
+			pagelist.rows[i].ref.setSelected( true);
+			pageidx = i;
+		}
+		page = data.page[i];
+		local props = fget( roledef, "pageprops", roledef, page);
+		pageproplist.bindProperties( props);
+		pageproplist.setParameters( page);
+		local cb = pagecmdblockmap[page];	//	キャッシュはidxじゃなくてpage実体そのものから。。。
+		if( !cb) cb = pagecmdblockmap[page] <- EventCommandBlockView.create( null, page.cmdblock, 0);
+		cmdlist.setCommandBlockView( cb);
+	}
+
+	function refresh(){
+		proplist.setParameters( data);
+		if( page==data.page[pageidx]){
+			local props = fget( roledef, "pageprops", roledef, page);
+			setDefaultProperties( props, page);	//	ここでデフォルト値いれちゃっていいかなー？？？undo/redoで正確ではない
+			//
+			pageproplist.bindProperties( props);
+			pageproplist.setParameters( page);
+		}
+	}
+
+	function submitOp( redo, undo, trk=null){
+		op.submit( redo, undo, trk);
+		::skstudio.updateChangeFile( editor);
+	}
+
+	//	MapEditorから呼ばれる
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( editor);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( editor);
+			return true;
+		case "menu_file_save":
+			savefunc( data);
+			return true;
+		case "menu_file_close":
+			view.postActionEvent( data);
+			return true;
+		default:
+			return cmdlist.execMenu( m);
+		}
+		return false;
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_close":
+			e.consume();
+			// view.removeFromParent();
+			view.postActionEvent( data);
+			break;
+		case "aipagebtn":
+			local pidx = e.src.ref;
+			setPage( pidx);
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showPageContextMenu( e);
+			}
+			break;
+		case "pagemenu":
+			showPageContextMenu( e);
+			break;
+		}
+	}
+
+	function showPageContextMenu( e){
+		local cbdata = getClipboard( "cevpage");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local ctxmenu = [
+			{ id="add", lbl="$T.lbl_addpage", icon="\ue146"},
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872"},
+		];
+		switch( MenuPopup.run( ctxmenu)["id"]){
+		case "add":
+			addPageOp( createInitialPage());
+			break;
+		case "copy":
+			putClipboard( "cevpage", data.page[pageidx]);
+			break;
+		case "paste":
+			addPageOp( cbdata);
+			break;
+		case "delete":
+			if( length( data.page) > 1) deletePageOp( pageidx);
+			break;
+		}
+	}
+
+	function addPageOp( newpage){
+		local self = this, data = this.data;
+		local oldpageidx = pageidx;
+		local redo = [@(){ data.page .. newpage; self.setPageNum( length( data.page)); self.setPage( length( data.page)-1); }];
+		local undo = [@(){ data.page.removeValue( newpage); self.setPageNum( length( data.page)); self.setPage( oldpageidx); }];
+		submitOp( redo, undo);
+	}
+
+	function deletePageOp( idx){
+		local self = this, data = this.data;
+		local oldpage = data.page[idx];
+		local redo = [@(){ delete data.page[idx]; self.setPageNum( length( data.page)); self.setPage( Math.max( idx-1, 0)); }];
+		local undo = [@(){ data.page[idx] <- oldpage; self.setPageNum( length( data.page)); self.setPage( idx); }];
+		submitOp( redo, undo);
+	}
+
+	function createInitialPage(){
+		local defpage = ::RPGSystem.eventrole.custom.defdata.page[0];
+		return deepclone( defpage);
+	}
+
+	function keyevent( e){
+		if( e.id != KEY_PRESSED) return;
+		switch( e.keycode){
+		case VK_ENTER:
+			break;
+		case VK_ESCAPE:
+			e.consume();
+			// view.removeFromParent();
+			view.postActionEvent( data);
+			break;
+		default:
+			local modkey = toModifierKeyString( e.keycode, e.modifiers);
+			local menu = ::skstudio.keymenumap[modkey];
+			if( menu){
+				e.consume();
+				::skstudio.execMenu( menu);	//	コマンドショートカットは実行？
+			}
+			break;
+		}
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+		}
+	}
+
+	//	
+	function pagepropevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.page;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+			if( prop["refresh"]){
+				refresh();
+			}
+		}
+	}
+
+	//	
+	function cmdevent( e){
+		local cmd = e.actioncmd, cmdop = cmd["op"];
+		e.consume();
+		if( cmdop){
+			submitOp( cmdop[0], cmdop[1], cmdop[2]);
+			if( cmd.cmd == "addcmd"){
+				local acmd = cmdlist.editCommand( cmd.addcv, false);	//	postActionEventしないように
+				if( acmd){
+					cmdop = acmd.op;
+					op.merge( cmdop[0], cmdop[1]);	//	addとeditを一つのopとしてマージ
+					::skstudio.updateChangeFile( editor);
+				}
+			}
+		}
+	}
+
+	function pagedndevent( e){
+		switch( e.id){
+		case TARGET_DROP:
+			e.consume();
+			local self = this;
+			local data = this.data;
+			local i0 = e.dragsrc.view.ref, p0 = data.page[i0];
+			local i1 = e.src.ref, p1 = data.page[i1];
+			if( !p1) return;
+			local redo = [@(){ data.page[i0] = p1; data.page[i1] = p0; self.setPage( i1); }];
+			local undo = [@(){ data.page[i0] = p0; data.page[i1] = p1; self.setPage( i0); }];
+			submitOp( redo, undo);
+			break;
+		}
+	}
+}

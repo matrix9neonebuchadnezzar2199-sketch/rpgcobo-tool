@@ -1,0 +1,1188 @@
+
+import VirtualKeyCode;
+import FileDialogMode;
+
+//	
+//	
+//	
+class SKStudio extends SKView
+{
+	rootdir = null;				//	Resource : プロジェクトのルート
+	
+	//	components
+	titlebar = null;			//	TitlebarBehavior : 
+	activitylist = null;		//	GPUIListView : 
+	activitylist_btm = null;	//	GPUIListView : 
+	filetabbar = null;			//	FileTabBehavior : 
+	statusbar = null;			//	StatusBar : 
+	
+	sideviewarea = null;		//	SKView : アクティブなサイドビューが1つこの中に追加される。
+	editorarea = null;			//	SKView : アクティブなエディターが1つこの中に追加される。
+	//	
+	sideview = null;			//	SKView : 現在アクティブなサイドビュー
+	editor = null;				//	EditorViewBase | null : 現在アクティブなエディター
+	editorfrz = null;			//	FreezedEditorView : => freezeEditorView
+	focusview = null;			//	sideviewもしくはeditor。フォーカスを取っている方 ---- 現在未使用。常にフォーカスはeditor
+
+	tabeditors = null;			//	{path:editor} : パスに対するエディタを保存する。
+	sideviewmap = null;			//	{id:sideview} : IDに対するサイドビューを保存。
+
+	//	menu
+	editormenumap = null;		//	{editorid:menudata} : エディター毎にメニューを切り替える
+	menumap = null;				//	{uid:menu} : メニューのuidが被んないように管理
+	menukeymap = null;			//	{uid:modkey} : メニューからショートカットキー。保存される。
+	keymenumap = null;			//	{modkey:menu} : 現在のエディターでのキー→メニューのマップ。
+
+	//	command
+	keycommandmap = null;		//	{modkey:command} : キー→コマンドのマップ。
+	
+	//	registry
+	menuregistry = null;		//	
+	activityregistry = null;	//	アクティビティバーに表示するアイコンと機能。新規と設定は固定のため入らない。
+	sideviewregistry = null;	//	サイドビューのファクトリー。
+	editorregistry = null;		//	リソースに対するエディタのファクトリー。また、全文検索も担当。さらにプレビュー表示も
+	commandregistry = null;		//	ショートカットを割り当てつつ機能を実行
+	
+	//	基本機能
+	fileview = null;			//	FileSideView : サイドビューの一つだが基本機能
+	favorites = null;			//	[dirpath,...] : お気に入り
+	openhistory = null;			//	[filepath,...] : オープンしたファイルのヒストリー
+	closehistory = null;		//	Ctrl+Shift+Tで開きなおす
+	
+	static function create( cdir, args){
+		local v = ::loadSKView( "/skstudio/ui/main/skstudio.ui", SKStudio);
+		v.init( cdir, args);
+		return v;
+	}
+
+	static function createEmptyEditor( path, iserr=false){
+		local r = ::getResource( path);
+		if( !r) return null;
+		local ed = ::loadSKView( "/skstudio/ui/main/emptyeditor.ui", EditorViewBase);
+		ed.setValue( "pathlbl", path);
+		ed.setValue( "pathicon", skstudio.getResourceIcon( ::getResource( path)));
+		ed.setValue( "msg", iserr ? "$T.editor_empty_error" : "$T.editor_empty_noeditor");
+		ed.findChild( "closebtn").addEventListener( ACTION_EVENT, @( e){
+			skstudio.closeEditor( path);
+		});
+		return ed;
+	}
+	
+	function init( cdir, args){
+		::skstudio <- this;
+		rootdir = cdir;
+		tabeditors = {};
+		sideviewmap = {};
+		favorites = [];
+		openhistory = [];
+		closehistory = [];
+		
+		titlebar = TitlebarBehavior( findChild( "titlebar"));
+		filetabbar = FileTabBehavior( findChild( "filetabbar"));
+		activitylist = findChild( "activitybar.LIST");
+		activitylist_btm = findChild( "activitybar.BLIST");
+		activitylist_btm.valign = 2;
+		sideviewarea = findChild( "sideviewarea");
+		editorarea = findChild( "editorarea");
+		
+		editormenumap = {};
+		menumap = {};
+		menukeymap = {};
+		keymenumap = {};
+		keycommandmap = {};
+
+		menuregistry = [];
+		activityregistry = [];
+		sideviewregistry = [];
+		editorregistry = [];
+		commandregistry = [];
+
+		filetabbar.view.addEventListener( ACTION_EVENT, filetabevent);
+		titlebar.menulistview.addEventListener( ACTION_EVENT, titlemenuevent);
+		
+		/////////////////////////////////////////////////////////////////////////////////////////
+		//	register defaults
+		
+		//	default menu
+		registerMenu( { uid="menu_file", lbl="$T.menu_file", isdir=true, submenu=[]});
+		registerMenu( { uid="menu_edit", lbl="$T.menu_edit", isdir=true, submenu=[]});
+		registerMenu( { uid="menu_view", lbl="$T.menu_view", isdir=true, submenu=[]});
+		registerMenu( { uid="menu_tool", lbl="$T.menu_tool", isdir=true, submenu=[]});
+		//	file menu
+		registerMenu( { uid="menu_file_new", parentid="menu_file", lbl="$T.menu_file_new", defkey="^N", func=menuNewFile.bindenv( this)});
+		registerMenu( { uid="menu_file_open", parentid="menu_file", lbl="$T.menu_file_open", defkey="^O"});
+		registerMenu( { uid="menu_file_save", parentid="menu_file", lbl="$T.menu_file_save", defkey="^S"});
+		registerMenu( { uid="menu_file_saveas", parentid="menu_file", lbl="$T.menu_file_saveas", defkey="^_S"});
+		registerMenu( { parentid="menu_file", separator="*1"});
+		registerMenu( { uid="menu_file_close", parentid="menu_file", lbl="$T.menu_file_close", defkey="^W", func=menuCloseEditor.bindenv( this)});
+		registerMenu( { uid="menu_file_revert", parentid="menu_file", lbl="$T.menu_file_revert", });
+		registerMenu( { parentid="menu_file", separator="*2"});
+		registerMenu( { uid="menu_file_reopentab", parentid="menu_file", lbl="$T.menu_file_reopentab", defkey="^_T", func=menuReopenTab.bindenv( this)});
+		registerMenu( { parentid="menu_file", lbl="$T.menu_file_recentfiles", submenu=submenuLastFiles.bindenv( this)});
+		registerMenu( { parentid="menu_file", separator="*3"});
+		registerMenu( { uid="menu_file_prefs", parentid="menu_file", lbl="$T.menu_file_prefs", icon="\ue8b8", defkey="^,", func=menuPreference.bindenv( this)});
+		registerMenu( { parentid="menu_file", separator="*4"});
+		registerMenu( { uid="menu_file_relaunch", parentid="menu_file", lbl="$T.menu_file_relaunch", icon="\uf053", defkey="^F4", func=menuRelaunch.bindenv( this)});
+		registerMenu( { uid="menu_file_quit", parentid="menu_file", lbl="$T.menu_file_quit", icon="\ue8ac", defkey="~F4"});
+		//	edit menu
+		registerMenu( { uid="menu_edit_undo", parentid="menu_edit", lbl="$T.menu_edit_undo", icon="\ue166", defkey="^Z"});
+		registerMenu( { uid="menu_edit_redo", parentid="menu_edit", lbl="$T.menu_edit_redo", icon="\ue15a", defkey="^_Z"});
+		registerMenu( { parentid="menu_edit", separator="*1"});
+		registerMenu( { uid="menu_edit_cut", parentid="menu_edit", lbl="$T.menu_edit_cut", icon="\ue14e", defkey="^X"});
+		registerMenu( { uid="menu_edit_copy", parentid="menu_edit", lbl="$T.menu_edit_copy", icon="\ue14d", defkey="^C"});
+		registerMenu( { uid="menu_edit_paste", parentid="menu_edit", lbl="$T.menu_edit_paste", icon="\ue14f", defkey="^V"});
+		// registerMenu( { parentid="menu_edit", separator="*2"});
+		registerMenu( { uid="menu_edit_selall", parentid="menu_edit", lbl="$T.menu_edit_selall", icon="\ue162", defkey="^A"});
+		// registerMenu( { uid="menu_edit_unsel", parentid="menu_edit", lbl="$T.menu_edit_unsel", defkey="^D"});
+		//	view menu
+		registerMenu( { uid="menu_view_gotofile", parentid="menu_view", lbl="$T.menu_view_gotofile", icon="\ue9bd" defkey="^P", func=menuGotoFile.bindenv( this)});
+		registerMenu( { uid="menu_view_rendersetting", parentid="menu_view", lbl="$T.menu_view_rendersetting", icon=FileIcons.conf, defkey="^_R", func=menuRenderSettingDialog.bindenv( this)});
+		registerMenu( { parentid="menu_view", separator="*1"});
+		registerMenu( { uid="menu_view_console", parentid="menu_view", lbl="$T.menu_view_console", icon="\ueb8e", defkey="^@", func=menuSystemConsole.bindenv( this)});
+		registerMenu( { uid="menu_view_sideview", parentid="menu_view", lbl="$T.menu_view_sideview", icon="\ue66b", defkey="^B", func=menuSideView.bindenv( this)});
+		//	tool menu
+		registerMenu( { parentid="menu_tool", separator="*1"});
+		registerMenu( { uid="menu_tool_commands", parentid="menu_tool", lbl="$T.menu_tool_commands", submenu=@() ::skstudio.listCommandMenu()});
+		//	file view
+		registerActivity( {uid:"act_fileview", sideview="side_fileview", icon="\ue2c8", slbl="$T.lbl_file"});
+		registerSideView( {uid:"side_fileview", lbl="$T.side_fileview", icon="\ue2c8", createSideView:FileSideView.createSideView, defkey="^_E" });
+		fileview = openSideView( "side_fileview");	//	fileviewは参照をとっておく
+		
+		//	default editor
+		//	ファイルが何も開かれてない状態、または開けないファイルを開いたときのエディター
+		registerEditor( {
+			uid = "editor_empty",
+			matches = @( path){ return true; }
+			createEditor = createEmptyEditor,
+		});
+	}
+	
+	//	ワークスペースを読み込んで最終的にエディターを起動状態にする。
+	//	
+	function loadWorkspace( ws){
+		// printf("loadWorkspace? %S   %S\n", ws["currentpath"], encodeJSON( ws));
+		updateAllMenus();
+		setCurrentMenus( "editor_empty");
+		if( ws["favorites"]){
+			favorites = ws.favorites;
+		}
+		if( ws["currentpath"] && rootdir.getResource( ws.currentpath)){
+			fileview.setCurrentDir( ws.currentpath);
+			fileview.setDirToVisible( ws.currentpath);
+		}
+		if( ws["openhistory"]) openhistory = ws.openhistory;
+		if( ws["tabs"]){
+			foreach( path in ws.tabs){
+				local r = rootdir.getResource( path);	//	or tool!!!
+				if( r) filetabbar.addTab( path);
+			}
+			local tr = rootdir.getResource( ws["currenttab"]);
+			if( tr){
+				filetabbar.selectTab( ws["currenttab"]);
+			}
+			if( filetabbar.getSelectedPath()){
+				openEditor( filetabbar.getSelectedPath());
+			}
+		}
+		if( ws["currentside"]){
+			openSideView( ws["currentside"]);
+		}
+		if( ws["hidesidebar"]){
+			setSideViewVisible( false);
+		}
+	}
+	
+	function added(){
+		::rootview.addPostEventListener( APP_EVENT, rootevent);
+		::rootview.addPostEventListener( KEY_EVENT, rootevent);
+		::rootview.addPostEventListener( NOTIFY_EVENT, rootevent);
+		super.added();
+	}
+	
+	function rootevent( e){
+		//	※コマンドのショートカットはconsumeも貫通
+		if( e.id == KEY_PRESSED){
+			local modkey = toModifierKeyString( e.keycode, e.modifiers);
+			local cmd = keycommandmap[modkey];
+			if( cmd) execCommand( cmd);
+		}
+		if( e.consumed==1) return;	//	※ダイアログ等でmodalでイベントが吸われた場合も実行
+		switch( e.id){
+		case SCREEN_RESIZED:
+			::rootview.broadcastEvent( {cmd="screen_resized", });
+			break;
+		case ACTIVESTATE_CHANGED:
+			printf("ACTIVESTATE_CHANGED %S\n", e.keycode);
+			::rootview.broadcastEvent( {cmd="app_active", state=e.keycode});
+			break;
+		case QUIT_REQUESTED:
+			printf("QUIT_REQUESTED\n");
+			::rootview.quit = false;	//	これtrueのままだと閉じちゃう
+			e.consume();
+			menuQuit( null);
+			break;
+		case KEY_PRESSED:
+		{
+			if( e.consumed) break;	//	modalで実行しない
+			local modkey = toModifierKeyString( e.keycode, e.modifiers);
+			local menu = keymenumap[modkey];
+			if( menu){
+				// printf( "MENU! %S\n", encodeJSON( menu));
+				if( execMenu( menu)) e.consume();
+			}
+			break;
+		}
+		case NOTIFY_ERROR:	//	表示するべきエラー
+		try{
+			e.consume();
+			Popups.showErrorTrace( e.actioncmd);
+			break;
+		}catch( ex){	//	ここでthrowしちゃうと無限ループしちゃう
+			printexception( ex);
+		}
+		}
+		if( !e.consumed) editor?.rootevent( e);
+	}
+
+	function filetabevent( e){
+		local cmd = e.actioncmd;
+		switch( cmd.op){
+		case "close":
+			closeEditor( cmd.path);
+			break;
+		case "change":
+			openEditor( cmd.path);
+			break;
+		case "ctxmenu":
+			fileTabContextMenu( e, cmd);
+			break;
+		}
+	}
+
+	//	ファイルタブで右クリック
+	function fileTabContextMenu( e, cmd){
+		local ctxmenu = [
+			{ id="close", lbl="$T.lbl_close", icon="\ue5cd"},
+			{ id="closeothers", lbl="$T.filetabs_ctxmenu_closeothers"},
+			"-",
+			{ id="fileview", lbl="$T.filetabs_ctxmenu_fileview", icon="\ue2c8"},
+			{ id="explor", lbl="$T.filetabs_ctxmenu_explor", icon="\ue89e"},
+		];
+		local ed = editorregistry.find( @( v) v["sideview"] && v.matches( cmd.path));
+		if( ed){
+			local sd = _getbyuid( sideviewregistry, ed.sideview);
+			ctxmenu[3] <- {
+				lbl = tmpl( T.tmpl_v_revail, {v=sd.lbl}),
+				icon = sd["icon"],
+				fn = @() ::skstudio.syncToSideView( cmd.path, true)
+			};
+		}
+		local gid = getTabGroupID( cmd.path);
+		local gtabs = filetabbar.tablist.rows.map( @( v)
+			(getTabGroupID( v.ref.path)!=gid) ? undefined : {
+				id="gtab", lbl=v.ref.lbl, icon=v.ref.icon, path=v.ref.path, checked = (cmd.path==v.ref.path)
+			}
+		).sort( @( v) v.lbl);
+		if( length( gtabs) > 1){	//	自分だけの場合は追加しない
+			ctxmenu .. "-" ... gtabs;
+		}
+		//
+		local ret = MenuPopup.run( ctxmenu);
+		switch( ret["id"]){
+		case "close":
+			closeEditor( cmd.path);
+			break;
+		case "closeothers":
+			openEditor( cmd.path);
+			filetabbar.closeOtherTabs( cmd.path);
+			break;
+		case "fileview":
+			fileview.setCurrentPath( cmd.path);
+			openSideView( "side_fileview");
+			break;
+		case "explor":
+			explor( cmd.path);
+			break;
+		case "gtab":
+			openEditor( ret.path);
+			break;
+		default:
+			if( ret["fn"]) ret.fn();
+			break;
+		}
+	}
+	
+	//	タブをグループ化する際に使用する
+	function getTabGroupID( path){
+		local g;
+		foreach( v in editorregistry){
+			if( g = v.matches( path)) return typeof( g)==SS_STRING ? `$v.uid/$g` : v.uid;
+		}
+	}
+	
+	//	指定したパスをサイドビューと同期する。
+	//	エディターが切り替わった時にautorevail=trueならサイドビューが切り替わる。
+	//	この時、現在のサイドビューが切り替えを禁止していたら、内部的に移動するのにとどめる
+	function syncToSideView( path, forceopen=false){
+		local uid = sideviewregistry.find( @( v) v["matches"] && v.matches( path))["uid"] || "side_fileview";
+		local sv = getSideView( uid);
+		if( !sv) return;	//	サイドビューが登録されてない
+		local b = sv.setCurrentPath( path);
+		openSideView( uid);
+		::workspace.currentside <- uid;
+	}
+
+	function explor( path){
+		local fref;
+		local r = getResource( path);
+		do{
+			if( fref = r["file"]) break;
+			r = r.pres;
+		}while( r);
+		local wp = fref.path.replace('/','\\');
+		skOpenURL( "dir://" .. fref.path);
+	}
+	
+	//	
+	//	{ title, filter, pathgroup, dirpath, abspath, relpath }
+	function showFileOpen( t){
+		local d = FileDialog();
+		d.setTitle( t["title"] || "$T.lbl_fileopen");
+		d.setMode( FILEDIALOG_OPEN);
+		if( t["dirpath"]){
+			local dir = getResource( t.dirpath).file;
+			d.setFile( dir);
+		}else
+		if( t["pathgroup"]){	//	パスグループごとに独立したフォルダ履歴
+			local path = ::workspace["pathgroup"][t.pathgroup];
+			if( path) d.setFile( FileRef( path));
+		}
+		if( t["filter"]) d.setFilters( t.filter);
+		d.show();
+		while( d.isShown()){
+			suspend();
+			// printf( "%d\n", skGetTime());
+			sleep( 100);
+		}
+		local p = d.getResult();
+		if( p){
+			//	set!
+			local path = t["abspath"] ? p : "/"..::getRelativePath( rootdir.file.path, p);
+			//	save pathgroup
+			if( t["pathgroup"]){	//	パスグループごとに独立したフォルダ履歴
+				local g = ::workspace["pathgroup"] || (::workspace["pathgroup"]<-{});
+				local f = FileRef( p);
+				if( !f.isDirectory()) f = FileRef( f, "..");
+				g[t.pathgroup] <- f.path;
+			}
+			return path;
+		}
+	}
+
+	function titlemenuevent( e){
+		local menu = e.actioncmd;
+		if( menu){
+			execMenu( menu);
+		}
+	}
+
+	//	指定したメニューを実行する。
+	//	m : string|menu
+	//	
+	function execMenu( m){
+		if( typeof( m) == SS_STRING) m = menumap[m];
+		// if( m["func"]){
+		// 	m.func( m);
+		// 	return true;
+		// }else{
+		// 	if( editor){
+		// 		return editor.execMenu( m);	
+		// 	}
+		// }
+		if( editor){	//	m.funcがあっても先にeditorで処理できるかチェックする。。。
+			if( editor.execMenu( m)) return true;
+		}
+		if( m["func"]){
+			m.func( m);
+			return true;
+		}
+		return false;
+	}
+
+	function _savews(){
+		local ws = ::workspace;
+		ws.currentpath <- fileview.currentdir.path;
+		ws.tabs = filetabbar.getPathList();
+		ws.favorites <- favorites;
+		ws.openhistory <- openhistory;
+		if( filetabbar.getSelectedPath()) ws.currenttab <- filetabbar.getSelectedPath();
+		ws.showconsole <- Win32.isConsoleVisible();
+		ws.hidesidebar <- !sideviewarea.visible;
+		local s = skGetScreenSize( []);
+		ws.winsize <- [s[0],s[1],titlebar.isMaximized()];
+		// printf("_savews %S\n",encodeJSON( ws));
+		::saveWorkspace();
+	}
+
+	//////////	favo
+
+	function isFavorite( path){
+		return favorites.contains( path);
+	}
+
+	function addFavorite( path){
+		if( favorites.contains( path)) return;
+		favorites .. path;
+	}
+
+	function removeFavorite( path){
+		favorites.removeValue( path);
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	アクティビティ操作
+
+	function registerActivity( t){
+		// t = clone t;
+		if( !("order" in t)) t.order <- length( activityregistry)*10;
+		t.visible <- true;	//	offすると消せる
+		//	ボタン
+		local slbl = t["slbl"];
+		local btn = ::loadSKView( slbl? "/skstudio/ui/main/activitybtn_lbl.ui" : "/skstudio/ui/main/activitybtn.ui");
+		btn.setValue( "icon", fget( t, "icon"));
+		if( slbl) btn.setValue( "slbl", slbl);
+		local badge = fget( t, "badge");
+		if( badge){
+			btn.setValue( "badge", badge); btn.findChild( "badge").layerflags |= 1;
+		}
+		btn.layerflags |= 256;		//	tipsを左右に配置するフラグ
+		btn.tips = @(){
+			if( t["sideview"]){
+				local sv = ::skstudio._getbyuid( ::skstudio.sideviewregistry, t.sideview);
+				if( sv){
+					//	同じ名前でメニューも登録されてる場合、ショートカットキーがある場合あり
+					local mi = ::skstudio.getMenu( t.sideview);
+					local modkey = fget( mi, "modkey");
+					return !modkey ? sv.lbl : sprintf( "%S (%S)", sv.lbl, getModifierKeyName( modkey));
+				}
+			}else{
+				return fget( t, "tips");
+			}
+		};
+		local listview = t["place"] == "bottom" ? activitylist_btm : activitylist;
+		local ii = listview.rows.findi( @( v) v.ref.order > t.order);
+		if( ii >= 0) listview.insertRow( ii, btn); else listview.addRow( btn);
+		listview.updateLayout();
+		btn.ref = t;
+		t.btn <- btn;
+		assignActivityToButton( t, btn);
+		activityregistry .. t;
+		return btn;
+	}
+
+	function assignActivityToButton( t, btn){
+		btn.addEventListener( ACTION_EVENT, @( e){
+			e.consume();
+			execActivity( t, btn);
+		});
+	}
+
+	//	アクティビティのボタン表示をリフレッシュする
+	function refreshActivity( uid){
+		local act = activityregistry.find( @( v) v.uid==uid);
+		if( !act) return;
+		local btn = act.btn;
+		btn.setValue( "icon", fget( act, "icon"));
+		local badge = fget( act, "badge");
+		if( badge){
+			btn.setValue( "badge", badge);
+			btn.findChild( "badge").layerflags |= 1;
+		}else{
+			btn.findChild( "badge").layerflags &= ~1;
+		}
+	}
+
+	function execActivity( t, btn){
+		if( t["func"]){
+			return t.func( btn);
+		}else{
+			if( t["sideview"] && _getbyuid( sideviewregistry, t.sideview)){	//	対応するサイドビューがあれば表示
+				if( ::workspace.currentside == t.sideview && sideviewarea.visible){
+					setSideViewVisible( false);
+				}else{
+					openSideView( t.sideview);
+					::workspace.currentside <- t.sideview;
+					setSideViewVisible( true);
+				}
+			}
+		}
+	}
+
+	//	サイドビューが切り替わった時に対応するアクティビティを強調する。
+	function highlightActivity( uid){
+		foreach( btn in activitylist.rows){
+			local bb = btn.findChild( "btn");
+			bb.setSelected( btn.ref["sideview"] == uid);
+		}
+	}
+
+	function _getbyuid( a, uid){
+		foreach( v in a){ if( v.uid == uid) return v; }
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	サイドビュー操作
+
+	function registerSideView( t){
+		sideviewregistry .. t;
+		if( t["defkey"]){
+			registerMenu( { uid=t.uid, lbl=t.lbl, parentid="menu_tool", block="*1", defkey=t["defkey"], icon=t["icon"],
+				func = @() ::skstudio.openSideView( t.uid);
+			});
+		};
+	}
+
+	function getSideView( uid){
+		local sv = sideviewmap[uid];
+		if( !sv){
+			sv = _getbyuid( sideviewregistry, uid)?.createSideView();
+			if( !sv) return null;
+			sideviewmap[uid] <- sv;
+			sv.stretchSize( sideviewarea.bnd.w, sideviewarea.bnd.h);	//	裏で読み込まれる場合の時も大体サイズが合うように
+		}
+		return sv;
+	}
+	
+	//	
+	function openSideView( uid){
+		local sv = getSideView( uid);
+		if( sv && sideview != sv){
+			_changecontent( sideviewarea, sv, "sideview");
+			highlightActivity( uid);
+		}
+		return sv;
+	}
+
+	function setSideViewVisible( b){
+		if( !b != !sideviewarea.visible){
+			sideviewarea.setVisible( b);
+			sideviewarea.revalidate();
+		}
+	}
+
+	//	
+	function _changecontent( cnt, view, vid){
+		local old = this[vid];
+		if( old){
+			if( old == view) return true;
+			if( "setActive" in old) old.setActive( false);
+			old.removeFromParent();
+		}
+		this[vid] = view;
+		if( view){
+			cnt.addChild( view);
+			view.stretchSize( cnt.bnd.w, cnt.bnd.h);
+			local s = cnt.getOriginalSize();
+			view.bindrect = ((0,0),(s[0],s[1]));	//	cntの基本矩形でバインドする。
+			if( "setActive" in view) view.setActive( true);
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	エディター操作
+
+	static function _addhistory( a, v, lim){
+		if( typeof( v) == SS_ARRAY){
+			foreach( i, h in a){ if( h[0]==v[0]){ delete a[i]; break; }}
+		}else{
+			a.removeValue( v);
+		}
+		if( length( a) >= lim){ a.resize( lim-1); }
+		a[0] <- v;
+	}
+
+	function registerEditor( t){
+		editorregistry[0] <- t;
+	}
+
+	//	
+	function openEditor( path){
+		local ed = tabeditors[path];
+		if( !ed){
+			ed = createEditor( path);
+			tabeditors[path] <- ed;
+		}
+		if( filetabbar.tabIndexOf( path) < 0){
+			_addhistory( openhistory, path, 50);
+		}
+		filetabbar.selectTab( path, true);
+		//	
+		freezeEditorView( false);
+		_changecontent( editorarea, ed, "editor");
+		setCurrentMenus( ed.name);
+		//	サイドビュー同期はここでチェック。
+		if( ::workspace["tabsync"]) syncToSideView( path);
+		return true;
+	}
+
+	function createEditor( path){
+		foreach( t in editorregistry){
+			if( !t["createEditor"]) continue;
+			if( !t.matches( path)) continue;
+			try{
+				local ed = t.createEditor( path);
+				if( ed){
+					ed.name = t.uid;
+					ed.filepath = path;
+					return ed;
+				}
+			}catch( ex){
+				printf( "An exception occured during createEditor: %S\n", path);
+				printexception( ex);
+				local ed = createEmptyEditor( path, true);
+				ed.name = "editor_empty";
+				ed.filepath = path;
+				return ed;
+			}
+		}
+	}
+
+	function closeEditor( path, force=false){
+		local ed = tabeditors[path];	//	nullの場合もある。
+		if( !force && ed?.isFileChanged()){
+			local r = Dialogs.fileSaveCheck( [path]);
+			if( !r) return;
+			if( r == "dosave"){
+				local m = menumap["menu_file_save"];	//	上書きセーブメニューを実行
+				ed.execMenu( m);
+			}
+		}
+		delete tabeditors[path];
+		_addhistory( closehistory, [path, filetabbar.tabIndexOf( path)], 50);
+		//	
+		if( ed == editor){
+			_changecontent( editorarea, null, "editor");
+			freezeEditorView( false);
+		}
+		local nextpath = filetabbar.closeTab( path);
+		if( nextpath){
+			openEditor( nextpath);
+		}else{
+			setCurrentMenus( "editor_empty");
+		}
+	}
+
+	//	
+	function flushEditor( path, force=false){
+		local ed = tabeditors[path];	//	nullの場合もある。
+		if( !force && ed?.isFileChanged()){
+			//
+		}
+		delete tabeditors[path];
+		filetabbar.setFileChanged( path, false);
+		if( editor["filepath"] == path){
+			if( ::getResource( path)){
+				openEditor( path);
+			}else{
+				closeEditor( path);
+			}
+		}
+	}
+
+	//	funcに引っかかるエディタを全てフラッシュ
+	function flushEditors( func){
+		foreach( path, ed in tabeditors){
+			if( func( path, ed)){
+				filetabbar.setFileChanged( path, false);
+				removei;
+			}
+		}
+	}
+
+	//	タブとして開かれてる全てのエディターのダーティ状態を更新する。
+	function updateChangedFiles(){
+		foreach( tv in filetabbar.tablist){
+			local tab = tv.ref;
+			local ed = tabeditors[tab.path];
+			filetabbar.setFileChanged( tab.path, ed?.isFileChanged());
+		}
+	}
+
+	function updateChangeFile( ed){
+		local path = Table.indexOf( tabeditors, ed);
+		if( path){
+			filetabbar.setFileChanged( path, ed.isFileChanged());
+		}
+	}
+
+	//	pathからプレビューを作成する。SKViewを返す。
+	function createPreview( path){
+		foreach( t in editorregistry){
+			if( !t["createPreview"]) continue;
+			if( !t.matches( path)) continue;
+			local pr = t.createPreview( path);
+			if( pr) return pr;
+		}
+	}
+
+	//	エディターのビュー表示を固定する。以下のケースでの高速化のため。
+	//	・ダイアログ表示時の全体の描画負荷を下げる
+	//	・再描画(skFlipScreen)そのものをスキップしてバックグラウンド処理を高速化する。zipの並列実行なんかで顕著。
+	//	※openEditorで別エディターに切り替わった際にこの状態はリセットする。
+	//	
+	function freezeEditorView( b){
+		if( !b == !editorfrz) return;
+		if( b){
+			editor.setVisible( false);
+			local cnt = editorarea;
+			local v = editorfrz = FreezedEditorView();
+			v.stretchalign = 15;
+			(v.viewdata = ::SKViewEntityData()).staticparams = [( SKViewPropertyID.SIZE_STATIC, (cnt.bnd.w, cnt.bnd.h))];	//	todo: この手順を無くさんとなー
+			cnt.addChild( v);
+			v.stretchSize( cnt.bnd.w, cnt.bnd.h);
+			local s = cnt.getOriginalSize();
+			v.bindrect = ((0,0),(s[0],s[1]));	//	cntの基本矩形でバインドする。
+			// v.updateFreezedView();
+		}else{
+			editor.setVisible( true);
+			editor.repaint();
+			editorfrz.removeFromParent();
+			editorfrz = null;
+		}
+	}
+	
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	メニュー操作
+
+	//	カレントのエディターによってタイトルメニューは切り替わる。※サブメニューは追加できない。submenuが参照共有だし。
+	//	
+	//	uid    : 識別用uid。メニューを一元的に管理するために必要。サブメニューにもショートカットをつけたら登録される。
+	//	parentid : どのタイトルメニューに追加するかuidで指定。nullの場合はルートメニューとなる
+	//	where  : "uieditor","efxeditor","pmeditor",... 配列で複数指定、nullですべてにメニューが追加される。
+	//	block  : "*extra"
+	//	defkey : デフォルトのショートカットキー。confで変更可能。※キーはCtrl,Altを含むかF1~F12のみ。
+	//	cmd    : コマンドのidもしくはfunctionそのもの。
+	//	
+	//	
+	function registerMenu( m){
+		//	uid登録。
+		_addmenuuid( m);
+		//	この後エディターが追加された時のために保存しておく
+		//	最終的にupdateAllMenus()を呼び出して全てのエディタ用に最新の状態にする。
+		menuregistry .. m;
+	}
+	
+	function _addmenuuid( m){
+		if( m["uid"]){
+			if( menumap[m.uid]) throw Exception( "Menu UID conflict... "..m.uid);
+			menumap[m.uid] <- m;
+			if( !m["isdir"]){	//	dirメニューはショートカットない
+				if( !menukeymap[m.uid] && m["defkey"]){	//	キーマップの登録。 menu<->key
+					menukeymap[m.uid] <- m.defkey;
+				}
+				m.modkey <- _getmodkey;	//	破壊的操作！！！！！！
+			}
+		}
+		//	サブメニューにも再帰的に
+		local ma = fget( m, "submenu");
+		foreach( sm in ma) _addmenuuid( sm);
+	}
+
+	static function _getmodkey(){
+		return skstudio.menukeymap[uid] || this["defkey"];
+	}
+
+	function getMenu( uid){
+		return menumap[uid];
+	}
+
+	//	全てのエディターのメニューを最新の状態にする
+	function updateAllMenus(){
+		editormenumap = {};	//	作り直す！！！！！
+		foreach( e in editorregistry){
+			if( !e["createEditor"]) continue;	//	エディタ無し
+			local menulist = editormenumap[e.uid]<-[];
+			foreach( m in menuregistry){
+				local where = m["where"];
+				if( !where || where.contains( e.uid)) _addeditormenu( menulist, m);
+			}
+		}
+	}
+
+	function _addeditormenu( menulist, m){
+		local parentid = m["parentid"];
+		if( parentid){
+			foreach( pm in menulist){
+				if( pm.uid != parentid) continue;
+				if( m["order"]){	//	指定した配置位置
+					local i = pm.submenu.findi( @( v) (v["order"]||0)>m.order);
+					if( i >= 0) pm.submenu[i] <- m;
+					else pm.submenu .. m;
+				}else
+				if( m["block"]){ //	指定したセパレーターブロックの直前に追加する
+					local i = pm.submenu.findi( @( v) v["separator"]==m.block);
+					if( i >= 0) pm.submenu[i] <- m;
+					else pm.submenu .. m;
+				}else{
+					pm.submenu .. m;
+				}
+				return;
+			}
+			//	ここに来たら追加できなかった！！！！
+		}else{
+			//	ルートのメニューはcloneされる。。。childrenの参照は共有できないし。。。
+			m = clone m; m.submenu = clone m.submenu;
+			menulist .. m;
+		}
+	}
+
+	//	エディターが切り替わった時に呼び出す。タイトルバーのメニュー表示とキーショートカットのマップが
+	//	指定のメニューデータに切り替わる。
+	//	
+	function setCurrentMenus( eid){
+		local menulist = editormenumap[eid];
+		//	キーショートカットからメニューのマップを更新
+		Table.clear( keymenumap);
+		foreach( m in menulist) _putkeymenu( m)
+		//	タイトルバーのメニューを設定
+		titlebar.setTitleMenus( menulist);
+	}
+
+	function _putkeymenu( m){
+		local modkey = menukeymap[m] || m["defkey"];
+		if( modkey) keymenumap[modkey] <- m;
+		local ma = fget( m, "submenu");
+		foreach( sm in ma) _putkeymenu( sm);
+	}
+
+	/////////////////////////////////////////////////////// 基本メニュー操作
+
+	function menuNewFile( m){
+		local ret = NewFileDialog.run( fileview.currentdir["path"]);
+		if( ret){
+			//	{ filename, dirpath, newfilereg }
+			local bb = ret.newfilereg.func( ret.filename, ret.dirpath);
+			local dir = ::getResource( ret.dirpath);
+			local fref = FileRef( dir.file, ret.filename);
+			fref.save( bb);
+			printf( "NEWFILE %S %S\n", fref.path, fref.size);
+			// fileview.refreshDirs();
+			fileview.refreshDir( ret.dirpath);
+			openEditor( ret.dirpath .. "/" .. ret.filename);
+		}
+	}
+
+	function menuOpenFile( m){
+	}
+
+	function menuCloseEditor( m){
+		local path = filetabbar.getSelectedPath();
+		if( path){
+			closeEditor( path);
+		}
+	}
+
+	function submenuLastFiles( m){
+		local menulist = [];
+		local openfile( m){
+			skstudio.openEditor( m.path);
+		}
+		foreach( v in openhistory){
+			local r = ::getResource( v);
+			menulist .. { lbl=v, icon=getResourceIcon( r), path=v, func=openfile };
+		}
+		return menulist;
+	}
+
+	function menuLastDirs( m){
+	}
+
+	function menuReopenTab( m){
+		for( ;;){
+			local v = delete closehistory[0];
+			if( !v) break;
+			if( filetabbar.tabIndexOf( v[0])<0){
+				filetabbar.addTab( v[0], v[1]);	//	所定の場所にタブを復活
+				openEditor( v[0]);
+				break;
+			}
+		}
+	}
+
+	function menuOpenRecent( m){
+	}
+
+	function menuOpenSideView( m){
+	}
+
+	function menuGotoFile( m){
+		ProjectSearchPopup.run();
+	}
+
+	function menuRenderSettingDialog( m){
+		local v = findChild( "menulayer.rendersetting");
+		if( v){
+			v.removeFromParent();
+		}else{
+			RenderSettingDialog.start( null);	//	runはブロック、startはノンブロック
+		}
+	}
+
+	function menuSystemConsole( m){
+		local b = Win32.isConsoleVisible();
+		Win32.setConsoleVisible( !b);
+	}
+
+	function menuSideView( m){
+		setSideViewVisible( !sideviewarea.visible);
+	}
+
+	function menuRelaunch( m){
+		if( m["force"] || checkSaveFiles()){
+			_savews();	//	ワークスペースも保存。これは確認不要
+			module.dispatchAction( "editor_closing");
+			local a = ::arguments;
+			a[0] <- "/skstudio/skstudio.sk"
+			if( !a.contains( "-reload")) a .. "-reload";
+			skRestart( a);
+		}
+	}
+
+	function menuQuit( m){
+		if( checkSaveFiles()){
+			_savews();	//	ワークスペースも保存。これは確認不要
+			module.dispatchAction( "editor_closing");
+			// skExit( 0);
+			::rootview.quit = true;
+			suspend();
+		}
+	}
+
+	function menuPreference( m){
+		PreferenceDialog.run();
+	}
+	
+	//	全ての変更されたファイルを保存するか確認する。
+	//	保存、保存しない、キャンセルの選択肢で、キャンセルの場合はfalse、それ以外はtrueを返す。
+	//	
+	function checkSaveFiles(){
+		local changed = [];
+		foreach( tv in filetabbar.tablist.rows){
+			local tab = tv.ref, path = tab.path;
+			local ed = tabeditors[path];
+			if( ed?.isFileChanged()){
+				changed .. ed;
+			}
+		}
+		if( length( changed)){
+			local r = Dialogs.fileSaveCheck( changed.map( @( v) v.filepath));
+			if( !r) return;	//	cancel
+			if( r == "dosave"){
+				local m = menumap["menu_file_save"];	//	上書きセーブメニューを実行
+				foreach( ed in changed){
+					ed.execMenu( m);
+				}
+			}
+		}
+		return true;
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	ログ
+	
+	//	古いログ消去する。sec秒以上昔のログは消去。1日なら86400。バックグラウンド時に実行
+	function cleanupOldLogs( path, sec){
+		local expire = Date.currentTime() - sec;
+		local dir = FileRef( path);
+		foreach( f in dir.getList( "*.log")){
+			if( f.updated < expire){
+				printf( "Delete Old Log: %S\n", f.path);
+				f.deleteFile();
+			}
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	コンテキストメニュー操作
+
+
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	コマンド操作
+
+	//	uid, lbl, icon, func, [modkey]
+	function registerCommand( t){
+		commandregistry .. t;
+		if( t["modkey"]){
+			keycommandmap[t.modkey] <- t;
+		}
+	}
+
+	function listCommandMenu(){
+		return commandregistry;
+	}
+	
+	function execCommand( cmd){
+		cmd.func();
+	}
+
+	/////////////////////////////////////////////////////////////////////////////////////////
+	//	ユーティリティ
+
+	function getResourceIcon( r){
+		if( r["getResourceIcon"]){
+			local icon = r.getResourceIcon(); if( icon) return icon;
+		}
+		if( r["isdir"]){
+			local f = r["flags"]||0;
+			if( f & 0x1000) return FileIcons.sysdir;
+			if( f & 0x2000) return FileIcons.alias;
+			return FileIcons.dir;
+		}else{
+			if( !r["name"]) return FileIcons.file;
+			local n = r.name;
+			local ext = n.substring( n.lastIndexOf( ".")+1).toLowerCase();
+			return FileIcons[ext] || FileIcons.file;
+		}
+	}
+}
+
+class SKStudio.NewFileDialog extends Dialog
+{
+	fileedit = null;	//	GPUITextEdit
+	diredit = null;		//	GPUITextEdit
+	typelist = null;	//	ListBehavior
+	errmsg = null;
+
+	constructor( v, curdir){
+		super( v);
+		fileedit = view.findChild( "fileedit");
+		diredit = view.findChild( "diredit");
+		typelist = ListBehavior( view.findChild( "LIST"));
+		typelist.setviewfunc = @( la, v, i){
+			defaultsetview( la, v, i);
+			v.setValue( "ext", i.ext);
+		}
+		errmsg = view.findChild( "errmsg");
+		errmsg.setText( "");
+		diredit.setText( curdir);
+		local a = [];
+		foreach( e in skstudio.editorregistry){
+			if( e["newfile"]) a .. e.newfile;
+		}
+		typelist.setListItems( a);
+	}
+
+	function shown(){
+		fileedit.startTextEdit();
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_create":
+			e.consume();
+			//	check!
+			if( !length( fileedit.getText())){
+				errmsg.setText( "filename is empty");
+				return;
+			}
+			local tp = typelist.getSelectedItems()[0];
+			if( !tp){
+				errmsg.setText( "select file type");
+				return;
+			}
+			local p = {
+				filename = fileedit.getText() .. tp.ext
+				dirpath = diredit.getText()
+				newfilereg = tp,
+			}
+			ret = p;
+			close();
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	function listevent( e){
+	}
+
+	static function run( curdir){
+		local dlg = SKStudio.NewFileDialog( "/skstudio/ui/dialog/newfile.ui", curdir);
+		dlg.show();
+		return dlg.ret;
+	}
+}
+
+class FreezedEditorView extends SKImageView
+{
+	function updateFreezedView(){
+		local ed = ::skstudio.editor;
+		ed.visible = true;	//	一時的にこれしとかないとGPUIListViewの描画が変。。。
+		ed.updateMatrixAll();
+		sp = ed.capture();
+		sp.bnd.set( 0, 0, bnd.w, bnd.h);
+		repaint();
+		ed.visible = false;
+	}
+
+	function updateLayout(){
+		updateFreezedView();
+	}
+}
+
+
+//	SKStudioのエディターのベースインターフェース。
+//	
+//	
+class EditorViewBase extends SKLibView
+{
+	op = null;				//	OperationStack : uiのオペレーションスタック
+	filepath = null;		//	編集中のパス。SKStudio.createEditorで代入
+
+	constructor(){
+		ref = { tipskey=getclassname( this), };
+	}
+
+	//	エディターがカレント状態が変わった時に呼ばれる。
+	//	デフォルト動作でeditor_activeコマンドをブロードキャスト。
+	function setActive( b){
+		if( b) ::rootview.broadcastEvent( {cmd="editor_active", editor=this});
+	}
+
+	//	skstudioレベルのイベントがカレントのエディターには飛んでくる。
+	//	
+	function rootevent( e){
+	}
+
+	//	指定したメニューがこのエディターで現在使用可能か、
+	//	undo,redoなどの有効無効をチェックする。メニューの定義にenabled=editorMenuEnabledを指定したときのみ飛んでくる。
+	function isMenuEnabled( m){
+		return false;
+	}
+
+	//	メニューの実行。メニュー自体にfuncなど機能がある場合はここまで飛んでこない。
+	//	save,revert,edit,
+	function execMenu( m){
+		return false;
+	}
+
+	//	ファイルが変更されたか。
+	//	クローズチェックの時にisFileChanged()の時には保存ダイアログを表示してyesの場合にexecMenu(save)を読んでからクローズする。
+	function isFileChanged(){
+		return op?.isChanged();
+	}
+
+	//	opがセットされているときのみ使用可能。オペレーションを登録、実行する。
+	//	
+	function submitOp( redo, undo, trk=null){
+		op.submit( redo, undo, trk);
+		::skstudio.updateChangeFile( this);
+	}
+
+	//	opがセットされているときのみ使用可能。オペレーションを登録、実行する。
+	//	直前のopにマージされる。
+	function mergeOp( redo, undo, trk=null){
+		op.merge( redo, undo);
+		::skstudio.updateChangeFile( this);
+	}
+}

@@ -1,0 +1,741 @@
+
+local bb1 = ByteBuffer();
+local bb2 = ByteBuffer();
+local bb3 = ByteBuffer();
+local bb4 = ByteBuffer();
+prelexext <- " sk conf pm ptd json trns ";
+patchgen <- 4;
+
+skLoadAddon( "popen");	//	vcdiff.exe
+
+enum SKPackageFlag
+{
+	SX_DATA_COMP_FAST = 1,
+	SX_DATA_COMP_HIGH = 2,
+	SX_DATA_NOCRYPT = 16,
+
+	SX_STORAGE_BASE = 1,
+	SX_STORAGE_APPEND = 2,
+	SX_STORAGE_KEEP_OPEN = 4,
+};
+
+import SKPackageFlag;
+
+local ignores = {
+	[".svn"] = 1,
+	[".git"] = 1,
+	[".gitkeep"] = 1,
+	[".cvs"] = 1,
+	["desktop.ini"] = 1,
+};
+
+
+function getCompressFlag( file, bbuf){
+	local ext = file.name.substring( file.name.lastIndexOf( ".") + 1).toLowerCase();
+	local size = bbuf.size-bbuf.pos;
+	switch( ext){
+	//	no compress
+	case "png":
+	case "jpg":
+	case "wav":
+	case "ogg":
+	case "webp":
+		return 0;
+	//	static binary
+	case "bin":
+	case "ttf":
+	case "ttc":
+	case "otf":
+	case "vmap":
+	case "vox":
+	case "ktx":
+		if( size < 1024) return 0;
+		return SX_DATA_COMP_HIGH;
+	//	dynamic binary
+	case "mdl":
+	case "mot":
+		if( size < 1024) return 0;
+		if( size < 10240) return SX_DATA_COMP_FAST;	//	10kbまではfast
+		else return SX_DATA_COMP_HIGH;				//	圧縮率優先でhigh
+	//	static text ( source code / conf )	※基本的に一度しかファイル読み込みが発生しないものと仮定。その場合はhigh圧縮でもオーバーヘッドがそれほど無い
+	case "sk":
+	case "conf":
+	case "trns":
+		if( size < 1024) return 0;
+		else return SX_DATA_COMP_HIGH;				//	high
+	//	etc( dynamic text )					※何度も解放・読み込みが発生すると仮定。fastで伸張時間を短縮する。
+	default:
+		if( size < 1024) return 0;
+		else return SX_DATA_COMP_FAST;				//	fast
+	}
+}
+
+local cryptext = {"sk"=1,"conf"=1,"proj"=1,"sk3"=1,"ks"=1,"json"=1,"scp"=1,"ui"=1,"pm"=1,"ptd"=1};
+const appnamechk = "-;:/=?~|&!#$%";
+
+//	基本テキストのみ暗号化する？？？
+function getCryptFlag( file, bbuf){
+	local ext = file.name.substring( file.name.lastIndexOf( ".") + 1).toLowerCase();
+	return (ext in cryptext) ? 0 : SX_DATA_NOCRYPT;
+}
+
+function applyPrelex( fname, bbuf){
+	local pi = fname.lastIndexOf( ".");
+	local ext = " " .. fname.substring( pi+1) .. " ";		//	前後に" "を入れて別の拡張子が引っかからないように
+	if( prelexext.indexOf( ext) >= 0){
+		try{
+			bbuf.prelex( bb3);
+			bbuf = bb3;
+		}catch( ex){
+			printexception( ex);
+			printf( "prelex failure %S\n", fname);
+		}
+	}
+	return bbuf;
+}
+
+
+
+//	バージョンjsonは{ "majver":0, "minver":0, "size":0, "md5":"X", "storages":[ [name,size16,md5,version,flags],... ] }のようになっている(timeはなし)
+//
+class SKPackager
+{
+	outpath = "pkg";
+
+	proj = null;						//	sakana.proj
+	rules = null;						//	projから
+	majver = 0;
+	initialpkg = true;
+
+	indir = null;						//
+	outdir = null;						//	$(outpath)/data
+	tmpdir = null;						//
+	
+	license = null;						//	
+	lkey = null;						//	ライセンスキー。sxのヘッダエンコードに使う。毎回変化する。keyから生成。
+	ekey = null;						//	エンコードキー。sxstorageのデータエンコードに使う。Licenser,User,AppIDから生成。
+	key = null;							//	秘密鍵。sx内の署名にも使う。
+	nover = true;						//	バージョン未付与モード。
+	
+	builder = null;
+	
+	constructor( li, lk, ek, k, dir, outp, vl){
+		rules = [];
+		license = li;
+		lkey = lk;
+		ekey = ek;
+		key = k;
+		nover = vl;
+
+		//	input dir...
+		indir = dir;
+		//	output dir...
+		outpath = outp;
+		outdir = _mkdirs( outpath);
+		tmpdir = FileRef( skGetCurrentDir());
+
+		//	sakana.projを取得
+		local projfile = FileRef( dir, "sakana.proj");
+		proj = decodeJSON( projfile.load());
+		foreach( r in proj["packagerule"]){
+			local t = SKPackagerRule( r);
+			rules .. t;
+		}
+
+		//	majver検索・取得。バージョン無しモードでは0。
+		if( nover){
+			majver = 0;
+		}else{
+			local version = 1;
+			local maxver = -1, maxverdir = null;
+			local list = outdir.getList();
+			foreach( f in list){
+				local n = f.name;
+				if( n.startsWith( proj.appname) && n.endsWith( "(00).json")){
+					local v = int( n.substring( length( proj.appname)+1));
+					if( v > maxver){ maxver = v; }
+				}
+			}
+			if( maxver >= 0){
+				initialpkg = false;
+				local lastpkg = decodeJSON( FileRef( outdir, sprintf( "%S-%03d(00).json", proj.appname, maxver)).load());
+				version = maxver + 1;
+				foreach( st in lastpkg["storages"]){	//	各ルールに前のStorageの情報を設定
+					foreach( r in rules){
+						if( r.name == st[0]){ r.lastst = st; break; }
+					}
+				}
+			}
+			majver = version;
+		}
+	}
+
+	function _mkdirs( path){
+		local f = FileRef( path);
+		if( f.isDirectory()) return f;
+		f.mkdirs();
+		do{
+			sleep( 100);
+			f = FileRef( path);
+		}while( !f.isDirectory());
+		return f;
+	}
+
+	function build(){
+		local t0 = skGetTime();
+		//	build実行
+		//
+		builder = SKPackageBuilder( lkey, ekey, key);
+		if( !FileRef( indir, "system").isDirectory()){
+			buildres( FileRef( skGetBinBaseDir() .. "/system"), "/system");		//	bin/system
+		}
+		buildres( indir, "");		//	project
+		printf("buildres done.\n");
+		builder.finishStorages();
+
+		//	storage変化チェック
+		//
+		local changedstorages = [];
+		foreach( r in rules){
+			if( r.storageidx < 0){ continue; }	//	一つも書かれてない
+			r.fs.close();	//	どこでやってもよし
+			if( nover){	//	noverモードでは
+				local st = (0,0,0,0,0);
+				builder.setStorageVersion( r.storageidx, majver);
+				builder.getStorageInfo( r.storageidx, st);	//	u-m
+				changedstorages .. st;
+				local renf = FileRef( outdir, storagefile( st));
+				r.file.moveTo( renf);
+			}else{
+				local st = builder.getStorageInfo( r.storageidx, (0,0,0,0,0) );	//	name, size16, md5, majver, flags, (time)
+				local st0 = r.lastst;
+				sleep( 50);		//	ファイルシステムをちょい待つ※ちゃんと待つ！
+				if( !st0 || st[1] != st0[1] || st[2] != st0[2]){	//	追加か変化したか [1]=size16, [2]=md5
+					builder.setStorageVersion( r.storageidx, majver);
+					builder.getStorageInfo( r.storageidx, st);	//	u-m
+					changedstorages .. st;
+					local renf = FileRef( outdir, storagefile( st));
+					r.file.moveTo( renf);
+				}else{
+					builder.setStorageVersion( r.storageidx, st0[3]);
+					FileRef( r.file.path).deleteFile();		//	refreshの代わり
+				}
+			}
+		}
+		printf("finish sxr\n");
+
+		//	storageに変換がなかった場合はここで終了
+		//
+		if( !length( changedstorages)){
+			printf( "NO CHANGE\n");
+		}else{
+			printf( "NEW MAJOR PACKAGE : %03d(%2d)\n", majver, 0);
+			//	dists情報を最初に。ここでエラー起きると後続の処理はゴミにしかならない
+			local dists = makeDistsJSON();
+			//	make patch!
+			builder.majver = majver;
+			local pt = [];
+			if( nover){
+				//	sxファイル書き出し-zip圧縮
+				local sxbb = builder.write( ByteBuffer());
+				sxbb.pos = 0;
+				local sxfile = FileRef( outdir, sprintf( "%S.sx", proj.appname));
+				sxfile.save( sxbb);
+				sxfile.refresh();
+				//	majver,currentへそれぞれ書き出し
+				local sts=[];
+				foreach( r in rules){
+					if( r.storageidx >= 0){ sts .. builder.getStorageInfo( r.storageidx, tuple( 5)); }
+				}
+				//	最終パッケージ情報
+				local verjson = { majver=majver, minver=0, storages=sts, size=sxfile.size, md5=::getMD5( sxfile), license=license};
+				if( length( dists)) verjson.dists <- dists;
+				if( length( pt)) verjson.patches <- pt;
+				local verstr = encodeJSON( verjson, 1|4);
+				local verbb = ByteBuffer(); verbb.putText( verstr); verbb.pos = 0;
+				FileRef( outdir, sprintf( "%S.json", proj.appname)).save( verbb);
+				printf( "package json: %S\n", verstr);
+			}else{
+				for( local l = 1;l <= ::patchgen; l ++){
+					local oldver = FileRef( outdir, sprintf("%S-%03d(00).json", proj.appname, majver-l));
+					if( oldver.exists()){
+						local p = makePatch( majver-l, majver, changedstorages);
+						builder.newPatch( p.oldver, p.size, p.md5);
+						pt .. [p.oldver, p.size, p.md5];
+					}
+				}
+				//	sxファイル書き出し-zip圧縮
+				local sxbb = builder.write( ByteBuffer());
+				sxbb.pos = 0;
+				local sxfile = FileRef( outdir, sprintf( "%S-%03d(00).sx", proj.appname, majver));
+				sxfile.save( sxbb);
+				sxfile.refresh();
+				//	majver,currentへそれぞれ書き出し
+				local sts=[];
+				foreach( r in rules){
+					if( r.storageidx >= 0){ sts .. builder.getStorageInfo( r.storageidx, tuple( 5)); }
+				}
+				//	最終パッケージ情報
+				local verjson = { majver=majver, minver=0, storages=sts, size=sxfile.size, md5=::getMD5( sxfile), license=license};
+				if( length( dists)) verjson.dists <- dists;
+				if( length( pt)) verjson.patches <- pt;
+				local verstr = encodeJSON( verjson, 1|4);
+				local verbb = ByteBuffer(); verbb.putText( verstr); verbb.pos = 0;
+				FileRef( outdir, sprintf( "%S-%03d(00).json", proj.appname, majver)).save( verbb);
+				verbb.pos = 0;
+				FileRef( outdir, sprintf( "%S-current.json", proj.appname)).save( verbb);
+				printf( "package json: %S\n", verstr);
+			}
+		}
+		//
+		local dt = skGetTime() - t0;
+		local m = dt / 1000 / 60;
+		local s = (dt / 1000)%60;
+		print("Elapsed time - "..m..":"..s.."\n");
+	}
+
+	//	以下build関係内部メソッド
+
+	//	FileResource前提
+	function buildres( f, path){
+		if( ignores[ f.name]) return;
+		local t;
+		if( f.isDirectory()){
+			local flist = f.getList();
+			flist.sort( function( a, b){ return (a.flags<>b.flags) || (a.name<>b.name); })
+			foreach( lr in flist){ buildres( lr, path .. "/" .. lr.name); }
+		}else{
+			addResource( f, path);
+		}
+	}
+
+	//	最初にマッチしたルールを返す
+	function getRule( path){
+		foreach( rule in rules){
+			foreach( p in rule.excludes){
+				if( globMatch( p, path)){
+					 goto EXCLUDED;
+				}
+			}
+			foreach( p in rule.includes){
+				if( globMatch( p, path)){
+					return !length( rule.name) ? null : rule;
+				}
+			}
+			EXCLUDED:
+				;
+		}
+		return null;
+	}
+
+	function addResource( f, path){
+		local rule = getRule( path);
+		if( !rule) return false;
+		if( !rule.name) return false;
+		local fs = rule.fs;
+		if( !fs){
+			rule.file = FileRef( tmpdir, sprintf( "%S.sxtmp", rule.name));
+			fs = rule.fs = rule.file.open( "wb");
+			rule.storageidx = builder.newStorage( rule.name, rule.flags);
+		}
+		//	file read
+		local data = f.load( bb1.clear());
+		data = applyPrelex( path, data);
+		//	flag set
+		local compflag = getCompressFlag( f, data);		//	0, SX_DATA_COMP_FAST, SX_DATA_COMP_HIGH
+		local cryptflag = getCryptFlag( f, data);		//	0, SX_DATA_NOCRYPT
+		builder.newData( path, data, compflag|cryptflag, rule.storageidx, bb4.clear());
+		fs.write( bb4);
+		printf( "entry :%S, size=%d->%d %x  crc32=%x\n", path, data.size, bb4.size, compflag|cryptflag, bb4.crc32( 0, bb4.size));
+		//
+		return true;
+	}
+
+	function findStorage( storages, name){
+		foreach( v in storages){ if( name == v[0]) return v; }
+		return null;
+	}
+
+	function storagefile( t){
+		if( nover){
+			return sprintf( "%S-%S.sxstorage", proj.appname, t[0]);	//	name
+		}else{
+			return sprintf( "%S-%03d-%S.sxstorage", proj.appname, t[3], t[0]);	//	ver, name
+		}
+	}
+
+	function _findpath( p){ return FileRef( p).exists() ? p : null; }
+
+	//	[name,size16,md5,majver,flags]
+	function makePatch( oldver, newver, changedstorages) {
+		local ver0 = decodeJSON( FileRef( outdir, sprintf( "%S-%03d(00).json", proj.appname, oldver)).load());
+		local pn = sprintf( "%S-%03d_%03d.sxpatch", proj.appname, newver, oldver);	//	※newverを先に
+		printf( "make patch : %S\n", pn);
+		local exe = (_findpath( "tools/bin/vcdiff.exe") || "bin/tools/bin/vcdiff.exe").replace('/','\\');
+		local proclist = [];
+		local flist = [];
+		foreach( v1 in changedstorages){
+			local v0 = findStorage( ver0.storages, v1[0]);
+			if( !v0){
+				//	追加されたらそのままファイルを繋げる。。。大きくなるので注意
+				flist .. { name=v1[0], path=FileRef( outdir, storagefile( v1)).path };
+			}else
+			if( v0[3] != v1[3]){
+				//	変化したらvcdiffの差分
+				local f0 = FileRef( outdir, storagefile( v0)), f1 = FileRef( outdir, storagefile( v1));
+				local pp = popen();
+				local cmd = sprintf( "%S encode -dictionary %S -target %S -delta %S.vcdiff", exe, f0.path.replace('/','\\'), f1.path.replace('/','\\'), v1[0]);
+				local ret = pp.open( cmd);
+				proclist .. pp;
+				flist .. { storage=v1[0], path=FileRef( v1[0] .. ".vcdiff").path, oldver=v0[3], newver=v1[3], };
+				printf( "%S = %S\n", cmd, ret);
+			}
+		}
+		//	wait for all vcdiff.exe processes
+		foreach( pp in proclist){
+			do{
+				local txt = pp.readLine();
+				if( txt) printf("%S\n", txt);
+				suspend();
+			}while( pp.isrunning());
+		}
+		//	wait for ready
+		local allready = true;
+		do{
+			sleep( 200);
+			allready = true;
+			foreach( v in flist){
+				if( !FileRef( v.path).exists()){ allready = false; break; }
+			}
+		}while( !allready);
+		/////////////////////////////////////////////////////////////////////////
+		//	ここからパッチ書き出し。
+		//	16bytesのヘッダに続き、json、パッチのリストと続く
+		local plist = [], totalsize = 0;
+		foreach( v in flist){
+			local f = FileRef( v.path);
+			plist .. { storage=v.storage, patchsize=f.size, md5=::getMD5( f), oldver=v.oldver, newver=v.newver };
+			totalsize += f.size;
+		}
+		local pbb = ByteBuffer();
+		pbb.puti( 0); pbb.puti( 0); pbb.puti( 0); pbb.puti( 0);	//	16bytes分先に書いとく
+		pbb.putText( encodeJSON( plist));
+		totalsize += pbb.size;
+		local hlen = pbb.size-16, salt = 212573 * pbb.size;
+		//	先頭に戻って各情報を入れていく
+		pbb.pos = 0;
+		pbb.puti( 123);			//	code
+		pbb.puti( hlen);		//	list json size
+		pbb.puti( salt);		//	salt
+		pbb.puti( 0);			//	reserved
+		pbb.pos = 0;
+		//	crypt iranka
+		pbb.crypt( 1462711 ^ (totalsize*31), 0, 16);
+		pbb.crypt( 31521351 ^ (hlen*31*31) ^ (salt*31), 16, pbb.size-16);
+		//	write
+		local fs = FileRef( outdir, pn).open( "wb");
+		fs.write( pbb);
+		foreach( v in flist){
+			local f = FileRef( v.path);
+			local bbuf = f.load( bb1);
+			fs.write( bbuf);
+			printf( "  diff :%S (%S), size=%d \n", v.storage, v.path, bbuf.size);
+			f.deleteFile();
+		}
+		fs.close();
+		local f = FileRef( outdir, pn);
+		//	check f.size == totalsize
+		return { oldver=oldver, md5=::getMD5( f), size=f.size};
+	}
+
+	//	
+	function makeDistsJSON(){
+		local dists = {};
+		local distsdir = FileRef( indir, "../dists");
+		foreach( os, libs in proj["dists"]){
+			local a = [];
+			foreach( v in libs){
+				local f = FileRef( distsdir, os.."/"..v[1]);
+				a .. [v[0],v[1], f.size, ::getMD5( f)]
+			}
+			dists[os] <- a;
+		}
+		return length( dists) ? dists : null;
+	}
+}
+
+
+class SKPackagerRule
+{
+	name = "";						//	nullの場合は書き出し無視
+	includes = null;				//	[""]
+	excludes = null;				//
+	flags = null;
+
+	storageidx = -1;				//	int
+	file = null;					//	FileRef : 一時的に書き込んだファイル
+	fs = null;						//	FileStream
+
+	lastst = null;					//	lastver.storage[name]
+
+	constructor( r){
+		name = r.name;
+		includes = r.includes;
+		excludes = r["excludes"] || null;
+		flags = r["flags"] || 0;
+	}
+}
+
+
+//	機能は全然違うけど同じ処理がいっぱいあるから継承しちゃえ
+//
+//	予め最新版sxを全て入れておいて変化のあったリソースをappname-xxx-yy.sxstorageに突っ込む
+//	※削除は出来ない
+//
+class SKAppendPackager extends SKPackager
+{
+	sx = null;			//	元となるメジャーパッケージ
+	sxmap = null;		//	sxのパスのマップ
+	minver = 0;			//	付けるマイナーバージョン。1以上
+
+	st0 = null;		//	前のマイナーバージョンからの変更チェック用。getStorageInfoで取得。
+	newidx = -1;		//	builder.newStorageをする。1つしかない。
+	newfile = null;		//	FileRef :
+	newfs = null;		//
+
+	function getLatestMinorVersion( ver){
+		local maxver = 1;
+		local list = outdir.getList();
+		foreach( f in list){
+			local n = f.name;
+			if( n.startsWith( proj.appname) && n.endsWith( ").json")){
+				local v = int( n.substring( length( proj.appname)+1));
+				if( v != ver) continue;
+				local mv = int( n.substring( length( proj.appname)+1+3+1));
+				if( mv > maxver-1){ maxver = mv+1; }
+			}
+		}
+		return maxver;
+	}
+
+	function _buildsxmap( t, sx, node, path){
+		local s = sx.getNodeName( node);
+		local p = sprintf( "%S%S", path, s);
+		if( node.isDirectory()){
+			p = p.."/";	//	kimoi
+			foreach( n in node.getList([])){
+				_buildsxmap( t, sx, n, p);
+			}
+		}else{
+			t[p] <- node;
+		}
+		return t;
+	}
+
+	function build(){
+		--majver;	//	majverはアップしない
+		local t0 = skGetTime();
+		//	latest major package
+		local sxfile = FileRef( outdir, sprintf( "%S-%03d(00).sx", proj.appname, majver));
+		sx = SKPackage( license);	//※※※※※※※※※ sxはlicense無しには開けないように。
+		sx.appname = proj.appname;
+		sx.load( sxfile.load());	//	ここでexception出る
+		sx.setupStorage( outdir, outdir);
+		sxmap = _buildsxmap( {}, sx, sx.getRoot(), "");
+		//	latest minor package
+		minver = getLatestMinorVersion( majver);
+		if( minver > 1){	//	一つ前のストレージの情報ゲット
+			local minsx = SKPackage( license);
+			minsx.load( FileRef( outdir, sprintf( "%S-%03d(%02d).sx", proj.appname, majver, minver-1)).load());
+			local st = (0,0,0,0,0);
+			for( local l = 0; minsx.getStorageInfo( l, st); l ++){
+				if( st[4] == SX_STORAGE_APPEND){ st0=st; break; }	//	APPENDフラグが立ってるstorageは一つしかないはずなので
+			}
+		}
+		//	build実行
+		builder = SKPackageBuilder( lkey, ekey, key);
+		builder.load( sxfile.load());	//	最新sxをロードする。ByteBufferはloadで壊れるのでもう一度読む。。。
+		builder.majver = majver;
+		builder.minver = minver;
+		if( !FileRef( indir, "system").isDirectory()){
+			buildres( FileRef( skGetBinBaseDir() .. "/system"), "/system");		//	bin/system
+		}
+		buildres( indir, "");
+		printf("buildres done.\n");
+		builder.finishStorages();
+		//	前のマイナーバージョンのストレージ(st0)との差もチェック
+		if( newfile){
+			newfs.close();
+			local st = builder.getStorageInfo( newidx, (0,0,0,0,0) );	//	name, size16, md5, version, flags, (time)
+			sleep( 50);		//	ファイルシステムをちょい待つ※ちゃんと待つ！
+			if( !st0 || st[1] != st0[1] || st[2] != st0[2]){	//	追加か変化したか [1]=size16, [2]=md5
+				printf( "NEW MINOR PACKAGE : %03d(%2d)\n", majver, minver);
+				//	dists情報を最初に。ここでエラー起きると後続の処理はゴミにしかならない
+				local dists = makeDistsJSON();
+				//	
+				builder.setStorageVersion( newidx, majver);		//	ストレージのバージョンはあくまでmajver
+				builder.getStorageInfo( newidx, st);			//	u-m
+				local renf = FileRef( outdir, storagefile( st));
+				newfile.moveTo( renf);
+				//	変化あり！
+				local sts=[];
+				for( local l = 0; ; l ++){
+					local st = builder.getStorageInfo( l, tuple( 5));
+					if( st) sts .. st; else break;
+				}
+				//	sxファイル書き出し-zip圧縮
+				local sxbb = builder.write( ByteBuffer());
+				sxbb.pos = 0;
+				local sxfile = FileRef( outdir, sprintf( "%S-%03d(%02d).sx", proj.appname, majver, minver));
+				sxfile.save( sxbb);
+				sxfile.refresh();
+				//	最終パッケージ情報
+				local verjson = { majver=majver, minver=minver, storages=sts, size=sxfile.size, md5=::getMD5( sxfile), dists=dists};
+				//	パッチをjsonから取る。。
+				{
+					local jf = FileRef( outdir, sprintf( "%S-%03d(00).json", proj.appname, majver));
+					local pf = decodeJSON( jf.load());
+					if( pf["patches"]) verjson.patches <- pf.patches;
+				}
+				local verstr = encodeJSON( verjson, 1);
+				local verbb = ByteBuffer(); verbb.putText( verstr); verbb.pos = 0;
+				FileRef( outdir, sprintf( "%S-%03d(%02d).json", proj.appname, majver, minver)).save( verbb);
+				verbb.pos = 0;
+				FileRef( outdir, sprintf( "%S-current.json", proj.appname)).save( verbb);
+				printf( "%S\n", verstr);
+			}else{
+				//	前からの変化なし。マイナーバージョン変化なし！
+				printf( "NO CHANGE FROM LAST MINOR VERSION\n");
+			}
+		}else{
+			printf( "NO CHANGE FROM MAJOR VERSION\n");
+		}
+		//
+		local dt = skGetTime() - t0;
+		local m = dt / 1000 / 60;
+		local s = (dt / 1000)%60;
+		print("Elapsed time - "..m..":"..s.."\n");
+	}
+
+	//	ここだけ大分変わる。
+	//
+	function addResource( f, path){
+		local rule = getRule( path);
+		if( !rule) return false;
+		//	file read
+		local data = f.load( bb1.clear());
+		data = applyPrelex( path, data);
+		//	org sx read
+		local node = sxmap[path];	//	最初の/を取ってsxからの相対パスに
+		local orgdata = node ? sx.loadData( node.di) : null;	//	SpriteSheetなんかを参照しちゃうことがある。Resourceで検索は危険か。。。
+		local cmp = (data <> orgdata);
+		if( !cmp){
+			printf( "nochange :%S\n", path);
+			return false;	//	元リソースといっしょ！
+		}
+		//
+		//	flag set
+		local compflag = getCompressFlag( f, data);		//	0, SX_DATA_COMP_FAST, SX_DATA_COMP_HIGH
+		local cryptflag = getCryptFlag( f, data);		//	0, SX_DATA_NOCRYPT
+		//	builderに置き換えを行う。
+		if( newidx < 0){
+			newfile = FileRef( tmpdir, "append.sxtmp");
+			newfs = newfile.open( "wb");
+			newidx = builder.newStorage( sprintf( "A%02d", minver), SX_STORAGE_APPEND);
+		}
+		builder.newData( path, data, compflag|cryptflag, newidx, bb4.clear());
+		newfs.write( bb4);
+		printf( "append :%S, size=%d->%d %x,  orgsize: %S cmp:%S\n", path, data.size, bb4.size, compflag|cryptflag, orgdata["size"]||0, cmp);
+		return true;
+	}
+}
+
+local timebase = Date( 124, 0, 1);		//	2024/01/01 GMT
+local time0 = Date( 125, 0, 1);
+local time1 = Date( 180, 0, 1);
+
+function time6(){
+	return (Date.currentTime()-timebase.getTime())[0];
+}
+
+function licensemsg( proj, user, appid){
+	if( length( proj) != 8 || length( user) != 10 || length( appid) != 10){
+		throw Exception( "License format error...... %S %S %S\n", proj, user, appid);
+	}
+	local msg = ByteBuffer(), time, crc;
+	msg.endian = 0;
+	msg.putText( proj);				//	
+	msg.putText( user);				//	
+	msg.putText( appid);			//	
+	msg.puti( 0xf3e85a);			//	固定・・・
+	msg.puti( crc = msg.crc32( 0, msg.size));
+	msg.pos = 0;
+	return msg;
+}
+
+//	main処理。。。
+//	※-majorを付けない場合は基本的にマイナーバージョンアップとする。
+
+{
+	local args = ::arguments;
+	local cdir = FileRef( skGetCurrentDir());
+	local indir = FileRef( cdir, "project");
+	local outpath = "pkg";
+	local nover = false;
+	local key = null, mod = null, license =  null, lkey = null, ekey = null;
+	local i = args.indexOf( "-inpath"); if( i >= 0) indir = FileRef( cdir, args[i+1]);
+	local i = args.indexOf( "-outpath"); if( i >= 0) outpath = args[i+1];
+	local i = args.indexOf( "-keyfile"); if( i >= 0){
+		runsk( "keyload.sk");
+		local pkstr = FileRef( cdir, args[i+1]).load().asText();
+		local ki = loadPrivateKey( pkstr);
+		key = ki.privateexp.getbytes();
+		mod = ki.publicmod.getbytes();
+	}
+	local i = args.indexOf( "-key"); if( i >= 0) key = decodeBASE64( args[i+1], ByteBuffer());
+	local i = args.indexOf( "-mod"); if( i >= 0) mod = decodeBASE64( args[i+1], ByteBuffer());
+	local i = args.indexOf( "-license");
+	if( i >= 0){
+		local proj = args[i+1], user = args[i+2], appid = args[i+3];
+		local N = bigint( mod);
+		local D = bigint( key);
+		local msg = licensemsg( proj, user, appid);
+		local M = bigint( msg);
+		local C = M.powmod( D, N);
+		license = encodeBASE64( C.getbytes());
+		lkey = C.getbytes().hash64( 51357717);
+		local ebb = ByteBuffer();
+		ebb.putText( proj);
+		ebb.putText( user);
+		ebb.putText( appid);
+		ebb.pos = 0;
+		ekey = ebb.hash64( 981513);
+	}
+//	printf( "%S %S %S %S %S %S\n", encodeJSON( args, 1), key, mod, license, lkey, ekey);
+//	printf( "key %x %x %x %x\n", key[0], key[1], key[2], key[3]);
+//	printf( "mod %x %x %x %x\n", mod[0], mod[1], mod[2], mod[3]);
+	
+	if( args.contains( "-nover")){	//	バージョン無しモード。
+		nover = true;
+	}else
+	if( args.contains( "-minor")){
+		local apkger = SKAppendPackager( license, lkey, ekey, key, indir, outpath);
+		if( !apkger.initialpkg){	//	パッケージが何もない状態ではSKAppendPackagerは動かせない
+			apkger.build();
+			return;
+		}
+	}
+	printf( "Packaging .sx  indir:%S  outdir:%S\n", indir.path, FileRef( outpath).path);
+	
+	local pkger = SKPackager( license, lkey, ekey, key, indir, outpath, nover);
+	try{
+		pkger.build();
+	}catch( ex){
+		printexception( ex);
+	}
+	//	remove temp files
+	pkger.tmpdir.refresh();
+	foreach( f in pkger.tmpdir.getList()){
+		if( f.name.endsWith( ".sxtmp")) f.deleteFile();
+	}
+}

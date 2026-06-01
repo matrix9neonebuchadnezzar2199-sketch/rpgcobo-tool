@@ -1,0 +1,724 @@
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	IO Extension
+//	
+
+function future::suspendget(){
+	for( ;;){
+		local o = tryget();
+		if( o != undefined) return o;
+		suspend();
+	}
+}
+
+local ipmap = {};
+::inetmode <- 0;
+
+//	global func
+function resolveIP( hostname, port=null){
+	local ipaddr = clone ipmap[hostname];
+	if( !ipaddr){
+		local resolver = HostNameResolver( hostname, port, ::inetmode);
+		while( !(ipaddr=resolver.get())){
+			suspend();
+		}
+		if( !ipaddr.isValid()){
+			return null;			//	error
+		}
+		ipmap[ hostname] <- ipaddr;
+		resolver = null;
+	}
+	if( port != null) ipaddr.port = port;
+	return ipaddr;
+}
+
+function clearIPMap( host=null){
+	if( host){
+		delete ipmap[host];
+	}else{
+		Table.clear( ipmap);
+	}
+}
+
+//	global func
+function parseURL( url){
+	local t = {};
+	local si = url.indexOf("://");
+	if( si < 0){
+//		throw Exception( "invalid URL : " .. url);
+		si = -3;
+		t.scheme <- "http";
+	}else{
+		t.scheme <- url.substring( 0, si);
+	}
+	local urllen = length( url);
+	local hi = url.indexOf( "/", si + 3);
+	if( hi < 0){
+		hi = urllen;		//	/なし。ホスト(+ポート)のみ
+	}
+	local host_port = url.substring( si + 3, hi);
+	local pi = host_port.indexOf( ":");
+	if( pi >= 0){
+		t.host <- host_port.substring( 0, pi);
+		t.port <- int( host_port.substring( pi+1));
+	}else{
+		t.host <- host_port;
+		if( t.scheme == "https"){
+			t.port <- 443;
+		}else{
+			t.port <- 80;			//	default port
+		}
+	}
+	t.path <- hi==urllen?"/":"/"..url.substring( hi+1);
+	return t;
+}
+
+//	特殊なネット環境をチェック。
+//	スマホなんかは接続が変化してIPv6の対応状況が変わったりするので定期的なチェックが必要。
+//	あと、インターフェースの情報を完全に信用してもいけないので実際に接続テストをした方がいい。
+function checkINet( url=null){
+	local a = IPAddress.getNetInterfaceInfoList();
+	printf( "checkINet interfaces %S\n", encodeJSON( a));
+	clearIPMap();
+	foreach( v in a){
+		if( v.flags & 1){
+			::inetmode = v["ipaddr6"] ? 0 : 1;
+			if( /*!::inetmode &&*/ url){
+				local con = TCPConnection();
+				con.setReader( function( con, buf){}, this);
+				con.setListener( function( id, c, src){}, this);
+				local urlreq = parseURL( url);
+				local ipaddr = resolveIP( urlreq.host, urlreq.port);	//	ホストとポートでIPAddressを生成
+				if( ipaddr){
+					con.connect( ipaddr);
+					local t0 = skGetTime();
+					while( skGetTime( t0) < 1000){	//	1秒だけ待つ
+						if( con.getState() == SOCKET_CONNECTED){
+							//	OK!!!!!!!
+							printf( "checkINet IPv6 available. %S => %S\n", url, ipaddr);
+							con.close();
+							return;
+						}
+						suspend();
+					}
+					//	timeout!!!!!!
+					printf( "checkINet IPv6 unreachable. FORCE IPv4 addressing. addr=%S\n", ipaddr);
+					::inetmode = 1;
+				}
+				con.close();
+			}
+			return;
+		}
+	}
+	//	メインのインターフェースがない？ネットに繋がってないとか
+	::inetmode = 1;
+}
+
+function getMD5( v){
+	local md5 = MD5();
+	if( v instanceof ByteBuffer){
+		local pos0 = v.pos;
+		md5.update( v);
+		v.pos = pos0;
+	}else
+	if( v instanceof FileRef){
+		local bufsize = 65536*8;
+		local is = v.open( "rb");
+		if( !is) throw Exception( sprintf( "file could not open : %S - %S", v.path, "rb"));
+		local bbuf = ByteBuffer( bufsize);
+		for(;;){
+			local r = is.read( bbuf, bufsize);
+			if( r <= 0){
+				if( is.eof()) break;
+			}else{
+				bbuf.pos = 0;
+				md5.update( bbuf);
+				bbuf.clear();
+			}
+			//	os_suspend();
+		}
+		is.close();
+	}
+	md5.finish();
+	return md5.getDigest();
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//	以下ネット用
+
+if( !::["Pinger"]) return;	//	SAKANA_NO_NET
+
+function Pinger::ping( ipaddr, timeout=5000, id=0, seq=0, len=64){
+	if( typeof( ipaddr) == SS_STRING){
+		local url = parseURL( ipaddr);
+		ipaddr = resolveIP( url.host, url.port);
+	}
+	local p = Pinger();
+	p.sendping( ipaddr, id, seq, len);
+	while( p.getState()==1){
+		if( skGetTime( p.senttime) > timeout){
+			p.close();
+			return timeout;
+		}
+		suspend();
+	}
+	p.close();
+	return p.recvtime - p.senttime;
+}
+	
+function TCPConnection::flush( stimeout=3000){
+	local rem = getWriteBufferRemaining();
+	local senttime = skGetTime();
+	while( rem > 0){
+		suspend();
+		local r = getWriteBufferRemaining();
+		if( r == rem){
+			if( skGetTime( senttime) >= stimeout){
+				printf( "WARNING! %S flush timeout. sending stuck over %d msec.", this, stimeout);
+				currentthread().printStackTrace();
+				break;
+			}
+		}else{
+			senttime = skGetTime();
+			rem = r;
+		}
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	SKTPConnectionの拡張
+//	ORBでスマートに隠蔽できるように。また、単体でもきちんと使えるように。
+//	オーバーライドして処理を書く方式にする。
+//	
+//	flushを定期的(毎フレーム)呼ぶ。
+//	
+
+const SKTP_FLUSHDELAY = 50;	//	これが大きいとtcp->writeの回数が減ってオーバーヘッドは減るが細かい通信のラグが大きくなる。
+
+
+class SKTPDelayFlushThread
+{
+	thread = null;
+	sktps = null;
+	
+	constructor(){
+		sktps = [];
+	}
+	
+	function append( sktp){
+		if( !sktps.contains( sktp)){
+			sktps .. sktp;
+			if( !thread){
+				(thread = newthread( "sktp flush thread")).start( run, this);
+			}
+		}
+	}
+	
+	function run(){
+		local dt = SKTP_FLUSHDELAY;
+		do{
+			sleep( dt);
+			foreach( sktp in sktps){
+				try{
+					if( !sktp.flush( dt)) removei;
+				}catch( ex){
+					printexception( ex);
+					removei;
+				}
+			}
+		}while( length( sktps));
+		thread = null;
+	}
+	
+	static function singleton(){
+		return #SKTPDelayFlushThread();
+	}
+}
+
+with SKTPConnection
+{
+	bandwidth <- 4096000;		//	bytes/sec : 初期値は4MBytes/sec。
+	traffic <- 0;				//	bytes/sec : 現在の帯域占有状況。bandwidth以上には基本ならない
+	lastsenttime <- 0;
+	lastrecvtime <- 0;
+	
+	tcpcon <- null;
+	peerip <- null;
+	udpsend <- null;
+	udprecv <- null;
+	
+	function connect( addr, timeout=10000){
+		tcpcon = TCPConnection();
+		tcpcon.setReader( tcpreadproc);
+		tcpcon.setListener( connectionStateChanged);
+		lastsenttime = lastrecvtime = skGetTime();
+		tcpcon.connect( addr);
+		waitForConnect( timeout);
+		peerip = tcpcon.getPeer();
+	}
+
+	function getState(){
+		return tcpcon.getState();
+	}
+	
+	function close(){
+		tcpcon.close();
+		if( udpsend){
+			udpsend = null;
+		}
+		if( udprecv){
+			udprecv.close(); udprecv = null;
+		}
+	}
+	
+	function waitForConnect( timeout){
+		local t0 = skGetTime();
+		do{
+			suspend();
+			switch( tcpcon.getState()){
+			case SOCKET_CONNECTING : continue;
+			case SOCKET_CONNECTED : return;
+			default :
+				//	SOCKET_CONNECTED以外はエラー
+				throw Exception( sprintf( "%S connection failure. state=%d", getclassname( this), tcpcon.getState()));
+			}
+		}while( skGetTime()-t0 < timeout);
+		//
+		throw Exception( sprintf( "waitForConnect timeout:%d\n", timeout));
+	}
+	
+	function write( ch, bb){
+		if( bb.remain == 0){
+			printf( "WARNING!!! SKTPConnection empty data write. ch:%d\n", ch);
+			currentthread().printStackTrace();
+		}
+		writeUDPTCP( ch, bb, udpsend, peerip);
+		if( flush( skGetTime( lastsenttime))){
+			local flushthread = ::SKTPDelayFlushThread.singleton();
+			flushthread.append( this);
+		}
+	}
+	
+	function flush( dt){
+		if( error) return 0;	//	エラー状態だったら何もしない
+		if( dt){
+			traffic = Math.max( 0, traffic-bandwidth*dt/1000);	//	trafficはdtと共に減る
+		}
+		lastsenttime = skGetTime();
+		//	送信可能サイズはSKTP_FLUSHDELAY(50ms)を基準で算出する。4MB/secの場合は最大200KB/flush。
+		//	TODO : TCPバッファが溢れている場合は送信が追い付いていないのでbandwidthを絞っていく。tcpconから取得可能。
+		local sendbufsize = (bandwidth-traffic)*SKTP_FLUSHDELAY/1000;
+		if( sendbufsize > 0){
+			local bb = flushTCP( TempBuffer( sendbufsize));
+			if( bb.size){
+				traffic += bb.size;
+				bb.pos = 0;
+				tcpcon.write( bb);
+			}
+			bb.dispose();
+		}
+		return remainingbufsize()>0;
+	}
+	
+	function tcpreadproc( con, bb){
+		try{
+			tcpreceived( bb);	//	native関数
+			lastrecvtime = skGetTime();
+		}catch( ex){
+			printexception( ex);	//	不正攻撃かデータ化け。どちらにしても接続は切るしかない
+			tcpcon.close();
+		}
+		local msgbb;
+		while( msgbb = nextMessage()){
+			local ch = msgbb.getb();
+			messageproc( ch, msgbb);
+		}
+	}
+	
+	//	クライアントでのUDP受信を処理する。
+	function udpreadproc( con, bb, ipaddr){
+		try{
+			udpreceived( con, bb, ipaddr);	//	native関数
+		}catch( ex){
+			printexception( ex);
+			tcpcon.close();					//	tcpconが無い場合はそもそもudpreadprocにこないはず
+		}
+		local msgbb;
+		while( msgbb = nextMessage()){
+			local ch = msgbb.getb();
+			messageproc( ch, msgbb);
+		}
+	}
+	
+	//	接続先をサーバーとしてUDP通信の開通を試みる。
+	//	300ms間隔で、mtuを1400から50刻みで減らし、10回の試行回数。
+	//	このメソッドはスレッドをロックする。
+	//	UDP接続は双方からタイミングを合わせて同時にやる必要がある。
+	//	
+	function tryOpenUDP(){
+		local dt = 300, mtu = 1400, dec = 50, trynum = 10;
+		local _udp = UDPSender();
+		udprecv = UDPReceiver();
+		udprecv.setReceiver( udpreadproc);
+		if( !udprecv.bind( tcpcon.getSock().port)){		//	こちらのTCPローカルポートと合わせる
+			udprecv.close();
+			udprecv = null;
+			return false;
+		}
+		//
+		local bb = ByteBuffer( 1500);
+		for( local l = 0;l < trynum;l ++){
+			local seed = udpseed^(mtu+4);
+			bb.resize( 0);
+			bb.puts( udpsession);
+			bb.puts( mtu);		//	size
+			bb.putb( 200);		//	ch
+			bb.putb( 0);		//	seq
+			bb.pos += mtu;		//	データは何でも良し
+			bb.size += mtu;
+			bb.crypt( seed);
+			_udp.send( peerip, bb);
+			sleep( dt);
+			if( tcpcon.getState()!=_SOCKET_CONNECTED){	//	こちらにudpmtuが設定されても相手側にudpmtu届いているとは限らない
+				break;
+			}
+			mtu -= 50;
+		}
+		if( udpmtu){
+			udpsend = _udp;		//	あちらからこちらのUDP通信が成立した。UDPSenderを設定して今後は可能な場合にUDP送信を行う
+			return true;
+		}else{
+			udprecv.close();	//	あちらからこちらにUDPパケットは届かなかった。こちらから相手に届いている可能性はあるが、sendもしないで良い。
+			udprecv = null;
+			return false;
+		}
+	}
+	
+	//	override
+	
+	function setServerConnection( serv, con){
+		tcpcon = con;
+		tcpcon.setReader( tcpreadproc, this);
+		tcpcon.setListener( connectionStateChanged, this);
+		peerip = tcpcon.getPeer();
+	}
+	
+	function connectionStateChanged( id, src, con){
+	}
+	
+	function messageproc( ch, bbuf){
+		printf( "sktp messageproc ch:%S data:%S %S\n", ch, bbuf, bbuf.remain);
+	}
+}
+
+class SKTPServer
+{
+	addr = null;				//	
+	tcpserver = null;			//	
+	udprecv = null;				//	UDPReceiver : nullの場合もある。
+	
+	entitymap = null;			//	{tcpcon=SKTPConnection} : 
+	udpmap = null;				//	{session=SKTPConnection} : 
+	
+	concls = SKTPConnection;
+	
+	constructor(){
+		entitymap = {};
+	}
+	
+	function bind( _addr){
+		local b = true;
+		if( _addr instanceof IPAddress){
+			addr = _addr;
+			tcpserver = TCPServer();
+			b = tcpserver.bind( _addr);
+		}else{
+			tcpserver = _addr;
+		}
+		tcpserver.setListener( connectionStateChanged, this);
+		return b;
+	}
+	
+	function close(){
+		tcpserver.close();
+		if( udprecv){
+			udprecv.close();
+		}
+	}
+	
+	//	サーバーでのUDP受信を処理する。udprecvの受信。
+	//	TODO : ipaddrからudpseedを取るようにして改ざんを防ぐ。
+	//	
+	function udpreadproc( con, bb, ipaddr){
+		local seed = udpseed^bb.remain, pos = bb.pos;
+		bb.crypt( seed, pos, pos+2);		//	udpseedは全コネクションで共通にしないといけないな。。。
+		local session = bb.gets();
+		local sktp = udpmap[session];
+		if( sktp){
+			if( !sktp.peerip.isSameAddress( ipaddr)){
+				//	異なるIPからこのセッションに対するパケットが送られてきた。攻撃の可能性あり。
+			}
+			bb.pos -= 2;
+			bb.crypt( seed, pos, pos+2);	//	crypt状態を戻す。まあこのぐらいの無駄は許容
+			sktp.udpreadproc( con, bb, ipaddr);
+		}
+	}
+	
+	function connectionStateChanged( id, src, con){
+		switch( id){
+		case SOCKET_ACCEPTED:
+		//	logger.debug( "%S connection accepted peer=%S sock=%S", getclassname( this), con.getPeer(), con.getSock());
+			printf( "%S connection accepted peer=%S sock=%S\n", getclassname( this), con.getPeer(), con.getSock());
+			local sktp = concls();
+			sktp.setServerConnection( this, con);
+			entitymap[ con] <- sktp;
+			return 1;
+		case SOCKET_CLOSED:
+		//	logger.debug( "%S connection closed by %S from %S, peer=%S", getclassname( this), con, src, con.getPeer());
+			local sktp = delete entitymap[ con];
+			if( sktp){
+				if( sktp.udpsession && udpmap[sktp.udpsession]==sktp){
+					delete udpmap[sktp.udpsession];
+				}
+			}
+			break;
+		}
+	}
+	
+	//	指定したクライアントとUDP通信の開通を試みる。
+	//	300ms間隔で、mtuを1400から50刻みで減らし、10回の試行回数。
+	//	このメソッドはスレッドをロックする。
+	//	UDP接続は双方からタイミングを合わせて同時にやる必要がある。
+	//	
+	function tryOpenUDPWith( sktp){
+		if( !udprecv) return false;		//	予めUDPReceiverは初期化しておかないといけない。
+		local dt = 300, mtu = 1400, dec = 50, trynum = 10;
+		local udpsession = nextsessionid();
+		local peerip = sktp.peerip;
+		sktp.udpsession = udpsession;
+		udpmap[udpsession] <- sktp;
+		local _udp = UDPSender();
+		//
+		local bb = ByteBuffer( 1500);
+		for( local l = 0;l < trynum;l ++){
+			local seed = udpseed^(mtu+4);
+			bb.resize( 0);
+			bb.puts( udpsession);
+			bb.puts( mtu);		//	size
+			bb.putb( 201);		//	ch
+			bb.putb( 0);		//	seq
+			bb.pos += mtu;		//	データは何でも良し
+			bb.size += mtu;
+			bb.crypt( seed);
+			_udp.send( peerip, bb);
+			sleep( dt);
+			if( tcpcon.getState()!=_SOCKET_CONNECTED){	//	こちらにudpmtuが設定されても相手側にudpmtu届いているとは限らないので送り続ける
+				break;
+			}
+			mtu -= 50;
+		}
+		if( sktp.udpmtu){
+			sktp.udpsend = _udp;		//	あちらからこちらのUDP通信が成立した。UDPSenderを設定して今後は可能な場合にUDP送信を行う
+			return true;
+		}else{
+			delete udpmap[udpsession];	//	あちらからこちらにUDPパケットは届かなかった。こちらから相手に届いている可能性はあるが、sendもしないで良い。
+			return false;
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//	リレー通信。
+//	RelayServerBroker, RelayServerFrontはutil/relayserv.sk
+//	
+
+TCPConnection.ch <- -1;
+
+class RelayServerEvent
+{
+	static function encodeAccept( ch, addr){
+		local bb = ByteBuffer(); bb.putb( SOCKET_ACCEPTED); bb.putb( ch); addr.getData( bb); bb.pos = 0;
+		return bb;
+	}
+
+	static function encodeClose( ch){
+		local bb = ByteBuffer(); bb.putb( SOCKET_CLOSED); bb.putb( ch); bb.pos = 0;
+		return bb;
+	}
+
+	static function encodeKeepalive(){
+		local bb = ByteBuffer(); bb.putb( 128); bb.pos = 0;
+		return bb;
+	}
+
+	static function encodePortbound( port){
+		local bb = ByteBuffer(); bb.putb( 129); bb.puts( port); bb.pos = 0;
+		return bb;
+	}
+
+	static function decode( bb){
+		local e = { id=bb.getb()&255};
+		switch( e.id){
+		case SOCKET_ACCEPTED: e.ch <- bb.getb(); e.addr <- IPAddress(); e.addr.setData( bb); break;
+		case SOCKET_CLOSED: e.ch <- bb.getb() & 0xff; break;
+		case 128: break;
+		case 129: e.port <- bb.gets() & 0xffff; break;
+		}
+		return e;
+	}
+}
+
+/**
+ *	SKTPServer.tcpserverとして動作可能。
+ *	RelayServerTerminalはバインド済みのTCPServerと同等に扱うことが出来き、パブリックからのクライアント接続に対応できる。
+ *	TinyORB.bindServer( term)でORBバインド可能にする
+ */
+class RelayServerTerminal extends SKTPConnection
+{
+	listenerproc = null;		//	
+	chclients = null;			//	<ch,RelayConnection> : 
+	bndaddr = null;				//	RelayRunnerを通してバウンドされたグローバルIPAddress
+
+	constructor(){
+		chclients = {};
+		setNumChannels( 100); //	※今は最大100接続まで。変更する場合はRelayServerFrontとチャンネル数を統一しないといけない。
+	}
+
+	function connect( addr, timeout=10000){
+		super.connect( addr, timeout);
+		for( ;;){
+			if( bndaddr) break;
+			suspend();
+		}
+		printf( "RelayServerTerminal bound to global IP %S\n", bndaddr);
+	}
+
+	function setListener( func, self){
+		listenerproc = func.bindenv( self);
+	}
+	
+	function close(){
+		foreach( con in chclients){
+			listenerproc( SOCKET_CLOSED, con, this);
+			removei;
+		}
+		super.close();
+	}
+	
+	//	RelayServerFrontからのメッセージ。chに対応するRelayConnectionのreadprocを呼ぶ
+	//	ch0はコネクションコントロール用チャンネル
+	function messageproc( ch, bbuf){
+		if( ch){
+			local con = chclients[ch];
+			if( con){	//	瞬間的にclose後にchにデータが来ることがある。
+				con.readproc( con, bbuf);
+			}
+		}else{
+			local e = ::RelayServerEvent.decode( bbuf);
+		//	printf( "CONNECTION EVENT %S\n", encodeJSON( e));
+			connectionproc( e);
+		}
+	}
+	
+	//	
+	function connectionproc( e){
+		switch( e.id){
+		case SOCKET_ACCEPTED:
+			local con = RelayConnection();
+			con.term = this;
+			con.ch = e.ch;
+			con.peerip = e.addr;
+			chclients[e.ch] <- con;
+			printf( "RelayTerminal client(%d) accepted. addr=%S\n", e.ch, con["peerip"]||"?");
+			listenerproc( SOCKET_ACCEPTED, this, con);
+			break;
+		case SOCKET_CLOSED:
+			local ch = e.ch, con = delete chclients[ch];
+			printf( "RelayTerminal client(%d) closed. addr=%S\n", e.ch, con["peerip"]||"?");
+			if( con){
+				con.ch = -1;
+				listenerproc( SOCKET_CLOSED, this, con);
+			}
+			break;
+		case 129:	//	port bound
+			bndaddr = tcpcon.getPeer();
+			bndaddr.port = e.port;
+			break;
+		}
+	}
+}
+
+/**
+ *	RelayServerTerminalとRelayServerFront間のコネクション。TCPConnectionと同じように振る舞うことが出来る。
+ *	実際は一つのTCPConnection上で走っているSKTPConnectionの一つチャンネル。
+ *	※※※ sktpのチャンネル毎通信は並列だが低いch順に処理されるのでcloseの操作をch0でやってしまうと最後にchXで出力したデータが
+ *	割り込まれてcloseしてしまうケースがある。TCPConnection.closeでも基本的には同じなのでほっといて良いか。でも
+ */
+class RelayConnection
+{
+	term = null;			//	RelayServerTerminal
+	ch = -1;				//	1-200 : 
+	peerip = null;			//	IPAddress? じゃなくても良いが、RelayRunnerServerに接続してきたpeeripを使う。
+
+	readproc = null;		//	function : RelayServerTerminal.messageprocから呼ばれる
+	listenerproc = null;	//	function : 
+	
+	static FRAMESIZE = 65527 / 4
+
+	function setReader( func, self){
+		readproc = func.bindenv( self);
+	}
+
+	function setListener( func, self){
+		listenerproc = func.bindenv( self);
+	}
+
+	function getState(){
+		return ch>0 ? SOCKET_CONNECTED : SOCKET_CLOSED;
+	}
+
+	function getPeer(){
+		return peerip;
+	}
+
+	function getSock(){
+		return null;		//	umm
+	}
+
+	//	RelayServerを経由してRelayRunnerにcloseを伝える
+	//	※term.listenerprocは呼び出されない？TCPConnectionの動作を要確認
+	function close(){
+		if( ch > 0){
+			delete term.chclients[ch];
+			// term.listenerproc( SOCKET_CLOSED, this, term);
+			local bb = ::RelayServerEvent.encodeClose( ch);
+			ch = -1;
+			term.write( 0, bb);
+		}
+	}
+
+	function write( bbuf){
+		if( ch > 0){
+			local ret = bbuf.remain;
+			if( ret > FRAMESIZE){
+				local size = bbuf.size, r = ret;
+				do{	//	FRAMESIZE毎に分割して送る
+					bbuf.size = bbuf.pos + FRAMESIZE;
+					term.write( ch, bbuf);
+					bbuf.pos = bbuf.size;
+					bbuf.size = size;
+					r -= FRAMESIZE;
+				}while( r > FRAMESIZE);
+			}
+			term.write( ch, bbuf);
+			return ret;
+		}else{
+			return -1;
+		}
+	}
+
+	function flush(){
+	}
+}

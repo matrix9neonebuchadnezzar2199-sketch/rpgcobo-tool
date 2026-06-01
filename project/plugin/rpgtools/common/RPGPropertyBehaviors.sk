@@ -1,0 +1,2540 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+import VarType;
+import BlockFlagID;
+import CollisionGroupID;
+
+local srcdir = dirname( callee().getSourceName());
+
+class PropertyBehaviors.NameIcon extends PropertyBehavior
+{
+	static proptype = NAME_ICON;
+	static uipath = srcdir .. "/ui/prop_nameicon.ui"
+	
+	iconbtn = null;			//	GPUIButton
+	edit = null;			//	GPUITextEdit
+
+	iconstr = null;			//	string : アイコンの絵文字コード
+
+	function init(){
+		iconbtn = view.findChild( "iconbtn");
+		edit = view.findChild( "edit");
+	}
+
+	function getParam(){
+		return (edit.getText(), iconstr);
+	}
+	
+	function setParam( v){
+		edit.setText( v[0]);
+		iconstr = v[1];
+		iconbtn.setValue( "icon", v[1]);
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "iconbtn":
+			local ic = IconSelectPopup.run( e, iconstr, prop["icontype"]);
+			if( ic){
+				iconstr = ic;
+				iconbtn.setValue( "icon", ic);
+				postActionEvent( true);
+			}
+			break;
+		case "edit":
+			postActionEvent( true);
+			break;
+		}
+	}
+}
+
+class PropertyBehaviors.ListScalar extends PropertyBehavior
+{
+	static proptype = LIST_SCALAR;
+	static uipath = srcdir .. "/ui/prop_listscalar.ui"
+	
+	menu = null;	//	MenuBehavior
+	val0 = null;	//	NumInputBehavior : viewの形状でどのbehavior使うか変えないと、、、
+	trgid = ACTION_PERFORMED;	//	int : 変更を確定するイベントID
+
+	function init(){
+		local strlist = fget( prop, "list", prop, proplist);
+		local itemlist = strlist.map( @( v, i) typeof( v)==SS_TABLE ? v : { lbl=v, val=i });
+		menu = MenuBehavior( view.findChild( "listmenu"), itemlist);
+		//
+		val0 = createNumInputBehavior( view.findChild( "val0"));
+		local r = prop["range"]||#(0,100), q = prop["q"]||1;
+		val0.setRange( r[0], r[1], q)
+	}
+
+	function getParam(){
+		local i = menu.menuitems.indexOf( menu.selitem);
+		return (menu.menuitems[i<0?0:i].val, val0.getValue());
+	}
+	
+	function setParam( v){
+		foreach( mi in menu.menuitems){
+			if( mi.val == v[0]){ menu.selectItem( mi); break; }
+		}
+		val0.setValue( v[1]||0);
+	}
+	
+	function paramevent( e){
+		if( e.src==menu.view){
+			postActionEvent( true);
+		}else
+		if( e.id==trgid && e.src==val0.view){
+			postActionEvent( true);	//	同じidに対する操作は常にまとめる？
+		}
+	}
+}
+
+local getData( dataid){
+	local datatype = ::RPGData.getDataType( dataid);
+	if( datatype){
+		return ::conf[datatype][dataid];
+	}
+}
+
+local setDataIDParam( view, dataid, num){
+	view.findChild( "L").setVisible( num <= 1);
+	view.setValue( "num", num>1 ? "+ "..num : "");
+	if( !length( dataid)){
+		view.setValue( "lbl", "未設定");
+		view.setValue( "icon", "\ue15b");
+		return;
+	}
+	local datatype = ::RPGData.getDataType( dataid);
+	if( datatype){
+		local r = ::conf[datatype][dataid];
+		if( r){
+			view.setValue( "lbl", sprintf( "%S: %S", dataid, lang( r.name)));
+			view.setValue( "icon", r["icon"] || ConfigResource.dbiconmap[datatype]);
+			return;
+		}
+	}
+	view.setValue( "lbl", sprintf( "%S: $T.lbl_invalidid", dataid));
+	view.setValue( "icon", "\ue000");
+}
+
+local showDataIDMenu( e, dataid){
+	if( !dataid) return;
+	local menudata = [
+		{ id="edit", lbl=~(compiletemplate_c( T.tmpl_edit_v), {v=dataid}), icon="\ue745" },
+	];
+	switch( MenuPopup.run( menudata)["id"]){
+	case "edit":
+		local datatype = ::RPGData.getDataType( dataid);
+		local path = "/.x/%S/%S" % (datatype, dataid);
+		::skstudio.openEditor( path);
+		break;
+	}
+}
+
+local showResIDMenu( e, resid){
+	if( !resid) return;
+	local menudata = [
+		{ id="edit", lbl=~(compiletemplate_c( T.tmpl_edit_v), {v=resid}), icon="\ue745" },
+	];
+	switch( MenuPopup.run( menudata)["id"]){
+	case "edit":
+		local restype = ::RPGResource.getResourceType( resid);
+		local path = "/.x/%S" % restype;
+		::skstudio.openEditor( path, resid);
+		break;
+	}
+}
+
+
+class PropertyBehaviors.DataID extends PropertyBehavior
+{
+	static proptype = DATAID;
+	static uipath = srcdir .. "/ui/prop_dataid.ui"
+	
+	menu = null;
+	dataid = null;
+	num = 1;
+
+	function init(){
+		menu = view.findChild( "listmenu");
+	}
+
+	function getParam(){
+		return num > 1 ? sprintf( "%S,%d", dataid, num) : dataid;
+	}
+	
+	function setParam( v){
+		local i = v ? v.indexOf( ',') : -1;
+		num = 1;
+		dataid = i<0 ? v : v.substring( 0, i);
+		if( prop["inputnum"] && i >= 0) num = int( v.substring( i+1));
+		setDataIDParam( menu, dataid, num);
+	}
+	
+	function paramevent( e){
+		if( e.src["name"]=="listmenu"){
+			if( e.isMouseDown( BUTTON1_MASK)){
+				local ret = DataSelectPopup.run( e, prop, getParam());
+				if( ret){
+					setParam( ret=="rem" ? null : ret);
+					postActionEvent( true);
+				}
+			}else
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showDataIDMenu( e, dataid);
+			}
+		}
+	}
+}
+
+class PropertyBehaviors.DataIDs extends PropertyBehavior
+{
+	static proptype = DATAIDS;
+	static uipath = srcdir .. "/ui/prop_dataids.ui"
+	
+	menulist = null;
+	plist = null;
+
+	datalist = null;
+
+	function init(){
+		menulist = view.findChild( "LIST");
+		plist = fget( prop, "datalist", prop, proplist);
+		menulist.setRowCount( length( plist));
+		foreach( i, v in plist){
+			local r = menulist.rows[i];
+			r.setValue( "head", v["head"] || string( i+1));
+			r.findChild( "listmenu").ref = (i,v);
+		}
+		local d = cnt.computeSizeDelta();
+		if( d.x != 0.0 || d.y != 0.0){
+			cnt.stretchSize( view.bnd.w+d.x, view.bnd.h+d.y);
+			cnt.revalidate();
+		}
+	}
+
+	function getParam(){
+		return datalist;
+	}
+	
+	function setParam( v){
+		datalist = clone v;
+		foreach( i,p in plist){
+			local r = menulist.rows[i];
+			if( r){
+				local v = datalist[i];
+				setDataIDParam( r, v, 1);
+			}
+		}
+	}
+	
+	function paramevent( e){
+		if( e.src["name"]=="listmenu"){	//	リスト選択
+			if( e.isMouseDown( BUTTON1_MASK)){
+				local ret = DataSelectPopup.run( e, e.src.ref[1]);
+				if( ret){
+					local i = e.src.ref[0];
+					local a = clone datalist;
+					if( length( a) < i+1) a.resize( i+1);
+					a[i] = ret=="rem" ? null : ret;
+					setParam( a);
+					postActionEvent( true);
+				}
+			}else
+			if( e.isMouseDown( BUTTON2_MASK)){
+				local i = e.src.ref[0];
+				showDataIDMenu( e, datalist[i]);
+			}
+		}
+	}
+}
+
+class PropertyBehaviors.ResourceID extends PropertyBehavior
+{
+	static proptype = RESID;
+	static uipath = srcdir .. "/ui/prop_dataid.ui"
+	
+	menu = null;
+	resid = null;
+	
+	function init(){
+		menu = view.findChild( "listmenu");
+	}
+
+	function getParam(){
+		return resid;
+	}
+	
+	function setParam( v){
+		resid = v;
+		if( !length( v)){
+			menu.setValue( "lbl", "$T.lbl_notset");
+			menu.setValue( "icon", "\ue15b");
+			return;
+		}
+		foreach( ri, res in ::conf._resource){
+			local r = res[v];
+			if( r){	//	リソースの名前とIDとアイコンを設定
+				menu.setValue( "lbl", sprintf( "%S: %S", resid, lang( r.name)));
+				menu.setValue( "icon", GameResourceResource.resiconmap[ri]);
+				return;
+			}
+		}
+		menu.setValue( "lbl", sprintf( "%S: ----", v));
+		menu.setValue( "icon", "\ue000");
+	}
+	
+	function paramevent( e){
+		if( e.src["name"]=="listmenu"){	//	リスト選択
+			local ret = ResourceSelectDialog.run( e, prop, resid);
+			if( ret){
+				setParam( ret=="rem" ? null : ret);
+				postActionEvent( true);
+			}
+		}
+	}
+}
+
+
+class PropertyBehaviors.ResourceIDPreview extends PropertyBehavior
+{
+	static proptype = RESID_PREVIEW;
+	static uipath = srcdir .. "/ui/prop_resid_pv.ui"
+	
+	resid = null;
+	preview = null;		//	ResourcePreviewCanvas : モデルのプレビュー
+
+	static function getUIPath( prop){
+		if( prop["size"]=="big") return srcdir .. "/ui/prop_resid_pvbig.ui";
+		return uipath;
+	}
+
+	function init(){
+		local selbtn = view.findChild( "selbtn");
+		preview = ResourcePreviewCanvas( selbtn, true);
+		selbtn.gpui.enablerclick = false;
+		// selbtn.addEventListener( MOUSE_EVENT, rclkevent);
+	}
+
+	function getParam(){
+		return resid;
+	}
+	
+	function setParam( v){
+		resid = v;
+		if( !length( v)){
+			view.setValue( "idlbl", "$T.lbl_notset");
+			preview.setResourceData( v, null);
+			return;
+		}
+		foreach( ri, res in ::conf._resource){
+			local r = res[v];
+			if( r){	//	リソースの名前とIDとアイコンを設定
+				view.setValue( "idlbl", sprintf( "%S: %S", resid, lang( r.name)));
+				preview.setResourceData( v, r);
+				return;
+			}
+		}
+		view.setValue( "idlbl", sprintf( "%S: ----", v));
+		preview.setResourceData( v, null);
+	}
+	
+	function paramevent( e){
+		if( e.src["name"]=="selbtn"){
+			if( e.isMouseDown( BUTTON1_MASK)){
+				local ret = ResourceSelectDialog.run( e, prop, resid);
+				if( ret){
+					setParam( ret=="rem" ? null : ret);
+					postActionEvent( true);
+				}
+			}else
+			if( e.isMouseDown( BUTTON2_MASK)){
+				local i = e.src.ref[0];
+				showResIDMenu( e, resid);
+			}
+		}
+	}
+
+	// function rclkevent( e){
+	// 	if( e.id==MOUSE_RELEASED && e.isMouseDown( BUTTON2_MASK) && e.isClicked()){
+	// 		local i = e.src.ref[0];
+	// 		showResIDMenu( e, resid);
+	// 	}
+	// }
+}
+
+
+class PropertyBehaviors.ExpCurve extends PropertyBehavior
+{
+	static proptype = EXPCURVE;
+	static uipath = srcdir .. "/ui/prop_dataid.ui"
+	
+	menu = null;
+	curv = null;
+
+	function init(){
+		menu = view.findChild( "listmenu");
+		curv = clone prop.defval;
+		menu.setValue( "icon", "");
+	}
+	
+	function getParam(){
+		return curv;
+	}
+	
+	function setParam( v){
+		curv = v;
+		menu.setValue( "lbl", encodeJSON( v));
+	}
+	
+	function paramevent( e){
+		if( e.src["name"]=="listmenu"){	//	リスト選択
+			local maxlv = proplist.getParam( "MAXLV") || 99;
+			local ret = ExpCurvePopup.run( e, curv, maxlv);
+			if( ret && ret<>curv){
+				setParam( ret);
+				postActionEvent( true);
+			}
+		}
+	}
+}
+
+class PropertyBehaviors.ExpCurve.ExpCurvePopup extends Popup
+{
+	static UIPATH = srcdir .. "/ui/expcurvpopup.ui";
+
+	modalclose = 2;
+	maxlv = 99;
+
+	baseval = null;
+	gainval = null;
+	explist = null;		//	GPUIListView
+
+	constructor( v, c, mlv=99){
+		super( v);
+		maxlv = mlv;
+		baseval = ::createNumInputBehavior( v.findChild( "baseval"));
+		gainval = ::createNumInputBehavior( v.findChild( "gainval"));
+		baseval.setRange( 10, 100, 1);
+		gainval.setRange( 1, 100, 1);
+		explist = v.findChild( "LIST");
+		baseval.setValue( c[0]);
+		gainval.setValue( c[1]);
+		setCurves();
+		baseval.view.addEventListener( ITEM_EVENT, valevent);
+		gainval.view.addEventListener( ITEM_EVENT, valevent);
+	}
+
+	function setCurves(){
+		local et = (baseval.getValue(), gainval.getValue());
+		explist.setRowCount( maxlv);
+		local prevexp =0;
+		for( local l = 1; l <= maxlv;l ++){
+			local r = explist.rows[l-1];
+			local exp = ::RPGSystem.getExpByLV( l+1, et);
+			setnum( r.findChild( "lv"), l, 3);
+			setnum( r.findChild( "next"), exp-prevexp, 11);
+			setnum( r.findChild( "total"), prevexp, 15);
+			prevexp = exp;
+			r.repaint();
+		}
+	}
+
+	function setnum( lbl, v, d){
+		local n = commaNum( v);
+		local x = "___,___,___,___,___".substring( 19-d, 19-length( n));
+		local a0 = clone lbl.fontattr, a1 = lbl.fontattr;
+		local tb = lbl.textbox;
+		a0.color = 0x77777777;
+		tb.setText( x..n);
+		tb.setAttribute( a0);
+		lbl.resetattr = false;
+		tb.setAttribute( a1, length( x));
+	}
+
+	function commaNum( i){	//	int
+		local sb = #StringBuffer(); sb.clear();
+		while( i >= 1000){
+			sb[0] <- ",%03d" % (i%1000); i /= 1000;
+		}
+		sb[0] <- string( i);
+		return string( sb);
+	}
+
+	function valevent( e){
+		setCurves();
+	}
+
+	static function run( e, curv, maxlv){
+		local p = this( ::loadSKView( UIPATH), curv, maxlv);
+		p.show( null, e.src);
+		return p.ret ? (p.baseval.getValue(), p.gainval.getValue()) : null;
+	}
+}
+
+class PropertyBehaviors.Graphic extends PropertyBehavior
+{
+	static proptype = GRAPHIC;
+	static uipath = srcdir .. "/ui/prop_dataid.ui"
+	
+	menu = null;
+	respath = null;
+
+	function init(){
+		menu = view.findChild( "listmenu");
+		menu.setValue( "icon", "\ue15b");
+		menu.setValue( "lbl", "$T.lbl_notset");
+	}
+
+	function getParam(){
+		return respath;
+	}
+	
+	function setParam( v){
+		respath = v;
+		local lbl = v? v.substring( v.lastIndexOf( "/")+1) : "$T.lbl_notset";
+		menu.setValue( "lbl", lbl);
+		local r = ::getResource( respath);
+		if( r){
+			menu.setValue( "icon", skstudio.getResourceIcon( r));
+		}else{
+			menu.setValue( "icon", "\ue15b");
+		}
+	}
+	
+	function paramevent( e){
+		if( e.src["name"]=="listmenu"){	//	リスト選択
+			local ret = ResourceFileSelectDialog.run( prop);
+			if( ret){
+				setParam( ret);
+				postActionEvent( true);
+			}
+		}
+	}
+}
+
+class PropertyBehaviors.VoxelParts extends PropertyBehavior
+{
+	static proptype = VOXEL_PARTS;
+	static uipath = srcdir .. "/ui/prop_voxparts.ui"
+	
+	menu = null;
+	
+	voxpath = null;			//	usevcnameの場合は名前のみ
+	partsid = null;			//	
+
+	function init(){
+		menu = view.findChild( "listmenu");
+	}
+	
+	function getParam(){
+		return (voxpath && partsid) ? (voxpath, partsid) : null;
+	}
+	
+	function setParam( v){
+		local vc = prop["usevcname"] ? VoxelContainer.getGlobal( v[0]) :  ::getResourceContent( v[0]);
+		if( vc){
+			voxpath = v[0];
+			local a = [], sel = null;
+			for( local l = 0, vp; vp = vc.partsAt( l); l++){
+				if( vp.parent) continue;
+				if( vp.name.startsWith( "_")) continue;
+				local mi = { lbl=vp.name, val=vp.name};
+				a .. mi;
+				if( vp.name==v[1]) sel = mi;
+			}
+			partsid = v[1];
+		}else{
+			voxpath = partsid = null;
+		}
+		if( voxpath && partsid){
+			menu.setValue( "lbl", voxpath.substring( voxpath.lastIndexOf( "/")+1).." - "..partsid);
+			menu.setValue( "icon", "\ue871");
+		}else{
+			menu.setValue( "lbl", "$T.lbl_notset");
+			menu.setValue( "icon", "\ue15b");
+		}
+	}
+	
+	function paramevent( e){
+		if( e.src["name"]=="listmenu"){	//	リスト選択
+			local ret = ResourceFileSelectDialog.run( prop);
+			if( ret){
+				if( prop["usevcname"]){
+					ret[0] = ret[0].substring( ret[0].lastIndexOf( "/")+1, ret[0].lastIndexOf( "."));
+				}
+				setParam( ret);
+				postActionEvent( true);
+			}
+		}
+	}
+}
+
+class PropertyBehaviors.VoxPalette extends PropertyBehavior
+{
+	static proptype = PALETTEMAP;
+	static uipath = srcdir .. "/ui/prop_pal.ui"
+	
+	palview = null;		//	SKImageView
+	palimg = null;		//	RGBAImage( 16, n)
+	palmod = null;		//	[i,col,...]
+	baseh = 1.0;
+	selbb = null;		//	ByteBuffer( 256)
+	selbb0 = null;
+	ix0 = 0;
+	iy0 = 0;
+	selmode = 0;
+
+	static menuitems = [
+		{ lbl="$T.lbl_editall_mtl", id="mtl" },
+		"*",
+		{ lbl="$T.lbl_copy_pal", id="copyimg", icon="\ue14d" },
+		{ lbl="$T.lbl_paste_pal", id="pasteimg", icon="\ue14f" },
+		"*",
+		{ lbl="$T.lbl_reset_pal", id="reset", icon="\uf053" },
+	];
+
+	static ctxmenuitems = [
+		{ lbl="$T.lbl_hsv", id="hsv" },
+		{ lbl="$T.lbl_material", id="mtl" },
+		"*",
+		{ lbl="$T.menu_edit_copy", id="copy", icon="\ue14d" },
+		{ lbl="$T.menu_edit_paste", id="paste", icon="\ue14f" },
+		"*",
+		{ lbl="$T.lbl_reset_col", id="reset", icon="\uf053" },
+	]
+
+	function init(){
+		palview = view.findChild( "pal");
+		palview.addEventListener( MOUSE_EVENT, palevent);
+		baseh = cnt.bnd.h;
+		selbb = ByteBuffer( 256);
+		selbb.size = 256;
+		selbb.fill( 0);
+		selbb0 = ByteBuffer( 256);
+		selbb0.size = 256;
+	}
+	
+	function getParam(){
+		return palmod;
+	}
+	
+	function setParam( v){
+		palmod = clone v;
+		setImage( v);
+	}
+
+	function setImage( v){
+		local n = length( v);
+		palimg = RGBAImage( 16, Math.max( 1, (n/2+15)/16), 0);
+		for( local l = 0; l < n; l += 2){
+			palimg[l/2] = v[l+1] | 0xff000000;
+		}
+		local paltex = Texture(); paltex.load( palimg);
+		paltex.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_POINT, SK_POINT));
+		local sp = Sprite( paltex);
+		sp.shadersrc = skFXFindTechnique( "rpgtool.palimg").getShaderSource( 0);
+		(sp.tex1 = Texture()).create( 256, 1, SK_R8, 0, 0, selbb);
+		sp.miscmat = Matrix();
+		palview.setSprite( sp);
+		local dh = (palimg.height-1) * 16;
+		cnt.stretchSize( cnt.bnd.w, baseh + dh);
+		cnt.revalidate();
+		updateSel();
+	}
+
+	function updateSel(){
+		local sp = palview.sp, m = sp.miscmat;
+		sp.tex1.create( 256, 1, SK_R8, 0, 0, selbb);
+		m[0] = 1.0/sp.bnd.w;
+		m[1] = 1.0/sp.bnd.h;
+		m[2] = 16;
+		m[3] = palimg.height;
+		palview.repaint();
+	}
+
+	function regclear(){
+		selbb.fill( 0);
+		updateSel();
+	}
+
+	//	mode 1:set, 2:add, 3:del
+	function regselect( x0, y0, x1, y1, mode=1){
+		if( x0>x1){ local t=x0; x0=x1; x1=t; }
+		if( y0>y1){ local t=y0; y0=y1; y1=t; }
+		x0 = Math.clamp( x0, 0, palimg.width-1);
+		x1 = Math.clamp( x1, 0, palimg.width-1);
+		y0 = Math.clamp( y0, 0, palimg.height-1);
+		y1 = Math.clamp( y1, 0, palimg.height-1);
+		local v = 255;
+		switch( mode){
+		case 1: selbb.fill( 0); break;
+		case 3: v = 0;
+		case 2: selbb.setBuffer( selbb0); break;
+		}
+		for( local y=y0; y<=y1; y++){
+			for( local x=x0; x<=x1; x++){
+				selbb[x+y*16] = v;
+			}
+		}
+		updateSel();
+	}
+	
+	function palevent( e){
+		if( !palimg) return;
+		e.computeLocal( palview.getInvMatrix());
+		local ix = Math.clamp( int(e.lx/palview.bnd.w*palimg.width), 0, palimg.width-1);
+		local iy = Math.clamp( int(e.ly/palview.bnd.h*palimg.height), 0, palimg.height-1);
+		local i = ix + iy * palimg.width;
+		switch( e.id){
+		case MOUSE_EXITED:
+			palview.tips = null;
+			break;
+		case MOUSE_MOVED:
+			palview.tips = null;
+			if( palimg[i]){
+				local mi = palmod[i*2+1]>>>24;
+				local voxmtl = ::conf._resource.renderset.voxmtls[mi];
+				if( voxmtl){
+					palview.tips = sprintf( "#%06X\n%d:%S", palmod[i*2+1]&0xffffff, mi, ::lang( voxmtl.name));
+				}
+			}
+			break;
+		case MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				if( palimg[i]){
+					local ret = MenuPopup.run( ctxmenuitems);
+					if( ret){
+						ctxMenuSelected( i, e, ret);
+					}
+				}
+				break;
+			}
+			if( e.isMouseDown( BUTTON3_MASK)){
+				if( selbb[i]) regclear(); else regselect( 0, 0, palimg.width-1, palimg.height-1);
+				break;
+			}
+			if( e.count == 2){
+				if( palimg[i]) editColor( i);
+			}
+			ix0 = ix; iy0 = iy;
+			if( e.isShiftDown()){
+				selmode = 2;
+			}else
+			if( e.isCommandDown()){
+				selmode = selbb[i] ? 3 : 2;
+			}else{
+				selmode = 1;
+				regclear();
+			}
+			selbb0.setBuffer( selbb);
+		case MOUSE_DRAGGED:
+			if( selmode && e.isMouseDown( BUTTON1_MASK)){
+				regselect( ix0, iy0, ix, iy, selmode);
+			}
+			break;
+		}
+	}
+
+	//	単色の編集
+	function editColor( i){
+		local ix = i%palimg.width, iy = i/palimg.width;
+		local px = ix*palview.bnd.w / palimg.width;
+		local py = (iy+1)*palview.bnd.h / palimg.height;
+		local c = palimg[i]||0; c = (c<<24)|((c>>8)&0xff00)|((c<<8)&0xff0000)|0xff;
+		local r = ColorPopup.run( Vector3D(px,py,0).transform( palview.mat), c);
+		if( r){
+			palmod = clone palmod;
+			r = (r>>>24)|((r>>8)&0xff00)|((r<<8)&0xff0000);
+			palmod[i*2+1] = (palmod[i*2+1]&0xff000000) | r;
+			setImage( palmod);
+			postActionEvent( true);
+		}
+	}
+	
+	function ctxMenuSelected( i, e, mi){
+		switch( mi["id"]){
+		case "hsv":
+		{
+			local img0 = clone palimg, img1 = palimg, self = this, n = length( palmod)/2, sb = selbb;
+			local hsvpropdef = {
+				name = "hsv",
+				props = [
+					{ pid="hsv", lbl="$T.lbl_hsv", type=VEC3, ui="bar", range=((-180,180),(-100,100),(-100,100)), dynamic=true },
+				],
+				setprop = @( prop, data, val){
+					if( prop.pid != "hsv") return;
+					img1.draw( img0, 0, 0);
+					local hv = Math.lerp( -Math.PI, Math.PI, val[0]/360.0+0.5);
+					local sv = Math.lerp( 0.0, 2.0, val[1]/200.0 + 0.5);
+					local vv = Math.lerp( 0.0, 2.0, val[2]/200.0 + 0.5);
+					local m = Matrix.fromHSV( hv, sv, vv);
+					local v = Vector3D();
+					for( local l = 0;l < n;l ++){
+						if( !sb[l]) continue;
+						local c = img1[l];
+						v( c&255, (c>>>8)&255, (c>>>16)&255).scale( 1.0/255.0);
+						v.transform( m).saturate().scale( 255.0);
+						img1[l] = (v.x) | (v.y<<8) | (v.z<<16) | (c&0xff000000);
+					}
+					self.palview.sp.tex0.load( img1);
+					self.palview.repaint();
+				}
+			}
+			local d0 = #{hsv=[0,0,0]};
+			local ret = PropertyEditPopup.run( palview, hsvpropdef, deepclone( d0));
+			if( ret && ret<>d0){
+				palmod = clone palmod;
+				for( local l = 0;l < n;l ++){
+					palmod[l*2+1] = (img1[l]&0xffffff) | (palmod[l*2+1]&0xff000000);
+				}
+				postActionEvent( true);
+			}
+			break;
+		}
+		case "mtl":
+		{
+			local m0 = palmod[i*2+1]>>>24, n = length( palmod)/2;
+			local ret = MaterialSelectPopup.run( e, m0);
+			if( ret){
+				local m = ret[0]<<24;
+				palmod = clone palmod;
+				for( local l = 0;l < n;l ++){
+					if( selbb[l]) palmod[l*2+1] = (palmod[l*2+1]&0x00ffffff) | m;
+				}
+				postActionEvent( true);
+			}
+			break;
+		}
+		case "copy":
+			local a = [], n = length( palmod)/2;
+			for( local l = 0;l < n;l ++){
+				if( selbb[l]) a .. palmod[l*2+1]; else if( length( a)) a .. 0;
+			}
+			putClipboard( "voxpal", a);
+			break;
+		case "paste":
+			local cbdata = getClipboard( "voxpal");
+			if( !cbdata) break;
+			local i0 = 0, n = length( palmod)/2;
+			for( local l = 0;l < n;l ++) if( selbb[l]) { i0=l; break; }
+			foreach( i, v in cbdata){
+				local pi = (i+i0) * 2 + 1;
+				if( v && palmod[pi]) palmod[pi] = v;
+			}
+			setImage( palmod);
+			postActionEvent( true);
+			break;
+		case "reset":
+			local pal = fget( prop, "inipal", prop, proplist);
+			if( pal){
+				local m0 = palmod[i*2+1]>>>24;
+				palmod = clone palmod;
+				palmod[i*2+1] = (pal[i*2+1]&0x00ffffff) | (m0<<24);
+				setImage( palmod);
+				postActionEvent( true);
+			}
+			break;
+		}
+	}
+
+	function menuSelected( e, mi){
+		switch( mi["id"]){
+		case "mtl":
+		{
+			local len = length( palmod);
+			local ca = [];
+			for( local l = 0, n = length( palmod); l < n; l += 2) ca .. palmod[l+1];
+			local ret = ColorMaterialSelectPopup.run( e, ca);
+			if( ret){
+				palmod = clone palmod;
+				foreach( i, v in ret){
+					palmod[i*2+1] = v;
+				}
+				setImage( palmod);
+				postActionEvent( true);
+			}
+			break;
+		}
+		case "copyimg":
+			skPutClipboardData( palimg);
+			break;
+		case "pasteimg":
+			if( skCheckClipboardType( ClipboardType.CLIPBOARD_IMAGE)) {
+				local img = skGetClipboardData( ClipboardType.CLIPBOARD_IMAGE);
+				local len = length( palmod);
+				if( img && img.width==16 && img.height>=len/32){
+					palmod = clone palmod;
+					for( local l = 0;l < len; l += 2){
+						local r = img[l/2];
+						r = r&0xffffff;// (r>>>24)|((r>>8)&0xff00)|((r<<8)&0xff0000);
+						palmod[l+1] = r | (palmod[l+1] & 0xff000000);
+					}
+					setImage( palmod);
+					postActionEvent( true);
+				}
+			}
+			break;
+		case "reset":
+			local pal = fget( prop, "inipal", prop, proplist);
+			if( pal){
+				palmod = pal;
+				setImage( pal);
+				postActionEvent( true);
+			}
+			break;
+		}
+	}
+}
+
+
+class PropertyBehaviors.Variable extends PropertyBehavior
+{
+	static proptype = VARIABLE;
+	static uipath = srcdir .. "/ui/prop_var.ui"
+
+	varfield = null;
+
+	function init(){
+		varfield = VariableBehavior( view.findChild( "varfield"), prop);
+	}
+
+	function getParam(){
+		return varfield.var;
+	}
+	
+	function setParam( v){
+		varfield.setVar( v);
+	}
+	
+	function paramevent( e){
+		local newvar;
+		switch( e.src["name"]){
+		case "varfield":
+			postActionEvent( true);
+			break;
+		}
+	}
+}
+
+
+class PropertyBehaviors.Requirements extends PropertyBehavior
+{
+	static proptype = REQUIREMENTS;
+	static uipath = srcdir .. "/ui/prop_reqchks.ui"
+
+	static menuitems = [
+		{ lbl="$T.lbl_reqnum = 0", val=0 },
+		{ lbl="$T.lbl_reqnum = 1", val=1 },
+		{ lbl="$T.lbl_reqnum = 2", val=2 },
+		{ lbl="$T.lbl_reqnum = 3", val=3 },
+	];
+
+	static opitems = [
+		{ lbl="＝", val="==" },
+		{ lbl="≠", val="!=" },
+		{ lbl="≧", val=">=" },
+		{ lbl="＞", val=">" },
+		{ lbl="≦", val="<=" },
+		{ lbl="＜", val="<" },
+	]
+	
+	reqlist = null;
+	noreqs = null;
+	h0 = 0;
+
+	reqs = null;
+
+	function init(){
+		reqlist = view.findChild( "reqlist");
+		noreqs = view.findChild( "noreqs");
+		h0 = cnt.bnd.h;
+	}
+
+	function getParam(){
+		return deepclone( reqs);
+	}
+	
+	function setParam( v){
+		reqs = deepclone( v) || [];
+		if( !length( reqs)){
+			noreqs.setVisible( true);
+			reqlist.setVisible( false);
+			reqlist.setRowCount( 0);
+			cnt.stretchSize( cnt.bnd.w, h0);
+		}else{
+			noreqs.setVisible( false);
+			reqlist.setVisible( true);
+			reqlist.setRowCount( 0);	//	要素を全部作り直すために一度0個に
+			reqlist.setRowCount( length( reqs));
+			foreach( i, v in reqs){
+				local k = v["key"]||"varcmp";
+				local reqdef = ::RPGSystem.reqchk[k]; if( "sub" in v) reqdef = reqdef.submenu[v.sub];
+				local r = reqlist.rows[i];
+				local op = r.findChild( "op");
+				local lv = r.findChild( "lvar");
+				if( "lvar" in v){
+					VariableBehavior.setVarView( v.lvar, r.findChild( "lvar.lbl"), null);
+				}else{
+					r.setValue( "lvar.lbl", reqdef.lbl);
+				}
+				local rvar = VariableBehavior( r.findChild( "rvar"), reqdef.rvar);	//	rvarは必ずある
+				rvar.setVar( v.rvar);
+				op.ref = MenuBehavior( op, opitems);
+				if( v["op"]){
+					op.ref.selectItem( @( a) a.val==v.op)
+				}else{
+					op.setVisible( false);
+				}
+				r.ref = i;
+			}
+			cnt.stretchSize( cnt.bnd.w, h0 + 44*(length( reqs)-1));
+		}
+		cnt.revalidate();
+	}
+
+	function paramevent( e){
+		local newvar;
+		local idx = e.src["parent"]["ref"];
+		local n = e.src["name"];
+		switch( n){
+		case "op":
+			reqs[idx].op <- e.src.ref.selitem.val;
+			postActionEvent( true);
+			break;
+		case "lvar":
+			e.consume();
+			showLVarMenu( idx, e);
+			break;
+		case "rvar":
+			e.consume();
+			reqs[idx].rvar <- e.actioncmd;
+			setParam( reqs);
+			postActionEvent( true);
+			break;
+		}
+	}
+
+	function showLVarMenu( idx, e){
+		local ret = MenuPopup.run( ::RPGSystem.reqchk._list, e.src);
+		if( ret){
+			local k = ret["key"]||"varcmp";
+			local r = deepclone( fget( ret, "defval"));
+			if( ret["lvar"]){
+				local lvar = VariableVarPopup.run( e, ret.lvar.varbits, reqs[idx]["lvar"]);
+				if( !lvar) return;
+				r.lvar = lvar;
+			}
+			reqs[idx] = r;
+			setParam( reqs);
+			postActionEvent( true);
+		}
+	}
+
+	function menuSelected( e, mi){
+		local n = mi["val"] || 0;
+		if( n == length( reqs)) return;
+		local a = (clone reqs) || []; a.resize( n);
+		foreach( i, v in a){
+			if( !v){
+				local v = (prop["varbits"]??1)&1 ? "A" : "G000";
+				a[i] = { lvar=v, op="=", rvar=true, }
+			}
+		}
+		setParam( a);
+		postActionEvent( true);
+	}
+}
+
+
+class PropertyBehaviors.GameTitle extends PropertyBehavior
+{
+	static proptype = GAMETITLE;
+	static uipath = srcdir .. "/ui/prop_gametitle.ui"
+
+	titleedit = null;
+	appedit = null;
+	iconbtn = null;
+
+	appicon = null;		//	RGBAImage
+
+
+	function init(){
+		titleedit = view.findChild( "titleedit");
+		appedit = view.findChild( "appedit");
+		iconbtn = view.findChild( "iconbtn");
+	}
+
+	function getParam(){
+		return (titleedit.getText(), appedit.getText(), appicon);
+	}
+	
+	function setParam( v){
+		titleedit.setText( v[0]);
+		appedit.setText( v[1]);
+		setIconImage( v[2]);
+	}
+
+	function setIconImage( img){
+		// printf( "ICONIMAG__???? %S %S\n", img, appicon<>img);
+		if( appicon <> img){
+			local tex = Texture(); tex.load( img);
+			local sp = Sprite( tex);
+			view.findChild( "appicon").setSprite( sp);
+			appicon = img;
+			return true;
+		}else{
+			return false;
+		}
+	}
+	
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "titleedit": case "appedit":
+			postActionEvent( true);
+			break;
+		case "iconbtn":
+			local iconpath = skstudio.showFileOpen( { dirpath="/resource/icon/appicon.png", filter=["*.png","*.webp"], abspath=true});
+			if( iconpath){
+				try{
+					local bb = FileRef( iconpath).load();
+					local img = skLoadImage( bb);
+					setIconImage( img);
+					postActionEvent( true);
+				}catch( ex){
+					printexception( ex);
+				}
+			}
+			break;
+		}
+	}
+}
+
+local xlist = [
+	{ icon="\ue270", lbl="$T.uipos_center", val=0 }
+	{ icon="\ue271", lbl="$T.uipos_left", val=1 }
+	{ icon="\ue272", lbl="$T.uipos_right", val=2 }
+	{ icon="\ue273", lbl="$T.uipos_lr", val=3 }
+]
+
+local ylist = [
+	{ icon="\ue274", lbl="$T.uipos_center", val=0 }
+	{ icon="\ue275", lbl="$T.uipos_up", val=1 }
+	{ icon="\ue276", lbl="$T.uipos_down", val=2 }
+	{ icon="\ue277", lbl="$T.uipos_ud", val=3 }
+]
+
+class PropertyBehaviors.UIPosition extends PropertyBehavior
+{
+	static proptype = UIPOSITION;
+	static uipath = srcdir .. "/ui/prop_uipos.ui"
+
+	xmenu = null;	//	ボタン
+	ymenu = null;	//	ボタン
+	lval = null;
+	rval = null;
+	uval = null;
+	dval = null;
+
+	xtype = 0;
+	ytype = 0;
+
+	function init(){
+		xmenu = view.findChild( "xmenu");
+		ymenu = view.findChild( "ymenu");
+		foreach( i in ["lval","rval","uval","dval"]){
+			this[i] = createNumInputBehavior( view.findChild( i));
+			this[i].setRange( -1280, 2560, 1);
+		}
+	}
+
+	function getParam(){
+		local t = {};
+		switch( xtype){
+		case 0: t.x <- lval.getValue(); break;
+		case 1: t.left <- lval.getValue(); break;
+		case 2: t.right <- lval.getValue(); break;
+		case 3: t.left <- lval.getValue(); t.right <- rval.getValue(); break;
+		}
+		switch( ytype){
+		case 0: t.y <- uval.getValue(); break;
+		case 1: t.up <- uval.getValue(); break;
+		case 2: t.down <- uval.getValue(); break;
+		case 3: t.up <- uval.getValue(); t.down <- dval.getValue(); break;
+		}
+		return t;
+	}
+	
+	function setParam( v){
+		xtype = ("left" in v && 1)|("right" in v && 2);
+		ytype = ("up" in v && 1)|("down" in v && 2);
+		local lv = 0, rv = null, uv = 0, dv = null;
+		switch( xtype){
+		case 0: lv = v["x"] ?? 640; break;
+		case 1: lv = v.left; break;
+		case 2: lv = v.right; break;
+		case 3: lv = v.left; rv = v.right; break;
+		}
+		switch( ytype){
+		case 0: uv = v["y"] ?? 360; break;
+		case 1: uv = v.up; break;
+		case 2: uv = v.down; break;
+		case 3: uv = v.up; dv = v.down; break;
+		}
+		xmenu.setValue( "icon", xlist[xtype].icon);
+		ymenu.setValue( "icon", ylist[ytype].icon);
+		lval.setValue( lv);
+		uval.setValue( uv);
+		rval.setValue( rv||0); rval.view.setVisible( rv!=null);
+		dval.setValue( dv||0); dval.view.setVisible( dv!=null);
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "xmenu":
+			local m = MenuPopup.run( xlist, e.src, xlist[xtype]);
+			if( m){
+				xtype = m.val;
+				xmenu.setValue( "icon", xlist[xtype].icon);
+				rval.view.setVisible( xtype==3);
+				postActionEvent( true);
+			}
+			break;
+		case "ymenu":
+			local m = MenuPopup.run( ylist, e.src, ylist[ytype]);
+			if( m){
+				ytype = m.val;
+				ymenu.setValue( "icon", ylist[ytype].icon);
+				dval.view.setVisible( ytype==3);
+				postActionEvent( true);
+			}
+			break;
+		default:
+			postActionEvent( true);
+			break;
+		}
+	}
+}
+
+//	
+local animestr( v){
+	local sb = StringBuffer();
+	sb .. (v["id"] ? ("$T.anim_"..v.id) : "");
+	if( v["spd"] && v["spd"]!=1.0){
+		sb .. ("  ×%.2f" % v.spd);
+	}
+	return string( sb);
+}
+
+class PropertyBehaviors.AnimeInline extends PropertyBehavior
+{
+	static proptype = ANIME_INLINE;
+	static uipath = srcdir .. "/ui/prop_anime.ui"
+
+	static menuitems = [
+		{ lbl="$T.lbl_preview", val="preview", icon="\uf1c5" },
+		"---",
+		{ lbl="$T.lbl_help", val="help", icon="\ue887" },
+	];
+
+	aniedit = null;		//	AnimeEdit
+
+	function init(){
+		aniedit = AnimeEdit( view.findChild( "animeedit"), prop);
+	}
+	
+	function getParam(){
+		local v = aniedit.getData();
+		local mdlid = fget( prop, "mdlid", prop, proplist);
+		if( mdlid){
+			delete v.mdlid;
+		}
+		return v;
+	}
+
+	function setParam( v){
+		local mdlid = fget( prop, "mdlid", prop, proplist);
+		if( mdlid){
+			v = clone v; v.mdlid <- mdlid;
+		}
+		aniedit.setData( v);
+	}
+
+	//	外部プロパティが変化した時に呼ばれる。
+	function refresh(){
+	}
+	
+	function paramevent( e){
+		if( e.src==aniedit.view){
+			postActionEvent( true);
+			if( e.actioncmd == "ok"){	//	
+				local ke = Event();
+				ke.src = view;
+				ke.id = KEY_PRESSED;
+				ke.keycode = VK_ENTER;
+				::rootview.postEvent( ke);
+			}
+		}
+	}
+}
+
+class PropertyBehaviors.AnimePopup extends PropertyBehavior
+{
+	static proptype = ANIME_POPUP;
+	static uipath = srcdir .. "/ui/prop_dataid.ui";
+
+	defmdlid = null;
+	data = null;
+
+	function init(){
+	}
+	
+	function getParam(){
+		return deepclone( data);
+	}
+
+	//	無理やりアイコン検索
+	function _findicon( aid){
+		foreach( a in RPG3DObject.animelistmap){
+			local ani = a.find( @( v) v.id==aid);
+			if( ani["icon"]) return ani["icon"];
+		}
+		return "\ue000";
+	}
+
+	function setParam( v){
+		data = deepclone( v);
+		defmdlid = fget( prop, "mdlid", prop, proplist);
+		if( v){
+			view.setValue( "lbl", animestr( v));
+			view.setValue( "icon", _findicon( v.id));
+		}else{
+			view.setValue( "lbl", "$T.lbl_notset");
+			view.setValue( "icon", "\ue15b");
+		}
+	}
+
+	//	外部プロパティが変化した時に呼ばれる。
+	function refresh(){
+	}
+	
+	function paramevent( e){
+		if( e.src["name"]=="listmenu"){
+			local v = data || (prop["nullable"] ? null : {id="stand"});
+			if( defmdlid) v.mdlid <- defmdlid;
+			local ret = AnimeEditPopup.run( e, prop, v);
+			if( ret && defmdlid) delete ret["mdlid"];
+			if( ret && ret <> v){
+				setParam( ret=="rem" ? null : ret);
+				postActionEvent( true);
+			}
+		}
+	}
+}
+
+
+//	{ id:"stand", st:5, en:9, spd:4, loop:true, replay=false }
+//	
+class PropertyBehaviors.AnimationMap extends PropertyBehavior
+{
+	static proptype = ANIMEMAP;
+	static uipath = srcdir .. "/ui/prop_animap.ui"
+
+	static menuitems = [
+		{ lbl="$T.lbl_add", val="add", icon="\ue146" },
+		// "---",
+		// { lbl="$T.lbl_help", val="help", icon="\ue887" },
+	]
+	
+	static anipropdef = {
+		name = "Anime",
+		props = @( cmd){
+			local mot = !!cmd.spd;
+			local a = [
+				{ pid="id", lbl="ID", type=STRING },
+				{ pid="mot", lbl="$T.lbl_type", type=LIST, list=[{lbl="$T.lbl_pose",val=false},{lbl="$T.lbl_anime",val=true}], refresh=1, get=@( prop, data) !!data.spd, set=@( prop, data, val){
+					if( !val){ data.spd=0.0; data.en=data.st; } else { data.spd=1.0; }; return val;
+				}},
+				{ pid="st", lbl="$T.lbl_start", type=SCALAR, range=(0,1000), },
+			];
+			if( mot){
+				a ... [
+					{ pid="en", lbl="$T.lbl_end", type=SCALAR, range=(0,1000), },
+					{ pid="spd", lbl="$T.lbl_speed", type=SCALAR, range=(0.01,100.0), q=10, },
+					{ pid="loop", lbl="$T.lbl_loop", type=BOOL, },
+					{ pid="replay", lbl="$T.lbl_replay", type=BOOL, },
+				];
+			}
+			return a;
+		}
+	};
+
+	animelist = null;	//	ListBehavior
+
+	function init(){
+		animelist = ListBehavior( view.findChild( "animelist"), []);
+		animelist.dndfunc = 3;
+		animelist.multisel = true;
+		animelist.setviewfunc = @( la, v, i){
+			local idx = la.items.indexOf( i);
+			local rt = i.spd ?
+				  sprintf( "[M][#bff]%02d:%-9s (%03d~%03d) *%2.1f [E][#bff]%s%s", idx, i.id, i.st, i.en, i.spd, i.loop?"\ue040":"\ue31c", i.replay?"\ue042":"")
+				: sprintf( "[M][#bff]%02d:%-9s (%03d)", idx, i.id, i.st)
+			v.setValue( "lbl", rtf( rt));
+			v.pickable = false;
+		}
+	}
+
+	function getParam(){
+		return deepclone( animelist.items);
+	}
+	
+	function setParam( v){
+		animelist.setListItems( deepclone( v) || []);
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "animelist": 
+			switch( e.id){
+			case ITEM_SORT:
+				local newli = ::applyItemSort( clone animelist.items, e);
+				animelist.setListItems( newli);
+				postActionEvent( true);
+				break;
+			case ACTION_PERFORMED:
+				if( e.isMouseDown( BUTTON2_MASK)){
+					showItemContextMenu( e);
+				}else{
+					local ani = e.actioncmd;
+					local cv = animelist.getItemView( e.actioncmd);
+					local v = PropertyEditPopup.run( cv, anipropdef, ani);
+					if( v){
+						Table.clear( ani) ... v;	//	aniの中身を置き換え
+						animelist.refreshItems();
+						postActionEvent( true);
+					}
+				}
+				break;
+			}
+			break;
+		}
+	}
+
+	function showItemContextMenu( e){
+		local ani = e.actioncmd;
+		local menudata = [
+			{ lbl="$T.menu_edit_copy", id="copy", icon="\ue14d" },
+			{ lbl="$T.menu_edit_paste", id="paste", icon="\ue14f" },
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872"},
+		];
+		switch( MenuPopup.run( menudata)["id"]){
+		case "copy":
+			putClipboard( "animemap", animelist.getSelectedItems( true));
+			break;
+		case "paste":
+			local cbdata = getClipboard( "animemap");
+			if( cbdata){
+				foreach( v in cbdata){
+					animelist.items .. v;
+				}
+				animelist.refreshItems();
+				postActionEvent( true);
+			}
+			break;
+		case "delete":
+			foreach( v in animelist.getSelectedItems()){
+				animelist.items.removeValue( v);
+			}
+			animelist.refreshItems();
+			postActionEvent( true);
+			break;
+		}
+	}
+
+	function menuSelected( e, mi){
+		local v = mi.val;
+		switch( v){
+		case "add":
+		{
+			local v = { id:"anime", st=0, en=0, spd=0.0, loop=false, replay=true };
+			animelist.items .. v;
+			animelist.refreshItems();
+			postActionEvent( true);
+			break;
+		}
+		}
+	}
+}
+
+//	メッセージの機能
+//	・表示のプレビュー。ウィンドウを表示してテキストを確認できる。
+//	・簡易ヘルプ。タグ[]と式$のヘルプ。
+//	・テキストのコンテキストメニューに以下の追加
+//	　- 書式 => スタイル、ボールド等、リセット、サイズ
+//	　- 文字送り => 文字送り速度、ウェイト、改ページ
+//	　- 名前表示 => プレイヤー、アイテム、変数。$NAME.P000とか${NAME[W]}みたいな。
+//	　- 式の挿入 => ${}だけでいいかな
+//	
+class PropertyBehaviors.Message extends PropertyBehavior
+{
+	static proptype = MESSAGE;
+	static uipath = srcdir .. "/ui/prop_message.ui"
+
+	static menuitems = [
+		{ lbl="$T.lbl_preview", val="preview", icon="\uf1c5" },
+		// "---",
+		// { lbl="$T.lbl_help", val="help", icon="\ue887" },
+	]
+
+	edit = null;	//	GPUITextEdit
+
+	function init(){
+		edit = view.findChild( "edit");
+		edit.setDefaultText( "");
+		edit.addEventListener( TEXT_EVENT, textevent);
+		local ml = prop["multiline"] || 6;
+		if( typeof( ml) == SS_INTEGER){
+			local lbl = edit.findChild( "editlabel");
+			local fh = lbl.fontattr.getFontMetrics().h * ml;
+			local dh = fh - lbl.bnd.h;
+			cnt.stretchSize( cnt.bnd.w, cnt.bnd.h+dh);
+			cnt.revalidate();
+		}
+		//	コンテキストメニューを追加
+		local self = this, ctxfunc = @( ed, m) self.textMenuSelected( m);
+		local styles = [
+			{ id="style", lbl="$T.lbl_reset", val="[O]", func=ctxfunc},
+			{ id="style", lbl=RichText( "[B]ボールド"), val="[B]", func=ctxfunc},
+			{ id="style", lbl=RichText( "[I]イタリック"), val="[I]", func=ctxfunc},
+			{ id="style", lbl=RichText( "[M]Mono Script"), val="[M]", func=ctxfunc},
+		];
+		local sizes = [
+			{ id="size", lbl=RichText( "[+6]$T.lbl_size+6"), val="[+6]", func=ctxfunc},
+			{ id="size", lbl=RichText( "[+4]$T.lbl_size+4"), val="[+4]", func=ctxfunc},
+			{ id="size", lbl=RichText( "[+2]$T.lbl_size+2"), val="[+2]", func=ctxfunc},
+			{ id="size", lbl=RichText( "[+0]$T.lbl_size+0"), val="[+0]", func=ctxfunc},
+			{ id="size", lbl=RichText( "[-2]$T.lbl_size-2"), val="[-2]", func=ctxfunc},
+			{ id="size", lbl=RichText( "[-4]$T.lbl_size-4"), val="[-4]", func=ctxfunc},
+			{ id="size", lbl=RichText( "[-6]$T.lbl_size-6"), val="[-6]", func=ctxfunc},
+		];
+		local colors = [
+			{ id="style", lbl="$T.lbl_reset", val="[c0]", func=ctxfunc},
+			{ id="style", lbl=RichText( "[c1]${T.lbl_color}1"), val="[c1]", func=ctxfunc},
+			{ id="style", lbl=RichText( "[c2]${T.lbl_color}2"), val="[c2]", func=ctxfunc},
+			{ id="style", lbl=RichText( "[c3]${T.lbl_color}3"), val="[c3]", func=ctxfunc},
+		];
+		local textruns = [
+			{ id="textrun", lbl="改ページ", val="[p]", func=ctxfunc},
+			{ id="textrun", lbl="停止", val="[.]", func=ctxfunc},
+			{ id="textrun", lbl="${T.lbl_speed} >", val="[>]", func=ctxfunc},
+			{ id="textrun", lbl="${T.lbl_speed} =", val="[=]", func=ctxfunc},
+			{ id="textrun", lbl="${T.lbl_speed} <", val="[<]", func=ctxfunc},
+		];
+		//
+		local a = [
+			{ id="style", lbl="テキストスタイル", func=ctxfunc, submenu=styles },
+			{ id="size", lbl="フォントサイズ", func=ctxfunc, submenu=sizes },
+			{ id="color", lbl="フォントカラー", func=ctxfunc, submenu=colors },
+			{ id="textrun", lbl="文字送り", func=ctxfunc, submenu=textruns },
+			"-",
+			{ id="dataname", lbl="アイテム名を挿入", icon="\uf120", func=ctxfunc },
+			{ id="dataiconname", lbl="アイテム名＋アイコンを挿入", icon="\uf120",func=ctxfunc },
+		];
+		edit.addContextMenu( a);
+	}
+
+	function getParam(){
+		return edit.getText();
+	}
+
+	function setParam( v){
+		if( v==null || v==undefined) v = "";
+		edit.setText( string( v));
+		//	def
+		local deflbl = fget( prop, "deflbl", prop, proplist);
+		edit.setDefaultText( deflbl||"");
+	}
+
+	//	外部プロパティが変化した時に呼ばれる。deflblを入れ替え
+	function refresh(){
+		local deflbl = fget( prop, "deflbl", prop, proplist);
+		edit.setDefaultText( deflbl||"");
+	}
+	
+	function paramevent( e){
+		if( e.src==edit){
+			postActionEvent( true);
+		}
+	}
+
+	function textevent( e){
+		if( e.id == TEXT_CHANGED) postActionEvent( true);
+	}
+
+	//	
+	function textMenuSelected( mi){
+		switch( mi.id){
+		case "dataname":
+		case "dataiconname":
+			local ret = DataSelectPopup.run( null, { datatype="all" });
+			if( ret){
+				local d = ::rpgdata[ret];
+				local v = mi.id=="dataiconname" ? (d["icon"]??"")..d.name : d.name;
+				edit.textedit.insertText( v);
+			}
+			break;
+		default:
+			local v = mi["val"];
+			if( v[0]=='['){
+				edit.textedit.insertText( v);
+				postActionEvent( true);
+			}
+			break;
+		}
+	}
+
+	function menuSelected( e, mi){
+		local v = mi.val;
+		switch( v){
+		case "preview":
+		{
+			//	UIを表示しちゃおう
+			//	{"cmd":"cmd_showmsg","key":"message_talk","name":"","text":"message...","uiclose":2,"who":0},
+			local key = proplist.getParam( "key") || "message_talk";
+			local name = proplist.getParam( "name");
+			local cmd = { key=key, name=name, text=edit.getText(), layer="dlglayer.dlgbody"};
+			MessagePreviewDialog.run( cmd);
+			break;
+		}
+		}
+	}
+}
+
+class PropertyBehaviors.Message.MessagePreviewDialog extends Dialog
+{
+	cmd = null;
+
+	constructor( v, c){
+		super( v);
+		cmd = c;
+	}
+
+	function shown(){
+		newthread().start( @(){
+			local v = RPGMain.showUI( cmd);
+			v.actionAndDie( "hide").waitAction();
+			close();
+		}, this);
+	}
+	
+	static function run( cmd){
+		local dlg = this( srcdir.."/ui/screendialog.ui", cmd);
+		dlg.show();
+	}
+}
+
+//	エネミーグループの文字列化
+function enemyGroupString( eg){
+	if( !length( eg)) return "$T.lbl_noenemies";
+	local a = [];
+	foreach( v in eg){
+		local e = a.find( @( c) c.id==v.id);
+		if( e) e.num++; else a .. { id=v.id, num=1 };
+	}
+	return a.map( @( v){
+		local n = ::conf.enemy[v.id]["name"] || ("%S?" % v.id);
+		return (v.num == 1) ? n : sprintf( "%S×%d", n, v.num);
+	}).join( ",");
+}
+
+//	エネミーを配置する。8m四方のキャンバスに配置し、x,zそれぞれ-4.0~4.0。
+//	[{eid,x,z},...]
+//	お気に入り登録、お気に入り編集、コピーとかとか
+//	
+class PropertyBehaviors.EnemyGroup extends PropertyBehavior
+{
+	static proptype = ENEMYGROUP;
+	static uipath = srcdir .. "/ui/prop_enemygroup.ui"
+
+	static menuitems = [
+		{ lbl="$T.lbl_add", val="add", icon="\ue146" },
+		"---",
+		{ lbl="$T.menu_edit_copy", val="copy", icon="\ue14d" },
+		{ lbl="$T.menu_edit_paste", val="paste", icon="\ue14f" },
+		"---",
+		{ lbl="$T.lbl_favorites", val="favo", icon=("\ue838",0xA3D900ff),
+			submenu = @(){
+				local a = ::workspace["enemy_favorites"];
+				return [
+					{lbl="$T.ctxmenu_file_add_favorite", val="addfavo", icon="\ue147"},
+					"-",
+					{lbl="お気に入りの管理", val="mngfavo", icon="\ue8b8"},
+				];
+			}
+		},
+	];
+
+	canvas = null;			//	SKImageView : こいつのchildでグラを配置。スケールを正しく。。。
+	enemylist = null;		//	ListBehavior
+	enemypics = null;		//	EnemyPic[] : ドラッグ可能。右クリ可能。αでピック。
+	
+	function init(){
+		canvas = view.findChild( "canvas");
+		enemylist = ListBehavior( view.findChild( "enemylist"));
+		enemylist.dndfunc = 3;
+		enemylist.listview.addEventListener( ITEM_EVENT, listevent);
+		enemylist.listview.addEventListener( ACTION_EVENT, listevent);
+		enemypics = [];
+		canvas.addEventListener( ITEM_EVENT, picitemevent);
+	}
+
+	function getParam(){
+		local cw = canvas.bnd.w, ch = canvas.bnd.h;
+		return enemypics.map( @( v){
+			return { id=v.enemyid, x=(v.pos.x/cw-0.5)*8.0, z=(v.pos.y/ch-0.5)*-8.0, }
+		});
+	}
+
+	function setParam( v){
+		canvas.clearChildren();
+		enemypics = [];
+		foreach( e in v){
+			local ep = EnemyPic( this);
+			ep.name = "enemypic"
+			ep.setEnemy( e);
+			ep.setEnemyPos( e.x, e.z, canvas.bnd.w);
+			canvas.addChild( ep);
+			enemypics .. ep;
+		}
+		enemylist.setListItems( v.map( @( v){
+			local data = ::conf.enemy[v.id];
+			return { lbl:"%S:%S" % (v.id,data.name), val:v, }
+		}));
+	}
+
+	function picitemevent( e){
+		e.consume();
+		if( e.src["name"] == "enemypic"){
+			local enemy = e.actioncmd;
+			if( e.id == ITEM_HOVER){
+				local i = enemylist.items.findi( @( v) v.val==enemy);
+				if( i>=0) enemylist.setSelectedIndex( i);
+			}
+		}
+	}
+
+	//	enemylist ... 消去、ソート
+	function listevent( e){
+		e.consume();
+		local cmd = e.actioncmd, enemy = cmd["val"];
+		switch( e.id){
+		case ITEM_HOVER:
+			foreach( v in enemypics){
+				v.setHovered( v.enemy == enemy);
+			}
+			break;
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showEnemyContextMenu( e.actioncmd.val, e);
+			}
+			break;
+		}
+	}
+
+	//	
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "enemypic":
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showEnemyContextMenu( e.actioncmd, e);
+			}else{
+				postActionEvent( true);
+			}
+			break;
+		}
+	}
+
+	function showEnemyContextMenu( enemy, e){
+		local ctxmenu = #[
+			{ id="replace", lbl="$T.lbl_replace", icon="\ue2e7"},
+			{ id="dup", lbl:"$T.lbl_duplicate", icon="\ue2bd" }
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872"},
+		];
+		local idx = enemypics.findi( @( v) v.enemy==enemy);
+		switch( MenuPopup.run( ctxmenu)["id"]){
+		case "replace":
+		{
+			local prop = { datatype=["enemy"] };
+			local ret = DataSelectPopup.run( e, prop);
+			if( ret){
+				local v = getParam();
+				v[idx].id = ret;
+				setParam( v);
+				postActionEvent( true);
+			}
+			break;
+		}
+		case "dup":
+		{
+			local v = getParam(), e0 = v[idx];
+			v .. { ...e0, x=e0.x+0.5, z=e0.z+0.5}
+			setParam( v);
+			postActionEvent( true);
+			break;
+		}
+		case "delete":
+			(delete enemypics[idx]).removeFromParent();
+			postActionEvent( true);
+			break;
+		}
+	}
+	
+	//	
+	function menuSelected( e, mi){
+		switch( mi.val){
+		case "add":
+		{
+			local prop = { datatype=["enemy"] };
+			local ret = DataSelectPopup.run( e, prop);
+			if( ret){
+				local v = getParam();
+				v .. { id=ret, x=0.0, z=0.0, };
+				setParam( v);
+				postActionEvent( true);
+			}
+			break;
+		}
+		case "copy":
+			break;
+		case "paste":
+			break;
+		}
+	}
+}
+
+//	
+class PropertyBehaviors.EnemyGroup.EnemyPic extends SKImageView
+{
+	eg = null;				//	EnemyGroup
+
+	enemy = null;
+	enemyid = null;
+	mdlid = null;
+	img = null;				//	RGBAImage : マスクをピックする用
+	flipx = false;
+	mx = 0.0;
+	my = 0.0;
+	pressmode = 0;
+	teximgcache = null;
+
+	constructor( g){
+		super();
+		eg = g;
+		addEventListener( MOUSE_EVENT, mouseevent);
+		enabled = true;
+		teximgcache = {};
+	}
+
+	function setEnemy( e){
+		enemy = e;
+		enemyid = e.id;
+		local data = ::conf.enemy[enemyid];
+		mdlid = data.mdlid;
+		local restype = RPGResource.getResourceType( mdlid);
+		local res = ::conf._resource[restype][mdlid];
+		local tex = null;
+		//	キャラの場合はどうしましょ
+		if( teximgcache[res.pic3d]){
+			local t = teximgcache[res.pic3d];
+			img = t.img;
+			tex = t.tex;
+		}else{
+			img = ::getResourceContent( res.pic3d);
+			local udiv = 1, vdiv = 1;
+			if( res["aniuv"]){
+				udiv = Math.max( 1, res.aniuv[0]);
+				vdiv = Math.max( 1, res.aniuv[1]);
+			}
+			if( udiv > 1 || vdiv > 1){
+				local pimg = RGBAImage( img.width/udiv, img.height/vdiv);
+				pimg.draw( img, 0, 0);	//	最初のフレームの画像
+				img = pimg;
+			}
+			tex = Texture(); tex.load( img);
+			teximgcache[res.pic3d] <- { img=img, tex=tex};
+		}
+		local h = (1.0/4.0) * tex.height / RPG3DPicture.BASERESO * res.scale;	//	1m=200/8=25px : parentの幅が200pxなの前提。。。
+		scale( h);
+		local gp = res.gndpos; //	"gndpos":[0.5,0.0]
+		sp = Sprite( tex);
+		sp.shadersrc = skFXFindTechnique( "sprite.srgb").getShaderSource( 0);
+		sp.blend = SK_MIX;
+		if( flipx = res["flipx"]){
+			sp.bnd.x = tex.width;
+			sp.bnd.w = -tex.width;
+		}
+		bnd.set( -tex.width*gp[0], -tex.height*(1.0-gp[1]), tex.width, tex.height);
+		matdirty = true;
+		repaint();
+	}
+
+	function updateLayout(){
+	}
+
+	function setEnemyPos( x, z, cw){
+		pos( x, -z, 0.0).scale( cw/8.0).add( cw*0.5);
+		matdirty = true;
+	}
+
+	//	pはローカル座標。
+	function innerpick( lx, ly){
+		local u = lx / bnd.w, v = ly / bnd.h;
+		if( flipx) u = 1.0-u;
+		local c = img.texture2d( u, v);
+		return (c>>>24) > 63;	//	ABGRになってる
+	}
+
+	function setHovered( b){
+		setBuffer( b);
+		if( b){
+			local fx = SKViewStrokeFX();
+			fxlist = [fx];
+		}else{
+			fxlist = null;
+		}
+	}
+
+	function mouseevent( e){
+		if( !parent) return;		//	マウス中に消えちゃってる
+		e.computeLocal( parent.getInvMatrix());
+		switch( e.id){
+		case MOUSE_ENTERED:
+			setHovered( true);
+			postIDEvent( ITEM_HOVER, enemy, 0, e.modifiers);
+			break;
+		case MOUSE_EXITED:
+			setHovered( false);
+			break;
+		case MOUSE_PRESSED:
+			pressmode = 0;
+			if( e.isMouseDown( BUTTON2_MASK)){
+				postActionEvent( enemy, 0, e.modifiers);
+				return 1;
+			}
+			mx = e.lx; my = e.ly;
+			e.consume();
+			pressmode = 1;
+			break;
+		case MOUSE_DRAGGED:
+			if( pressmode){
+				local pr = parent.bnd;
+				pos.add( e.lx-mx, e.ly-my, 0.0);
+				matdirty = true;
+				parent.repaint();
+				mx = e.lx; my = e.ly;
+				e.consume();
+				pressmode = 2;
+			}
+			break;
+		case MOUSE_RELEASED:
+			if( pressmode == 2){
+				postActionEvent( enemy, 0, e.modifiers);
+			}
+			pressmode = 0;
+			e.consume();
+			break;
+		}
+	}
+}
+
+
+////////////////////////////////////////////////////////////
+//	
+//	{ mapid="M000", evid=100003 | pos=[x,z,r] }
+
+local dirlist = [
+	{lbl="↑",val=0}
+	{lbl="→",val=1}
+	{lbl="↓",val=2}
+	{lbl="←",val=3}
+];
+
+class PropertyBehaviors.Portal extends PropertyBehavior
+{
+	static proptype = PORTAL;
+	static uipath = srcdir .. "/ui/prop_portal.ui"
+
+	mapidmenu = null;
+	portalchk = null;
+	portalmenu = null;
+	xzchk = null;
+	xval = null;
+	zval = null;
+	dirmenu = null;
+
+	mapshot = null;		//	SKImageView
+	portalmap = null;	//	PortalMap
+
+	mapid = "M000";
+
+	function init(){
+		mapidmenu = view.findChild( "mapidmenu");
+		portalmenu = MenuBehavior( view.findChild( "portalmenu"));
+		mapshot = view.findChild( "mapshot");
+		xval = createNumInputBehavior( view.findChild( "val0"));
+		xval.setRange( 0, 1024, 1);
+		zval = createNumInputBehavior( view.findChild( "val1"));
+		zval.setRange( 0, 1024, 1);
+		dirmenu = MenuBehavior( view.findChild( "dirmenu"), dirlist);
+		portalchk = view.findChild( "portalchk");
+		xzchk = view.findChild( "xzchk");
+		//
+		portalmap = PortalMap( this, mapshot);
+		portalmap.setRect( 0, 0, mapshot.bnd.w, mapshot.bnd.h);
+		mapshot.addChild( portalmap);
+	}
+
+	function getParam(){
+		local t = { mapid=mapid};
+		if( portalchk.isSelected()){
+			t.evid <- portalmenu.selitem.evid;
+		}else{
+			t.pos <- (xval.getValue()*0.5,null,zval.getValue()*0.5,dirmenu.selitem.val*Math.PI*0.5);
+		}
+		return t;
+	}
+	
+	function setParam( v){
+		setMapID( v.mapid);
+		if( v["evid"]){
+			checkmode( 0);
+			portalmenu.selectItem( @( p) p.evid==v.evid);
+		}else{
+			checkmode( 1);
+		}
+		local pos = v["pos"] || #(1,null,1,2);
+		xval.setValue( Math.iround( pos[0]*2.0));
+		zval.setValue( Math.iround( pos[2]*2.0));
+		local d = Math.iround( pos[3]/Math.PI/0.5);
+		dirmenu.selectItem( @( p) p.val==d);
+		portalmap.selectPortal( v);
+	}
+
+	//	ポータルのリスト、マップショット
+	function setMapID( mid){
+		mapid = mid;
+		local map, tex;
+		if( ::skstudio.editor["mapid"]==mid){
+			map = ::skstudio.editor.data;	//	現在編集中のマップ。。。
+			tex = ::skstudio.editor.getMapShot();
+		}else{
+			map = ::conf.map[mid];
+			tex = ::getTexture( "/data/mapdata/%S.webp" % mid);
+		}
+		setDataIDParam( mapidmenu, mapid, 1);
+		xval.setRange( 0, map.size[0], 1);
+		zval.setRange( 0, map.size[2], 1);
+		mapshot.setSprite( Sprite( tex));
+		//	ポータル配置
+		local portals = [];
+		foreach( i, v in map.event){
+			if( v.role=="portal" || v.role=="pdoor") portals..{ lbl=v.name, evid=i, }
+		}
+		portalmenu.setMenu( portals);
+		portalmap.setPortals( map, portals);
+		if( length( portals)){
+			checkmode( 0);
+		}else{
+			checkmode( 1);
+		}
+	}
+
+	//	0,1
+	function checkmode( i){
+		portalchk.setSelected( !i);
+		xzchk.setSelected( !!i);
+		view.findChild( "g").anime( i);
+	}
+	
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "portalmenu":
+			postActionEvent( true);
+			portalmap.selectPortal( getParam());
+			break;
+		case "portalchk":
+			if( length( portalmenu.menuitems)){
+				checkmode( 0);
+				postActionEvent( true);
+				portalmap.selectPortal( getParam());
+			}
+			break;
+		case "xzchk":
+			checkmode( 1);
+			postActionEvent( true);
+			portalmap.selectPortal( getParam());
+			break;
+		case "mapidmenu":
+			local ret = DataSelectPopup.run( e, { datatype=["map"]});
+			if( ret){
+				setMapID( ret);
+				checkmode( 1);
+				portalmap.selectPortal( getParam());
+				postActionEvent( true);
+			}
+			break;
+		case "val0": case "val1": case "dirmenu":
+			postActionEvent( true);
+			break;
+		case "portalmap":	//	PortalMapから
+			local evid = e.actioncmd["evid"];
+			if( evid){
+				checkmode( 0);
+				portalmenu.selectItem( @( p) p.evid==evid);
+			}else{
+				checkmode( 1);
+				xval.setValue( e.actioncmd[0]);
+				zval.setValue( e.actioncmd[1]);
+			}
+			postActionEvent( true);
+			portalmap.selectPortal( getParam());
+			break;
+		}
+	}
+}
+
+//	
+class PropertyBehaviors.Portal.PortalMap extends SKView
+{
+	static POPATH = "/skstudio/img/ui/c6.png"
+	static SELPATH = "/skstudio/img/ui/cs10.png"
+
+	portal = null;
+	pic = null;
+	selsp = null;		//	portalが設定されてたらportal周りに、posが設定されてたら点
+	monsp = null;
+	splist = null;
+
+	map = null;
+	mapw = 10;
+	mapd = 10;
+
+	constructor( po, pi){
+		name = "portalmap";
+		portal = po;
+		pic = pi;
+		addEventListener( MOUSE_EVENT, mouseevent);
+		selsp = ::getSprite( SELPATH);
+	}
+
+	function render(){
+		skDrawSprites( splist, selsp, monsp);
+	}
+
+	function setPortals( map, a){
+		local sp = pic.sp;
+		splist = [];
+		this.map = map;
+		mapw = map.size[0];
+		mapd = map.size[2];
+		foreach( v in a){
+			local ev = map.event[v.evid];
+			local p = Vector3D( ev.pos[0], mapd-ev.pos[2]-1, 0.0).scale( sp.bnd.w / mapw, sp.bnd.h / mapd, 1.0).add( sp.bnd.x, sp.bnd.y, 0.0);
+			local vsp = ::getSprite( POPATH);
+			vsp.color = 0xff0000ff;
+			vsp.bnd.set( p.x-3, p.y-3, 6, 6);
+			vsp.ref = v;
+			splist .. vsp;
+		}
+	}
+
+	function selectPortal( v){
+		local sp = pic.sp, pos;
+		if( v["evid"]){
+			local ev = map.event[v.evid];
+			// pos = ev.pos;
+			pos = (ev.pos[0]*0.5,ev.pos[1]*0.5,ev.pos[2]*0.5);
+		}else
+		if( v["pos"]){
+			pos = v.pos;
+		}
+		local p = Vector3D( pos[0]*2, mapd-pos[2]*2-2, 0.0).scale( sp.bnd.w / mapw, sp.bnd.h / mapd, 1.0).add( sp.bnd.x, sp.bnd.y, 0.0);
+		selsp.bnd.set( p.x-6, p.y-6, 12, 12);
+	}
+
+	function portalAt( x, z){
+		foreach( sp in splist){
+			if( sp.bnd.getFrontMostDistance( x, z) < 4.0) return sp;
+		}
+	}
+
+	function mouseevent( e){
+		e.computeLocal( pic.getInvMatrix());
+		switch( e.id){
+		case MOUSE_EXITED:
+			monsp = null;
+			repaint();
+			break;
+		case MOUSE_MOVED:
+			local msp = portalAt( e.lx, e.ly);
+			if( msp){
+				monsp = clone msp;
+				monsp.color = 0xff9900ff;
+			}else{
+				monsp = ::getSprite( POPATH);
+				monsp.color = 0x9999ffff;
+				monsp.bnd.set( e.lx-3, e.ly-3, 6, 6);
+			}
+			repaint();
+			break;
+		case MOUSE_PRESSED:
+			if( monsp){
+				if( monsp.ref){
+					postActionEvent( monsp.ref);
+				}else{
+					local sp = pic.sp;
+					local bx = ((monsp.bnd.x+monsp.bnd.w*0.5)-sp.bnd.x) / sp.bnd.w * mapw;
+					local bz = (1.0-((monsp.bnd.y+monsp.bnd.h*0.5)-sp.bnd.y) / sp.bnd.h) * mapd;
+					postActionEvent( (bx|0,bz|0));
+				}
+			}
+			monsp = null;
+			break;
+		}
+	}
+}
+
+
+
+
+////////////////////////////////////////////////////////////
+//	
+//	{ mapid="M000", evid=100003 | pos=[x,z,r] }
+
+class PropertyBehaviors.PlaceAsset extends PropertyBehavior
+{
+	static proptype = PLACEASSET;
+	static uipath = srcdir .. "/ui/prop_mapasset.ui"
+
+	assetbtn = null;	//	btn
+	dirmenu = null;
+	vals = null;		//	NumInputBehavior[3]
+	resid = null;
+	canvas = null;
+
+	bw = null;			//	BlockWorld: nullの場合はマッププレビューなしでグリッド表示
+	bw3d = null;		//	SK3DBlockWorld
+	ma3d = null;		//	アセットのSK3D。
+	sel3d = null;		//	選択部分のSK3D。ma3dの子
+	
+	function init(){
+		vals = [];
+		for( local l = 0;l < 3;l ++){
+			local v = createNumInputBehavior( view.findChild( "val"..l));
+			v.setRange( 0, l==1?127:1023, 1);
+			vals .. v;
+		}
+		assetbtn = view.findChild( "assetbtn");
+		dirmenu = MenuBehavior( view.findChild( "dirmenu"), dirlist);
+		canvas = CanvasBehavior( view.findChild( "canvas"), null);
+		canvas.view.renderer.setEnvironment( ::RenderSettings.getEnvironment( "pbr_fw"));
+		canvas.view.addUpdateFunc( @(){
+			if( bw3d){
+				bw3d.checkUpdateInCameraMesh( canvas.camwork.cam);
+				return true;
+			}
+		}.bindenv( this));
+		setBlockWorld( ::skstudio.editor.bw);
+	}
+
+	function setBlockWorld( bw){
+		this.bw = bw;
+		bw3d = SK3DBlockWorld( bw);
+		bw3d.setVoxelTec( skFXFindTechnique( "vox.grid"));
+		canvas.scn.addObject( bw3d);
+		canvas.camwork.setRotation( Vector3D( 0, 52*Math.DTOR, 0));
+		canvas.view.addEventListener( MOUSE_EVENT, canvasevent);
+	}
+
+	function getParam(){
+		return {
+			resid = resid,
+			pos = vals.map( @( v) v.getValue()) .. (dirmenu.selitem["val"]||0),
+			blend = 0,
+		};
+	}
+	
+	function setParam( v){
+		local ma = ::conf._resource.map_asset[v.resid];
+		assetbtn.setValue( "lbl", sprintf( "%S: %S", v.resid, lang( ma["name"])));
+		assetbtn.setValue( "icon", GameResourceResource.resiconmap["map_asset"]);
+		vals[0].setValue( v.pos[0]);
+		vals[1].setValue( v.pos[1]);
+		vals[2].setValue( v.pos[2]);
+		dirmenu.selectItem( @( m) m.val==v.pos[3]);
+		if( resid != v.resid){
+			resid = v.resid;
+			placeAsset( v.resid);
+			setAssetPosition( v.pos);
+			canvas.camwork.moveFocus( Vector3D( v.pos).scale( 0.5));
+		}else{
+			setAssetPosition( v.pos);
+		}
+	}
+
+	function placeAsset( id){
+		if( ma3d) ma3d.kill();
+		local ma = ::conf._resource.map_asset[id];
+		local bb = uncompressZSTD( decodeBASE64( ma.bw64, ByteBuffer()));
+		local abw = ObjectInput.decode( bb);
+		local bw3d = SK3DBlockWorld( abw);
+		bw3d.setPivot( Vector3D( -abw.w*0.25, 0, -abw.d*0.25));
+		bw3d.generateAllMesh();
+		ma3d = bw3d;
+		setAssetMaterial( 0.5);
+		if( 1){
+			local vm = RPGToolMesh.createFaceMesh( abw.w, abw.h, abw.d, PenMode.PEN_ATTACH, 32);
+			local vm3d = SK3DObject( vm);
+			bw3d.addChild( vm3d);
+			local shp = b3Shape.createBox( abw.w*0.25, 0.1, abw.d*0.25);
+			local body = bw3d.b3body = b3Body( 0.0, shp, vm3d.mat, G_EVENT, G_CHARA|G_OBJECT);
+			body.ref = bw3d;
+			body.setOffsetTransform( Matrix.fromTranslate( abw.w*0.25, 0, abw.d*0.25));
+			sel3d = vm3d;
+		}
+		canvas.scn.addObject( bw3d);
+	}
+
+	function setAssetMaterial( v){
+		foreach( ch in ma3d.vchunklist){
+			foreach( f in ch.mesh.face){
+				local m = f.m;
+				m.alphatest = 1; m.alpharef = v;
+				m.polygonoffset1 = -30;
+			}
+		}
+	}
+
+	function setAssetPosition( pos){
+		ma3d.pos( pos).scale( 0.5);//.add( 0.25);
+		ma3d.rot.setHPB( (pos[3]&3)*Math.HPI, 0, 0);
+		ma3d.matdirty = 1;
+	}
+
+	function canvasevent( e){
+		//	アセットの下の部分のあれ
+		e.computeLocal( canvas.view.getInvMatrix());
+		local qw = canvas.getRay( e.lx, e.ly), q = qw[0], w = qw[1]-qw[0];
+		local b3res = canvas.b3world.rayTest( 1, q, q+w, -1, -1);	//	closest
+		local hitp = null;
+		foreach( br in b3res){
+			if( br.bodyb["ref"] == ma3d){
+				hitp = Vector3D( br.pointb);
+				break;
+			}
+		}
+		setAssetMaterial( hitp?0.75 : 0.5);
+		canvas.view.repaint();
+		switch( e.id){
+		case MOUSE_MOVED:
+			break;
+		case MOUSE_PRESSED:
+			if( hitp && e.isMouseDown( BUTTON1_MASK)){
+				canvas.toolfunc = dragAsset( e, hitp);
+			}
+			break;
+		}
+	}
+
+	//	
+	function planeTest( e, hitp){
+		local p = #Plane();
+		local nx = 0, ny = 1, nz = 0;
+		p.setParam( nx, ny, nz, hitp.x, hitp.y, hitp.z);
+		local q = canvas.getRay( e.lx, e.ly), w = q[1]-q[0];
+		local t = p.getIntersectTime( q[0], w);
+		if( t < 0.0 || t > 1.0) return null;
+		local fp = w.scale( t).add( q[0]);
+		local bx = ((fp.x*2)-nx*0.1-hitp.x*2)|0, by = Math.iround((fp.y*2)-ny*0.1-hitp.y*2), bz = ((fp.z*2)-nz*0.1-hitp.z*2)|0;
+		return [bx,by,bz];
+	}
+
+	function dragAsset( e0, hitp){
+		local self = this, canvas = canvas, ma3d = ma3d, vals = vals, dir = dirmenu.selitem.val;
+		local bp0 = vals.map( @( v) v.getValue());
+		setAssetMaterial( 0.6);
+		return @( e){
+			e.consume();
+			e.computeLocal( canvas.view.getInvMatrix());
+			local dp = self.planeTest( e, hitp);
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				if( dp){
+					local p = [bp0[0]+dp[0], bp0[1]+dp[1], bp0[2]+dp[2], dir];
+					self.setAssetPosition( p);
+					vals[0].setValue( p[0]);
+					vals[1].setValue( p[1]);
+					vals[2].setValue( p[2]);
+				}
+				break;
+			case MOUSE_RELEASED:
+				if( dp[0] || dp[1] || dp[2]){
+					self.postActionEvent( true);
+				}
+			case MOUSE_CANCELLED:
+				self.setAssetMaterial( 0.75);
+				canvas.view.repaint();
+				return null;
+			}
+			return callee();
+		}
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "assetbtn":
+			local ret = ResourceSelectDialog.run( e, {restype="map_asset"}, resid);
+			if( ret){
+				resid = ret;
+				placeAsset( ret);
+				setAssetPosition( vals.map( @( v) v.getValue()));
+				postActionEvent( true);
+			}
+			break;
+		case "dirmenu":
+			local p = vals.map( @( v) v.getValue()) .. (dirmenu.selitem.val);
+			setAssetPosition( p);
+			postActionEvent( true);
+			break;
+		case "val0": case "val1": case "val2": 
+			local p = vals.map( @( v) v.getValue()) .. (dirmenu.selitem.val);
+			postActionEvent( true);
+			break;
+		}
+	}
+}
+
+
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+function varstr( var){
+	switch( typeof( var)){
+	case SS_BOOL:
+		return var?"ON":"OFF";
+	case SS_STRING:
+		if( var[0]=='\''){
+			return sprintf( "\"%S\"", var.substring( 1));
+		}else
+		if( var[0]=='\t'){
+			return "{%S}" % var.substring( 1);
+		}else{
+			local vi = ::RPGVarAccessor.getVarInfo( var);
+			// local s = sprintf( "{ %S } %S", vi.key, vi.name);
+			local s = sprintf( "[%S]", vi.key);
+			return s;
+		}
+		break;
+	}
+	return string( var);
+}
+
+local _getreqdef( key, a=null){
+	if( !a) a = ::RPGSystem.reqchk._list;
+	foreach( i, v in a){
+		if( v["key"] == key) return v;
+		if( v["submenu"]){
+			if( v=_getreqdef( key, v.submenu)) return v;
+		}
+	}
+	return null;
+}
+
+function eventRequirementText( reqs){
+	if( !length( reqs)) return "$T.lbl_noreq";
+	//
+	local sb = #StringBuffer(); sb.clear();
+	foreach( i, req in reqs){
+		if( i) sb .. " ＆ ";
+		if( "lvar" in req){
+			sb .. sprintf( "%S %S %S", varstr( req.lvar), operatorToString[req.op], varstr( req.rvar));
+		}else{
+			local reqdef = req["key"] && _getreqdef( req.key);
+			if( "sub" in req) reqdef = reqdef.submenu[req.sub];
+			printf( "arere %S    %S\n", encodeJSON( req), reqdef);
+			if( reqdef){
+				if( req["op"]){
+					sb .. sprintf( "%S %S %S", reqdef.lbl, operatorToString[req.op], varstr( req.rvar));
+				}else{
+					sb .. sprintf( "%S ⇒ %S", reqdef.lbl, varstr( req.rvar));
+				}
+			}else{
+				sb .. sprintf( "%S", varstr( req.rvar));
+			}
+		}
+	}
+	return string( sb);
+}
+
+::proptextfuncmap[VARIABLE] <- @( prop, data){
+	local val = data[prop.pid];
+	return varstr( val);
+};
+
+::proptextfuncmap[DATAID] <- @( prop, data){
+	local dataid = data[prop.pid];
+	local r = RPGData.getData( dataid);
+	if( r){
+		return sprintf( "%S: %S", dataid, lang( r.name));
+	}
+	return dataid;
+};
+
+::proptextfuncmap[RESID] <- @( prop, data){
+	local resid = data[prop.pid];
+	foreach( ri, res in ::conf._resource){
+		local r = res[resid];
+		if( r){
+			return sprintf( "%S: %S", resid, lang( r.name));
+		}
+	}
+	return resid;
+};
+
+::proptextfuncmap[PORTAL] <- @( prop, data){
+	//	
+	local cmd = data[prop.pid];
+	local mapid = cmd.mapid;
+	local map;
+	if( ::skstudio.editor["mapid"]==mapid){
+		map = ::skstudio.editor.data;	//	現在編集中のマップ。。。
+	}else{
+		map = ::conf.map[mapid];
+	}
+	local pos = "";
+	if( cmd["ev"]){
+		pos = map.event[cmd.ev];
+	}else
+	if( cmd["pos"]){
+		// pos = sprintf( "(%S %S %S)", cmd.pos[0], cmd.pos[2], dirlist[cmd.pos[3]]["lbl"]);
+		pos = sprintf( "(%S %S %S)", cmd.pos[0], cmd.pos[2], (Math.RTOD * cmd.pos[3])|0);
+	}
+	//
+	return sprintf( "%S: %S - %S", mapid, map.name, pos);
+};
+
+::proptextfuncmap[ANIME_INLINE] <- @( prop, data){
+	local cmd = data[prop.pid];
+	return animestr( cmd);
+}
+
+::proptextfuncmap[ANIME_POPUP] <- ::proptextfuncmap[ANIME_INLINE];
+

@@ -1,0 +1,419 @@
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	RPGVarAccessors.sk
+//	イベント等からゲームの値にアクセスするための変数名を～～～～～～～
+//	
+/*
+	いま一度整理。欲しい情報をちゃんと整理してリスト化。今のシステム変数ってだけだと分かりづらい
+	
+	パーティー
+	- 所持金
+	- 現メンバー
+	- 所持アイテム
+	- 全てのキャラ
+
+	選択キャラ
+	- 選択キャラのLV
+	- 選択キャラの装備
+	- 選択キャラのスキル
+	- 選択キャラのジョブ
+
+	ターゲットキャラ(同上)
+
+	アイテム所持数
+	アイテム取得フラグ
+	エネミー討伐数
+*/
+
+
+import GamepadButtonCode;
+import VarType;
+
+local idxaccess( self){
+	local cache = {};	//	内部キャッシュ。
+	return @( key, val=undefined){
+		local fn = cache[key];
+		if( !fn){
+			if( key>=0 && key<=999){
+				fn = cache[key] <- self.makevar( key);
+			}else{
+				return undefined;
+			}
+		}
+		return fn( key, val);
+	}
+}
+
+local varaccsfunc( storage, vartype, defval){
+	switch( vartype){
+	case VAR_BOOL:
+		return @( key, val=undefined){
+			local a = ::rpgstat[storage]; return (val==undefined) ? bool( fget( a, key) ?? defval) : a[key]<-bool( val);
+		}
+	case VAR_INT:
+		return @( key, val=undefined){
+			local a = ::rpgstat[storage]; return (val==undefined) ? int( fget( a, key) ?? defval) : a[key]<-int( val);
+		}
+	case VAR_FLOAT:
+		return @( key, val=undefined){
+			local a = ::rpgstat[storage]; return (val==undefined) ? float( fget( a, key) ?? defval) : a[key]<-float( val);
+		}
+	case VAR_STRING:
+		return @( key, val=undefined){
+			local a = ::rpgstat[storage]; return (val==undefined) ? string( fget( a, key) ?? defval) : a[key]<-string( val);
+		}
+	default:	//	any
+		return @( key, val=undefined){
+			local a = ::rpgstat[storage]; return (val==undefined) ? (fget( a, key) ?? defval) : a[key]<-val;
+		}
+	}
+}
+
+//	グローバル変数へのアクセッサ。書き込み可能。
+//	"G000"~"G999" : stringでの直値でのアクセス。
+//	G[i] : インデックスでのアクセス。
+//	
+class GlobalVarAccessor
+{
+	name = "$T.var_global"
+	icon = "\uf80a"
+	varbits = 4
+	
+	//	keyに対するアクセス用functionを返す。無い場合はnull
+	//	confに設定が無く、keyがG000~G999の範囲内ならanyタイプとする
+	function makevar( key){
+		if( key == "G"){	//	G[i]でアクセス可能に！
+			return idxaccess( this);
+		}
+		local v = ::conf.gvar[key];
+		if( !v) return null;
+		return varaccsfunc( "gvarmap", v.type, v.defval);
+	}
+
+	//	ツール用。一覧表示するためのリストを表示。
+	//	key, name, icon, type(bool,int,float,string,any,none), rw, 
+	function list(){
+		local a = [];
+		local num = ::conf.gvar._meta.caps;
+		for( local l = 0;l < num;l ++){
+			local key = sprintf( "G%03d", l);
+			local v = ::conf.gvar[key];
+			if( v) a .. info( key);
+		}
+		return a;
+	}
+
+	//	ツール用。変数の情報を表示するためのもの。
+	//	::rpgvar.info( key)で取得可能。
+	function info( key){
+		local v = ::conf.gvar[key];
+		if( !v) return null;
+		return { key=key, name=v.name, type=v.type, write=true, }
+	}
+}
+
+//	アイテムの所持数、敵の討伐数、キャラのパーティ加入状態、クエストの進捗状況など、
+//	イベントの条件に必要そうな状態を返すための変数アクセッサ。読み込み専用。
+//	
+//	アイテム所持数 : NUM_I010 所持数を返す。無い場合は0
+//	パーティ加入 : IN_P022 加入していたら1、してなかったら0
+//	クエスト状況 : ST_Q001 0=未出現、1=出現、2=受注、3=達成、-1=失敗、-2=拒否
+//	ジョブレベル : ？パーティ内の最大ジョブレベルかな？
+//	
+class QueryVarAccessor
+{
+	name = "";
+	icon = "\uf80c"
+	varbits = 16
+	type = VAR_INT
+
+	dbname = null;
+	prefix = "NUM_";	//	デフォルト値。変更可能
+	dbchar = null;
+	key0 = null;
+	namefmt = "%S";
+	getfunc = null;
+
+	constructor( t){
+		name = t.name;
+		dbname = t.dbname;
+		dbchar = Table.indexOf( RPGData.typemap, dbname);	//	"player"=>"P", "item"=>"I"
+		prefix ??= t["prefix"];
+		type ??= t["type"];
+		key0 = prefix .. dbchar;
+	}
+
+	function makevar( key){
+		if( key == key0){	//	P[i]等でアクセス可能に！
+			return idxaccess( this);
+		}
+		if( !key.startsWith( key0)) return undefined;
+		local dataid = key.substring( 4);
+		local v = ::conf[dbname][dataid];
+		if( !v) return undefined;
+		return getfunc( key);
+	}
+
+	//	ツール用。一覧表示するためのリストを表示。
+	//	key, name, icon, type(bool,int,float,string,any,none), rw, 
+	function list(){
+		local a = [];
+		foreach( i, v in ::conf[dbname]){
+			if( !i.startsWith( "_")) a .. info( prefix .. i);
+		}
+		a.sort( @( v) v.key);
+		return a;
+	}
+	
+	function info( key){
+		local dataid = key.substring( key.indexOf( "_")+1);
+		local v = ::conf[dbname][dataid];
+		if( !v) return null;
+		local name = sprintf( ::lang( namefmt), v.name);
+		return { key=key, name=name, icon=v["icon"], type=type, }
+	}
+}
+
+local makesvar( t){
+	t.func <- varaccsfunc( "svarmap", t.type, "defval" in t ? t.defval : false);
+	return t;
+}
+
+local makeobjref( v){
+	local ret;
+	if( v instanceof RPGCharaBase){
+		ret = RPGObjectRef();
+		ret.type = (v instanceof RPGEnemy) ? "enemy" : "player";
+		ret.id = v.dataid;
+		ret.objid ??= v["objid"];
+	}
+	if( v instanceof RPGStageEventRunner){
+		ret = RPGObjectRef();
+		ret.type = "event";
+		ret.id = v.evid;
+		ret.mapid = ::rpgstage.mapid;
+	}
+	return ret;
+}
+
+//	ゲーム全般の情報を取得するための変数アクセッサ。書き込み可能なものもある。
+//	
+class SystemVarAccessor
+{
+	name = "$T.var_system";
+	icon = "\uf80b"
+	varbits = 8
+
+	static varmap = SettingMap( "key", [
+		{
+			key = "MONEY", name = "所持金", type = VAR_INT, 
+			func = @( key, val=undefined){
+				if( val){
+					return ::rpgstat.money = Math.clamp( int( val), 0, 99999999);
+				}
+				return ::rpgstat.money;	//	money自体システム変数化してもいいが？
+			}
+		},
+		{
+			key = "AVELV", name = "平均レベル", type = VAR_INT, read = true,
+			func = @( key, val=undefined){
+				local a = ::rpgstat.members.filter( @( v) !!v);
+				return (a.reduce( @( v, x) v.LV+x, 0.0) / length( a) + 0.5) | 0;
+			}
+		},
+		{
+			key = "MAXLV", name = "最大レベル", type = VAR_INT, read = true,
+			func = @( key, val=undefined){
+				local a = ::rpgstat.members.filter( @( v) v);
+				return a.reduce( @( v, x) Math.max( v.LV, x), 0);
+			}
+		},
+		{
+			key = "MAPID", name = "$T.dlg_newmap_mapid", type = VAR_STRING, read = true,
+			func = @( key, val=undefined){
+				return ::rpgstage["mapid"] || "";
+			}
+		},
+		{
+			key = "SYSTIME", name = "システム時間", type = VAR_INT, read = true,
+			func = @( key, val=undefined){ return skGetTime(); }
+		},
+		{
+			key = "RND99", name = "ランダム(0-99)", type = VAR_INT, read = true,
+			func = @( key, val=undefined){ return ::rnd.nexti( 0, 100); }
+		},
+		makesvar({
+			key = "PTIME", name = "プレイ時間", type = VAR_INT, defval = 0,
+		}),
+		makesvar({
+			key = "STEPS", name = "歩数", type = VAR_INT, defval = 0,
+		}),
+		makesvar({
+			key = "DTIMER", name = "タイマー(↓)", type = VAR_INT, defval = -1,
+		}),
+		makesvar({
+			key = "UTIMER", name = "タイマー(↑)", type = VAR_INT, defval = -1,
+		}),
+		makesvar({
+			key = "SHOWTIMER", name = "表示タイマー", type = VAR_ANY, defval = null,
+		}),
+		makesvar({
+			key = "RESULT", name = "結果(バトル)", type = VAR_ANY, defval = 0,
+		}),
+		makesvar({
+			key = "ERROR", name = "エラー", type = VAR_INT, defval = 0,
+		}),
+		makesvar({
+			key = "REMAPID", name = "マップの再配置ID", type = VAR_INT, defval = 1,
+		}),
+		makesvar({
+			key = "ENCOUNTER", name = "エンカウント", type = VAR_FLOAT, defval = 0.0,
+		}),
+		{
+			key = "INBATTLE", name = "バトル中か", type = VAR_BOOL, read = true,
+			func = @( key, val=undefined){ return !!::rpgstage.battle; }
+		},
+		{
+			key = "ESCAPABLE", name = "$T.lbl_escapable", type = VAR_BOOL, read = true,
+			func = @( key, val=undefined){ return !!::rpgstage.battle["battledata"]["escapable"]; }
+		},
+		{
+			key = "UIFOCUS", name = "UIフォーカス", type = VAR_STRING, read = true,
+			func = @( key, val=undefined){
+				return ::gpui.gpuitarget["view"]["name"] || "";
+			}
+		},
+		{
+			key = "ATKCHR", name = "攻撃キャラ", type = VAR_ANY, read = true,
+			func = @( key, val=undefined) makeobjref( ::rpgstage["battle"]["atkchr"]);
+		},
+		{
+			key = "DEFCHR", name = "防御キャラ", type = VAR_ANY, read = true,
+			func = @( key, val=undefined) makeobjref( ::rpgstage["battle"]["defchr"]);
+		},
+		{
+			key = "MEMBERS", name = "パーティリスト", type = VAR_ANY, read = true,
+			func = @( key, val=undefined) ::rpgstat.members.map( @( v) makeobjref( v)),
+		},
+		{
+			key = "ENEMIES", name = "エネミーリスト", type = VAR_ANY, read = true,
+			func = @( key, val=undefined) ::rpgstage.battle["enemies"]?.map( @( v) makeobjref( v)) || null,
+		},
+	]);
+
+	static function add( t){
+		varmap .. t["func"] ? t : makesvar( t);
+	}
+	
+	function makevar( key){
+		return varmap[key]["func"];
+	}
+	
+	//	ツール用。一覧表示するためのリストを表示。
+	//	key, name, icon, type(bool,int,float,string,any,none), rw, 
+	function list(){
+		local a = [];
+		foreach( i, v in varmap._list) a .. info( v.key);
+		return a;
+	}
+
+	function info( key){
+		local v = varmap[key];
+		if( !v) return null;
+		return { key:key, name:v.name, type:v.type, }
+	}
+}
+
+
+//	ボタンが押された状態。キーボードやタッチパネルはマッピングされる。＋マウスやタッチパネルのタップを指定可能。
+//	ON, OFFを返す。 A,B,X,Y, 
+//	
+class ButtonVarAccessor
+{
+	name = "ボタン状態";
+	icon = "\uf80b"
+	varbits = 16
+
+	varmap = SettingMap( "key", [
+		{ key="BTN_TAP", name="画面タップ", type=VAR_BOOL, btn=BTN_A, },
+		//
+		{ key="BTN_UP", name="UPボタン", type=VAR_BOOL, btn=BTN_UP, },
+		{ key="BTN_DOWN", name="DOWNボタン", type=VAR_BOOL, btn=BTN_DOWN, },
+		{ key="BTN_LEFT", name="LEFTボタン", type=VAR_BOOL, btn=BTN_LEFT, },
+		{ key="BTN_RIGHT", name="RIGHTボタン", type=VAR_BOOL, btn=BTN_RIGHT, },
+		{ key="BTN_A", name="Aボタン", type=VAR_BOOL, btn=BTN_A, },
+		{ key="BTN_B", name="Bボタン", type=VAR_BOOL, btn=BTN_B, },
+		{ key="BTN_X", name="Xボタン", type=VAR_BOOL, btn=BTN_X, },
+		{ key="BTN_Y", name="Yボタン", type=VAR_BOOL, btn=BTN_Y, },
+	]);
+	
+	function makevar( key){
+		local b = varmap[key];
+		if( b){
+			local btn = b.btn;
+			return @( _, val=undefined){
+				return ::gpui.isButtonDown( btn);
+			}
+		}
+	}
+	
+	//	ツール用。一覧表示するためのリストを表示。
+	function list(){
+		local a = [];
+		foreach( i, v in varmap._list) a .. info( v.key);
+		return a;
+	}
+
+	function info( key){
+		local v = varmap[key];
+		if( !v) return null;
+		return { key:key, name:v.name, type:v.type, }
+	}
+}
+
+// class GlobalSettingAccessor
+// {
+// 	name = "グローバル設定";
+// 	icon = "\uf80b"
+// 	varbits = 16
+	
+// 	function makevar( key){
+// 	}
+
+// 	//	ツール用。一覧表示するためのリストを表示。
+// 	function list(){
+// 		local self = this;
+// 		return RPGSystem.settingprops.map( @( v){
+// 			if( v["proptype"]!="status") return undefined;
+// 			return self.info( v.pid);
+// 		}) 
+// 	}
+
+// 	function info( key){
+// 		local v = RPGSystem.settingprops.find( @( v) v.pid==key);
+// 		if( !v) return null;
+// 		return { key:key, name:v.lbl, type:VAR_ANY, }
+// 	}
+// }
+
+
+////////////////////////////////////////////////////////////////////////////////
+//	register accessors
+
+RPGSystem.varaccs .. GlobalVarAccessor();
+RPGSystem.varaccs .. SystemVarAccessor();
+RPGSystem.varaccs .. QueryVarAccessor({
+	name: "$T.qvar_item",
+	dbname = "item",
+	getfunc = @( dataid) ::rpgstat.countItems( dataid, true),	//	装備品も合わせたカウント
+});
+RPGSystem.varaccs .. QueryVarAccessor({
+	name: "$T.qvar_enemy",
+	dbname = "enemy",
+	getfunc = @( dataid){
+		local v = ::rpgstat.globals.collection[dataid];
+		return v ? v.num : 0;
+	},
+});
+RPGSystem.varaccs .. ButtonVarAccessor();
+// RPGSystem.varaccs .. GlobalSettingAccessor();

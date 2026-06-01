@@ -1,0 +1,673 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import SKViewPropertyID;
+
+function getPtcTecs(){
+	local a = [];
+	local efxs = skFXGetEffects();
+	local icons = #( ("\ue430", 0xffff00ff), ("\ue2bd", 0x999999ff));
+	foreach( efx in efxs){
+		local efxname = efx.name;
+		foreach( i,tec in efx){
+			// printf( "tec.name %S    %S\n", tec.name, tec.tag);
+			if( !tec.tag || !tec.tag.contains( "particle")){
+				continue;
+			}
+			local ispbr = tec.tag.contains( "pbr");
+			local icon = icons[ispbr?0:1];
+			a .. { lbl=tec.name, val=tec.name, tec=tec, icon=icon};
+		}
+	}
+	return a;
+}
+
+//	ヘッダ
+local materialhead = { pid="MT", lbl="$T.lbl_material", type=HEADER, }
+local shapehead = { pid="SP", lbl="$T.lbl_shape", type=HEADER, }
+local emitterhead = { pid="EM", lbl="$T.lbl_emitter", type=HEADER, }
+
+//	マテリアル
+//		legacy => Kd, Ks, Ka
+//		pbr => color, emit   pbrパーティクルはrough=1.0, metal=0.0
+
+local textureprop = { pid="texture",	lbl="Texture", type=PATH }
+local masktexprop = { pid="masktex",	lbl="Mask Texture", type=PATH }
+local blendmodeprop = { pid="blendmode", lbl="BlendMode",	type=LIST, list=["0:OPAQUE","1:MASKED","2:TRANSPAR","3:DECAL","4:MASKED DECAL","5:TRANS DECAL"] };
+local blendprop = { pid="blend",	lbl="$T.lbl_blend", type=LIST, list=::SKVP[IMAGEBLEND].list};
+local tecprop = { pid="tec",	lbl="Shader",	type=LIST, list=getPtcTecs };
+local legacyprops = [
+	{ pid="color",	lbl="Color",	type=RGBA },
+];
+local overlayprop = { pid="overlay",	lbl="Overlay", type=SCALAR, range=(-1.0,1.0,), q=100, ui="bar" }
+
+
+local pbrprops = [
+	{ pid="color",	lbl="Color",	type=RGBA },
+	{ pid="emission", lbl="Emission",	type=SCALAR, range=(0,255), q=1 }, 
+];
+
+//	シェイプ
+//	シェイプ変更時のデフォルト値
+local shapedefaults = [
+	{ w = 0.1, h = 0.1, d = 0.01, r = 0.0, axis = 0 },
+	{ w = 0.1, h = 0.1, d = 0.1 },
+	{ r = 0.1, segw = 6, segh = 6 },
+	{ topr = 0.1, btmr = 0.1, h = 0.1, segw = 12, closemask=7, axis=0 },
+	{ path="", usemtl=false, w = 0.1, h = 0.1, d = 0.1 },
+]
+
+local shapetypes = [
+	{ lbl:"0:Quad", icon:"\ueb36", val:0},
+	{ lbl:"1:Cube", icon:"\ue53b", val:1},
+	{ lbl:"2:Sphere", icon:"\uef4a", val:2},
+	{ lbl:"3:Cylinder", icon:"\ue0d6", val:3},
+	{ lbl:"4:Polygon", icon:"\ue86b", val:4}, 
+]
+
+local aimtypeprop = { pid="aimtype", lbl="Billboard",	type=LIST, list=["0:OFF","1:ON","2:AIMING"] };
+local shaperotprop = { pid="shaperot", lbl="HPB",	type=VEC3, range=(-180,180), };
+local shapetypeprop = { pid="shapetype", lbl="ShapeType",	type=LIST, list=shapetypes };
+local shapetypeprops = [
+	//	0:Quad
+	[
+		{ pid="shapesize", lbl="Size",	type=VEC2, range=(0.01, 8.0), q=1000 },
+		{ pid="shaper", lbl="Roundness",	type=SCALAR, range=(0.0, 1.0), q=100, ui="bar" },
+		{ pid="shapeaxis", lbl="Axis",	type=LIST, list=["0:XY","1:XZ","2:YZ"] },
+	],
+	//	1:Cube
+	[
+		{ pid="shapesize", lbl="Size",	type=VEC3, range=(0.01, 8.0), q=1000 },
+		shaperotprop,
+	],
+	//	2:Sphere
+	[
+		{ pid="shaper", lbl="Radius",	type=SCALAR, range=(0.01, 8.0), q=1000 },
+		{ pid="shapeseg2", lbl="Segments",	type=VEC2, range=(4, 32), q=1 },
+	],
+	//	3:Cylinder
+	[
+		{ pid="shapeh", lbl="Height",	type=SCALAR, range=(0.01, 8.0), q=1000 },
+		{ pid="shaper2", lbl="R(Top,Bottom)",	type=VEC2, range=(0.01, 8.0), q=1000 },
+		{ pid="shapeseg", lbl="Segments",	type=SCALAR, range=(4, 32), q=1 },
+		{ pid="shapecap", lbl="CapMask",	type=SCALAR, range=(4, 32), q=1 },
+		{ pid="shapeaxis", lbl="Axis",	type=LIST, list=["0:XY","1:YX"] },
+		shaperotprop,
+	],
+	//	4:Polygon
+	[
+		{ pid="shapepath",	lbl="PM Path", type=PATH },
+		{ pid="shapesize2",	lbl="Size",	type=VEC3, range=(0.01, 8.0), q=1000 },
+		{ pid="shapemtl",	lbl="Use PM's Material", type=BOOL },
+		shaperotprop,
+	]
+]
+
+//	エミッター
+
+local emit_numseedprop = { pid="emit_numseed", lbl="Num/Seed", type=3300 }
+local emit_startprop = { pid="emit_start", lbl="Start", type=3301 }
+local emit_lifeprop = { pid="emit_life", lbl="Duration", type=3301 }
+local emit_posprop = { pid="emit_pos", lbl="Position", type=3302, range=(-10.0,10.0), q=100 }
+local emit_dirprop = { pid="emit_dir", lbl="Direction", type=3302, range=(-360,360), q=1 }
+
+
+//	モディファイア
+//	X ptcmod_follow
+//	
+//	+ ptcmod_uv2
+
+local modctxmenudata = [
+	{ id="upmost", lbl="$T.editor_ui_menu_edit_order_upmost", icon="\ue25a"},
+	{ id="up", lbl="$T.editor_ui_menu_edit_order_up", icon="\ue5d8"},
+	{ id="down", lbl="$T.editor_ui_menu_edit_order_down", icon="\ue5db"},
+	"-",
+	{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+	{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=@() !::pmodclipboard },
+	"-",
+	{ id="delete", lbl="$T.lbl_delete", icon="\ue872"},
+]
+
+local modmenulist = [
+	{ classid="ptcmod_vel", lbl="Velocity", icon="\uf102", type=3310,  def={ classid="ptcmod_vel", vel = 1.0, vel_spr = 0.0, }, menu=modctxmenudata },
+	{ classid="ptcmod_acc", lbl="Accel", icon="\uf102", type=3311,  def={ classid="ptcmod_acc", coord = 0, axisid = 1, acc = 0.1, acc_spr = 0.0, }, menu=modctxmenudata },
+	{ classid="ptcmod_offs", lbl="Offset", icon="\uf102", type=3320,  def={ classid="ptcmod_offs", x=0.0, y=0.0, z=0.0, }, menu=modctxmenudata },
+	{ classid="ptcmod_color", lbl="Color", icon="\uf102", type=3312,  def={ classid="ptcmod_color", color = [0xffffffff, 0x00000080], }, menu=modctxmenudata },
+	{ classid="ptcmod_scale", lbl="Scale", icon="\uf102", type=3313,  def={ classid="ptcmod_scale", xyz = 7, scale = [1.0, 0.1], }, menu=modctxmenudata },
+	{ classid="ptcmod_rot", lbl="Rotate", icon="\uf102", type=3314,  def={ classid="ptcmod_rot", axisid = 2, scale = 3.1416, rot = [-1.0, 1.0], }, menu=modctxmenudata },
+	{ classid="ptcmod_texanime", lbl="TexAnime", icon="\uf102", type=3315,  def={ classid="ptcmod_texanime", frame = [0, 1], }, menu=modctxmenudata },
+	{ classid="ptcmod_uv", lbl="UVScroll", icon="\uf102", type=3317,  def={ classid="ptcmod_uv", u = 0.0, v = 1.0, ease = 0, }, menu=modctxmenudata, hide=true },
+	{ classid="ptcmod_uv2", lbl="UVScroll", icon="\uf102", type=3318,  def={ classid="ptcmod_uv2", uv = 1, scale=1.0, scroll=[0.0,1.0], }, menu=modctxmenudata },
+	{ classid="ptcmod_rnd", lbl="Randomize", icon="\uf102", type=3319,  def={ classid="ptcmod_rnd", h = 0.0, p = 0.0, b = 0.0, scale = 0.0, color = 0, }, menu=modctxmenudata },
+	"-",
+	{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=@() !::pmodclipboard },
+];
+
+local findmodmenu( classid){
+	foreach( v in modmenulist){
+		if( classid == v["classid"]) return v;
+	}
+}
+
+::pmodclipboard <- null;	//	disable周りが面倒なのでまだputClipboardにもってかない
+
+class EfxRightPanel
+{
+	editor = null;
+	view = null;
+
+	
+	selgd = null;					//	ParticleGroupData
+	
+	//	childlen
+	pglist = null;					//	ListBehavior
+	tabs = null;					//	TabsBehavior
+	proplist = null;				//	
+	modlist = null;					//	
+	acteditor = null;				//	ActionListEditor
+	addmodbtn = null;				//	
+	tabselview = null;
+	
+	curlist = null;					//	proplist || modlist
+	
+	constructor( v, e){
+		view = v;
+		editor = e;
+		//
+		pglist = ListBehavior( v.findChild( "pglist"), ["1","2","3","4","5","6","7","8","9","0"]);
+		pglist.dndfunc = 3;
+		pglist.setviewfunc = @( la, v, i){
+			defaultsetview( la, v, i);
+			v.findChild( "visichk").setSelected( i.enabled);
+			v.findChild( "localchk").setSelected( i.localcoord);
+			local img = v.findChild( "img");
+			local tex = ::getTexture( i.res.getResource( i.texture));
+			local sp = Sprite( tex);
+			img.setSprite( sp);
+			img.setColor( i.color | 0xff);
+			sp.blend = SK_MIX;
+			v.pickable = false;
+		}
+		pglist.listview.addEventListener( ACTION_EVENT, pglistevent);
+		pglist.listview.addEventListener( ITEM_EVENT, pglistevent);
+		pglist.keyenable = false;
+		
+		tabs = TabsBehavior( v.findChild( "tabs"), ["$T.editor_efx_tab_property","$T.editor_efx_tab_modifiers","$T.editor_efx_tab_actions"]);
+		tabs.listview.addEventListener( ACTION_EVENT, tabevent);
+		//
+		proplist = PropertyListBehavior( v.findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = e;
+		
+		modlist = PropertyListBehavior( v.findChild( "modlist"));
+		modlist.listview.addEventListener( ACTION_EVENT, modevent);
+		modlist.listview.addEventListener( ITEM_EVENT, modevent);
+		modlist.ref = e;
+
+		acteditor = ActionListEditor( v.findChild( "actedit"), ParticleActions);
+		acteditor.view.addEventListener( ACTION_EVENT, actevent);
+
+		tabselview = proplist.listview;
+		modlist.listview.setVisible( false);
+		acteditor.view.setVisible( false);
+		
+		addmodbtn = v.findChild( "addmodbtn");
+		addmodbtn.setVisible( false);
+		
+		view.addEventListener( ACTION_EVENT, actionevent);
+	}
+	
+	function setData( pd){
+		pglist.setListItems( pd.groups);
+		local gi = Math.clamp( pglist.curidx, 0, length( pd.groups)-1);
+		pglist.setSelectedIndex( gi);
+		acteditor.setActions( pd.actions);
+		setGroupIndex( gi);
+	}
+
+	function setGroupIndex( i){
+		selgd = editor.ptdata.groups[i];
+		updateSelection( selgd);
+	}
+
+	function updateSelection( gd){
+		local gprops = getGroupProperties( gd);
+		proplist.bindProperties( gprops);
+		
+		local mprops = getModifierProperties( gd);
+		modlist.bindProperties( mprops);
+
+		refreshParams( gd);
+	}
+
+	function refreshParams( gd){
+		local prms = {};
+		local props = proplist.getProperties();
+		foreach( p in props){
+			prms[p.pid] <- getGroupParam( gd, p.pid);
+		}
+		proplist.setParameters( prms);
+		
+		local modprops = modlist.getProperties();
+		prms = {};
+		foreach( p in modprops){
+			prms[p.pid] <- getModifierParam( gd, p.pid);
+		}
+		modlist.setParameters( prms);
+	}
+
+	function tabevent( e){
+		local v = null;
+		switch( e.actioncmd){
+		case 0: v = proplist.listview; break;
+		case 1: v = modlist.listview; break;
+		case 2: v = acteditor.view; break;
+		}
+		tabselview?.setVisible( false);
+		v?.setVisible( true);
+		tabselview = v;
+		//
+		addmodbtn.setVisible( modlist.listview.visible);
+	}
+
+	function propevent( e){
+		if( e.id != ACTION_PERFORMED) return;
+		local cmd = e.actioncmd, pid = cmd.prop.pid;
+		if( setGroupParam( selgd, pid, cmd.val) != undefined){
+			editor.refreshParticle();
+			editor.ptdata.prof <- editor.profileParticle( editor.ptc);
+			local sb = editor.encodeParticleData( editor.ptdata);
+			editor.submitOp( sb);
+			if( pid == "shapetype"){
+				updateSelection( selgd);
+			}
+			local i = editor.ptdata.groups.indexOf( selgd);
+			pglist.refreshIndex( i);
+		}
+	}
+
+	function modevent( e){
+		local cmd = e.actioncmd, pid = cmd.prop.pid;
+		if( cmd.cmd == "prop"){
+			if( setModifierParam( selgd, pid, cmd.val) != undefined){
+				editor.refreshParticle();
+				editor.ptdata.prof <- editor.profileParticle( editor.ptc);
+				local sb = editor.encodeParticleData( editor.ptdata);
+				editor.submitOp( sb);
+			}
+		}else
+		if( cmd.cmd == "menu"){
+			local mi = pid-100000, id = cmd.val.id;
+			switch( id){
+			case "upmost":
+			case "up":
+			case "down":
+				local mi1 = id=="upmost"? 0 : mi+(id=="up"?-1:1);
+				local mo0 = selgd.mod[mi], mo1 = selgd.mod[mi1];
+				if( mo1){
+					delete selgd.mod[mi];
+					selgd.mod[mi1] <- mo0;
+					// selgd.mod[mi] = mo1;
+					// selgd.mod[mi1] = mo0;
+					local sb = editor.encodeParticleData( editor.ptdata);
+					editor.submitOp( sb);
+					editor.refreshParticle();
+					updateSelection( selgd);
+				}
+				break;
+			case "copy":
+				::pmodclipboard = deepclone( selgd.mod[mi]);
+				break;
+			case "paste":
+				local mo = deepclone( ::pmodclipboard);
+				selgd.mod[mi+1] <- mo;
+				local sb = editor.encodeParticleData( editor.ptdata);
+				editor.submitOp( sb);
+				editor.refreshParticle();
+				updateSelection( selgd);
+				break;
+			case "delete":
+				delete selgd.mod[mi];
+				local sb = editor.encodeParticleData( editor.ptdata);
+				editor.submitOp( sb);
+				editor.refreshParticle();
+				updateSelection( selgd);
+				break;
+			}
+		}
+	}
+
+	function actevent( e){
+		editor.ptdata.actions <- deepclone( acteditor.actionitems);
+		local sb = editor.encodeParticleData( editor.ptdata);
+		editor.submitOp( sb);
+		editor.refreshParticle();
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "addgroupbtn":
+			addParticleGroup();
+			break;
+		case "addmodbtn":
+			local ret = MenuPopup.run( modmenulist);
+			if( ret){
+				if( ret["id"]=="paste"){
+					local mo = deepclone( ::pmodclipboard);
+					selgd.mod .. mo;
+				}else{
+					selgd.mod .. deepclone( ret.def);
+				}
+				local sb = editor.encodeParticleData( editor.ptdata);
+				editor.submitOp( sb);
+				editor.refreshParticle();
+				updateSelection( selgd);
+			}
+			break;
+		}
+	}
+
+	function addParticleGroup(){
+		local gd = editor.createDefaultParticleGroup();
+		gd.res = editor.res;
+		local pd = editor.ptdata;
+		for( local l = 1;; l ++){
+			local name = "GROUP"..l;
+			if( !pd.groups.find( @( v) v.name==name)){ gd.name = name; break; }
+		}
+		pd.groups .. gd;
+		local sb = editor.encodeParticleData( pd);
+		editor.submitOp( sb);
+		editor.refreshParticle();
+		pglist.setListItems( pd.groups);
+		pglist.setSelectedIndex( length( pd.groups) - 1);
+		setGroupIndex( length( pd.groups) - 1);
+	}
+
+	function pglistevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ACTION_PERFORMED:
+			// if(  == "visichk")
+			switch( cmd["src"]["name"]){
+			case "visichk":
+			case "localchk":
+				local id = (cmd["src"]["name"]=="visichk") ? "enabled":"localcoord";
+				cmd.item[id] = cmd.src.isSelected();
+				local sb = editor.encodeParticleData( editor.ptdata);
+				editor.submitOp( sb);
+				editor.refreshParticle();
+				break;
+			default:
+				if( e.isMouseDown( BUTTON2_MASK)){
+					showContextMenu( cmd);
+				}else{
+					editor.canvas.startSingleGroup( cmd);
+				}
+				break;
+			}
+			break;
+		case ITEM_SELECTED:
+			selgd = cmd;
+			updateSelection( cmd);
+			break;
+		case ITEM_SORT:
+			local redo = [], undo = [], li = editor.ptdata.groups;
+			local a = clone e.actioncmd.from, to = e.actioncmd.to, way = e.actioncmd.way;
+			local ins = li[ li.indexOf( to) + Math.max( way, 0)];
+			foreach( gd in a){
+				li.removeValue( gd);
+				li[ ins?li.indexOf( ins) : length(li)] <- gd;
+			}
+			local sb = editor.encodeParticleData( editor.ptdata);
+			editor.submitOp( sb);
+			editor.refreshParticle();
+			pglist.refreshItems();
+			break;
+		}
+	}
+
+	function showContextMenu( gd){
+		local cbdata = getClipboard( "ptcg");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local ctxmenu = [
+			{ id="rename", lbl="$T.lbl_rename", icon="\ue3c9"},
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-",
+			{ id="scalesize", lbl="$T.lbl_scalesize", icon="\ue56b", },
+			{ id="scaletime", lbl="$T.lbl_scaletime", icon="\ue9e4", },
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872"},
+		];
+		switch( MenuPopup.run( ctxmenu)["id"]){
+		case "rename":
+			local iv = pglist.getItemView( gd), lbl = iv.findChild( "lbl");
+			local n = Popups.showRename( lbl);
+			if( n){
+				gd.name = n;
+				local sb = editor.encodeParticleData( editor.ptdata);
+				editor.submitOp( sb);
+				pglist.refreshItems();
+			}
+			break;
+		case "copy":
+			local sb = editor.encodeParticleGroup( selgd, StringBuffer() .. "local gd = (");
+			sb .. ");\nreturn gd;"
+			printf( "ParticleGroup copied....%S\n", sb);
+			putClipboard( "ptcg", string( sb));
+			break;
+		case "paste":
+		{
+			local func = compilestring( cbdata);
+			local gd = func();
+			gd.res = editor.res;
+			local pd = editor.ptdata;
+			pd.groups .. gd;
+			local sb = editor.encodeParticleData( pd);
+			editor.submitOp( sb);
+			editor.refreshParticle();
+			pglist.setListItems( pd.groups);
+			pglist.setSelectedIndex( length( pd.groups) - 1);
+			setGroupIndex( length( pd.groups) - 1);
+			break;
+		}
+		case "delete":
+			if( length( editor.ptdata.groups) > 1){
+				editor.ptdata.groups.removeValue( gd);
+				local sb = editor.encodeParticleData( editor.ptdata);
+				editor.submitOp( sb);
+				pglist.refreshItems();
+				setGroupIndex( 0);
+				pglist.setSelectedIndex( 0);
+				editor.refreshParticle();
+			}
+			break;
+		case "scalesize":
+			local s = Popups.showNumInput({ val=100, range=(10,400), q=1, title="$T.pop_numscale"});
+			if( s != 100){
+				s *= 0.01;
+				editor.sizeScaleParticleGroup( selgd, s);
+				local sb = editor.encodeParticleData( editor.ptdata);
+				editor.submitOp( sb);
+				editor.refreshParticle();
+			}
+			break;
+		case "scaletime":
+			local s = Popups.showNumInput({ val=100, range=(10,400), q=1, title="$T.pop_numscale"});
+			if( s != 100){
+				s *= 0.01;
+				editor.timeScaleParticleGroup( selgd, s);
+				local sb = editor.encodeParticleData( editor.ptdata);
+				editor.submitOp( sb);
+				editor.refreshParticle();
+			}
+			break;
+		}
+	}
+
+	/////////////////////////////////////////////////////////////////
+	//	group properties
+
+	//	
+	function getGroupProperties( gd){
+		local a = [];
+		//	material
+		a .. materialhead;
+		a .. textureprop;
+		a .. blendmodeprop;
+		a .. blendprop;
+		a .. tecprop;
+		local tec = gd.tec && skFXFindTechnique( gd.tec);
+		local ispbr = tec["tag"]?.contains( "pbr");
+		a .. (ispbr ? pbrprops : legacyprops);
+		a .. masktexprop;
+		a .. overlayprop;
+		
+		//	shape
+		a .. shapehead;
+		a .. aimtypeprop;
+		a .. shapetypeprop;
+		a .. shapetypeprops[ gd.shapetype];
+
+		//	emitter
+		a .. emitterhead;
+		a .. emit_numseedprop;
+		a .. emit_startprop;
+		a .. emit_lifeprop;
+		a .. emit_posprop;
+		a .. emit_dirprop;
+		
+		return a;
+	}
+
+	function rtod( a){
+		a = clone a;
+		foreach( i,v in a) a[i] = Math.round( v*Math.RTOD)|0;
+		return a;
+	}
+
+	function dtor( a){
+		a = clone a;
+		foreach( i,v in a) a[i] = v*Math.DTOR;
+		return a;
+	}
+
+	//	
+	function getGroupParam( gd, pid){
+		local e = gd.emitter, sd = gd.shapedata;
+		//
+		switch( pid){
+		//	material
+		case "texture": return gd.texture;
+		case "masktex": return gd.masktex;
+		case "blendmode": return gd.blendmode;
+		case "blend": return gd.blend;
+		case "tec": return gd.tec || "decal.def";
+		case "color": return gd.color;
+		case "emission": return gd.emission;
+		case "overlay": return gd.overlay;
+		//	shape
+		case "aimtype": return gd.aimtype;
+		case "shapetype": return gd.shapetype;
+		case "shapesize": return (sd.w, sd.h, sd["d"]||0.0);
+		case "shapesize2": return (sd["w"]||0.1, sd["h"]||0.1, sd["d"]||0.1);
+		case "shapeh": return sd.h;
+		case "shaper": return sd["r"]||0.0;
+		case "shaper2": return (sd.topr, sd.btmr);
+		case "shapeaxis": return sd.axis;
+		case "shapeseg": return sd["segw"]||4;
+		case "shapeseg2": return (sd["segw"]||4, sd["segh"]||4);
+		case "shapepath": return sd["path"];
+		case "shapemtl": return !!sd["usemtl"];
+		case "shaperot": return sd["hpb"] || #[0,0,0];
+		//	emitter
+		case "emit_numseed": return (e.num,e.seed);
+		case "emit_start": return (e.start,e.start_spr,e.linearbits&1);
+		case "emit_life": return (e.life,e.life_spr,(e.linearbits>>1)&1);
+		case "emit_pos": return (e.posx,e.posy,e.posz, e.pos_sprx,e.pos_spry,e.pos_sprz, (e.linearbits>>2)&7);
+		case "emit_dir": return rtod( [e.dirx,e.diry,e.dirz, e.dir_sprx,e.dir_spry,e.dir_sprz]) .. ((e.linearbits>>5)&7);
+		}
+	}
+
+	function _setlinebit( e, i, b){
+		if( b) e.linearbits |= 1<<i; else e.linearbits &= ~(1<<i);
+	}
+
+	//	
+	function setGroupParam( gd, pid, val){
+		local e = gd.emitter, sd = gd.shapedata;
+		//
+		switch( pid){
+		//	material
+		case "texture": return gd.texture = val;
+		case "masktex": return gd.masktex = val;
+		case "blendmode": return gd.blendmode = val;
+		case "blend": return gd.blend = val;
+		case "tec": return gd.tec = val;
+		case "color": return gd.color = val;
+		case "emission": return gd.emission = val;
+		case "overlay": return gd.overlay = val;
+		//	shape
+		case "aimtype": return gd.aimtype = val;
+		case "shapetype": 
+			gd.shapedata = clone shapedefaults[val];
+			return gd.shapetype = val;
+		case "shapesize": sd.w = val[0]; sd.h = val[1]; if( "d" in sd) sd.d = val[2]; return val;
+		case "shapesize2": sd.w <- val[0]; sd.h <- val[1]; sd.d <- val[2]; return val;
+		case "shapeh": return sd.h = val;
+		case "shaper": return sd.r <- val;	//	r naiyatu mo...
+		case "shaper2": sd.topr = val[0]; sd.btmr = val[1]; return val;
+		case "shapeaxis": return sd.axis = val;
+		case "shapeseg": return sd.segw = val;
+		case "shapeseg2": sd.segw = val[0]; sd.segh = val[1]; return val;
+		case "shapepath": return sd["path"] = val;
+		case "shapemtl": return sd["usemtl"] <- val;
+		case "shaperot": if( val[0]|val[1]|val[2]){ sd.hpb<-val; }else{ delete sd.hpb; }; return val;
+		//	emitter
+		case "emit_numseed": e.num = val[0]; e.seed = val[1]; return val;
+		case "emit_start": e.start = val[0]; e.start_spr = val[1]; _setlinebit( e, 0, val[2]); return val;
+		case "emit_life": e.life = val[0]; e.life_spr = val[1]; _setlinebit( e, 1, val[2]); return val;
+		case "emit_pos": 
+			e.posx = val[0]; e.posy = val[1]; e.posz = val[2]; e.pos_sprx = val[3]; e.pos_spry = val[4]; e.pos_sprz = val[5];
+			 _setlinebit( e, 2, val[6]&1);
+			 _setlinebit( e, 3, val[6]&2);
+			 _setlinebit( e, 4, val[6]&4);
+			return val;
+		case "emit_dir":
+			local v6 = val[6];
+			val = dtor( val); e.dirx = val[0]; e.diry = val[1]; e.dirz = val[2]; e.dir_sprx = val[3]; e.dir_spry = val[4]; e.dir_sprz = val[5];
+			_setlinebit( e, 5, v6&1);
+			_setlinebit( e, 6, v6&2);
+			_setlinebit( e, 7, v6&4);
+			return val;
+		}
+		return undefined;
+	}
+	
+	/////////////////////////////////////////////////////////////////
+	//	modifiers properties
+	
+	function getModifierProperties( gd){
+		local a = [];
+		foreach( i,m in gd.mod){
+			local v = clone findmodmenu( m.classid);
+			v.pid <- i+100000;
+			a .. v;
+		}
+		return a;
+	}
+
+	//	
+	function getModifierParam( gd, pid){
+		local mi = pid-100000;
+		return gd.mod[mi];
+	}
+
+	//	
+	function setModifierParam( g, pid, val){
+		local mi = pid-100000;
+		g.mod[mi] ... val;
+	}
+}

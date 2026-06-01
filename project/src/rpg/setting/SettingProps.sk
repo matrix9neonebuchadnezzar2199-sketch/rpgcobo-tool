@@ -1,0 +1,518 @@
+//***LicenseHere
+
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	システム設定のプロパティ定義。
+//	ゲーム中に変更可能なプロパティはstatus、変更不能なプロパティはstaticとする。
+//	
+
+local settingprops = RPGSystem.settingprops;
+
+local battletypelist = [
+	{ val=0, lbl="$T.setting_battletype0", },
+	{ val=1, lbl="$T.setting_battletype1", disable=true },	//	未実装・・・
+	{ val=2, lbl="$T.setting_battletype2", disable=true },	//	未実装・・・
+];
+
+//////// basic - 基本システム
+
+settingprops .. {
+	part = "basic",
+	pid = "battletype",
+	lbl = "$T.setting_battletype"
+	type = LIST,
+	list = battletypelist,
+	defval = 0,
+};
+
+settingprops .. {
+	part = "basic",
+	pid = "maxmembers",
+	lbl = "$T.setting_maxmembers",
+	type = SCALAR
+	range = (1,6)
+	defval = 4,
+};
+
+settingprops .. {
+	part = "basic",
+	proptype = "status",
+	pid = "walkspd",
+	lbl = "$T.setting_walkspd",
+	type = SCALAR,
+	ui = "bar",
+	range = (0.0,10.0),
+	q = 10
+	defval = 5.0,
+};
+
+settingprops .. {
+	part = "basic",
+	pid = "jxptype",
+	lbl = "$T.setting_jxptype",
+	type = LIST,
+	list = [
+		{ lbl="$T.setting_jxptype_auto", val=0, }
+		{ lbl="$T.setting_jxptype_manual", val=1, }
+	]
+	defval = 0,
+};
+
+settingprops .. {
+	part = "basic",
+	proptype = "status",
+	pid = "hotelheal",
+	lbl = "$T.setting_hotelheal",
+	type = LIST,
+	list = [
+		{ lbl="$T.setting_hotelheal0", val=0, }
+		{ lbl="$T.setting_hotelheal1", val=1, }
+		{ lbl="$T.setting_hotelheal2", val=2, }
+	]
+	defval = 2,
+};
+
+settingprops .. {
+	part = "basic",
+	proptype = "status",
+	pid = "lvupheal",
+	lbl = "$T.setting_lvupheal",
+	type = BOOL,
+	defval = false,
+};
+
+settingprops .. {
+	part = "basic",
+	proptype = "status",
+	pid = "showhidden",
+	lbl = "$T.setting_showhidden",
+	type = BOOL,
+	type = LIST,
+	list = [
+		{ lbl="$T.lbl_none", val=0, }
+		{ lbl="$T.lbl_auto", val=1, }
+		{ lbl="$T.lbl_always", val=2, }
+	]
+	defval = 1,
+};
+
+//////// command - バトルコマンド
+
+for( local l = 0;l < 8;l ++){
+	settingprops .. {
+		part = "command",
+		pid = "battlecmd"..l,
+		proptype = "status",			//	イベントコマンドで置き換えられたりすると便利？
+		lbl = "${T.lbl_command}"..l
+		type = LIST,
+		list = RPGProperties.battlecmdlist,
+		defval = null,
+	};
+}
+
+//////// 
+
+settingprops .. {
+	part = "startup"
+	pid = "inimembers"
+	lbl = "$T.setting_inimembers"
+
+	type = DATAIDS
+	datalist = @() array( ::conf.setting.maxmembers).map(
+		@( _, i){
+			return {
+				head = ""..i,
+				datatype = ["player"],
+			}
+		}
+	)
+	defval = ["P000"]
+};
+
+settingprops .. {
+	part = "startup"
+	pid = "inimoney"
+	lbl = "$T.mymoney"
+
+	type = SCALAR
+	range = (0, 1000000)
+
+	defval = 100
+};
+
+settingprops .. {
+	part = "startup"
+	pid = "titlemap"
+	lbl = "$T.setting_titlemap"
+	type = DATAID
+	datatype = ["map"]
+	
+	defval = "M001"
+};
+
+
+settingprops .. {
+	part = "startup"
+	pid = "inimap"
+	lbl = "$T.setting_inimap"
+	type = CUSTOMBUTTON
+
+	tostring = @( v){
+		local dirs = ["↑","→","↓","←",];
+		local map = ::conf.map[v["mapid"]], pos = v.pos;
+		local lbl = sprintf( "%S: %S (%S %S %S %S)", v["mapid"], map["name"] || "$T.lbl_invalidid", pos[0], pos[1], pos[2], dirs[pos[3]]);
+		return lbl;
+	}
+
+	//	コンテキストメニュー表示してマップ編集に移動
+	edit = @( val){
+		if( MenuPopup.run( [{ lbl="$T.setting_inimap_open", icon="\ue89e" }])){
+			::skstudio.openEditor( "/.x/map/%S" % val.mapid);
+			//	位置まで移動したらもっと親切
+		}
+	}
+};
+
+//////// メニュー画面設定。
+
+settingprops .. {
+	part = "ui",
+	proptype = "status",
+	pid = "menu_status",
+	lbl = @() (T.format_view % T.status),
+	type = LIST,
+	list = RPGProperties.uivisiblelist,
+	defval = 3
+};
+
+settingprops .. {
+	part = "ui",
+	proptype = "status",
+	pid = "menu_item",
+	lbl = @() (T.format_view % T.item),
+	type = LIST,
+	list = RPGProperties.uivisiblelist,
+	defval = 3
+};
+
+settingprops .. {
+	part = "ui",
+	proptype = "status",
+	pid = "menu_skill",
+	lbl = @() (T.format_view % T.skill),
+	type = LIST,
+	list = RPGProperties.uivisiblelist,
+	defval = 3
+};
+
+settingprops .. {
+	part = "ui",
+	proptype = "status",
+	pid = "menu_equip",
+	lbl = @() (T.format_view % T.equip),
+	type = LIST,
+	list = RPGProperties.uivisiblelist,
+	defval = 3
+};
+
+settingprops .. {
+	part = "ui",
+	proptype = "status",
+	pid = "menu_job",
+	lbl = @() (T.format_view % T.job),
+	type = LIST,
+	list = RPGProperties.uivisiblelist,
+	defval = 3
+};
+
+settingprops .. {
+	part = "ui",
+	proptype = "status",
+	pid = "menu_formation",
+	lbl = @() (T.format_view % T.formation),
+	type = LIST,
+	list = RPGProperties.uivisiblelist,
+	defval = 3
+};
+
+settingprops .. {
+	part = "ui",
+	proptype = "status",
+	pid = "menu_save",
+	lbl = @() (T.format_view % T.save),
+	type = LIST,
+	list = RPGProperties.uivisiblelist,
+	defval = 3
+};
+
+settingprops .. {
+	part = "ui",
+	proptype = "status",
+	pid = "menu_load",
+	lbl = @() (T.format_view % T.load),
+	type = LIST,
+	list = RPGProperties.uivisiblelist,
+	defval = 0
+};
+
+settingprops .. {
+	part = "ui",
+	proptype = "status",
+	pid = "menu_config",
+	lbl = @() (T.format_view % T.config),
+	type = LIST,
+	list = RPGProperties.uivisiblelist,
+	defval = 3
+};
+
+////////////////////////////////////////////////////////////////////////////////
+//	ステージ設定
+//	以下のプロパティはステージの保存時に保存される。また、mapedit=trueの場合はマップエディタで初期設定を設定可能。
+//	これらの状態変更は、イベントコマンド「ステージ設定の変更」で行う。BGM変更みたいなのは個別にコマンドがある
+
+local rendersetlist(){
+	local a = [];
+	foreach( v in ::RenderSettings.data){
+		if( v.renderpass == 2) a .. { lbl=v.name, id=v.id, icon="\ue430", val=v.id }	//	deferredのみ
+	}
+	return a;
+}
+
+local stageprops = RPGSystem.stageprops;
+
+stageprops .. { mapedit=true, pid="encntrate", lbl="$T.lbl_encntrate", type=SCALAR, ui="bar", range=(0.0,100.0), q=10, barrange=(0.0,100.0,1.0), defval=0.0 };
+
+stageprops .. {
+	mapedit=true,
+	pid="rsetid",
+	lbl="$T.menu_view_rendersetting",
+	type=LIST,
+	list = rendersetlist,
+	defval="pbr_df",
+};
+
+local bgtypelist = [
+	{ lbl="$T.lbl_skybox", val="skybox", icon="\ue3c4", }
+	{ lbl="$T.sfxbit_0", val="col", icon="\ueb36", }
+	{ lbl="$T.lbl_gradation", val="grad", icon="\ue3e9", }
+	{ lbl="$T.lbl_texture", val="tex", icon="\ue3d3"}
+];
+
+local bgpropdef(){
+	return {
+		name = "$T.lbl_bgimage"
+		props = @( v){
+			local a = [
+				{ pid="type", lbl="$T.lbl_type", type=LIST, list = bgtypelist, refresh = true},
+			];
+			switch( v["type"]){
+			case "col":
+				a .. { pid="col", lbl="$T.sfxbit_0", type=RGB, defval=(v["col"]||0x000000ff), };
+				break;
+			case "grad":
+				a .. { pid="grad", lbl="$T.lbl_gradation", type=3312, defval={color=[0x000033ff, 0x0000ffff]} };
+				break;
+			case "tex":
+				a .. { pid="tex", lbl="$T.lbl_texture", type=PATH, defval="", };
+				a .. { pid="uv", lbl="$T.lbl_uv", type=LIST, defval="", };	//	Cylinder, Equirectangular, Cube
+				break;
+			}
+			return a;
+		}
+		setprop = @( prop, data, val){
+			local ed = ::skstudio.editor;
+			if( ed instanceof MapEditor){
+				ed.canvas.setBackground( data);
+			}
+		}
+		tostring = @( v){
+			local ts = bgtypelist.find( @( x) x.val==v.type)["lbl"];
+			switch( v.type){
+			case "col":
+				local cs = "%06x" % (v["col"]>>>8);
+				ts = rtf( `$ts: [#$cs]■`);
+				break;
+			case "grad":
+				local g = v["grad"]["color"]||[0xff0000ff];
+				local cs0 = "%06x" % (g[0]>>>8);
+				local cs1 = "%06x" % (g.last()>>>8);
+				ts = rtf( `$ts: [#$cs0]■[#$cs1]■`);
+				break;
+			}
+			return ts;
+		}
+	};
+}
+
+//	黒、スカイボックス、-、色指定、　テクスチャ指定
+stageprops .. {
+	mapedit=true,
+	pid="bg",
+	lbl="$T.lbl_bgimage",
+	type=PROPERTYLIST,
+	defval={ type="skybox", },
+	propdef = bgpropdef
+};
+
+/*
+		{ pid="spd", lbl="$T.lbl_speed", type=VEC2, range=(0.0,1.0), q=100, defval=[0.05,0.05], ui="bar"},
+		{ pid="cloudcol", lbl="$T.lbl_color", type=RGB, defval=0x999999ff},
+		{ pid="scale", lbl="$T.lbl_scale", type=SCALAR, range=(1,1000), q=1, defval=150, ui="bar"},
+		{ pid="dens", lbl="$T.lbl_density", type=SCALAR, range=(0.01,0.99), q=100, defval=0.36, ui="bar"},
+		{ pid="smooth", lbl="$T.lbl_smooth", type=SCALAR, range=(0.00,0.99), q=100, defval=0.09, ui="bar"},
+*/
+::weatherlist <- [
+	{ id="none", type=null, },
+	{ id="rain1", type="rain", spd=2.0, raincol=0xcce7ffff, dropw=0.02, droph=0.04, dropangle=0.0, dropdens=10, darken=40 },
+	{ id="rain2", type="rain", spd=3.0, raincol=0xcce7ffff, dropw=0.02, droph=0.08, dropangle=0.25, dropdens=25, darken=70 },
+	{ id="mist1", type="mist", spd=[0.22,0.1], dens=40, scale=50, xscale=3.0, modspd=0.1, mistcol=0xcce7ffff },
+	{ id="mist2", type="mist", spd=[1.2,-0.6], dens=48, scale=60, xscale=4.5, modspd=0.9, mistcol=0xCBC78Fff },
+	{ id="cloud1", type="cloud", spd=[0.05,0.05], cloudcol=0x999999ff, scale=150, dens=0.36, smooth=0.09 },
+	{ id="snow1", type="snow", spd=2.0, snowcol=0xffffffff, scale=150, dens=0.36, },
+];
+
+local weatherpropdef(){
+	local idmap = {}, idlist = [];
+	foreach( i, v in ::weatherlist){
+		if( v.type) idmap[v.id] <- v;
+		idlist .. { lbl="$T.weather_"..v.id, icon="\uf1ad", val=v.id, }
+	}
+	return {
+		name = "$T.setting_weather"
+		props = @( v){
+			local a = [
+				{ pid="id", lbl="$T.lbl_type", type=LIST, list=idlist, refresh=true,
+					set = @( prop, data, val){
+						Table.clear( data) ... idmap[val];
+					}
+				},
+			];
+			local cls = SK3DWeathers[v["type"]], props = cls["props"];
+			a ... props;
+			return a;
+		}
+		setprop = @( prop, data, val){
+			local ed = ::skstudio.editor;
+			if( ed instanceof MapEditor){
+				ed.canvas.refreshLinkedWeather( data);
+			}
+		}
+		tostring = @( v) v["id"] ? sprintf( "$T.weather_%S", v["id"]) : "$T.lbl_none"
+	};
+}
+
+stageprops .. {
+	mapedit=true,
+	pid="mapshotmode",
+	lbl="$T.lbl_mapshotmode",
+	type=LIST,
+	list=["$T.uivisible0","$T.uivisible3","$T.lbl_automapping"]
+	defval = 0
+}
+
+stageprops .. {
+	mapedit=true,
+	pid="weather",
+	lbl="$T.setting_weather",
+	type = PROPERTYLIST,
+	propdef = weatherpropdef,
+	defval = {type=null},
+};
+
+stageprops .. {
+	mapedit=true, pid="bgmid", lbl="$T.lbl_bgm", type=RESID, restype = ["bgm"], defval=null
+}
+
+stageprops .. {
+	mapedit=true, pid="reverbid", lbl="$T.reverb", type=LIST,
+	list=@() ::conf._resource.snd._env.reverbs.map( @( v)({ lbl="$T.reverb_"..v.id, icon="\ue049", val=v.id, })),
+	defval="PLAIN"
+};
+
+stageprops .. {
+	pid = "playervisible"
+	lbl = "$T.setting_playervisible"
+	type = BOOL
+	defval = true
+};
+
+stageprops .. {
+	pid = "playermodel"
+	lbl = "$T.setting_playermodel"
+	type = RESID
+	restype = ["chara_etc","chara_vox"]
+	defval = null	//	null=先頭
+};
+
+stageprops .. {
+	pid = "ctrmode",
+	lbl = "$T.setting_ctrmode",
+	type = LIST,
+	list = [
+		{ lbl="$T.ctrmode0", val=0 },
+		{ lbl="$T.ctrmode1", val=1 },
+		{ lbl="$T.ctrmode2", val=2 },
+		{ lbl="$T.ctrmode3", val=3 },
+	]
+	defval = 1,
+};
+
+stageprops .. {
+	pid = "menuopenable",
+	lbl = "$T.setting_menuopenable",
+	type = BOOL,
+	defval = true,
+};
+
+stageprops .. {
+	pid = "saveable",
+	lbl = "$T.setting_saveable",
+	type = BOOL,
+	defval = true,
+};
+
+local destprop = { pid="dest", lbl = "$T.cmd_mapmove_dest", type=PORTAL, cnt="cnt6v.ui" };
+local exitmappropdef = {
+	name = "$T.setting_exitmap"
+	props = @( v){
+		local a = [
+			{ pid="enabled", lbl="$T.lbl_enabled", type=BOOL, refresh=true,
+				get = @( prop, data) !!data["dest"],
+				set = @( prop, data, val){
+					data.dest <- val ? (clone ::conf.setting.inimap) : null;
+				}
+			},
+		];
+		if( v["dest"]) a .. destprop
+		return a;
+	}
+	tostring = @( v){
+		if( !v["dest"]){
+			return "$T.lbl_notset";
+		}else{
+			return getPropertyText( destprop, v);
+		}
+	}
+}
+
+stageprops .. {
+	mapedit=true, pid="exitmap", lbl="脱出先マップ", type=PROPERTYLIST,
+	propdef = exitmappropdef,
+	defval = {dest=null},
+}
+
+stageprops .. {
+	pid = "mapexitable",
+	lbl = "$T.setting_mapexitable",
+	type = BOOL,
+	defval = true,
+};
+
+////////////////////////////////////////////////////////////////////////////////
+//	コンフィグ設定
+//	
+
+

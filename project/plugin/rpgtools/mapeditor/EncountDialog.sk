@@ -1,0 +1,490 @@
+import PropertyType;
+import RPGPropertyType;
+import VirtualKeyCode;
+import ModifiersMask;
+
+local srcdir = dirname( callee().getSourceName());
+
+local filterlist = [
+	{ icon="\uf143", lbl="${T.lbl_group}A", val=0, }
+	{ icon="\uf144", lbl="${T.lbl_group}B", val=1, }
+	{ icon="\uf145", lbl="${T.lbl_group}C", val=2, }
+	{ icon="\uf146", lbl="${T.lbl_group}D", val=3, }
+	{ icon="\uf147", lbl="${T.lbl_group}E", val=4, }
+	{ icon="\uf148", lbl="${T.lbl_group}F", val=5, }
+	{ icon="\uf149", lbl="${T.lbl_group}G", val=6, }
+];
+
+
+local initgroup = {
+	gid = 1,
+	filterbits = 1|2|4|8|16|32|64,
+	rate = 50,
+	mapid = "M000",
+	enemies = [{ id="E000", x=0.0, z=0.0}],
+	bgmid = "MU018",
+	area = encodeBASE64( ObjectOutput.encode( Bitmap(8,8,1))),
+	escape = true,
+}
+
+class EncountDialog extends UndoableDialog
+{
+	static props = [
+		{ pid="filterbits", lbl="$T.lbl_filterg", type=CHECKBITS, list=filterlist, hidelisticon=true },
+		{ pid="rate", lbl="$T.lbl_encrate", type=SCALAR, range=(0,100), ui="bar" },
+		{ pid="mapid", lbl="$T.lbl_battlemap", type=DATAID, datatype=["map"], filter=@( v, i){
+			local g = ::conf.map._meta.groups.find( @( v) v["id"]==-2);
+			return g.maps.contains( i);
+		}},
+		{ pid="escape", lbl="$T.lbl_escapable", type=BOOL, defval = true, },
+		{ pid="bgmid", lbl="$T.lbl_bgm", type=RESID, restype = ["bgm"] },
+		{ pid="enemies", lbl="$T.lbl_enemies", type=ENEMYGROUP, cnt="cnt6.ui", notrk=1},
+	];
+
+	editor = null;
+	data = null;			//	{ gid:{ },... }
+	gid = 0;				//	
+
+	grouplist = null;	//	MenuBehavior
+	proplist = null;	//	PropertyListBehavior
+	canvas = null;
+	tools = null;		//	[tool0, tool1]
+
+	static function run( editor, data){
+		local dlg = this( srcdir.."/ui/encountdialog.ui", editor, data);
+		dlg.show();
+		return dlg.data;
+	}
+
+	static function inimap(){
+		local g = ::conf.map._meta.groups.find( @( v) v["id"]==-2);
+		return g.maps[0];
+	}
+	
+	constructor( v, e, d){
+		super( v);
+		editor = e;
+		if( !length( d)){ d = [{...initgroup,mapid=inimap()}]; }
+		data = deepclone( d);
+
+		grouplist = ListBehavior( view.findChild( "grouplist"));
+		grouplist.setviewfunc = @( la, v, i){
+			local n = enemyGroupString( i.enemies);
+			v.setValue( "lbl", n);
+			v.pickable = false;
+		};
+		grouplist.setListItems( data);
+		grouplist.dndfunc = 3;
+		grouplist.listview.addEventListener( ITEM_EVENT, groupevent);
+		grouplist.listview.addEventListener( ACTION_EVENT, groupevent);
+
+		proplist = PropertyListBehavior( view.findChild( "proplist"));
+		proplist.bindProperties( props);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.ref = this;
+		
+		local canvasg = view.findChild( "canvasg");
+		canvas = EncountAreaCanvas( this, e.getMapShot());
+		canvas.setRect( 0, 0, canvasg.bnd.w, canvasg.bnd.h);
+		canvasg.addChild( canvas);
+		tools = [ view.findChild( "tool0"), view.findChild( "tool1"), ];
+		tools[0].setSelected( true);
+
+		grouplist.setSelectedIndex( 0);
+		setGroup( data[0].gid);
+	}
+
+	function setGroup( _gid){
+		gid = _gid;
+		local g = getGroup( _gid);
+		proplist.setParameters( g);
+		canvas.setData( g.area);
+	}
+
+	function getGroup( gid){
+		return data.find( @( v) v.gid==gid);
+	}
+
+	function updateAreaData( bmp){
+		getGroup( gid).area = encodeBASE64( ObjectOutput.encode( bmp));
+	}
+	
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "tool0": case "tool1":
+			local ti = e.src.name[4]-'0';
+			foreach( i, v in tools) v.setSelected( i==ti);
+			canvas.setTool( ti);
+			break;
+		case "groupselmenu":
+			break;
+		case "groupmenu":
+			showGroupsMenu( e);
+			break;
+		case "areamenu":
+			showAreaContextMenu( e);
+			break;
+		case "debugbtn":
+			startDebug( e);
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	function refreshGroup( selg=null){
+		grouplist.setListItems( data);
+		if( selg){
+			grouplist.setSelectedItem( selg);
+			setGroup( selg.gid);
+		}
+	}
+
+	static function nextgid( data){
+		return data.reduce( @( v, x) Math.max( x, v.gid), 0)+1;
+	}
+
+	function showGroupsMenu( e){
+		local mid = editor.mapid;
+		local ctxmenu = [
+			{ id="add", lbl="$T.lbl_add", icon="\ue146"},
+			// "-",
+			// { id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			// { id="paste", lbl="$T.menu_edit_paste", icon="\ue14f"},
+			"-",
+			{ id="copyfrom", lbl="$T.lbl_copyfrommap", icon="\ue675", submenu=@(){
+				return Table.map( ::conf.map, @( v, i){
+					if( !length( v["encount"])) return undefined;
+					if( mid == i) return undefined;
+					local e = v.encount;
+					return {
+						lbl = sprintf( "%S %S%S", i, enemyGroupString( e[0]["enemies"]), e[1]?(" +"..(length( e)-1)):""),
+						val = i, id="copyfrom",
+					};
+				}).sort( @( v) v.lbl);
+			}},
+		];
+		local m = MenuPopup.run( ctxmenu);
+		switch( m["id"]){
+		case "add":
+		{
+			local oldg = getGroup( gid);
+			local newg = deepclone( initgroup), self = this;
+			newg.mapid = inimap();
+			newg.gid = nextgid( data);
+			//	
+			local redo = [@(){ self.data .. newg; self.refreshGroup( newg); }];
+			local undo = [@(){ self.data.removeValue( newg); self.refreshGroup( oldg); }];
+			submitOp( redo, undo);
+			break;
+		}
+		case "copyfrom":
+			local map = ::conf.map[m.val];
+			local olddata = data, newdata = deepclone( map.encount), self = this;
+			local redo = [@(){
+				self.data = newdata;
+				self.grouplist.setListItems( self.data);
+				self.grouplist.setSelectedIndex( 0);
+				self.setGroup( self.data[0].gid);
+			}];
+			local undo = [@(){
+				self.data = olddata;
+				self.grouplist.setListItems( self.data);
+				self.grouplist.setSelectedIndex( 0);
+				self.setGroup( self.data[0].gid);
+			}];
+			submitOp( redo, undo);
+			break;
+		}
+	}
+	
+	function showAreaContextMenu( e){
+		local cbdata = getClipboard( "encountarea");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local ctxmenu = [
+			{ lbl="$T.menu_edit_copy", id="copy", icon="\ue14d" },
+			{ lbl="$T.menu_edit_paste", id="paste", icon="\ue14f", disable=!cbdata },
+			"-",
+			{ id="size", val=8, lbl="8 x 8", icon="\ue5d0"},
+			{ id="size", val=16, lbl="16 x 16", icon="\ue5d0"},
+			{ id="size", val=32, lbl="32 x 32", icon="\ue5d0"},
+			"-",
+			{ id="invert", lbl="$T.lbl_invert", icon="\ue5d0"},
+		];
+		local ret = MenuPopup.run( ctxmenu);
+		switch( ret["id"]){
+		case "copy":
+		{
+			local bb64 = encodeBASE64( ObjectOutput.encode( canvas.bitmap));
+			putClipboard( "encountarea", bb64);
+			break;
+		}
+		case "paste":
+		{
+			local bb = decodeBASE64( cbdata, ByteBuffer());
+			local bmp = ObjectInput.decode( bb);
+			setAreaBitmap( gid, bmp);
+			break;
+		}
+		case "size":
+		{
+			local val = ret["val"];
+			if( val!=canvas.bitmap.w){
+				local bmp = clone canvas.bitmap;
+				while( bmp.w < val) bmp.doublen();
+				while( bmp.w > val) bmp.halfen();
+				setAreaBitmap( gid, bmp);
+			}
+			break;
+		}
+		case "invert":
+		{
+			local bmp = clone canvas.bitmap, w = bmp.w;
+			for( local x = 0; x < w; x ++) for( local y = 0; y < w; y ++){
+				bmp.set( x, y, 1^bmp.get( x, y));
+			}
+			setAreaBitmap( gid, bmp);
+			break;
+		}
+		}
+	}
+
+	function setAreaBitmap( gid, bmp){
+		local self = this, g = getGroup( gid);
+		local oldarea = g.area, newarea = encodeBASE64( ObjectOutput.encode( bmp));
+		local redo = [@(){
+			g.area = newarea;
+			if( g.gid==self.gid) self.canvas.setData( newarea);
+		}];
+		local undo = [@(){
+			g.area = oldarea;
+			if( g.gid==self.gid) self.canvas.setData( oldarea);
+		}];
+		submitOp( redo, undo);
+	}
+
+	function groupevent( e){
+		switch( e.id){
+		case ITEM_SELECTED:
+			setGroup( e.actioncmd.gid);
+			break;
+		case ITEM_SORT:
+		{
+			local olddata = data, newdata = ::applyItemSort( clone data, e);
+			local g = getGroup( gid), self = this;
+			local redo = [@(){ self.data = newdata; self.refreshGroup( g); }];
+			local undo = [@(){ self.data = olddata; self.refreshGroup( g); }];
+			submitOp( redo, undo);
+			break;
+		}
+		case ITEM_REMOVE:
+		{
+			if( length( data) <= 1) break;
+			deleteGroup( e.actioncmd[0]);
+			break;
+		}
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showGroupContextMenu( e);
+			}
+			break;
+		}
+	}
+
+	function showGroupContextMenu( e){
+		local cbdata = getClipboard( "encountg");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local ctxmenu = [
+			{ id="dup", lbl:"$T.lbl_duplicate", icon="\ue2bd", disable=!e.actioncmd}
+			"-",
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d", disable=!e.actioncmd},
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=!e.actioncmd},
+		];
+		switch( MenuPopup.run( ctxmenu)["id"]){
+		case "dup":
+		{
+			local oldg = e.actioncmd, self = this;
+			local newg = deepclone( oldg);
+			newg.gid = (data.reduce( @( v, x) Math.max( x, v.gid), 0)+1);
+			local redo = [@(){ self.data .. newg; self.refreshGroup( newg); }];
+			local undo = [@(){ self.data.removeValue( newg); self.refreshGroup( oldg); }];
+			submitOp( redo, undo);
+			break;
+		}
+		case "copy":
+			putClipboard( "encountg", e.actioncmd);
+			break;
+		case "paste":
+		{
+			local oldg = getGroup( gid), self = this;
+			local newg = cbdata;
+			newg.gid = nextgid( data);
+			local redo = [@(){
+				self.data .. newg;
+				self.refreshGroup( newg);
+				self.grouplist.setSelectedItem( newg);
+				self.setGroup( newg.gid);
+			}];
+			local undo = [@(){
+				self.data.removeValue( newg);
+				self.grouplist.refreshItems();
+				self.grouplist.setSelectedItem( oldg);
+				self.setGroup( oldg.gid);
+			}];
+			submitOp( redo, undo);
+			break;
+		}
+		case "delete":
+			deleteGroup( e.actioncmd);
+			break;
+		}
+	}
+
+	function deleteGroup( g){
+		local self = this, idx = data.indexOf( g), selidx = Math.min( idx, length( data)-2);
+		local redo = [@(){ self.data.removeValue( g); self.refreshGroup( self.data[selidx]); }];
+		local undo = [@(){ self.data[idx] <- g; self.refreshGroup( g); }];
+		submitOp( redo, undo);
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local pid = cmd.prop.pid, gid = this.gid;
+			local val = cmd.val;
+			local trk = cmd.prop["notrk"] ? null : "-"..gid..pid;
+			local oldval = getEncountParam( gid, pid);
+			//	
+			local self = this;
+			local redo = [@(){ self.setEncountParam( gid, pid, val); self.refreshParams( gid); }];
+			local undo = [@(){ self.setEncountParam( gid, pid, oldval); self.refreshParams( gid); }];
+			submitOp( redo, undo, trk);
+		}
+	}
+
+	function refreshParams( _gid){
+		if( gid == _gid){
+			local g = getGroup( _gid);
+			proplist.setParameters( g);
+		}
+	}
+
+	function getEncountParam( _gid, pid){
+		local g = getGroup( _gid);
+		return g[pid];
+	}
+
+	function setEncountParam( _gid, pid, val){
+		local g = getGroup( _gid);
+		return g[pid]<-val;
+	}
+
+	function startDebug( e){
+		//	現在の作業データをテンポラリに保存
+		local f = FileRef( "tmp/debugconf.json");
+		local bb = encodeJSON({ [`map.${editor.mapid}.encount`]=data, }, 5, ByteBuffer());
+		bb.pos = 0;
+		f.save( bb);
+		local m = { uid="menu_debug_battle", mapid=editor.mapid, gid=gid, confpath=f.path, };
+		startDebugMenu( m);
+	}
+}
+
+class EncountDialog.EncountAreaCanvas extends SKView
+{
+	dlg = null;
+	mapshot = null;				//	Sprite : マップショット
+	orgbnd = null;
+
+	bitmap = null;				//	Bitmap : 8x8, 16x16, 32x32のビットマップ。base64にエンコードされる
+	pixsp = null;
+	mousesp = null;
+
+	tooltype = 0;
+	mx = 0; my = 0; mx0 = 0; my0 = 0;
+	mousein = false;
+	mousepress = false;
+	setbit = 1;
+
+	constructor( d, mp){
+		dlg = d;
+		mapshot = Sprite( mp);
+		orgbnd = clone mapshot.bnd;
+		pixsp = ::getSprite( "/plugin/rpgtools/img/pix.png");
+		mousesp = clone pixsp; mousesp.color = 0xffffff80;
+		addEventListener( MOUSE_EVENT, mouseevent);
+	}
+
+	function setTool( i){
+		tooltype = i;
+	}
+
+	function setData( a){
+		local bb = decodeBASE64( a, ByteBuffer());
+		bitmap = ObjectInput.decode( bb);
+		repaint();
+	}
+
+	function updateLayout(){
+		local w = bnd.w, h = bnd.h;
+		//	contains
+		local s = Math.min( w/orgbnd.w, h/orgbnd.h);
+		local sw = orgbnd.w*s, sh = orgbnd.h*s;
+		mapshot.bnd.set( (w-sw)>>1, (h-sh)>>1, sw, sh);
+	}
+
+	function render(){
+		skDrawSprite( mapshot);
+		if( bitmap){
+			local w = bitmap.w, ww = w*w, sc = bnd.w/w;
+			for( local x = 0;x < w;x ++){
+				for( local y = 0;y < w;y ++){
+					if( bitmap.get( x, y)){
+						skDrawSprite( pixsp, x*sc, (w-1-y)*sc, sc, sc);
+					}
+				}
+			}
+		}
+	}
+
+	function fillboxop( x0, y0, x1, y1, b){
+		if( x0>x1){ local tmp=x0; x0=x1; x1=tmp; }
+		if( y0>y1){ local tmp=y0; y0=y1; y1=tmp; }
+		local w = bitmap.w, ww = w*w, sc = bnd.w/w;
+		local newbmp = clone bitmap, oldbmp = bitmap, self = this;
+		for( local x = x0;x <= x1;x ++){
+			for( local y = y0;y <= y1;y ++) newbmp.set( x, y, b);
+		}
+		local redo = [@(){ self.bitmap = newbmp; self.repaint(); self.dlg.updateAreaData( newbmp); }]
+		local undo = [@(){ self.bitmap = oldbmp; self.repaint(); self.dlg.updateAreaData( oldbmp); }]
+		dlg.submitOp( redo, undo, null);
+	}
+
+	function mouseevent( e){
+		e.consume();
+		e.computeLocal( getInvMatrix());
+		local w = bitmap.w, ww = w*w, sc = bnd.w/w;
+		switch( e.id){
+		case MOUSE_MOVED:
+			mousein = true;
+			break;
+		case MOUSE_EXITED:
+			mousein = false;
+			break;
+		case MOUSE_PRESSED:
+			mx0 = mx = Math.clamp( e.lx/sc, 0, w-1)|0;
+			my0 = my = Math.clamp( (bnd.h-1-e.ly)/sc, 0, w-1)|0;
+			setbit = bitmap.get( mx, my)^1;	//	反転して描画
+			fillboxop( mx, my, mx, my, setbit);
+			break;
+		case MOUSE_DRAGGED:
+			local _mx = Math.clamp( e.lx/sc, 0, w-1)|0;
+			local _my = Math.clamp( (bnd.h-1-e.ly)/sc, 0, w-1)|0;
+			if( _mx != mx || _my != my){
+				mx = _mx; my = _my;
+				dlg.op.undo();
+				fillboxop( mx0, my0, mx, my, setbit);
+			}
+			break;
+		}
+	}
+}

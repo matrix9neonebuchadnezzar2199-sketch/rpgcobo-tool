@@ -1,0 +1,320 @@
+declare ssgi;
+
+module mod_math;
+
+vs def
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+//	prepare pass
+
+param ssgi_pre
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+
+	uniform mediump sampler2D coltex <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump sampler2D gitex <id=COLORTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	
+	uniform sampler2D gtex0 <id=GTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp usampler2D gtex1 <id=GTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp usampler2D gtex2 <id=GTEX3, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump usampler2D curuztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump usampler2D olduztex <id=COLORTEX3, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+
+	uniform highp mat4 p0 <id=MISC1MAT>;
+	uniform highp mat4 pmat <id=MISC2MAT>;
+	uniform highp mat4 reprojectmat <id=MISC3MAT>;		//	newcamera vmat to oldcamera vmat
+	
+	varying highp vec4 v_uv;
+	
+	fragout highp uvec2 frag1;
+	fragout highp uint frag2;
+}
+
+fs ssgi_pre
+{
+	vec4 reproject( sampler2D tex, highp vec3 curwvp){
+		highp vec4 oldwvp = reprojectmat * vec4( curwvp, 1.0);	//	old camera's view pos
+		highp vec4 oldwvpp = pmat * oldwvp; oldwvpp /= oldwvpp.w;
+		highp vec2 olduv = oldwvpp.xy*0.5 + 0.5;		//	pick a pixel from older frame's uv.
+		highp vec3 samwvp = reconstructWVPtex( olduztex, olduv, p0[1]);	//	sampled wvp
+		float d = length( oldwvp.xyz-samwvp.xyz);
+		float wgt = clamp( 1.0-d*20.0, 0.0, 1.0) * 0.95;	//	
+		return vec4( texture( tex, olduv).xyz*wgt, wgt);
+	}
+
+	mediump vec3 decodeDiff( mediump vec4 pix){
+		highp uint i = floatBitsToUint( pix.w);
+		//	** exp 112~143
+		highp uvec3 v = ( (uvec3( i) & uvec3( 0x80000000, 0x7f800000, 0x007fffff)) >> uvec3( 16, 13, 13) ) - uvec3( 0, 112<<10, 0); // uint s = (i&0x80000000)>>16, e =((i&0x7f800000)>>23) - 112, f = (i&0x007fffff)>>13, vs = s|e|f;
+		vec3 mul = vec3( (uvec3( v.x|v.y|v.z)>>uvec3( 11, 5, 0)) & uvec3( 31, 63, 31)) / vec3( 31.0, 63.0, 31.0);
+		return min( pix.xyz, 32.0) * mul;
+	}
+
+	void main(){
+		highp vec2 uv = v_uv.xy;
+		vec3 dif = decodeDiff( texture( coltex, uv));
+		vec4 f0 = texture( gtex0, uv);
+		highp uint u1 = texture( gtex1, uv).x;
+		highp uint u2 = texture( gtex2, uv).x;
+		highp vec3 wvp = reconstructWVPtex( curuztex, uv, p0[0]);
+		vec4 lastgi = reproject( gitex, wvp);	//	 texture( gitex, uv);
+		//	frag1 dif,n
+		{
+			dif = dif + lastgi.xyz;	//	mix?
+			highp uint o0, o1;
+			float v = ceil( max( dif.x, max( dif.y, dif.z))+0.0001);
+			uvec3 udif = uvec3( clamp( dif/v, 0.0, 1.0) * 255.5) << uvec3( 24, 16, 8);
+			uint uex = uint( v-1.0);
+			uint unx = (u1>>2u)&511u, uny = ((u1>>13u)&511u);
+			o0 = udif.x|udif.y|udif.z|(uex<<4u)|(unx>>5u);
+			o1 = (unx<<27)|(uny<<18);
+			frag1 = uvec2( o0, o1);
+		}
+		//	frag2 albedo, ao, emit
+		{
+			uint mtlid = (u1>>29u);
+			vec3 alb = mix( f0.xyz, vec3( 1.0), 0.2) * float( mtlid!=1) * vec3( 31.5, 63.5, 31.5);	//	alb=0~63
+			uvec3 ualb = uvec3( alb) << uvec3( 27, 21, 16);
+			// uint uemit = uint( uint(mtlid==1)*0xff00u + uint(mtlid==0)*(u2&0xff00u)) >> 8u;
+			uint uwgt = uint( lastgi.w * 255.5);
+			frag2 = ualb.x|ualb.y|ualb.z | (uwgt);
+		}
+	}
+}
+
+technique ssgi_pre
+{
+	apilevel = 30;
+
+	pass {
+		using reconstwvp;
+		param = ssgi_pre;
+		vs = def;
+		fs = ssgi_pre;
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+//	ssgi pass
+// aopow, 		aoradius,		decay( aotick),		aoexp,
+// aofade[0],	1.0/aofade[1],	-aobias*aobias,		gipow,
+// projasp,	1.0,			projscale,			0,
+// toffs,		trot,			0,					0
+//	
+
+param ssgi
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform mediump usampler2D gisrctex0 <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp usampler2D gisrctex1 <id=COLORTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp vec2 texscale <id=COLORTEX1>;
+	uniform highp usampler2D uztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	
+	uniform mediump mat4 p0 <id=MISC1MAT>;
+	uniform highp mat4 invpmat <id=ENV2MAT>;
+	
+	varying highp vec4 v_uv;
+	
+	fragout mediump vec4 fragcolor;
+	
+	const float PI = 3.14159263358979323845;
+	const float PI2 = (PI * 2.0);
+	const float HPI = (PI / 2.0);
+}
+
+fs ssgi
+{
+	mediump vec3 getNormal( highp uvec2 v){
+		const mediump vec2 S =  vec2( 1.0/255.5);
+		const mediump vec2 T = -vec2( 1.0);
+		mediump vec2 un = vec2( uvec2( (v.x<<5u)|(v.y>>27u), v.y>>18u) & uvec2( 511));
+		un = un * S + T;
+		return vec3( un, sqrt( clamp( 1.0-dot( un, un), 0.0, 1.0)));
+	}
+	
+	//	offset pos, dir
+	vec2 getSpreds(	const vec2 fragpos){
+		return vec2(
+			( 1.0 / 4.0 ) * float( int( fragpos.y-fragpos.x) & 3 ),
+			fract( 52.9829189 * fract( dot( fragpos, vec2( 0.06711056, 0.00583715 ))))		// Jimenez's "Interleaved Gradient Noise"
+		);
+	}
+
+	vec3 getColor( highp uvec2 v){
+		mediump vec4 fv = vec4(( uvec4( v.x) >> uvec4( 24, 16, 8, 4)) & uvec4( 255, 255, 255, 15));
+		return fv.xyz * (fv.w+1.0) * (1.0/255.0);
+	}
+
+	#define saturate( A) clamp( A, 0.0, 1.0)
+
+	void main(){
+		highp vec2 uv0 = v_uv.xy;
+		uvec2 src0 = texture( gisrctex0, uv0).xy;	//	dif, n, z
+		uint src1 = texture( gisrctex1, uv0).x;		//	albedo, ao, e, wgt
+		float AO = 0.0;
+		vec3 GI = vec3( 0.0);
+		vec3 vpos = reconstructWVPtex( uztex, uv0, p0[3]);
+		float tick = 0.01;	//	p0[1].z
+		if( vpos.z > -100.0){	//	zfar check
+			vec3 eyevec = normalize( vpos);
+			vec3 thickVec = eyevec * tick;//0.6;	//cbAO.thickness;	//	thickness = 1.0 (0.1~10.0)
+			vec3 surfn = getNormal( src0);	//	surface normal
+			//	spread noise
+			vec2 spr = getSpreds( gl_FragCoord.xy);// + p0[3].xy;	//	( TemporalOffsets, TemporalDirections);
+			//	step size 
+			float screenRadius = clamp( p0[0].y * p0[2].z / -vpos.z, 0.005, 0.5 );	//	radius * projscale / z	//	projscale = 1.0 / cam.prjmat[5]   radius = 30.0 (0.0~200.0)
+			float stepr = screenRadius / (float( STEPCNT) + 1.0);
+			float voffs = max( fract( spr.x), texscale.x);
+			float th = spr.y * (PI2 / float( DIRCNT));
+			//	DIRCNT * hemi-horizons
+			for( uint d = 0; d < DIRCNT; d++){
+				th += (PI2 / float( DIRCNT));
+				vec2 slicedir = sin( vec2( th+HPI, th)) * p0[2].xy;	//	cos, sin
+				vec2 duv = slicedir * stepr;
+				vec3 baseVec = surfn;
+				uint mask = 0u;
+				vec2 uv = uv0 + voffs * duv;
+				for( uint s = 0u; s < STEPCNT; s++){
+					if( any( bvec4( lessThan( uv, vec2( 0.0)), greaterThan( uv, vec2( 1.0))) )) break;	// if( any( bvec4( uv < rect.xy, uv > rect.zw))) break;
+					highp uvec2 src0_ = texture( gisrctex0, uv).xy;
+					vec3 Sf = reconstructWVPtex( uztex, uv, p0[3]);
+					// Sf = Sf - normalize( Sf) * tick;	//	p0[1].z viewBias 1.0 (0.0~10.0)
+					vec3 Vf = normalize( Sf - vpos);
+					float Df = dot( baseVec, Vf) - 0.001;
+					if( Df > 0.0 && Sf.z > -100.0){
+						vec3 Sb = Sf + thickVec;
+						vec3 Vb = normalize( Sb - vpos);
+						float Tf = acos( Df);
+						float Tb = acos( saturate( dot( baseVec, Vb)));
+						float Tmin = min( Tf, Tb);
+						float Tmax = max( Tf, Tb);
+						uint a = uint( floor( Tmin * 32.0 / HPI));
+						uint b = uint( ceil( (Tmax - Tmin) * 32.0 / HPI));
+						uint bit = ((1u << b) - 1u) << a;		// uint bit = ((2 ^ b) - 1) << a;  koredeii?
+						vec3 Cf = getColor( src0_);
+						vec3 Nf = getNormal( src0_);
+						vec3 gi = vec3( float( bitCount(bit & (~mask))) / 32.0);
+						gi *= Cf * Df * (1.0-dot( Nf, surfn)*0.75);// * mix( Df, 1.0, 0.1);// * dot( Nf, Vf);
+						GI += gi;
+						mask = mask | bit;
+					}
+					uv += duv;
+				}
+				AO += float( bitCount( mask)) / 32.0;
+			}
+			vec3 albedo = vec3( (uvec3( src1)>>uvec3( 27, 21, 16))&uvec3( 31, 63, 31)) / vec3( 31.0, 63.0, 31.0);
+			AO = pow( saturate( AO * 3.0 / float( DIRCNT) * p0[0].x - 0.3), 1.5); //	intensity = 1.0 (0.0~100.0)
+			GI = saturate( GI / float( DIRCNT)) * albedo * p0[1].w * 2.0;	//	giIntensity = 1.0 (0.0~200.0)
+		}
+		//	
+		fragcolor = vec4( GI, AO);
+	}
+}
+
+param ssgi_normal
+{
+	const uint DIRCNT = 4u;
+	const uint STEPCNT = 20u;
+}
+
+param ssgi_quality
+{
+	const uint DIRCNT = 6u;
+	const uint STEPCNT = 10u;
+}
+
+technique ssgi_normal
+{
+	apilevel = 30;
+
+	pass {
+		using ssgi_normal, reconstwvp;
+
+		param = ssgi;
+		vs = def;
+		fs = ssgi;
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+//	ssgi upsampling pass
+//	
+
+param ssgi_upsample
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform mediump sampler2D gitex <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform mediump sampler2D oldgitex <id=COLORTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp usampler2D gisrctex1 <id=COLORTEX3, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp sampler2D ztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	
+	uniform highp mat4 p0 <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	
+	fragout mediump vec4 fragcolor;
+}
+
+fs ssgi_upsample
+{
+	const int R = 2;
+	const float SIGMA = float( R) * 0.9;
+	const float FALLOFF = 1.0 / (2.0*SIGMA*SIGMA);
+	const float SHARPEN = 5.0;
+
+	highp float wvz( highp vec2 uv){
+		highp vec4 dotzw = p0[1];
+		highp vec2 zw = vec2( texture( ztex, uv).x * 2.0 - 1.0, 1.0);
+		return dot( zw, dotzw.xy) / dot( zw, dotzw.zw);
+	}
+	
+	void main(){
+		highp vec2 uv = v_uv.xy;
+		highp float z0 = wvz( uv);
+		highp vec2 texsc = p0[0].xy;
+		mediump vec4 sumgi = vec4( 0.0);
+		mediump float sumw = 0.0;
+		for( int y=-R; y<=R; y ++){
+			for( int x=-R; x<=R; x ++){
+				highp vec2 xy = vec2( x, y);
+				vec4 gi = texture( gitex, uv+xy*texsc);
+				highp float z = wvz( uv+xy*texsc);
+				float ddiff = (z - z0) * SHARPEN;
+				float w = exp2( -dot( xy, xy)*FALLOFF - ddiff*ddiff);
+				sumgi += gi * w;
+				sumw += w;
+			}
+		}
+		sumgi /= sumw;
+		vec4 oldgi = texture( oldgitex, uv);
+		highp uint u = texture( gisrctex1, uv).x;
+		float wgt = float( u&255) / 255.0;
+		sumgi = mix( sumgi, oldgi, vec4( 0.85, 0.85, 0.85, 0.5) * wgt);
+
+		fragcolor = sumgi;
+	}
+}
+
+technique ssgi_upsample
+{
+	apilevel = 30;
+
+	pass {
+		param = ssgi_upsample;
+		vs = def;
+		fs = ssgi_upsample;
+	}
+}

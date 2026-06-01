@@ -1,0 +1,124 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+
+local srcdir = dirname( callee().getSourceName());
+
+local runmodelist = [
+	{ lbl="$T.lbl_runmode0", val=0, }
+	{ lbl="$T.lbl_runmode1", val=1, }
+	{ lbl="$T.lbl_runmode2", val=2, }
+];
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorMacro : マクロ編集
+//	
+
+class DBEditorMacro extends EditorViewBase
+{
+	//	スキルの基本パラメータ。基本拡張はできない。が、プラグインでここ拡張することは可能。
+	static baseprops = [
+		RPGProperties.nameprop,
+		RPGProperties.descprop,
+		{ pid="runmode", lbl="$T.lbl_runmode", type=LIST, list=runmodelist, defval=0 },
+		{ pid="runatmenu", lbl="$T.lbl_runatmenu", type=BOOL, defval=false, hide=@( pl) pl.getParam( "runmode")!=1 },
+		{ pid="runreqs", lbl="$T.lbl_runreqs", type=REQUIREMENTS, defval=[], cnt="cnt6.ui", hide=@( pl) !pl.getParam( "runmode") },
+	];
+	
+	//////////////////////////////////////////////////////////////////////////////////////
+
+	res = null;				//	Resource : 
+	data = null;			//	X000等のデータのコピー。
+	
+	//	view
+	proplist = null;		//	PropertyListBehavior : 
+	cmdlist = null;			//	EventCommandList : 
+	
+	function init( path){
+		op = OperationStack();
+		proplist = PropertyListBehavior( findChild( "proplist"), null);
+		proplist.bindProperties( baseprops);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+
+		cmdlist = EventCommandList( findChild( "cmdlist"));
+		cmdlist.listview.addEventListener( ACTION_EVENT, cmdevent);
+		cmdlist.ref = this;
+
+		res = ::getResource( path);
+		data = deepclone( res.getContent()) || {};
+		//	データ補間。存在しないプロパティにデフォルト値を挿入
+		setDefaultProperties( baseprops, data);
+		if( !data["cmdblock"]) data.cmdblock <- [];
+		cmdlist.setCommandBlock( data.cmdblock);
+		refresh();
+	}
+
+	function refresh(){
+		proplist.setParameters( data);
+	}
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		if( cmdlist.execMenu( m)) return true;
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			data.cmdblock = cmdlist.getCommandBlock();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	//	マクロのプロパティ設定
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+		}
+	}
+
+	//	
+	function cmdevent( e){
+		local cmd = e.actioncmd, cop = cmd["op"];
+		e.consume();
+		if( cop){
+			submitOp( cop[0], cop[1], cop[2]);
+			if( cmd.cmd == "addcmd"){
+				local editor = this, acmd = cmdlist.editCommand( cmd.addcv, false);	//	postActionEventしないように
+				if( acmd){
+					op.merge( acmd.op[0], acmd.op[1]);	//	addとeditを一つのopとしてマージ
+					::skstudio.updateChangeFile( editor);
+				}
+			}
+		}
+	}
+}

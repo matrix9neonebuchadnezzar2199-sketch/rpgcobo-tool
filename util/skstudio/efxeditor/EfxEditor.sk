@@ -1,0 +1,421 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+class EfxEditor extends EditorViewBase
+{
+	res = null;				//	Resource : 
+	op = null;				//	DataOperationStack : pmdata(=table)のオペレーションスタック
+	
+	ptc = null;				//	ParticleSystem
+	ptdata = null;			//	読み込み時のptd。dirtyチェックに使う
+	
+	//	view
+	canvas = null;			//	EfxCanvas : プレビューキャンバス
+	efxright = null;		//	EfxRightPanel : 
+	spdval = null;			//	NumInputBehavior
+	
+	static function createEditor( path){
+		if( !path.endsWith( ".ptd")) return null;
+		//	
+		local ed = ::loadSKView( "/skstudio/ui/efxeditor/efxeditor.ui", EfxEditor);
+		ed.init( path);
+		return ed;
+	}
+
+	//	ptd File Preview
+	static function createPreview( path){
+		if( !path.endsWith( ".ptd")) return null;
+		local pv = ::loadSKView( "/skstudio/ui/parts/preview1.ui");
+		local g = pv.findChild( "g");
+		local v3 = SK3DView();
+		pv.setValue( "lbl", "");
+		v3.setRect( 0, 0, g.bnd.w, g.bnd.h);
+		g.addChild( v3)
+		g.setBuffer( 2);
+		v3.renderer.setEnvironment( ::RenderSettings.getEnvironment( "pbr_draft"));
+		v3.scn.maincamera.lookat( Vector3D( 0, 0.4, -8), Vector3D( 0, -0.4, 0));
+		local sk3d = SK3DObject( ::getResource( path));
+		v3.scn.addObject( sk3d);
+		sk3d.startParticle();
+		return pv;
+	}
+
+	static function newFile( filename, dirpath){
+		local d = {
+			parentcoord = false
+			currentgroup = 0
+			groups = [EfxEditor.createDefaultParticleGroup()]
+			actions = [{"acttype":"emitall","time":0}]
+		};
+		local sb = EfxEditor.encodeParticleData( d);
+		local bb = sb.toByteBuffer();
+		return bb;
+	}
+
+	static function getParticleData( sb){	//	bb|sb
+		local t = {};
+		local func = sb.compile().bindenv( t);
+		func();
+		foreach( pd in t.groups){ pd.res = res; }
+		return t;
+	}
+	
+	function init( path){
+		canvas = EfxCanvas( this);
+		efxright = EfxRightPanel( findChild( "right"), this);
+		spdval = createNumInputBehavior( findChild( "spdval"));
+		spdval.setRange( 0.1, 2.0, 100);
+		spdval.setValue( 1.0);
+		spdval.view.addEventListener( ACTION_EVENT, spdevent);
+		spdval.view.addEventListener( ITEM_EVENT, spdevent);
+		addEventListener( ACTION_EVENT, actionevent);
+		//	
+		res = ::getResource( path);
+		res.userdata = null;
+		//	データセット
+		local sb = res.loadData();
+		local ptd = getParticleData( sb);
+		local ptc = ::ParticleEffect.createParticleEffect( ptd);
+		setParticle( ptc, ptd);
+		//
+		local self = this;
+		local setptdfunc = @( d){
+			local ptd = self.getParticleData( d);
+			local ptc = ::ParticleEffect.createParticleEffect( ptd);
+			self.setParticle( ptc, ptd);
+		};
+		op = DataOperationStack( setptdfunc, sb);
+	}
+
+	//	DataOperationStack用に引数を変え
+	//	
+	function submitOp( sb, trk=null){
+		op.submit( sb, trk);
+		::skstudio.updateChangeFile( this);
+	}
+	
+	function setActive( b){
+		super.setActive( b);
+		if( b){
+			canvas.view.requestFocus();
+		}
+	}
+
+	function spdevent( e){
+		if( e.id == ACTION_PERFORMED || e.id == VALUE_CHANGED){
+			canvas.scn.timescale = spdval.getValue();
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "spdbtn":
+			spdval.setValue( 1.0);
+			canvas.scn.timescale = 1.0;
+			break;
+		}
+	}
+
+	function rootevent( e){
+		switch( e.id){
+		case SCREEN_RESIZED:
+			break;
+		}
+	}
+	
+	function execMenu( m){
+		printf( "EfxEditor execMenu %S\n", encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			::skstudio.updateChangeFile( this);
+			break;
+		case "menu_edit_redo":
+			op.redo();
+			::skstudio.updateChangeFile( this);
+			break;
+		case "menu_file_save":
+			savePTD( ptdata);
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			break;
+		}
+		return false;
+	}
+
+	//	色々便利な機能を付けたい
+	//	- 全体のサイズ、スピードのスケール
+	//	- ボックスの形状変更
+	//	- キャンバスの操作
+	function showCanvasContextMenu( e){
+		local menudata = [
+			// { id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			// { id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", },
+			// "-",
+			{ id="scalesize", lbl="$T.lbl_scalesize", icon="\ue56b", },
+			{ id="scaletime", lbl="$T.lbl_scaletime", icon="\ue9e4", },
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "scalesize":
+			local s = Popups.showNumInput({ val=100, range=(10,400), q=1, title="$T.pop_numscale"});
+			if( s != 100){
+				s *= 0.01;
+				foreach( pg in ptdata.groups) sizeScaleParticleGroup( pg, s);
+				local sb = encodeParticleData( ptdata);
+				submitOp( sb);
+				refreshParticle();
+			}
+			break;
+		case "scaletime":
+			local s = Popups.showNumInput({ val=100, range=(10,400), q=1, title="$T.pop_numscale"});
+			if( s != 100){
+				s *= 0.01;
+				foreach( pg in ptdata.groups) timeScaleParticleGroup( pg, s);
+				local sb = encodeParticleData( ptdata);
+				submitOp( sb);
+				refreshParticle();
+			}
+			break;
+		}
+	}
+
+	//	パーティクルグループのサイズをスケーリング。
+	//	シェイプのsize、エミッターのpos、モディファイアのvelocity, accelぐらい？
+	function sizeScaleParticleGroup( pg, s){
+		local shp = pg.shapedata;
+		if( "w" in shp) shp.w *= s;
+		if( "h" in shp) shp.h *= s;
+		if( "d" in shp) shp.d *= s;
+		if( "r" in shp && pg.shapetype==2) shp.r *= s;	//	球のみ。。。
+		//
+		with( pg.emitter){
+			posx *= s; posy *= s; posz *= s;
+			pos_sprx *= s; pos_spry *= s; pos_sprz *= s;
+		}
+		//
+		foreach( m in pg.mod){
+			switch( m["classid"]){
+			case "ptcmod_vel": m.vel *= s; m.vel_spr *= s; break;
+			case "ptcmod_acc": m.acc *= s; m.acc_spr *= s; break;
+			}
+		}
+	}
+
+	//	パーティクルグループの再生速度をスケーリング。
+	//	エミッターのstart,life、モディファイアのvelocity, accelぐらい？
+	function timeScaleParticleGroup( pg, s){
+		with( pg.emitter){
+			start = (start/s)|0; start_spr = (start_spr/s)|0;
+			life = (life/s)|0; life_spr = (life_spr/s)|0;
+		}
+		//
+		foreach( m in pg.mod){
+			switch( m["classid"]){
+			case "ptcmod_vel": m.vel *= s; m.vel_spr *= s; break;
+			case "ptcmod_acc": m.acc *= s*s; m.acc_spr *= s*s; break;
+			}
+		}
+	}
+
+	function refreshParticle(){
+		ptc = ::ParticleEffect.createParticleEffect( ptdata);
+		canvas.setParticle( ptc);
+	}
+
+	function setParticle( p, d){
+		ptc = p;
+		ptdata = d;
+		canvas.setParticle( p);
+		efxright.setData( d);
+	}
+	
+	function savePTD( d){
+		local f = res.file;
+		local sb = encodeParticleData( d);
+		printf( "saveFile %S \n", f.path);
+		printf( "%S\n", sb);
+		local bb = sb.toByteBuffer();
+		f.save( bb);
+		res.flush();
+		::skstudio.fileview.refreshDir( res.pres.path);
+		// postNotifyEvent( sprintf( ".pm saved - %S", pm.res.file.path));
+	}
+
+	//	パーティクルの一番賑やかな時間とそのバウンディングを計る
+	function profileParticle( ptc){
+		local p = clone ptc;
+		p.sk3dref = null;
+		p.start();
+		local time = 0, score = 0, bnd = Rect3D(),  r = Rect3D(), gr = Rect3D(), e = ParticleElement();
+		local rsc = 0.0, mr = Rect3D(0,0,0,-100,-100,-100), wr = Rect3D(0,0,0,-100,-100,-100);
+		for( local t = 0; ; t += 16){	//	60fps解像度
+			p.update( 16);
+			if( !p.alive || t > 5000) break;	//	5秒
+			r.invalidate();
+			local sc = 0, n = 0;
+			foreach( g in p.groups){
+				r.expand( g.getBounds( gr));
+				g.beginElement( e);
+				for( ;;){
+					if( e.time >= 0.0){
+						++n;
+						local a = (e.color&255) / 255.0;
+						local s = 1.0 + Math.max( e.width, e.height) * Math.max( e.sx, e.sy);
+						sc += Math.sqrt( e.x*e.x+e.y*e.y+e.z*e.z) * a * s;
+					}
+					if( !g.nextElement( e)) break;
+				}
+			}
+			if( sc > score){
+				time = t; score = sc;
+			}
+			local r3 = r.r*r.s*r.t;
+			if( rsc < r3){ mr.set( r); rsc = r3; }
+			//
+			wr.expand( r);
+			// printf( "time %S : score %S num %S   %S %S %S %S %S %S\n", t, sc, n, r.x,r.y,r.z,r.r,r.s,r.t);
+		}
+		local showtime = time||10;
+		// local showtime = (Math.lerp( time, Math.max( time-100, 0.0), 0.5)|0)||10;
+		p.start();
+		for( local t = 0; t < showtime; t += 16) p.update( 16);
+		r.invalidate();
+		foreach( g in p.groups){
+			g.getBounds( gr);
+			r.expand( gr);
+		}
+		local ret = {
+			showtime=showtime, 
+			showbnd=[r.x,r.y,r.z,r.r,r.s,r.t], 
+			wholebnd=[wr.x,wr.y,wr.z,wr.r,wr.s,wr.t], 
+			maxbnd=[mr.x,mr.y,mr.z,mr.r,mr.s,mr.t],
+		};
+		// printf( "RET %S\n", encodeJSON( ret, 1));
+		return ret;
+	}
+
+	//	
+	// function getEditInfo(){
+	// 	return {
+	// 		rsetid = canvas.view.renderer.env.id,
+	// 		gridchk = canvas.gridchk.isSelected(),
+	// 		boxchk = canvas.bndchk.isSelected(),
+	// 	}
+	// }
+
+	///////
+
+	static function createDefaultParticleGroup(){
+		local gd = with ParticleGroupData() {
+			name = "GROUP1"
+			aimtype = 1
+			emitter = with ParticleEmitter(){
+				pos_sprx = 0.0;
+				pos_spry = 0.0;
+				pos_sprz = 0.0;
+				dir_sprx = 3.141592;
+				dir_spry = 3.141592;
+				num = 30;
+				start = 0;
+				life = 2000;
+			}
+			shapetype = 0
+			shapedata = { w = 0.1, h = 0.1, axis = 0}
+			texture = ""
+			color = 0xffffffff
+			blend = SK_MIX
+			tec = null
+			mod = [
+				{ classid="ptcmod_vel", vel=1.0, vel_spr=0.0 },
+			]
+		}
+		return gd;
+	}
+	
+	static function _str( o){
+		return (o ? "\""..o.."\"" : null);
+	}
+	
+	static function encodeParticleData( t){
+		local sb = StringBuffer();
+		sb .. "////////////////////////////////////////////////////////\n"
+		sb .. "//   ParticleData\n"
+		sb .. "////////////////////////////////////////////////////////\n"
+		sb .. "parentcoord <- " .. t.parentcoord .. "\n"
+		sb .. "currentgroup <- " .. t.currentgroup .. "\n"
+		sb .. "prof <- " .. encodeJSON( t["prof"]) .. "\n"
+		sb .. "groups <- [\n"
+		foreach( g in t.groups){
+			encodeParticleGroup( g, sb);
+			sb .. ",\n";
+		}
+		sb .. "]\n"
+		//	actions
+		sb .. "actions <- ";
+		sb .. encodeJSON( t.actions, 5);
+		sb .. "\n"
+		return sb;
+	}
+
+	static function encodeParticleGroup( g, sb){
+		sb .. "\twith ParticleGroupData(){\n"
+		sb .. "\t\tname = \"" .. g.name .. "\"\n"
+		sb .. "\t\tenabled = " .. g.enabled .. "\n"
+		sb .. "\t\taimtype = " .. g.aimtype .. "\n"
+		sb .. "\t\tlocalcoord = " .. g.localcoord .. "\n"
+		//	
+		local e = g.emitter;
+		sb .. "\t\temitter = with ParticleEmitter(){\n"
+		sb .. "\t\t\tnum = " .. e.num .. "\n"
+		sb .. "\t\t\tstart = " .. e.start .. ", start_spr = " .. e.start_spr .. "\n"
+		sb .. "\t\t\tlife = " .. e.life .. ", life_spr = " .. e.life_spr .. "\n"
+		sb .. sprintf( "\t\t\tposx = %f, posy = %f, posz = %f\n", e.posx, e.posy, e.posz)
+		sb .. sprintf( "\t\t\tpos_sprx = %f, pos_spry = %f, pos_sprz = %f\n", e.pos_sprx, e.pos_spry, e.pos_sprz)
+		sb .. sprintf( "\t\t\tdirx = %f, diry = %f, dirz = %f\n", e.dirx, e.diry, e.dirz)
+		sb .. sprintf( "\t\t\tdir_sprx = %f, dir_spry = %f, dir_sprz = %f\n", e.dir_sprx, e.dir_spry, e.dir_sprz)
+		sb .. "\t\t\tlinearbits = " .. e.linearbits .. "\n"
+		if( e.seed) sb .. "\t\t\tseed = " .. e.seed .. "\n"
+		sb .. "\t\t},\n"
+		//	
+		sb .. "\t\tshapetype = " .. g.shapetype .. "\n"
+		sb .. "\t\tshapedata = " .. encodeJSON( g.shapedata) .. "\n"
+		//	
+		sb .. "\t\ttexture = " .. _str( g.texture) .. "\n"
+		if( length( g.masktex)) sb .. "\t\tmasktex = " .. _str( g.masktex) .. "\n"
+		sb .. sprintf( "\t\tcolor = 0x%06x\n", g.color)
+		sb .. "\t\tblendmode = " .. g.blendmode .. "\n"
+		sb .. "\t\tblend = " .. g.blend .. "\n"
+		if( g.tec) sb .. "\t\ttec = " .. _str( g.tec) .. "\n"
+		if( g.overlay) sb .. "\t\toverlay = " .. g.overlay .. "\n"
+		sb .. "\t\tKa = " .. sprintf( "0x%08x", g.Ka) .. "\n"
+		sb .. "\t\tKs = " .. sprintf( "0x%08x", g.Ks) .. "\n"
+		if( g.cullface != SK_CCW) sb .. "\t\tcullface = " .. g.cullface .. "\n"
+		//
+		sb .. "\t\tmod = [\n"
+		foreach( m in g.mod){
+			sb .. sprintf( "\t\t%S,\n", encodeJSON( m));
+		}
+		sb .. "\t\t]\n"
+		//
+		sb .. "\t}"
+		return sb;
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+skstudio.registerEditor( {
+	uid = "editor_efx",
+	matches = @( path){ return path.endsWith( ".ptd"); }
+	createEditor = EfxEditor.createEditor,
+	createPreview = EfxEditor.createPreview,
+
+	newfile = {
+		icon = FileIcons.ptd,
+		name = "$T.filetype_ptd",
+		ext = ".ptd",
+		func = EfxEditor.newFile
+	}
+});

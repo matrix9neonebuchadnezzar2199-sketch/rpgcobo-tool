@@ -1,0 +1,143 @@
+//***LicenseHere
+
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	用語の辞書定義。他のプロパティ定義と違い、文字列のみの編集用定義。
+//	※これツールでしか使わないのでここに定義する必要はない。load.skでツールじゃなかったら読まないとかすればいいかな
+//	
+//	いくつかあるカテゴリに追加していく。
+//	0:ステータス
+//	1:メニュー／コマンド
+//	2:画面表示
+//	3:メッセージ (長文)
+//	
+
+local dictprops = RPGSystem.dictprops;
+
+//	ステータス名辞書
+dictprops .. { category = 0, key = "LV", lbl = {ja="レベル",en="Level"} };
+dictprops .. { category = 0, key = "lv", lbl = {ja="レベル(略)",en="Level(short)"}, defval = {ja="Lv", en="Lv"} };
+dictprops .. { category = 0, key = "EXP", lbl = {ja="経験値",en="Exp"} };
+dictprops .. { category = 0, key = "exp", lbl = {ja="経験値(略)",en="Exp(short)"}, defval = {en="Exp"} };
+dictprops .. { category = 0, key = "JXP", lbl = {ja="ジョブ経験値",en="Job Exp"}, defval = {ja="ジョブポイント", en="Job Point"} };
+dictprops .. { category = 0, key = "jxp", lbl = {ja="ジョブ経験値(略)",en="Job Exp(short)"}, defval = {ja="JP", en="JP"} };
+dictprops .. { category = 0, key = "HP", lbl = {en="HP"}, defval = {en:"HP"} };
+dictprops .. { category = 0, key = "MP", lbl = {en="MP"}, defval = {en:"MP"} };
+dictprops .. { category = 0, key = "TP", lbl = {en="TP"}, defval = {en:"TP"} };
+dictprops .. { category = 0, key = "MAXHP", lbl = {ja="最大HP",en="Max HP"} };
+dictprops .. { category = 0, key = "MAXMP", lbl = {ja="最大MP",en="Max MP"} };
+dictprops .. { category = 0, key = "PATK", lbl = {ja="攻撃力",en="P.Attack"} };
+dictprops .. { category = 0, key = "PDEF", lbl = {ja="防御力",en="P.Defence"} };
+dictprops .. { category = 0, key = "MATK", lbl = {ja="魔法攻撃",en="M.Attack"} };
+dictprops .. { category = 0, key = "MDEF", lbl = {ja="魔法防御",en="M.Defence"} };
+dictprops .. { category = 0, key = "AGI", lbl = {ja="素早さ",en="Agility"} };
+dictprops .. { category = 0, key = "PHIT", lbl = {ja="命中率",en="P.Dexterity"} };
+dictprops .. { category = 0, key = "PEVA", lbl = {ja="物理回避",en="P.Evasion"} };
+dictprops .. { category = 0, key = "MHIT", lbl = {ja="魔法命中",en="M.Dexterity"} };
+dictprops .. { category = 0, key = "MEVA", lbl = {ja="魔法回避",en="M.Evasion"} };
+dictprops .. { category = 0, key = "CRI", lbl = {ja="会心率",en="Critical"} };
+dictprops .. { category = 0, key = "CEVA", lbl = {ja="会心回避",en="C.Evasion"} };
+dictprops .. { category = 0, key = "TGR", lbl = {ja="ターゲット率",en="TargetRate"} };
+
+//	
+dictprops .. { category = 1, key = "menu", lbl = {ja="メニュー",en="Menu"} };
+dictprops .. { category = 1, key = "mainmenu", lbl = {ja="メインメニュー",en="Main Menu"} };
+dictprops .. { category = 1, key = "job", lbl = {ja="ジョブ",en="Job"}, defval = {ja="ジョブ", en="Job"} };
+dictprops .. { category = 1, key = "equip", lbl = {ja="装備",en="Equip" } };
+dictprops .. { category = 1, key = "formation", lbl = {ja="隊列",en="Formation" } };
+dictprops .. { category = 1, key = "status", lbl = {ja="ステータス",en="Status" } };
+dictprops .. { category = 1, key = "attack", lbl = {ja="攻撃",en="Attack" } };
+dictprops .. { category = 1, key = "item", lbl = {ja="アイテム",en="Item" } };
+dictprops .. { category = 1, key = "skill", lbl = {ja="スキル",en="Skill" } };
+dictprops .. { category = 1, key = "quest", lbl = {ja="クエスト",en="Quest" } };
+dictprops .. { category = 1, key = "craft", lbl = {ja="クラフト",en="Craft" } };
+dictprops .. { category = 1, key = "config", lbl = {ja="コンフィグ",en="Config" } };
+dictprops .. { category = 1, key = "save", lbl = {ja="セーブ",en="Save" } };
+dictprops .. { category = 1, key = "savedata", lbl = {ja="セーブデータ",en="Save Data" } };
+dictprops .. { category = 1, key = "newgame", lbl = {ja="ニューゲーム",en="New Game" } };
+dictprops .. { category = 1, key = "loadgame", lbl = {ja="コンティニュー",en="Continue" } };
+dictprops .. { category = 1, key = "gotitle", lbl = {ja="タイトルに戻る",en="Return to Title" } };
+dictprops .. { category = 1, key = "buy", lbl = {ja="購入する",en="Buy" } };
+dictprops .. { category = 1, key = "sell", lbl = {ja="売却する",en="Sell" } };
+dictprops .. { category = 1, key = "enchant", lbl = {ja="強化する",en="Enchant" } };
+dictprops .. { category = 1, key = "yes", lbl = {ja="はい",en="Yes" } };
+dictprops .. { category = 1, key = "no", lbl = {ja="いいえ",en="No" } };
+dictprops .. { category = 1, key = "back", lbl = {ja="戻る",en="Back" } };
+
+//	
+dictprops .. { category = 2, key = "money", lbl = {ja="通貨名",en="Currency"}, defval = {ja="ジェム",en="Gem"} };
+dictprops .. { category = 2, key = "weapon", lbl = {ja="武器",en="Weapon"} };
+dictprops .. { category = 2, key = "armor", lbl = {ja="防具",en="Armor"} };
+dictprops .. { category = 2, key = "keyitem", lbl = {ja="キーアイテム",en="Key Item"} };
+dictprops .. { category = 2, key = "stepcount", lbl = {ja="歩数",en="Steps"} };
+dictprops .. { category = 2, key = "elem", lbl = {ja="属性",en="Element"} };
+dictprops .. { category = 2, key = "elemdef", lbl = {ja="属性耐性",en="E.Defence"} };
+dictprops .. { category = 2, key = "cond", lbl = {ja="状態",en="Condition"} };
+dictprops .. { category = 2, key = "conddef", lbl = {ja="状態耐性",en="C.Defence"} };
+dictprops .. { category = 2, key = "tribe", lbl = {ja="種族",en="Tribe"} };
+dictprops .. { category = 2, key = "ok", lbl = {ja="決定",en="OK"} };
+dictprops .. { category = 2, key = "next", lbl = {ja="進む",en="Next"} };
+dictprops .. { category = 2, key = "close", lbl = {ja="閉じる",en="Close"} };
+dictprops .. { category = 2, key = "cancel", lbl = {ja="やめる",en="Cancel"} };
+dictprops .. { category = 2, key = "trash", lbl = {ja="捨てる",en="Trash"} };
+dictprops .. { category = 2, key = "material", lbl = {ja="素材",en="Material"} };
+dictprops .. { category = 2, key = "equip_best", lbl = {ja="最強装備",en="Equip Best"} };
+dictprops .. { category = 2, key = "equip_removeall", lbl = {ja="すべて外す",en="Undress"} };
+dictprops .. { category = 2, key = "equip_none", lbl = {ja="装備なし",en="No Equipment"} };
+dictprops .. { category = 2, key = "job_change", lbl = {ja="ジョブをチェンジ",en="Change Job"}, defval = {ja="$v をチェンジ",en="Change $v"} };
+dictprops .. { category = 2, key = "option", lbl = {ja="オプション",en="Option"} };
+dictprops .. { category = 2, key = "learnoption", lbl = {ja="習得オプション",en="習得オプション"} };
+
+dictprops .. { category = 2, key = "soldout", lbl = {ja="売り切れ",en="Sold out"} };
+dictprops .. { category = 2, key = "ownnum", lbl = {ja="所持数",en="Num of owns"} };
+
+
+
+//
+dictprops .. { category = 3, key = "choose_item", lbl = "アイテム選択セリフ", defval = {
+	ja = "どのアイテムにしますか？",
+	en = "Which item do you choose?"
+} };
+
+dictprops .. { category = 3, key = "confirm_save", lbl = "セーブ確認", defval = {
+	ja = "(%02d)のセーブデータを上書きしますか？",
+	en = "Are you OK to overwrite the SaveData (%02d)?"
+} };
+
+dictprops .. { category = 3, key = "confirm_load", lbl = "ロード確認", defval = {
+	ja = "(%02d)のセーブデータからゲームを再開します",
+	en = "Game will resume from the SaveData (%02d)"
+} };
+
+dictprops .. { category = 3, key = "levelup", lbl = "レベルアップ表示", defval = {
+	ja = "${v} がレベルアップ！",
+	en = "${v} Level up!"
+} };
+
+dictprops .. { category = 3, key = "gotitem", lbl = "アイテム取得", defval = {
+	ja = "${v} を手に入れた！",
+	en = "Got a ${v}！"
+} };
+
+dictprops .. { category = 3, key = "gotitem_n", lbl = "アイテム取得(複数)", defval = {
+	ja = "${v} を${n}個手に入れた！",
+	en = "Got ${n} of ${v}！"
+} };
+
+dictprops .. { category = 3, key = "nomoney", lbl = "お金が足りない", defval = {
+	ja = "(…だがお金が足りない…)",
+	en = "(...But I don't have enough money...)"
+} };
+
+//	dictpropsのdefval又はlblを、dictの初期値として設定する。この辞書はdict.jsonによって上書きされる。
+local registerDict(){
+	foreach( p in RPGSystem.dictprops){
+		local v = {...p.lbl, ...p["defval"]};
+		T[p.key] <- v;
+	}
+}
+
+module.hookAction( "conf_preload", registerDict, 67878);

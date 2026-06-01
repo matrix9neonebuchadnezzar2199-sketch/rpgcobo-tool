@@ -1,0 +1,200 @@
+
+
+::UIOP <- {
+	
+	function OP_Rename( view, name){
+		return @() { 
+			view.name = name;
+		}
+	}
+
+	function OP_SetSKView( p, view, idx){
+		return @() {
+			p.setChild( idx, view);
+		}
+	}
+
+	function OP_AddSKView( p, view, idx=-1){
+		return @() {
+			if( idx >= 0){
+				p.insertChild( idx, view);
+			}else{
+				p.addChild( view);
+			}
+		}
+	}
+
+	function OP_RemoveSKView( p, view){
+		return @() {
+			p.removeChild( view);
+		}
+	}
+
+	function OP_MoveSKView( p, view, prev){
+		return @() {
+			view.removeFromParent();
+			local i = typeof( prev)==SS_INTEGER ? prev : (p.children ? p.children.indexOf( prev) : 0);
+			if( i >= 0) p.insertChild( i+1, view); else p.insertChild( 0, view);
+		}
+	}
+
+	function OP_SetSKViewStaticParam( view, pid, val){
+		return @() {
+			view.setParam( pid, val);
+			if( (pid==SKViewPropertyID.SIZE || pid==SKViewPropertyID.SIZE_STATIC) && view.viewdata && view["sizechangeable"]){
+				if( !view["nostretchinner"]){
+					view.stretchSize( view.bnd.w|0, view.bnd.h|0, true);
+				}
+			}
+			view.updateMatrix();
+		}
+	}
+
+	function OP_SetSKViewMotionParam( view, pid, key){
+		key = clone key;
+		
+		return @() {
+			local mot = view.getMotion( pid);
+			mot.put( key);
+			mot.build();
+			view.moveFrame( null, view.framepos);
+			view.updateMatrix();
+			local k = mot.key;
+			while( k){
+				k = k.next;
+			}
+		}
+	}
+
+	function OP_RemoveSKViewMotionParam( view, pid, time){
+		return @() {
+			local mot = view.getMotion( pid);
+			mot.remove( time);
+			mot.build();
+			view.moveFrame( null, view.framepos);
+			view.updateMatrix();
+		}
+	}
+
+	function OP_SelectSKViews( editor, sellist){
+		return @() { 
+			editor.refresh();
+			editor.setSelection( sellist);
+		}
+	}
+
+	function OP_SKViewFlags( view, layerflags){
+		return @() { 
+			view.layerflags = layerflags;
+			view.parent.repaint();
+		}
+	}
+
+	function OP_SetSKViewMotions( view, mots){
+		return @() { 
+			view.motion = mots;
+		}
+	}
+
+	function OP_PutSKViewMotionKeys( list){
+		return @() { 
+			foreach( v in list){
+				local mot = v.view.getMotion( v.pid);
+				if( mot){
+					mot.put( clone v.key);
+					mot.build();
+				}
+			}
+		}
+	}
+
+	function OP_DeleteSKViewMotionKeys( list){
+		return @() { 
+			foreach( v in list){
+				local mot = v.view.getMotion( v.pid);
+				if( mot){
+					mot.remove( v.key.time);
+					mot.build();
+				}
+			}
+		}
+	}
+
+	function OP_MoveTime( e, t){
+		return @(){
+			e.canvas.setFrameTime( t);
+			e.uiright.refreshParams();
+		}
+	}
+
+	///////////////////////// fx
+
+	function OP_AddSKViewFX( view, fx, idx=-1){
+		return @() {
+			if( !view.fxlist){
+				view.fxlist = [fx];
+			}else
+			if( idx >= 0){ 
+				view.fxlist[idx] <- fx;
+			}else{
+				view.fxlist .. fx;
+			}
+			view.repaint();
+		}
+	}
+
+	function OP_RemoveSKViewFX( view, fx){
+		return @() { 
+			view.fxlist.removeValue( fx);
+			if( !length( view.fxlist)) view.fxlist = null;
+			view.repaint();
+		}
+	}
+
+	function OP_MoveSKViewFX( view, fx, dir){
+		return @() {
+			local i = view.fxlist.indexOf( fx);
+			view.fxlist.removeValue( fx);
+			if( dir > 0){
+				view.fxlist[i+1] <- fx;
+			}else{
+				view.fxlist[i-1] <- fx;
+			}
+			view.repaint();
+		}
+	}
+
+	function OP_SetSKViewFXStaticParam( view, fx, pid, val){
+		return @() { 
+			fx.setParam( pid, val);
+			view.repaint();
+		}
+	}
+
+	function OP_SetSKViewFXMotionParam( view, fx, pid, key){
+		return @() { 
+			local mot = fx.getMotion( pid);
+			mot.put( key);
+			mot.build();
+			fx.moveFrame( null, fx.framepos);
+			view.repaint();
+		}
+	}
+
+	function OP_RemoveSKViewFXMotionParam( view, fx, pid, time){
+		return @() { 
+			local mot = fx.getMotion( pid);
+			mot.remove( time);
+			mot.build();
+			fx.moveFrame( null, fx.framepos);
+			view.repaint();
+		}
+	}
+
+	function OP_ReplaceSKView( p, idx, view){
+		return @() {
+			p.removeChild( p.children[idx]);
+			p.insertChild( idx, view);
+		}
+	}
+}

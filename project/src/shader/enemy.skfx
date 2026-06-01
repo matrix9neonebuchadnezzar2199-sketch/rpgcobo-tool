@@ -1,0 +1,274 @@
+declare enemy;
+
+module mod_math;
+module mod_transform;
+module mod_pbrg;
+module mod_pbrlighting;
+module mod_efx;
+
+param def
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec3 in_n <ID=NORMAL>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform mediump sampler2D coltex1 <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform mediump sampler2D coltex2 <id=COLORTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	
+	uniform highp mat4 wvmat <id=WVMAT>;
+	uniform highp mat4 pmat <id=PMAT>;
+	uniform highp mat4 uvmat <id=UVMAT>;
+
+	uniform mediump mat4 mtl <id=PBRMATERIAL>;
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform highp mat4 p1 <id=MISC1MAT>;
+	uniform lowp vec4 envcol <id=ENVCOLOR>;
+	
+	varying mediump vec4 v_uv;
+	varying mediump vec4 v_col;
+	varying highp vec3 v_wvp;
+	varying highp vec4 v_wvpp;
+	varying mediump vec3 v_n;
+}
+
+vs def
+{
+	void main(){
+		vec4 wvp = wvmat * in_pos;
+		v_wvp = wvp.xyz;
+		gl_Position = v_wvpp = pmat * wvp;
+		v_n = normalize( in_n * mat3( wvmat));
+		if( v_n.z < 0.0) v_n *= -1.0;
+		$(UVMAT) { v_uv = vec4( (uvmat * vec4( in_uv.xy, 0.0, 1.0)).xy, in_uv.xy); } : { v_uv = in_uv.xyxy; }
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	base pass collapse effect
+//	雑魚、ボスで感じを変えられるようにパラメータ化。
+//	time : 0~1
+//	scale : ノイズの細かさ
+//	color : ビームカラー
+//	
+
+fs collapsefx
+{
+	vec2 random( vec2 uv){
+		uv = vec2( dot( uv, vec2(127.1,311.7) ), dot( uv, vec2(269.5,183.3) ) );
+		return -1.0 + 2.0 * fract( sin( uv) * 43758.5453123);
+	}
+
+	float noise(vec2 uv) {
+		vec2 uv_index = floor( uv), uv_fract = uv-uv_index;
+		vec2 blur = smoothstep( 0.0, 1.0, uv_fract);
+		return mix( mix( dot( random(uv_index + vec2(0.0,0.0) ), uv_fract - vec2(0.0,0.0) ),
+						 dot( random(uv_index + vec2(1.0,0.0) ), uv_fract - vec2(1.0,0.0) ), blur.x),
+					mix( dot( random(uv_index + vec2(0.0,1.0) ), uv_fract - vec2(0.0,1.0) ),
+						 dot( random(uv_index + vec2(1.0,1.0) ), uv_fract - vec2(1.0,1.0) ), blur.x), blur.y) * 0.5 + 0.5;
+	}
+	
+	vec4 collapsefx1( vec4 pix, vec2 uv, float w){
+		const float noise_desnity = 28.0;
+		const float beam_size = 0.06;
+		const vec4 color = vec4( 0.6, 0.0, 0.4, 1.0);
+		float v = noise( uv * noise_desnity) * uv.y - w;
+		if( v <= 0.0) return vec4( 0.0);
+		if( v <= beam_size) return color * pix.w;
+		return pix;
+	}
+
+	vec4 collapsefx2( vec4 pix, vec2 uv, float w){
+		const float noise_desnity = 28.0;
+		float v = noise( uv * noise_desnity) * uv.y - w;
+		return v<=0.0 ? vec4( 0.0) : pix;
+	}
+	
+	//	
+	void collapsefx( int type, float w, inout vec4 pix, vec2 uv){
+		switch( type){
+		case 1: pix = collapsefx1( pix, uv, w); break;
+		case 2: pix = collapsefx2( pix, uv, w); break;
+		}
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	pbr sprite shader
+
+define usealpha
+{
+	#define USEALPHA 1
+}
+
+define noalpha
+{
+	#define USEALPHA 0
+}
+
+fs def
+{
+	highp vec2 transuv( in highp vec2 uv){
+		uv = uv * p1[2].zw + 0.5;
+		highp vec2 iuv = floor( uv);
+		highp vec2 fuv = uv - iuv;
+		fuv *= fuv * (3.0 - 2.0 * fuv);
+		return (iuv+fuv-0.5) * p1[2].xy;
+	}
+
+	void main(){
+		highp vec2 uv = transuv( v_uv.xy);
+		mediump vec4 pix = texture2D( coltex1, uv);
+		pix.xyz = toLinear( pix.xyz);
+		collapsefx( int( p1[1].x), p1[1].y, pix, uv * p1[0].zw);
+		$(ALPHATEST && USEALPHA) if( pix.w < 0.994) discard;
+		$(COLORMAT) pix = colormat * pix;
+		G g;
+		g.n = normalize( v_n);
+		mediump mat4 m = mtl;
+		g.rough = m[1].x;
+		g.metal = m[1].y;
+		g.gsel = m[1].z;
+		g.mtype = uint( m[1].w);
+		g.mparam = m[2];
+		g.col = pix;
+		//
+		FRAGOUT
+	}
+}
+
+param overlayout
+{
+	fragout lowp vec4 fragcolor;
+}
+
+fs overlay
+{
+	highp vec2 transuv( in highp vec2 uv){
+		uv = uv * p1[2].zw + 0.5;
+		highp vec2 iuv = floor( uv);
+		highp vec2 fuv = uv - iuv;
+		fuv *= fuv * (3.0 - 2.0 * fuv);
+		return (iuv+fuv-0.5) * p1[2].xy;
+	}
+
+	void main(){
+		highp vec2 uv = transuv( v_uv.xy);
+		mediump vec4 t = texture2D( coltex1, uv);
+		mediump vec4 pix = vec4( 0.0);
+		//	overlay
+		mediump vec4 ovcol = overlayefx( v_wvp);
+		pix = ovcol * t.w;
+		//	outline
+		float b = outline_tex( coltex1, uv, p1[3].xy, t.w) * p1[0].x;
+		pix = mix( pix, envcol, b);
+		//	
+		fragcolor = pix;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	depth/shadow
+//////////////////////////////////////////////////////////////////////////////////////
+
+param depth
+{
+	fragout highp vec4 fragcolor;
+}
+
+fs depth
+{
+	void main(){
+		fragcolor = vec4( v_wvp.z);
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	tecs
+//////////////////////////////////////////////////////////////////////////////////////
+
+technique def
+{
+	apilevel = 30;
+	
+	//	pbr deferred pass
+	pass {
+		using colorspace;
+		using g, packg, tonemapping;
+		using pbrout_deferred;
+		using usealpha, collapsefx;
+		BLEND = OFF;
+
+		passfilter = 1024;
+		visiblemask = 1;
+		param = def;
+		vs = def;
+		fs = def;
+	}
+	
+	//	pbr forward pass
+	pass {
+		using colorspace;
+		using g, tonemapping, pbrlighting;
+		using pbrout_forward, pbrout_forward_linear;
+		using noalpha, collapsefx;
+		DEPTHMASK = OFF;
+		POLYGONOFFSET = 15;
+		
+		passfilter = 512;
+		visiblemask = 2;
+		param = def;
+		vs = def;
+		fs = def;
+	}
+	
+	//	forward+tonemap pass
+	pass {
+		using colorspace;
+		using g, tonemapping, pbrlighting;
+		using pbrout_forward, pbrout_forward_srgb;
+		using noalpha, collapsefx;
+		DEPTHMASK = OFF;
+		
+		passfilter = 256;
+		visiblemask = 2;
+		param = def;
+		vs = def;
+		fs = def;
+	}
+	
+	//	overlay pass
+	pass {
+		using outline_tex, overlayout;
+		using noalpha, overlayefx;
+		BLEND = PMAMIX;
+		DEPTHMASK = OFF;
+		POLYGONOFFSET = -60;
+		
+		passfilter = 128;
+		visiblemask = 12288;
+		param = def;
+		vs = def;
+		fs = overlay;
+	}
+
+	//	mode shaders
+
+	pass(depth) {
+		using depth;
+		BLEND = OFF;
+		
+		param = def;
+		vs = def;
+		fs = depth;
+	}
+	
+	pass(shadow) {
+		using depth;
+		BLEND = OFF;
+		
+		param = def;
+		vs = def;
+		fs = depth;
+	}
+}

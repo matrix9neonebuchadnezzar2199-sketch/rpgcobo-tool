@@ -1,0 +1,6 @@
+
+runsk( "PMCanvas.sk");
+runsk( "PMMaterialPanel.sk");
+runsk( "PMPartsPanel.sk");
+runsk( "PMRightPanel.sk");
+runsk( "PMEditor.sk");

@@ -1,0 +1,211 @@
+
+local maxsizelist = [
+	{ name="256", ref = 256 },
+	{ name="512", ref = 512 },
+	{ name="1024", ref = 1024 },
+	{ name="2048", ref = 2048 },
+];
+
+local sizelistmap = { [256]=maxsizelist[0], [512]=maxsizelist[1], [1024]=maxsizelist[2], [2048]=maxsizelist[3]};
+
+local filetypelist = [
+	{ lbl="PNG", i=0 },
+	{ lbl="WebP 75", i=1 },
+	{ lbl="WebP 90", i=2 },
+	{ lbl="WebP Lossless", i=3 },
+]
+
+import FileDialogMode;
+
+class SpriteSheetRightPanel extends SKView
+{
+	editor = null;
+	view = null;
+
+	//	path
+	imagediredit = null;
+	//	params
+	filetypemenu = null;
+	marginval = null;
+	pmachk = null;
+	resoval = null;
+	//	sprites
+	spritelist = null;			//	ListAdaptor
+	//	stretch
+	stretchchk = null;
+	stretchg = null;
+	stretchvals = null;			//	[sval0,sval1,sval2,sval3]
+	punchchk = null;
+	//
+	selclip = null;
+	
+	constructor( e, v){
+		editor = e;
+		view = v;
+		
+		imagediredit = v.findChild( "imagediredit");
+		filetypemenu = MenuBehavior( v.findChild( "filetypemenu"), filetypelist);
+		pmachk = v.findChild( "pmachk");
+		pmachk.setAutoToggle( true);
+		marginval = createNumInputBehavior( v.findChild( "marginval"));
+		resoval = createNumInputBehavior( v.findChild( "resoval"));
+		resoval.setRange( 50, 400, 1);
+		
+		spritelist = ListBehavior( v.findChild( "LIST"));
+		spritelist.setviewfunc = @( la, v, i){
+			local lbl = i["clipid"];
+			if( lbl) v.setValue( "lbl", lbl);
+			v.pickable = false;
+		}
+		
+		stretchchk = v.findChild( "stretchchk");
+		stretchchk.setAutoToggle( true);
+		stretchg = v.findChild( "stretchg");
+		stretchvals = (
+			createNumInputBehavior( v.findChild( "sval0")),
+			createNumInputBehavior( v.findChild( "sval1")),
+			createNumInputBehavior( v.findChild( "sval2")),
+			createNumInputBehavior( v.findChild( "sval3")),
+		);
+		punchchk = v.findChild( "punchchk");
+		punchchk.setAutoToggle( true);
+		
+		v.addEventListener( ACTION_EVENT, actionevent);
+		spritelist.listview.addEventListener( ITEM_EVENT, listevent);
+	}
+	
+	function setData( d){
+		imagediredit.setText( d.imagedir);
+		marginval.setValue( d.margin);
+		pmachk.setSelected( !!d["pma"]);
+		filetypemenu.selectItem( filetypelist[d.filetype]);
+		resoval.setValue( d.resorate);
+		
+		local a = [];
+		foreach( ic in d.cliplist){ a .. ic; }
+		spritelist.setListItems( a);
+		
+		selclip = null;
+	}
+	
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "imagediredit":
+			local d = editor.data;
+			editor.data.imagedir = imagediredit.getText();
+			break;
+		case "choosedirbtn":
+			showSelectDialog();
+			break;
+		case "explorbtn":
+		{
+			local dir = FileRef( editor.basedir, editor.data.imagedir);
+			skOpenURL( "dir://" .. dir.path);
+			break;
+		}
+		case "savebtn":
+			editor.save();
+			break;
+		case "reloadbtn":
+			editor.generate();
+			break;
+		case "marginval":
+			local d = editor.data;
+			d.margin = margin.getValue()|0;
+			editor.markChanged();
+			break;
+		case "pmachk":
+			local d = editor.data;
+			d.pma = pmachk.isSelected() ? SK_MIX : 0;
+			local b0 = d.pma ? SK_MIX : SK_PMAMIX;
+			local b1 = d.pma ? SK_PMAMIX : SK_MIX;
+			foreach( c in d.cliplist){
+				if( c.blend == b0) c.blend = b1;
+			}
+			spritelist.revalidate();
+			proplist.setParameters();
+			editor.markChanged();
+			break;
+		case "filetypemenu":
+			local d = editor.data;
+			local i = e.actioncmd.i;
+			if( i != d.filetype){
+				d.filetype = i;
+				editor.generate();
+			}
+			break;
+		case "resoval":
+			local d = editor.data;
+			d.resorate = resoval.getValue()|0;
+			break;
+		case "stretchchk":
+			selclip.stretch = stretchchk.isSelected() ? (0,0,0,0,0) : null;
+			updateStretch( selclip.stretch);
+			editor.markChanged();
+			break;
+		case "sval0": case "sval1": case "sval2": case "sval3":
+			local i = e.src.name[4]-'0';
+			selclip.stretch[i] = stretchvals[i].getValue();
+			editor.canvas.view.repaint();
+			editor.markChanged();
+			break;
+		case "punchchk":
+			selclip.stretch[4] = punchchk.isSelected()?1:0;
+			editor.markChanged();
+			break;
+		}
+	}
+	
+	function listevent( e){
+		switch( e.id){
+		case ITEM_SELECTED:
+			selectImageClip( e.actioncmd);
+			break;
+		}
+	}
+	
+	function selectImageClip( c){
+		spritelist.setSelectedItem( c);
+		spritelist.scrollItemToVisible( c);
+		selclip = c;
+		editor.canvas.view.repaint();
+		//	
+		updateStretch( c["stretch"]);
+	}
+
+	function updateStretch( str){
+		stretchchk.setSelected( !!str);
+		stretchg.setEnabled( !!str);
+		if( str){
+			for( local l = 0;l < 4;l ++) stretchvals[l].setValue( str[l]);
+			punchchk.setSelected( str[4]);
+		}else{
+			foreach( v in stretchvals) v.setValue( 0);
+			punchchk.setSelected( false);
+		}
+	}
+	
+	function showSelectDialog(){
+		local d = FileDialog();
+		d.setTitle( lang( T.dlg_dir_select));
+		d.setMode( FILEDIALOG_SELECTDIR);
+		if( editor.basedir){
+			local dir = FileRef( editor.basedir, editor.data.imagedir);
+			d.setFile( dir);
+		}
+		d.show();
+		while( d.isShown()){
+			suspend();
+			sleep( 500);
+		}
+		local p = d.getResult();
+		if( p){
+			//	set!
+			local p2 = ::getRelativePath( editor.basedir.path, p);
+			imagediredit.setText( p2);
+			editor.data.imagedir = p2;
+			//	build!
+			editor.generate();
+		}
+	}
+}

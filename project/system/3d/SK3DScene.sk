@@ -1,0 +1,521 @@
+
+class SK3DScene
+{
+	//	objects
+	objs = null;			//	SK3DObject[]
+	lights = null;			//	[Light|Light[]] : punctualライトのみ。ライト配列を入れることも可能
+	quakes = null;			//	[CameraQuake] : カメラ揺れの震源地。applyQuake( cam)でカメラに適用。
+	maincamera = null;		//	
+
+	//	physics
+	b3world = null;			//	b3World
+	b3res = null;			//	b3CollisionResult
+	pbonegroups = null;		//	PhysicalBoneGroup[]
+	disablesimulation = false;
+
+	//	3d sound
+	sk3dsound = null;		//	SK3DSoundManager
+	
+	ref = null;				//	SK3DViewが入ったり
+	
+	animating = true;
+	timescale = 1.0;		//	
+
+	constructor(){
+		lights = [];
+		objs = [];
+		pbonegroups = [];
+		//	
+		maincamera = Camera();
+		maincamera.perspective( 40.0, 1.0, 0.1, 100.0);
+		maincamera.lookat( Vector3D( 0, 2, -8), Vector3D( 0, 1, 0));
+		maincamera.name = "MainCamera";
+	}
+	
+	function getB3World( create=true){
+		if( !b3world && create){
+			b3world = b3World( Rect3D( 0, 0, 0, 512, 64, 512), 0);
+		}
+		return b3world;
+	}
+
+	function setTimeScale( t){
+		timescale = t;
+	}
+
+	function setSK3DSoundManager( m){
+		sk3dsound = m;
+	}
+
+	function countObjects(){
+		return length( objs);
+	}
+
+	function addObject( sk3d){
+		objs .. sk3d;
+		sk3d.addedToScene( this);
+	}
+
+	function removeObject( sk3d){
+		local a, i;
+		if( sk3d.parent){
+			a = sk3d.parent.children;
+		}else{
+			a = objs;
+		}
+		i = a.indexOf( sk3d);
+		delete a[i];
+		sk3d.removedFromScene( this);
+	}
+
+	function addLight( li){
+		lights .. li;
+	}
+	
+	function removeLight( li){
+		return lights.removeValue( li);
+	}
+
+	function clearObjects(){
+		foreach( o in objs){
+			o.removedFromScene( this);
+		}
+		objs.clear();
+		lights.clear();
+		maincamera.linkto = null;
+		sk3dsound?.clearSounds();
+	}
+
+	function updateScene( dt){
+		dt *= timescale;
+		local anim = animating;
+		animating = updateObjects( dt, objs, false);
+		animating |= updateQuakes( dt);
+		//	b3world
+		if( b3world){
+			if( disablesimulation){
+				foreach( g in pbonegroups ){
+					skBonePoseToPhysicalList( g.sk3d.gmat, g.bones);
+				}
+				b3world.updateAABBs();
+				//	disablesimulation時には	SK3DObject自身のrunMatrixでb3bodyのsetTransformがされるのでここからは何もしない。。。
+			}else{
+				local sdt = dt * 0.001;
+				if( sdt >= 4.0/60.0) sdt = 4.0/60.0;	//	66.7ms以上はシミュレーション速度を落とすことで対応
+				while( sdt >= 1.0/50.0){ b3world.simulate( 1.0/60.0, 1, 1.0/60); sdt -= 1.0/60.0; }
+				b3world.simulate( sdt, 1, 1.0/60.0);	//	サブステップがまるで当てにならん
+				updatePhysicalMatrices();
+				updatePhysicalBones();
+				if( length( pbonegroups)) animating = true;
+			}
+		}
+		//	sounds
+		sk3dsound?.update( dt);
+		return anim || animating;
+	}
+
+	function updateObjects( dt, a, pmatdirty){
+		local anim = false;
+		foreach( n in a){
+			local nmatdirty = pmatdirty || n.matdirty;
+			if( !n.update( dt*n.timescale, pmatdirty)){
+				n.removedFromScene( this);
+				n.parent = null;
+				anim = true;
+				removei;
+			}else{
+				anim |= n.animating;
+				nmatdirty = nmatdirty || anim || n.parentbone;
+				if( n.children) anim |= updateObjects( dt, n.children, nmatdirty);	//	update recursive
+			}
+		}
+		return anim;
+	}
+
+	function findByName( n){
+		return _findByName( n, objs);
+	}
+
+	function _findByName( n, a){
+		foreach( o in a){
+			if( o.alive){	//	aliveのみ
+				if( n == o["name"]) return o;
+				local co;
+				if( o["children"] && (co=_findByName( n, o.children))) return co;
+			}
+		}
+		return null;
+	}
+
+	function findObject( fn){
+		return _findObject( fn, objs);
+	}
+
+	function _findObject( fn, a){
+		foreach( o in a){
+			if( fn( o)) return o;
+			local co;
+			if( o.children && (co=_findObject( fn, o.children)) ) return co;
+		}
+		return null;
+	}
+
+	function collectObjects( fn, ret=null){
+		if( !ret) ret = [];
+		_collectObjects( fn, objs, ret);
+		return ret;
+	}
+
+	function _collectObjects( fn, a, ret=null){
+		foreach( o in a){
+			if( fn( o)) ret .. o;
+			if( o.children) _collectObjects( fn, o.children, ret);
+		}
+	}
+
+	function foreachObjects( fn){
+		_foreachObjects( fn, objs);
+	}
+
+	function _foreachObjects( fn, a){
+		foreach( o in a){
+			fn( o);
+			if( o.children) _foreachObjects( fn, o.children);
+		}
+	}
+
+	//	
+	function addQuake( q){
+		if( !quakes) quakes = [];
+		quakes .. q;
+	}
+
+	//	
+	function updateQuakes( dt){
+		foreach( q in quakes){
+			if( !q.update( dt)) removei;
+		}
+		return !!length( quakes);
+	}
+
+	//	
+	function getQuake( id){
+		return quakes?.find( @( v) v.id==id);
+	}
+
+	//	カメラにこのシーン内で発声しているカメラ揺れを適用する。カメラワークの最後段で行う。
+	//	変形したcamは最終的にupdatePlanesをする必要あり
+	function applyQuake( cam){
+		if( length( quakes)){
+			local v = (#Vector3D()) ( 0.0);
+			foreach( q in quakes){
+				q.apply( cam.eye, v);
+			}
+			cam.viewmat.translate( v);
+		}
+	}
+	
+	/////////////////////////////////////////////////////////////////////////
+	//	ぼーん
+
+	/**
+	 * 物理シミュレーションで動くJointリストを登録
+	 */
+	function addPhysicalBoneGroup( g){
+		if( g ){
+			pbonegroups .. g;
+		}
+	}
+
+	/**
+	 * 指定KGLObjectの物理シミュレーションで動くJointリストを取り除く
+	 */
+	function removePhysicalBoneObject( sk3d){
+		if( sk3d){
+			foreach( i,g in pbonegroups ){
+				if( g.sk3d == sk3d ){
+					delete pbonegroups[i];
+					return;
+				}
+			}
+		}
+	}
+
+	//	物理シミュレーションで動くSK3DObjectを更新
+	//	※毎フレーム全オブジェクトを線形走査してるが無駄。pbonegroupsと同様にすべし。
+	function updatePhysicalMatrices(){
+		foreach( o in objs){
+			o.updatePhysicalMatrix();
+		}
+	}
+
+	/**
+	 * 物理シミュレーションで動くBoneを更新
+	 */
+	function updatePhysicalBones(){
+		foreach( g in pbonegroups ){
+			skPhysicalPoseToBoneList( g.sk3d.gmat, g.bones);
+		}
+	}
+}
+
+/**
+ * 物理シミュレーションによって動くBoneのグループ
+ */
+class SK3DScene.PhysicalBoneGroup
+{
+	sk3d = null;	// SK3DObject
+	bones = null;	// Bone[] 物理氏シミュレーションで動くBone
+
+	constructor( o, b){
+		sk3d = o;
+		bones = b;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////
+//	全画面描画用のSK3DObject
+
+class SK3DScreenObject extends SK3DObject
+{
+	vtx = null;
+	ridx = null;
+	fidx = null;
+	m = null;
+
+	constructor(){
+		local _pm = SK3DRenderer.PassRegistory.ImagePassBase._getImageMesh();
+		vtx = _pm.vtx;
+		fidx = _pm.face[0].idx;
+		ridx = _pm.face[1].idx;
+		m = Material();
+		m.depthtest = 0;
+		m.cullface = 0;
+		m.visiblemask = visiblemask = SK_VISIBLE_DECAL;
+		sortoffset = -1000.0;
+		sortscale = 0.0;
+		bnd.set( 0, 0, 0, 100000, 100000, 100000);
+	}
+	
+	function render( cam, visiblemask){
+		skBindVertexBuffer( vtx);
+		// local idx = r.currenttarget?ridx:fidx;
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, fidx);
+	}
+
+	function updateSortOffset(){}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////
+//	b3Worldのコリジョンのプレビュー描画対応
+//	※CustomConcaveは子オブジェクトを追加する形で対応！
+//	
+
+b3Body.shpn <- null;
+
+/*	カラーマップは↓のような対応に。。。※G_STAGEはさらに色分けしたい
+	G_VIEW			= 0x7F;
+	G_CHARA			= 0x100;
+	G_OBJECT		= 0x200;
+	G_EVENT			= 0x400;	//	実体のない衝突判定はこれを
+	G_STAGE			= 0x800;
+	G_WATER			= 0x1000;
+*/
+class SK3DCollisionPreview extends SK3DObject
+{
+	b3world = null;
+	colmask = 0xff80;
+	gcolmap = null;			//	グループのカラーマップ
+	scollist = null;		//	[(partidmask,col),...]
+
+	constructor( w, cmap=null, sca=null){
+		super( null);
+		b3world = w;
+		bnd.set( 0, 0, 0, 2000, 400, 2000);
+		visiblemask = SK_VISIBLE_DECAL;
+		gcolmap = cmap || #{
+			[0x100] = 0x0099ffff,
+			[0x200] = 0xff9900ff,
+			[0x400] = 0x00bb00ff,
+			[0x800] = 0x993300ff,
+			[0x1000]= 0x0000ffff,
+			[0] = 0xffffffff,
+		};
+		scollist = sca || #[(128, 0xff0033ff),(16, 0xffff9966),(4,0xffff33ff),(0, 0xffffffff),];	// 128=BLK_DIGCLOSE,	16=SOLIDFB, 4=BLK_LIQUID
+	}
+	
+	function customDisplayList( displist, visiblemask){
+		local a = b3world.getBodies( #[], colmask);
+		try{
+		foreach( b in a){
+			local rn = b.shpn;
+			local shp = b.getShape(), cif = shp.getConcaveInterface();
+			if( !rn){
+				if( cif){
+					rn = b.shpn = SK3DCustomCollisionPreview( cif);
+				}else{
+					rn = b.shpn = SK3DRenderNode();
+					rn.mesh = shp.createPolygonMesh( b);
+					setMaterial( rn, b);
+				}
+				rn.parent = this;
+			}
+			b.getRawTransform( rn.gmat);
+			b.getBounds( rn.gbnd);
+			// printf( "BBBBB %S %S %S   %S %S %S\n", rn.gbnd.x, rn.gbnd.y, rn.gbnd.z, rn.gbnd.r, rn.gbnd.s, rn.gbnd.t); rn.gmat.print();
+			displist.cullNodes( [rn], visiblemask);
+		}
+		}catch( ex){
+			printexception( ex);
+		}
+		a.clear();
+	}
+
+	function setMaterial( rn, b){
+		foreach( f in rn.mesh["face"]){
+			local m = f.m;
+			m.tec = skFXFindTechnique( "decal.def");
+			m.visiblemask = SK_VISIBLE_DECAL;
+			m.cullface = SK_CCW;
+			m.fillmode = SK_LINE;
+			m.depthtest = SK_ALWAYS;
+			m.depthmask = false;
+			m.blend = SK_MIX;
+			m.polygonoffset1 = -100;
+			m.Kd = gcolmap[b.group] || gcolmap[0];
+		}
+	}
+}
+
+local r_1 = Rect3D(), r_2 = Rect3D(), r_3 = Rect3D();
+
+//	customconcaveは非常に大きく、また、中身が更新される場合が多い。
+//	2Dのグリッドに分ける
+//	※チャンク跨ぎでポリゴンが存在する場合はダブってしまう。
+//	↑だとちょっとダブりが多くなりすぎる。。。ちょっとずらして
+//	
+class SK3DCustomCollisionPreview extends SK3DRenderNode
+{
+	gsize = 4.0;		//	4m毎にチャンクを切る？
+	pmgrid = null;		//	
+	mb = null;			//	PolygonMeshBuilder
+	mbmtl = null;		//	Material
+	mtmtl = null;
+	//
+	cif = null;			//	b3ConcaveInterface
+	cbnd = null;		//	cif.getBounds
+	cw = 1;				//		
+	cd = 1;				//	
+
+	constructor( c){
+		cif = c;
+		cbnd = c.getBounds();
+		cw = (cbnd.r * 2.0 / gsize + 0.9) | 0;
+		cd = (cbnd.t * 2.0 / gsize + 0.9) | 0;
+		pmgrid = tuple( cw * cd);
+		//
+		mb = PolygonMeshBuilder();
+		local m = mbmtl = Material();
+		m.tec = skFXFindTechnique( "decal.cols");
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.depthtest = SK_ALWAYS;
+		m.depthmask = false;
+		m.blend = SK_MIX;
+		m.Kd = 0xffffffcc;
+
+		local m = mtmtl = Material();
+		m.tec = skFXFindTechnique( "decal.def");
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.depthtest = SK_ALWAYS;
+		m.blend = SK_MIX;
+		m.polygonoffset1 = -100;
+		m.Kd = 0xffff0033;
+		// m.cullface = SK_CW;
+	}
+
+	//	※オーバーライド
+	function getSeq( r){
+		return cif["calcSeq"] ? cif.calcSeq( r) : 1;
+	}
+	
+	function render( cam, visiblemask){
+		// printf( "rerender! %S  %S\n", visiblemask, this);
+		skSetMatrix( SK_WORLD, gmat);
+		local cr = r_1;
+		local gh = gsize*0.5, x0 = cbnd.x-cbnd.r+gh;
+		cr.set( x0, cbnd.y, cbnd.z-cbnd.t+gh, gh, cbnd.s, gh);
+		for( local gz = 0, i = 0; gz < cd; gz ++){
+			for( local gx = 0; gx < cw; gx ++, i ++){
+				local gr = r_2.set( cr).transform( gmat);	//	※カメラを回転したほうが速いが！
+				if( cam.isInside( gr)){
+					local pm = pmgrid[i], seq = getSeq( cr);
+					if( !pm || seq != pm.customdata){
+						pm = pmgrid[i] = makepm( cr);
+						pm.customdata = seq;
+					}
+					pm.render( visiblemask);
+				}
+				cr.x += gsize;
+			}
+			cr.x = x0;
+			cr.z += gsize;
+		}
+	}
+	
+	//	※appendConcaveInterface時に色をpartid, tridから変化させられるように！！
+	function makepm( r){
+		local _r = r_3.set( r).expand( -0.002);	
+		// mb.setMaterial( mtmtl);
+		// mb.appendConcaveInterface( cif, _r, SK_TRIANGLES, parent.scollist);	//	※sk側から1枚1枚作ってると遅いので一気に追加
+		mb.setMaterial( mbmtl);
+		mb.appendConcaveInterface( cif, _r, SK_LINES, parent.scollist);	//	※sk側から1枚1枚作ってると遅いので一気に追加
+		local pm = mb.toPolygonMesh();
+		mb.clear();
+		return pm;
+	}
+}
+
+local v_1 = Vector3D(), v_2 = Vector3D();
+
+//	
+//	
+class CameraQuake
+{
+	static crnd = Random();
+
+	id = 0;
+	seed = 151331;
+	//	パラメータ
+	pow = 0.5;			//	揺れの強さ
+	freq = 30.0;		//	揺れの細かさ。60.0で60fps
+	vert = false;		//	軸を前に固定
+	distatten = 20.0;	//	距離的減衰。20mで消失
+	timeatten = 1.0;	//	時間的減衰
+	//	
+	//	ステート
+	pos = null;			//	震源地。nullの場合は距離による減衰なし。
+	w = 1.0;
+	time = 0.0;
+
+	function update( dt){
+		time += dt;
+		w = Math.saturate( w - timeatten * dt);
+		if( w<=0.0) return false;
+		return true;
+	}
+
+	//	
+	function apply( eye, outvec){
+		local ww = w*w, t = time*freq*0.001;
+		crnd.setSeed( seed + int( t)*4417  , 5);
+		local v0 = v_1( 0.0, crnd.nextf( -ww, ww), 0.0).rotate( 0, 0, crnd.nextf( 0.0, Math.PI2));
+		crnd.setSeed( seed + (int( t)+1)*4417, 5);
+		local v1 = v_2( 0.0, crnd.nextf( -ww, ww), 0.0).rotate( 0, 0, crnd.nextf( 0.0, Math.PI2));
+		v0.lerp( v1, t%1.0, v0);
+		local d = pos ? (pos.hypot( eye) / distatten) : 0.0;	//	1.0で消失。posない場合は減衰なし
+		if( d < 1.0){
+			v0.scale( ww * pow * Math.saturate( Math.pow( 1.1-d*1.1, 2.0)));	//	10%は減衰なし
+			outvec.add( v0);
+		}
+	}
+}

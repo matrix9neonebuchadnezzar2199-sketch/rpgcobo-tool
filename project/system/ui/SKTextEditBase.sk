@@ -1,0 +1,1020 @@
+local a_1 = [0,0];
+local a_2 = [0,0,0];
+local r_1 = Rect2D();
+
+import VirtualKeyCode;
+import ModifiersMask;
+import SKViewPropertyID;
+
+/**
+ *	wstringクラスをテキスト入力に使う。
+ *	TextInputを継承した各クラスでフォント等は決め打ちされるはずなので、フォントの指定などは基本的に行わない。
+ */
+class SKTextEditBase extends SKView
+{
+	wtext = "";			//	wstring : 絵文字を一文字と認識するための絵文字エンコードがされたutf32。入出力のときにちゃんとEmoji.encode|decodeを行うこと！
+	fontattr = null;
+	prevText = null;
+	imview = null;		//	IMTextView
+	fontmet = null;
+	
+	editable = true;
+	enableime = true;	//	IME有効
+	
+	idx=0;
+	cursx=0;
+	cursy=0;
+	endline = 0;
+	
+	regselect=false;
+	regend=-1;
+	
+	maxlen = 128;
+	areatrim = 0;
+	textfilter = null;	//	function(ch)
+	
+	issecret = false;
+	showbar = true;
+	lockfocus = false;
+	
+	textbox = null;		//	TextBox
+	
+	sprite = null;		//	for render
+	
+	mousein = false;
+	mousepress = false;
+	sbintervalid = null;
+	
+	tabgroup = "textinput";
+
+	exmenus = null;		//	追加のコンテキストメニュー
+	
+	static clipString = [null];	// local ClipBoard
+	
+	constructor( s="", a=null){
+		fontattr = a || #FontAttribute( Fonts.get( "ui"), 12, 0xffffffff, SK_FONT_BOLD);
+		textbox = TextBox( fontattr, s);
+		sprite = Sprite(null);
+		setText( s);
+		fontmet = fontattr.getFontMetrics();
+	}
+	
+	function computeSizeDeltaSelf( d){
+		local sa = stretchalign, hs = (sa&5)==5, vs = (sa&10)==10;
+		if( hs|vs){
+			local s0 = getOriginalSize(), mt = fontattr.getFontMetrics();
+			local mh = s0[1]-mt.linespace;	//	縦に限り上下のマージンを残すように
+			local tbnd = textbox.bnd, dw = tbnd.w-bnd.w, dh = tbnd.h-bnd.h+mh;
+			local a = 1<<textbox.align;
+			//["0:←↑・","1:・↑・","2:・↑→","3:←・・","4:・〇・","5:・・→","6:←↓・","7:・↓・","8:・↓→","9:・↑・(LINE)","10:・〇・(LINE)","11:・↓・(LINE)"];
+			local xmask = (1<<1)|(1<<4)|(1<<7)|(1<<9)|(1<<10)|(1<<11);
+			local ymask = (1<<3)|(1<<4)|(1<<5);
+			local sx = 1.0, sy = 1.0;
+			if( sa&16){ sx = parent.bnd.w / bnd.w; sy = parent.bnd.h / bnd.h; }
+			if( hs && dw*dw > 0.1) d.x = Math.max( d.x, Math.ceil( sx*dw*((a&xmask)?1:1)));	//1,4,7,9,10,11
+			if( vs && dh*dh > 0.1) d.y = Math.max( d.y, Math.ceil( sy*dh*((a&ymask)?1:1)));
+			return false;
+		}
+		return false;	//	中身がさらにレイアウトを伸ばすことはない
+	}
+	
+	function updateLayout(){
+		textbox.setRect( 0, 0, bnd.w, bnd.h);
+		updateFigs();
+	}
+	
+	 function setFontAttribute( a){
+		fontattr = a;
+		textbox.setAttribute( a);
+		updateFigs();
+		repaint();
+		fontmet = fontattr.getFontMetrics();
+	}
+
+	function added(){
+		updateMatrix();
+		updateFigs();
+	}
+	function removed(){
+		if( sbintervalid) clearInterval( sbintervalid);
+	}
+	
+	function enableStateChanged( b){	//	b=0,1
+	}
+	
+	function focusStateChanged( b){
+		if( lockfocus) return;
+		if( b){
+			skEnableInputMethods( enableime);
+			showbar = true;
+			showbarInterval();
+			updateCursorPos();
+		}else{
+			skEnableInputMethods( false);
+			if( sbintervalid) clearInterval( sbintervalid);
+			_removeimview();
+		}
+	}
+	
+	function isMultiline(){
+		local wrap = textbox.wrapmode;
+		return wrap==1 || wrap==2;
+	}
+
+	function showbarInterval(){
+		showbar = true;
+		if( sbintervalid) clearInterval( sbintervalid);
+		local self = this;
+		sbintervalid = setInterval( @(){ self.showbar = !self.showbar; self.repaint(); }, 500);
+	}
+	
+	function render(){
+		drawBack();
+		startClip();
+		if( (lockfocus||focused) && regselect) drawSelection( Math.min(regend,idx), Math.max(regend,idx));
+		drawText();
+		endClip();
+		drawBorder();
+		if( !imview && (lockfocus||focused) && showbar && !regselect) drawCursor( cursx, cursy);
+	}
+	
+	function startClip(){
+	}
+	function endClip(){
+	}
+	function drawBack(){
+		sprite.bnd.set(0,0,bnd.w,bnd.h); sprite.color=0x000000ff; skDrawSprite( sprite);
+	}
+	function drawText(){
+		skDrawTextBox( textbox);
+	}
+	function drawBorder(){
+	}
+	function drawCursor( x, y){
+		sprite.bnd.set( x-1, y+fontmet.y, 2, fontmet.h);
+		sprite.color0=0xffffffff;
+		skDrawSprite( sprite);
+	}
+	function drawSelectionLine( x, y, w, h){
+		sprite.bnd.set( x, y, w, h).clip( r_1.set( 0, 0, bnd.w, bnd.h));
+		if( sprite.bnd.valid()){
+			sprite.color=0x555555ff;
+			skDrawSprite( sprite);
+		}
+	}
+	
+	function drawSelection( s, e){
+		local l0 = textbox.getLineIndex( s), l1 = textbox.getLineIndex( e);
+		local y = textbox.y;
+		if( l0 > 0){ local li0 = textbox.getLineInfo( l0-1, a_1); y += li0[4]+li0[3]; }
+		for( local l = l0; l <= l1; l ++){
+			local li = textbox.getLineInfo( l, a_1);	//[st,en,maxdescent,maxlinespace,y,w]
+			local ls = Math.max( li[0], s), le = Math.min( li[1]+1, e);
+			local x0 = textbox.getCharPos( ls, a_2)[0], x1;
+			if( textbox.getLineIndex( le) != l){
+				textbox.getCharPos( le-1, a_2);
+				x1 = a_2[0] + a_2[2];
+			}else{
+				textbox.getCharPos( le, a_2);
+				x1 = a_2[0];// + a_2[2];
+			}
+		 	drawSelectionLine( x0, y, x1-x0, li[3]);
+			y += li[3];
+		}
+	}
+	
+	function posttext(){
+		local e = Event();
+		e.id = TEXT_CHANGED;
+		e.src = this;
+		e.actioncmd = getText();
+		::rootview.postEvent(e);
+	}
+	
+	//	event handle
+	
+	function _removeimview(){
+		if( imview){ imview.removeFromParent(); imview = null; }
+	}
+
+	function processEvent( e){
+		foreach( f in listeners[e.id/100]){
+			f( e);
+			if( e.consumed) return false;
+		}
+		
+		if( editable && e.src == this)
+		switch( e.id){
+		case KEY_PRESSED:
+		case KEY_REPEATED:
+			if( e.isCommandDown()){
+				commandPressed(e);
+			}else{
+				pressed(e);
+			}
+			break;
+		case KEY_TYPED:
+			typed( e);
+			e.consume();
+			_removeimview();
+			repaint();
+			showbarInterval();
+			return true;
+		case MOUSE_PRESSED:
+			e.computeLocal( getInvMatrix());
+			mousepress = mousepressed( e);
+			break;
+		case MOUSE_DRAGGED:
+			if( mousepress){
+				e.computeLocal( getInvMatrix());
+				mousedragged( e);
+			}
+			break;
+		case MOUSE_RELEASED:
+			if( mousepress){
+				mousereleased( e);
+				mousepress = false;
+			}
+			break;
+		case MOUSE_ENTERED:
+			mousein = true;
+			break;
+		case MOUSE_EXITED:
+			mousein = false;
+			break;
+		case IMTEXT_CHANGED:
+			e.consume();
+			local imstr = e.actioncmd;
+			if( imstr){
+				if( !imview){
+					imview = IMTextView.start( this, textbox, fontattr, (cursx,cursy));
+				}
+				imview.setIMText( imstr);
+			}else{
+				_removeimview();
+			}
+			break;
+		case TEXTINPUT_DONE:
+			e.consume();
+			setText( e.actioncmd);
+			setCursorIndex( length( wtext));
+			repaint();
+			if( enterPressed( e)) e.consume();
+			break;
+		case TEXTINPUT_CHANGED:
+			e.consume();
+			setText( e.actioncmd);
+			setCursorIndex( length( wtext));
+			repaint();
+			posttext();
+			break;
+		}
+		
+		if( e.consumed) return false;
+		if( modal){ if( !e.consumed) e.consumed=2; return false; }	//	モーダルでconsumeした場合は2を入れる
+		if( parent) return parent.processEvent( e);	//	parent?.でやると末尾再帰しない。。。
+	}
+	
+	function mousepressed( e){
+		local rclk = e.isMouseDown( BUTTON2_MASK);
+		e.consume();
+		if( !focused){
+			requestFocus();
+			pressfocused();
+		}
+		if( !rclk || !regselect){
+			idx = textbox.charIndexAt( e.lx,e.ly);
+			regend = idx;
+			regselect = false;
+		}
+		updateCursorPos();
+		scrollCursorToVisible();
+		updateRegion();
+		if( rclk){
+			showContextMenu( e);
+			return false;
+		}
+		return true;
+	}
+
+	function showContextMenu( e){
+		local ctxmenu = [
+			{ id="emoji", lbl="$T.lbl_emoji", icon="\ue545"},
+			"-",
+			{ id="cut", lbl="$T.menu_edit_cut", icon="\ue14e", disable=!regselect },
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d", disable=!regselect },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!(_getClipString()[0]) },
+		];
+		if( exmenus){
+			ctxmenu .. "-" ... exmenus;
+		}
+		lockfocus = true;
+		local ret = MenuPopup.run( ctxmenu);
+		switch( ret["id"]){
+		case "emoji":
+			local ic = IconSelectPopup.run( e, "", null);
+			if( ic){
+				local ec = Emoji.encodeEmojiString( ic)[0];	//	絵文字コードとしては一文字
+				wtext = wtext.insert( idx, ec);
+				++idx;
+				updateFigs();
+				updateRegion();
+				posttext();
+			}
+			break;
+		case "cut": cut(); break;
+		case "copy": copy(); break;
+		case "paste": paste(); break;
+		default:
+			if( ret["func"]) ret.func( this, ret);
+			break;
+		}
+		lockfocus = false;
+	}
+	
+	function pressfocused(){
+	}
+
+	function mousedragged( e){
+		if( focused){
+			idx = textbox.charIndexAt( e.lx,e.ly);
+			regselect = (regend != idx);
+			updateCursorPos();
+			scrollCursorToVisible();
+			updateRegion();
+			e.consume();
+		}
+	}
+
+	function mousereleased( e){
+		e.consume();
+	}
+	
+	function pressed( e){
+		if (!editable) return;
+		switch( e.keycode ){
+		case VK_TAB :
+			rotateFocus();
+			e.consume();
+			break;
+		case VK_DELETE :
+			if( regselect){
+				regselect = false;
+				local nidx = Math.min(idx,regend);
+				if( remove( nidx, Math.max(idx,regend))){
+					idx = nidx;
+					updateFigs();
+					updateRegion();
+					posttext();
+				}
+			}else
+			if( editable && remove( idx, idx+1)){
+				updateFigs();
+				updateRegion();
+				posttext();
+			}
+			break;
+		case VK_BACK_SPACE :
+			if( regselect){
+				regselect = false;
+				local nidx = Math.min(idx,regend);
+				if( remove( nidx, Math.max(idx,regend))){
+					idx = nidx;
+					updateFigs();
+					updateRegion();
+					posttext();
+				}
+			}else
+			if( idx > 0){
+				local addidx = (idx==length( wtext));
+				idx--;
+				if(editable){
+					if( remove( idx, idx+1)){
+						updateFigs();
+						updateRegion();
+						posttext();
+					}
+				}
+				if( idx == 0 && length( wtext) > 0 && addidx) idx++;
+			}
+			break;
+		case VK_UP :
+			if( e.isShiftDown() && !regselect) regend = idx;
+			if( !isMultiline()){
+				idx = 0;
+			}else{
+				local li = textbox.getLineIndex( idx);
+				if( li > 0){
+					local upline = textbox.getLineInfo( li-1, a_1);	//[st,en,maxdescent,maxlinespace,y,w]
+					idx = textbox.charIndexAt( cursx +textbox.lx+textbox.x, upline[4] +textbox.ly+textbox.y);	//	uplineはローカル座標
+				}else{
+					idx = 0;
+				}
+			}
+			regselect = (e.isShiftDown() && regend != idx);
+			updateCursorPos();
+			scrollCursorToVisible();
+			updateRegion();
+			break;
+		case VK_DOWN : 
+			if( e.isShiftDown() && !regselect) regend = idx;
+			if( !isMultiline()){
+				idx = length( wtext);
+			}else{
+				local li = textbox.getLineIndex( idx);
+				if( li < endline){
+					local dnline = textbox.getLineInfo( li+1, a_1);	//[st,en,maxdescent,maxlinespace,y,w]
+					idx = textbox.charIndexAt( cursx +textbox.x+textbox.lx, dnline[4] +textbox.y+textbox.ly);	//	uplineはローカル座標
+				}else{
+					idx = length( wtext);
+				}
+			}
+			regselect = (e.isShiftDown() && regend != idx);
+			updateCursorPos();
+			scrollCursorToVisible();
+			updateRegion();
+			break;
+		case VK_LEFT :
+			if( e.isShiftDown()){
+				if(!regselect)regend = idx;
+				idx = (idx==0)?0:idx-1;
+				regselect = (regend != idx);
+			}else{
+				if( regselect){
+					idx = Math.min(idx,regend);
+					regselect = false;
+				}else{	idx = (idx==0)?0:idx-1; }
+			}
+			updateCursorPos();
+			scrollCursorToVisible();
+			updateRegion();
+			break;
+		case VK_RIGHT :
+			if( e.isShiftDown()){
+				if(!regselect)regend = idx;
+				idx = Math.min( length( wtext), idx+1);
+				regselect = (regend != idx);
+			}else{
+				if( regselect){
+					idx = Math.max(idx,regend);
+					regselect = false;
+				}else{
+					idx = Math.min( length( wtext), idx+1);
+				}
+			}
+			updateCursorPos();
+			scrollCursorToVisible();
+			updateRegion();
+			break;
+		case VK_SPACE:
+			//	何もしないけどconsumeはしておく
+			break;
+		case VK_ENTER :
+			if( enterPressed(e)) break;
+			if( imview) e.consume();		//	IME入力中はここでconsumeしておく。
+			return;
+		case VK_ESCAPE:
+			if( escapePressed( e)) break;
+			return;
+		default:
+			return;		//	not consume
+		}
+		showbarInterval();
+		e.consume();
+	}
+	
+	function _setClipString( clipstr) {
+		if( !skPutClipboardData( Emoji.decodeEmojiString( clipstr))) {
+			clipString[0] = clipstr;
+		}
+	}
+
+	function _getClipString() {
+		if( skCheckClipboardType( ClipboardType.CLIPBOARD_TEXT)) {
+			return skGetClipboardData( ClipboardType.CLIPBOARD_TEXT);
+		}
+		return clipString[0];
+	}
+	
+	function _insertText( ws, idx) {
+		if( length( wtext) >= maxlen) return 0;
+		if( !(ws instanceof wstring)){
+			ws = wstring( ws);
+		}
+		local slen = length( ws);
+		if( length( wtext)+slen > maxlen){
+			slen = maxlen-length( wtext);
+		}
+		ws = Emoji.encodeEmojiString( ws);	//	絵文字エンコード
+		wtext = wtext.slice( 0, idx) .. ws .. wtext.slice( idx);
+		if( length( wtext) > maxlen) {
+			local old = length( wtext);
+			wtext = wtext.slice( 0, maxlen);
+		}
+		return slen;
+	}
+
+	function copy(){
+		if( regselect){
+			_setClipString( wtext.slice( Math.min(idx,regend), Math.max(idx,regend)));
+			return true;
+		}
+	}
+
+	function cut(){
+		if( regselect){
+			prevText = Emoji.decodeEmojiString( wtext);
+			local begin = Math.min(idx,regend);
+			local end = Math.max(idx,regend);
+			_setClipString(wtext.slice(begin, end));
+			remove( begin, end);
+			idx = begin;
+			regend = 0;
+			regselect = false;
+			updateFigs();
+			updateRegion();
+			posttext();
+			return true;
+		}
+	}
+
+	function paste(){
+		local clipstr = _getClipString();
+		if( !length( clipstr)) return false;
+		prevText = Emoji.decodeEmojiString( wtext);
+		if( regselect){
+			regselect = false;
+			local nidx = Math.min(idx,regend);
+			if( remove( nidx, Math.max(idx,regend))){
+				idx = nidx;
+			}
+		}
+		idx += _insertText( clipstr, idx);
+		updateFigs();
+		updateRegion();
+		posttext();
+		return true;
+	}
+
+	function commandPressed( e){
+		//	TODO
+		local key = e.keycode;
+		if( key >= 'A') {
+			switch (key) {
+			case 'A' :
+				selectAll();
+				e.consume();
+				break;
+			case 'C' :
+				if( copy()) e.consume();
+				break;
+			case 'V' :
+				if( paste()) e.consume();
+				break;
+			case 'X' :
+				if( cut()) e.consume();
+				break;
+			case 'Z' :
+				if (prevText != null) {
+					local prevPrev = prevText;
+					prevText = wtext;
+					setText( prevPrev);
+					e.consume();
+				}
+				break;
+			default : return;
+			}
+		}
+	}
+	
+	function enterPressed( e){
+		return false;
+	}
+	
+	function escapePressed( e){
+		return false;
+	}
+	
+	function typed( e){
+		if (!editable) return false;
+		local ch = e.keychar;
+		if( (ch == '\n' && isMultiline()) || (ch > 31 && ch != 127)){
+			if( length( wtext) >= maxlen && !regselect) return false;
+			if( textfilter) if( !(ch = textfilter( ch))) return false;
+			if( regselect){
+				local nidx = Math.min( idx, regend);
+				if( remove( nidx, Math.max( idx, regend))){
+					idx = nidx;
+					e.consume();
+				}
+			}
+			prevText = null;
+			insert( idx, ch);
+			regselect = false;
+			idx = (idx+1)|0;
+			updateFigs();
+			_trimarea();
+			e.consume();
+			posttext();
+		}
+		return true;
+	}
+
+	function _trimarea(){
+		if( areatrim){	//	omoi
+			local b = textbox.bnd;
+			local bw = b.x+b.w+textbox.marginl+textbox.marginr;
+			local bh = b.h+textbox.margint+textbox.marginb;
+			while( length( wtext) &&  bw > bnd.w || bh > bnd.h){
+				wtext = wtext.slice( 0, length( wtext)-1);
+				textbox.x = textbox.y = 0;
+				updateFigs();
+				b = textbox.bnd;
+				bw = b.x+b.w+textbox.marginl+textbox.marginr;
+				bh = b.h+textbox.margint+textbox.marginb;
+			}
+			idx = Math.min( idx, length( wtext));
+		}
+	}
+	
+	//	text input
+	
+	function setText( ws){
+		if( ws == null || ws == undefined){
+			ws = #wstring( "");
+		}else
+		if( !(ws instanceof wstring)){
+			ws = wstring( ws);
+		}
+		wtext = Emoji.encodeEmojiString( ws);	//	wsに絵文字エンコードを施す。絵文字がない場合は何もしない
+		regselect = false;
+		if( idx > length( wtext)) idx = length( wtext);
+		updateFigs();
+		_trimarea();
+	}
+	
+	function getText(){
+		local tx = Emoji.decodeEmojiString( wtext);	//	絵文字コードからutf8にデコードする。
+		return tx;		//	getTextはstringを返す。getWText()はwstringを返す。
+	}
+
+	function insertText( ws){
+		if( ws == null || ws == undefined){
+			return false;
+		}else
+		if( !(ws instanceof wstring)){
+			ws = wstring( ws);
+		}
+		ws = Emoji.decodeEmojiString( ws);
+		if( regselect){
+			regselect = false;
+			local nidx = Math.min(idx,regend);
+			if( remove( nidx, Math.max(idx,regend))){
+				idx = nidx;
+			}
+		}
+		idx += _insertText( ws, idx);
+		updateFigs();
+		updateRegion();
+		posttext();
+		return true;
+	}
+	
+	function insert( idx, ch){
+		wtext = Emoji.encodeEmojiString( wtext.insert( idx, ch));	//	１文字ずつの入力でも連結して絵文字になる
+		// updateFigs();
+		// _trimarea();
+	}
+	
+	function remove( s, e){
+		if( s >= length( wtext) || e > length( wtext) ) return false;
+		local old = wtext;
+		wtext = wtext.remove( s, e);
+		return true;
+	}
+	
+	//	edit functions
+	function selectAll(){
+		idx = length( wtext);
+		regend = 0;
+		regselect = (regend != idx);
+		updateCursorPos();
+		scrollCursorToVisible();
+		updateRegion();
+	}
+
+	static cgmap = [
+		" \t"
+		"_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		"+-*/=%&|^!<>"
+	];
+
+	static function charagroup( c){
+		if( c >= 256){
+			return 100;
+		}
+		foreach( i, m in cgmap){
+			if( m.contains( c)) return i;
+		}
+		return c;
+	}
+	
+	function selectWordAt( lx, ly){
+		local i = textbox.charIndexAt( lx, ly), len = textbox.length;
+		if( i >= len) i = len-1;
+		local c = textbox[i], g = charagroup( c);
+		local i0 = i, i1 = i;
+		for( ;i0 >= 0; i0--){ if( charagroup( textbox[i0]) != g) break; }
+		++i0;
+		for( ;i1 <= len; i1 ++){ if( charagroup( textbox[i1]) != g) break; }
+		// --i1;
+		regend = i0;
+		idx = i1;
+		regselect = true;
+		updateCursorPos();
+		scrollCursorToVisible();
+		updateRegion();
+	}
+
+	function selectLineAt( lx, ly){
+		if( !isMultiline()){
+			selectAll();
+		}else{
+			local i = textbox.charIndexAt( lx, ly);
+			local li = textbox.getLineInfo( textbox.getLineIndex( i), a_1);	//[st,en,maxdescent,maxlinespace,y,w]
+			idx = li[1]+!!(textbox[li[1]]);
+			regend = li[0];
+			regselect = true;
+			updateCursorPos();
+			scrollCursorToVisible();
+			updateRegion();
+		}
+	}
+	
+	//	internal states
+	function setSecret( b) {
+		issecret = b;
+		updateFigs();
+	}
+	
+	//	IME有効化／無効化
+	function enableIME( b){
+		b = !!b;
+		if( enableime != b){
+			enableime = b;
+			if( focused) skEnableInputMethods( b);
+		}
+	}
+	
+	function updateFigs(){
+		if( issecret){
+			textbox.setText( toSecretText( wtext));
+		}else{
+			textbox.setText( wtext);
+		}
+		updateCursorPos();
+		scrollCursorToVisible();
+	}
+
+	//	※utf8が来てもそのまま処理
+	static function toSecretText( str){
+		local sb = StringBuffer();
+		local len = length( str);
+		for( local l = 0;l < len;l ++) sb .. "●";
+		return string( sb);
+	}
+	
+	function updateCursorPos(){
+		textbox.getCharPos( idx, a_1);
+		cursx = a_1[0]; cursy = a_1[1];
+		textbox.getColumnLine( length( wtext), a_1);
+		endline = a_1[1];
+		repaint();
+		updateCandidateLocation();
+	}
+
+	function updateCandidateLocation(){
+		if( focused) {
+			local p = Vector3D( cursx, cursy, 0.0).transform( mat);
+			local cx = p.x|0, cy = (p.y-fontmet.h/2)|0;	//	文字の上部を渡すのかな？うまい値がわからん
+			skSetCandidateLocation( cx, cy);	//	直値でオフセットなんとかする
+		}
+	}
+	
+	function setCursorIndex( i){
+		idx = Math.clamp( i, 0, length( wtext));
+		updateCursorPos();
+		regselect = false;
+		return idx;
+	}
+	
+	function scrollCursorToVisible(){
+	}
+	
+	//	iru?
+	function updateRegion(){}
+	
+	
+	//////////////////////////////////////////////////////////////////////////
+	//	Parameter get/set
+	
+	
+	function getParam( pid){
+		switch( pid){
+		case LABEL : return Emoji.decodeEmojiString( wtext);
+		case FONT : return {
+			fontname=fontattr.font.name, fontsize=fontattr.size, fontcolor=fontattr.color, fontflags=fontattr.flags,
+			strokecolor = fontattr.strokecolor, strokesize = fontattr.strokesize, strokex = fontattr.strokex, strokey = fontattr.strokey,
+		};	//	fontattr.advance, fontattr.linespace
+		case TEXTCOLOR : return (textbox.colormask&0xff) | (fontattr.color&0xffffff00);
+		case WRAPTEXT : return textbox.wrapmode;
+		case TEXTALIGN : return textbox.align;
+		case AUTOFITWEIGHT : return textbox.autofitw;
+		default : return super.getParam( pid);
+		}
+	}
+	
+	function setParam( pid, p0, p1=null, w=0.0){
+		switch( pid){
+		case LABEL :
+			{
+				setText( p0);
+			}
+			break;
+		case FONT :
+			{
+				local c0 = fontattr.color;
+				local fa = FontAttribute( ::Fonts.get( p0.fontname), p0.fontsize, c0, p0.fontflags);
+				fa.strokecolor = p0["strokecolor"] || 0xff;
+				fa.strokesize = p0["strokesize"] || 0;
+				fa.strokex = p0["strokex"] || 0;
+				fa.strokey = p0["strokey"] || 0;
+				setFontAttribute( fa);
+			}
+			break;
+		case TEXTCOLOR :
+			local c = Math.lerpcolor( p0, p1, w);
+			textbox.colormask = 0xffffff00|c;	//	premult alphaなので
+			fontattr.color = c | 0xff;
+			textbox.setAttribute( fontattr);	//	updateFigsはいらん
+			break;
+		case WRAPTEXT :
+			textbox.wrapmode = p0; repaint();
+			break;
+		case TEXTALIGN :
+			textbox.align = p0; repaint();
+			break;
+		case AUTOFITWEIGHT :
+			textbox.autofitw = p0; textbox.wrapmode = textbox.wrapmode; repaint();
+			break;
+		case TEXTCLIP :
+			textbox.clip = p0; repaint();
+			break;
+		default:
+			super.setParam( pid, p0, p1, w);
+			break;
+		}
+	}
+}
+
+
+//	IME入力中のテキストを表示する。
+//	PCなどのキーボード入力や、Switchのインラインキーボード入力で使用する。
+//	バッファ内部に描画されてクリップされないようにrootview直下にaddされる。
+//	
+class IMTextView extends SKView
+{
+	pview = null;
+	imbox = null;			//	TextBox
+	bgsp = null;			//	Sprite[]
+	caretsp = null;			//	Sprite
+
+	//	
+	attr = null;			//	FontAttribute
+	fontmet = null;			//	
+	//	
+	cattrs = null;			//	
+	bgcols = null;			//	int[]
+	caretcol = null;
+
+	//	SKView内のTextBoxのカーソル位置を基準にしてIMテキスト表示を開始する。
+	//	curpos==nullの場合はtboxのbndでそのまま開始する。入っている場合はそこから1ラインの表示となる。
+	//	imviewのpos,scale,rot,bndはすべて意味ないので初期値。
+	//	rootview.addChildまでする
+	//	※startしたあとにsetIMText()で文字を設定する
+	//	
+	static function start( view, tbox, attr, curpos, neg=true){
+		local imview = IMTextView();
+		imview.attr = attr;
+		imview.enabled = false;		//	表示専用なので!enabled
+		//	curposをベースラインにする
+		local b = imview.imbox = TextBox( attr);
+		local met = imview.fontmet = attr.getFontMetrics();
+		if( curpos){
+			//	アライン左上からの改行なし。なのでwidthもheightも入れないでよし
+			local bb = tbox.bnd;
+			b.x = curpos[0]+bb.x//+tbox.x;
+			b.y = curpos[1]+bb.y//+tbox.y;
+		}else{
+			//	表示領域の値を全部コピー
+			b.marginl = tbox.marginl; b.marginr =tbox.marginr;
+			b.margint = tbox.margint; b.marginb =tbox.marginb;
+			b.x = tbox.x; b.y = tbox.y; b.width = tbox.width; b.height = tbox.height;
+			b.align = tbox.align;
+			b.wrapmode = tbox.wrapmode;
+		}
+		//	viewの座標系の直接描画
+		imview.customtransform = 1;
+		// ::rootview.getInvMatrix().mult44( view.mat, imview.mat);	//	rootview座標系でviewの姿勢
+		imview.mat.set( view.mat);	//	rootview座標系じゃなくてグローバル座標系か、customtransformだから
+		rootview.addChild( imview);
+		imview.setupColors2( attr.color, neg);
+		// imview.setupColors2( colmap||ColorMap);
+		imview.pview = view;
+
+		return imview;
+	}
+	
+	function setupColors( colmap){
+		cattrs = [];
+		foreach( fc in colmap.fontcolors){
+			local a = clone attr;
+			a.color = fc;
+			cattrs .. a;
+		}
+		bgcols = clone colmap.bgcolors;
+		caretcol = colmap.caretcol;
+	}
+
+	//	フォント色から勝手に決めちゃう
+	function setupColors2( fc, neg){
+		local lm = (fc>>>24)+((fc>>>16)&255)+((fc>>>8)&255);
+		neg = neg^(lm>240);
+		local c0, c1, b0, b1;
+		if( neg){
+			c0 = 0xddddddff;
+			c1 = 0xffffffff;
+			b0 = 0x111111ff;
+			b1 = 0x409CBBff;
+		}else{
+			c0 = 0x222222ff;
+			c1 = 0x000000ff;
+			b0 = 0xf8f8f8ff;
+			b1 = 0x6BB7CFff;
+		}
+		local a0 = clone attr; a0.color = c0;
+		local a1 = clone attr; a1.color = c1;
+		cattrs = [a0,a1,a1,a1];
+		bgcols = [b0,b1,b1,b1];
+		caretcol = 0xFFA64Dff;
+	}
+
+	function setIMText( s){
+		local asc = -fontmet.y;
+		local dsc = fontmet.y+fontmet.h;
+		imbox.setText( s.toWString());	//	utf32
+		bgsp = [];
+		caretsp = null;
+		local n = s.len();
+		local lastfa = cattrs[0], carp = null;
+		imbox.setAttribute( lastfa);
+		for( local l = 0;l < n;l ++) {
+			local hl = s.attrAt( l);
+			local fa = cattrs[hl];
+			if( fa != lastfa){ imbox.setAttribute( lastfa=fa, l, n); }
+			local sp = Sprite();
+			local m = imbox.getCharPos( l, #(0,0,0));	//	[3]の配列を渡すと次の文字との幅も返る
+			local bg = bgcols[hl] || 0xff0000ff;
+			sp.bnd.set( m[0], m[1]-asc, m[2], asc+dsc);
+			sp.color = bg;
+			bgsp .. sp;
+			if( l == s.caretpos()) { carp = clone m; }
+		}
+		local cpos = s.caretpos();
+		if( cpos >= 0 && cpos <= n){
+			local carp = imbox.getCharPos( cpos, #(0,0,0));
+			if( carp){
+				caretsp = Sprite();
+				caretsp.bnd.set( carp[0]-1, carp[1]-asc-2, 2, asc+dsc+2);
+				caretsp.color = caretcol;
+			}
+		}
+		repaint();
+	}
+
+	function render(){
+		skDrawSprites( bgsp);
+		skDrawTextBox( imbox);
+		skDrawSprites( caretsp);
+		if( pview.mat <> mat){	//	無理やり。。。だけどループで監視するのもバカバカしい
+			mat.set( pview.mat); matdirty = true; repaint();
+		}
+	}
+}
+
+class IMTextView.ColorMap
+{
+	fontcolors = [0xddddddff,0xffffffff,0xccccccff,0xffffffff];
+	bgcolors = [0x000000ff, 0x666666ff, 0x000000ff, 0x000000ff];
+	caretcol = 0xff9900ff;
+}

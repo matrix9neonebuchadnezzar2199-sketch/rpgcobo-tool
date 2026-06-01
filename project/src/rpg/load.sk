@@ -1,0 +1,16 @@
+runsk( "RPGConstants.sk");
+runsk( "RPGViews.sk");
+runsk( "RPGSystem.sk");
+runsk( "RPGEvent.sk");
+runsk( "RPGObjects.sk");
+runsk( "RPG3DObject.sk");
+runsk( "RPGStage.sk");
+runsk( "RPGCamerawork.sk");
+runsk( "RPGEffect.sk");
+
+runsk( "battle/load.sk");	//	バトルシステム読み込み
+runsk( "setting/load.sk");	//	基本設定の読み込み
+runsk( "action/load.sk");	//	キャラ、イベントのアクションの読み込み
+runsk( "ui/load.sk");		//	uiの読み込み
+
+runsk( "RPGMain.sk");

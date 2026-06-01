@@ -1,0 +1,96 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+class PropertyBehaviors.MapShot extends PropertyBehavior
+{
+	static proptype = 11001;
+	static uipath = srcdir .. "/ui/prop_mapshot.ui"
+	
+	pic = null;				//	SKImageView : 
+	vals = null;			//	NumInputBehavior : 
+
+	mapshot = null;			//	
+	monimg = null;			//	
+
+	function init(){
+		pic = view.findChild( "pic");
+		pic.addEventListener( MOUSE_EVENT, picmouseevent);
+		vals = [];
+		for( local l = 0;l < 4;l ++){
+			local v = ::createNumInputBehavior( view.findChild( "val"..l));
+			vals .. v;
+			v.setRange( 0, 1024, 1);
+		}
+		monimg = SKImageView( ::getSprite( "/skstudio/img/ui/c8.png"));
+		monimg.setColor( 0x9999ffff);
+		monimg.setVisible( false);
+		pic.addChild( monimg);
+	}
+
+	function getParam(){
+		return mapshot;
+	}
+	
+	function setParam( v){
+		mapshot = deepclone( v);
+		foreach( i, v in mapshot.crop){
+			vals[i].setValue( v);
+		}
+		//	ここで更新するものかなーー、、
+		local tex = fget( prop, "maptex", prop, proplist);
+		if( tex){
+			local sp = Sprite( tex);
+			pic.setSprite( sp);
+		}
+	}
+	
+	by = 0;
+
+	//	picのクリックでマップ内を移動
+	function picmouseevent( e){
+		e.computeLocal( pic.getInvMatrix());
+		local editor = ::skstudio.editor;
+		local sp = pic.sp;
+		local bx = Math.saturate( (e.lx-sp.bnd.x)/sp.bnd.w) * editor.bw.w;
+		local bz = (1.0-Math.saturate( (e.ly-sp.bnd.y)/sp.bnd.h)) * editor.bw.d;
+		//
+		switch( e.id){
+		case MOUSE_EXITED:
+			monimg.setVisible( false); pic.repaint();
+			break;
+		case MOUSE_MOVED:
+			monimg.pos( e.lx-4, e.ly-4); monimg.matdirty = true;
+			monimg.setVisible( true);
+			pic.repaint();
+			break;
+		case MOUSE_PRESSED:
+			if( !(e.modifiers & (BUTTON2_MASK | BUTTON3_MASK | SHIFT_MASK | ALT_MASK | CTRL_MASK))){
+				by = editor.bw.getFloorY( bx, bz);
+				editor.canvas.camwork.moveFocus( Vector3D( bx, by, bz).scale( 0.5));
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( !(e.modifiers & (BUTTON2_MASK | BUTTON3_MASK | SHIFT_MASK | ALT_MASK | CTRL_MASK))){
+				editor.canvas.camwork.moveFocus( Vector3D( bx, by, bz).scale( 0.5));
+			}
+			monimg.pos( e.lx-4, e.ly-4); monimg.matdirty = true;
+			monimg.setVisible( true);
+			pic.repaint();
+			break;
+		}
+	}
+
+	function paramevent( e){
+		switch( e.src["name"]){
+		case "mapgenbtn":
+			postActionEvent( true, "mapgen");
+			break;
+		case "edit":
+			postActionEvent( true);
+			break;
+		}
+	}
+}

@@ -1,0 +1,381 @@
+
+import VirtualKeyCode;
+import ModifiersMask;
+
+class FileTabBehavior
+{
+	FILETABUIPATH = "/skstudio/ui/main/filetab.ui"
+
+	view = null;
+	tablist = null;				//	GPUIListView : ListBehaviorにしない代わりにDrag&Dropを個別実装しないといけない。。。
+	filetabmenu = null;			//	MenuBehavior
+
+	seltab = null;				//	selected tab
+	pathhistory = null;			//	
+	
+	constructor( v){
+		view = v;
+		tablist = v.findChild( "LIST");
+		tablist.addEventListener( ACTION_EVENT, tabevent);
+		pathhistory = [];
+		view.findChild( "filetabmenu").addEventListener( ACTION_EVENT, alltabevent);
+	}
+
+	function getPathList(){
+		local a = [];
+		foreach( tv in tablist.rows) a .. tv.ref.path;
+		return a;
+	}
+
+	function tabIndexOf( path){
+		foreach( i, tv in tablist.rows){
+			if( tv.ref.path == path) return i;
+		}
+		return -1;
+	}
+
+	function getTabView( path){
+		foreach( tv in tablist.rows){
+			if( tv.ref.path == path) return tv;
+		}
+	}
+
+	function addTab( path, idx=-1){
+		local tv = ::loadSKView( FILETABUIPATH);
+		tv.ref = FileTab( tv, path, this);
+		if( idx < 0 || idx >= length( tablist.rows)){
+			tablist.addRow( tv);
+		}else{
+			tablist.insertRow( idx, tv);
+		}
+		tablist.updateLayout();
+		notifyTabChanged();
+		return tv;
+	}
+
+	function closeTab( path, selnext=true){
+		local tv = getTabView( path), i = tablist.rows.indexOf( tv);
+		tablist.removeRow( tv);
+		tablist.updateLayout();
+		if( tv != seltab){
+			notifyTabChanged();
+			return null;
+		}
+		//	カレントのタブを閉じた
+		seltab = null;
+		local nexttab = null;
+		if( selnext){ 
+			foreach( p in pathhistory){
+				if( nexttab = getTabView( p)) break;
+				remvei;
+			}
+			if( !nexttab) nexttab = tablist.rows[Math.max( i-1, 0)];
+		}
+		notifyTabChanged();
+		return nexttab && nexttab.ref.path;
+	}
+
+	function closeOtherTabs( path){
+		local tv = getTabView( path), i = tablist.rows.indexOf( tv);
+		foreach( r in clone tablist.rows){
+			if( tv != r){
+				tablist.removeRow( r);
+			}
+		}
+		tablist.updateLayout();
+		notifyTabChanged();
+	}
+
+	function selectTab( path, make=false){
+		local tv = getTabView( path);
+		if( !tv){
+			if( !make) return false;
+			local idx = tablist.rows.indexOf( seltab);
+			if( idx >= 0) ++idx;
+			tv = addTab( path, idx);
+		}
+		selectTabView( tv);
+		return true;
+	}
+	
+	function selectTabView( tv){
+		if( tv == seltab) return true;
+		if( seltab) seltab.ref.setSelected( false);
+		tv.ref.setSelected( true);
+		seltab = tv;
+		//	pathhistory
+		pathhistory.removeValue( tv.ref.path);
+		pathhistory[0] <- tv.ref.path;
+		view.updateMatrixAll();		//	どーもスクロール前にmatが落ち着いてない
+		tablist.gpui.scrollViewToVisible( tv, 0);
+		notifyTabChanged();	//	こっちでnotify
+	}
+
+	function setFileChanged( path, b){
+		local tv = getTabView( path);
+		if( tv){
+			tv.ref.setFileChanged( b);
+		}
+	}
+
+	function getSelectedPath(){
+		return seltab ? seltab.ref.path : null;
+	}
+
+	function refreshTabs(){
+		foreach( tv in tablist.rows) tv.ref.refresh();
+		tablist.updateLayout();
+	}
+
+	function tabevent( e){
+		e.consume();
+		if( e.id == ACTION_PERFORMED){
+			if( e.src["name"] == "btn"){
+				local tv = e.src.parent;
+				if( e.isMouseDown( BUTTON2_MASK)){
+					view.postActionEvent( { op="ctxmenu", path=tv.ref.path, view=tv});
+				}else{
+					if( tv != seltab){
+						selectTabView( tv);
+						view.postActionEvent( { op="change", path=tv.ref.path, view=tv});
+					}
+				}
+			}else
+			if( e.src["name"] == "closebtn" && e.isMouseDown( BUTTON1_MASK)){
+				local tv = e.src.parent.parent;
+				view.postActionEvent( { op="close", path=tv.ref.path, view=tv});
+			}
+		}
+	}
+
+	function alltabevent( e){
+		e.consume();
+		AllTabPopup.run( e, this);
+	}
+
+	function moveTab( path, idx){
+		local tv = getTabView( path);
+		tablist.moveRow( tv, idx);
+		tablist.updateLayout();
+		notifyTabChanged();
+	}
+
+	//	連続で投げられたときにスキップするように
+	function notifyTabChanged(){
+		local skip = #( 0,), self = this;
+		if( skip[0]) return;
+		skip[0] = setTimeout(
+			@(){
+				::rootview.broadcastEvent( {cmd="filetab_changed", pathlist=self.getPathList(), selpath=self.getSelectedPath()});
+				skip[0] = 0;
+			}, 10
+		);
+	}
+}
+
+//	ファイルタブの主にイベント操作をまとめる
+class FileTabBehavior.FileTab
+{
+	view = null;			//	SKView
+	path = null;
+	filetabs = null;
+	dragitemsp = null;
+	btn = null;
+	closebtn = null;
+	vw0 = 1;
+	lw0 = 1;
+
+	lbl = null;
+	icon = null;
+
+	constructor( v, p, ft){
+		view = v;
+		path = p;
+		filetabs = ft;
+		btn = view.findChild( "btn");
+		btn.addEventListener( MOUSE_EVENT, tabevent);
+		btn.addEventListener( DROPTARGET_EVENT, tabevent);
+		closebtn = view.findChild( "closebtn");
+		closebtn.setVisible( false);
+		v.findChild( "dirty").setVisible( false);
+		btn.dragsource = this;
+		vw0 = v.bnd.w;
+		lw0 = v.findChild( "lbl").bnd.w;
+		refresh();
+	}
+
+	function refresh(){
+		local r = ::getResource( path);
+		lbl = (r["getResourceName"] && r.getResourceName()) || path.substring( path.lastIndexOf( "/")+1);
+		icon = skstudio.getResourceIcon( r);
+		local v = view;
+		v.setValues( { lbl = lbl, icon = icon, });
+		local lbl = v.findChild( "lbl");
+		local w1 = 200;
+		if( lw0 < lbl.textbox.bnd.w){
+			local w = Math.min( w1, vw0 + (lbl.textbox.bnd.w-lw0));
+			v.stretchSize( w, lbl.bnd.h);
+		}
+	}
+
+	function setSelected( b){
+		btn.setSelected( b);
+	}
+	
+	function setFileChanged( b){
+		view.findChild( "dirty").setVisible( b);
+	}
+
+	function tabevent( e){
+		switch( e.id){
+		case MOUSE_ENTERED:
+			if( view.contains( e.src)) closebtn.setVisible( true);
+			// e.consume();
+			break;
+		case MOUSE_EXITED:
+			if( !view.contains( e.dst)) closebtn.setVisible( false);
+			// e.consume();
+			break;
+		case MOUSE_PRESSED:
+			if( e.isMouseDown( BUTTON3_MASK)){
+				FileTabBehavior.AllTabPopup.run( e, filetabs);	//	alltabs表示時にはやらないように。。。
+			}
+			break;
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			e.computeLocal( view.getInvMatrix());
+			btn.anime( (e.lx >= view.bnd.w*0.5) ? 5:4);
+			e.consume();
+			break;
+		case TARGET_DRAG_EXIT:
+			btn.anime( 0);
+			e.consume();
+			break;
+		case TARGET_DROP:
+			btn.anime( 0);
+			e.consume();
+			{
+				e.computeLocal( view.getInvMatrix());
+				local mi = view.parent.children.indexOf( view) + ((e.lx >= view.bnd.w*0.5)?1:0);
+				filetabs.moveTab( e.dragsrc.path, mi);
+			}
+			break;
+		}
+	}
+
+	//	DragSource
+	
+	//	ドラッグ中描画処理
+	function dndrender( m){
+		skDrawSprite( dragitemsp, m.mousex, m.mousey);
+	}
+	
+	function acceptDrag( e){
+		if( e.modifiers & (SHIFT_MASK|ALT_MASK|CTRL_MASK|BUTTON2_MASK|BUTTON3_MASK)) return false;
+		dragitemsp = view.capture();
+		dragitemsp.color = 0x99999999;
+		local p0 = Vector3D( 0).transform( view.mat).sub( e.x, e.y, 0.0);
+		dragitemsp.bnd.x = p0.x;
+		dragitemsp.bnd.y = p0.y;
+		return true;
+	}
+	
+	function acceptDrop( ds, x, y){
+		return ds != this && ( ds instanceof FileTabBehavior.FileTab);
+	}
+}
+
+class FileTabBehavior.AllTabPopup extends Popup
+{
+	ALLTABUIPATH = "/skstudio/ui/main/alltabpopup.ui"
+	
+	filetabbar = null;
+
+	constructor( v, ft){
+		super( v);
+		filetabbar = ft;
+		view.findChild( "tabg").addEventListener( ACTION_EVENT, tabgevent);
+		view.addEventListener( BROADCAST_EVENT, broadevent);
+	}
+
+	function tabgevent( e){
+		e.consume();
+		if( e.src["name"] == "btn"){
+			local tv = e.src.parent;
+			if( e.isMouseDown( BUTTON2_MASK)){
+				filetabbar.view.postActionEvent( { op="ctxmenu", path=tv.ref.path, view=tv});
+			}else{
+				if( tv != filetabbar.seltab){
+					filetabbar.view.postActionEvent( { op="change", path=tv.ref.path, view=tv});
+					close();
+				}
+			}
+		}else
+		if( e.src["name"] == "closebtn" && e.isMouseDown( BUTTON1_MASK)){
+			local tv = e.src.parent.parent;
+			filetabbar.view.postActionEvent( { op="close", path=tv.ref.path, view=tv});
+		}
+	}
+
+	function broadevent( e){
+		local bc = e["actioncmd"];
+		switch( bc["cmd"]){
+		case "filetab_changed":
+			updateTabs( view, filetabbar);
+			break;
+		}
+	}
+	
+	function actionevent( e){
+		super.actionevent( e);
+	}
+
+	static function updateTabs( alltab, ft){
+		alltab.stretchSize( ft.view.bnd.w, ft.view.bnd.h);
+		local selpath = ft.seltab.ref.path;
+		local tabg = alltab.findChild( "tabg");
+		tabg.clearChildren();
+		local x = 0, y = 0, w = tabg.bnd.w, h = tabg.bnd.h;
+		local tabs = [];
+		foreach( tab0 in ft.tablist.rows){
+			local path = tab0.ref.path;
+			local tv = ::loadSKView( FileTabBehavior.FILETABUIPATH);
+			tv.ref = FileTabBehavior.FileTab( tv, path, ft);
+			tv.ref.btn.gpui.setButtonType( 0);
+			tv.stretchSize( tv.bnd.w, h);
+			if( selpath == path){
+				tv.ref.setSelected( true);
+			}
+			local ed = ::skstudio.tabeditors[path];
+			tv.ref.setFileChanged( ed?.isFileChanged());
+			if( x + tv.bnd.w > w){
+				x = 0; y += h;
+			}
+			tv.pos( x, y, 0);
+			x += tv.bnd.w;
+			tabs .. tv;
+		}
+		if( y > 0){
+			alltab.stretchSize( alltab.bnd.w, y+h);
+		}
+		foreach( t in tabs){
+			tabg.addChild( t);
+		}
+	}
+
+	static function createAllTab( ft){
+		local alltab = ::loadSKView( ALLTABUIPATH);
+		alltab.ref = alltab.bnd.h;
+		updateTabs( alltab, ft);
+		return alltab;
+	}
+	
+	static function run( e, ft){
+		local v = createAllTab( ft);
+		local pop = FileTabBehavior.AllTabPopup( v, ft);
+		local p = Vector3D( 0.0).transform( ft.view.mat);
+		pop.show( null, p);
+		if( pop.ret){
+		}
+	}
+}

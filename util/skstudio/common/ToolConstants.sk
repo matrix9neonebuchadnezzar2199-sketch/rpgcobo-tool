@@ -1,0 +1,48 @@
+
+::FileIcons <-
+{
+	alias = ("\ue2c7",0xffbf00ff)
+	dir = ("\ue2c7",0x2693ffff)
+	doc = ("\uef42",0xffffffff)
+	file = ("\uef42",0xddddddff)
+	mixer = ("\ue429",0xDBDBEAff)
+	pm = ("\ue86b",0xA64DFFff)
+	ptd = ("\ue518",0xFE00FEff)
+	sd = ("\ue574",0x009B9Bff)
+	scn = ("\ue574",0x009B9Bff)
+	sysdir = ("\ue617",0xE599FFff)
+	ui = ("\ue1bd",0x26C9FFff)
+	ssg = ("\ue43c",0xB9FF73)
+	//	text
+	conf = ("\ue8b9",0xccccccff)
+	scp = ("\ue86f",0xffffffff)
+	json = ("\ue86f",0xffffffff)
+	sk = ("\ue86f",0xffffffff)
+	trns = ("\ue8e2",0xffffffff)
+	//	image
+	png = ("\ue40b",0xff0000ff)
+	jpg = ("\ue40b",0xff0000ff)
+	ktx = ("\ue40b",0xff0000ff)
+	webp = ("\ue40b",0xff0000ff)
+	sk3d = ("\uf082",0xff0000ff)
+	epng = ("\ue40b",0xff0099ff)
+	//	font
+	ttf = ("\ue167",0x00A3D9ff)
+	ttc = ("\ue167",0x00A3D9ff)
+	otf = ("\ue167",0x00A3D9ff)
+	//	sound
+	ogg = ("\ueb82",0xFFD24Dff)
+	wav = ("\ueb82",0xFFD24Dff)
+	//	archive
+	zip = ("\ue149",0xddddddff)
+
+	//////////// etc ///////////
+
+	pad = ("\ue338",0xddddddff)
+	cube = ("\ue9fe",0xddddddff)
+	list = ("\ue8ef",0xddddddff)
+	scale = ("\ue56b",0xddddddff)
+	button = ("\ue5c6",0x1366ffff)
+	edit = ("\ue9a2",0x00A3D9ff)
+	frame = ("\ue22f",0xddddddff)
+};

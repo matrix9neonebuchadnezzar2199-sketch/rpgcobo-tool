@@ -1,0 +1,1378 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import CollisionGroupID;
+import BlockFlagID;
+import BlockPlacementID;
+import PenMode;
+import FreeBlockCategoryID;
+
+VoxelData8.pivot <- null;
+
+
+::MapTools <- {};
+local hpbquat( h, p, b){ return Quaternion.fromHPB( h*Math.DTOR, p*Math.DTOR, b*Math.DTOR); }
+local hpbmat( h, p, b){ return Matrix.fromHPB( h*Math.DTOR, p*Math.DTOR, b*Math.DTOR); }
+
+class MapTool
+{
+	//	常に使うものを展開しとく。bwとかは参照変わるので展開不能
+	editor = null;
+	canvas = null;
+	scn = null;
+	b3world = null;
+
+	optionview = null;		//	SKView
+	selblk = null;			//	SelectBlock : ブロックの選択は大体のツールにある。選択ツール、整地ツールには無い
+
+	guides = null;			//	{key:SK3DObject}
+
+
+	constructor( e){
+		editor = e;
+		canvas = e.canvas;
+		scn = canvas.scn;
+		b3world = scn.b3world;
+		guides = {};
+	}
+
+	static function createTool( e, id){
+		local cls = MapTools[id];
+		return cls( e);
+	}
+
+	function reloadBlockList(){
+		selblk?.reloadPages();
+	}
+
+	////////////////////////////////////////////////////////////////////////////////
+	//	オーバーライド
+
+	function changeActiveTool( t){
+		if( t != this){
+			clearGuides();
+		}
+	}
+	
+	function dndevent( e){
+	}
+	
+	//	キャンバスで起きたイベントを処理。キー、マウス
+	//	@ret : functionを返すとツール機能開始。
+	function canvasevent( e){
+		switch( e.id){
+		case MOUSE_RELEASED:
+		{
+			if( e.isClicked() && e.isMouseDown( BUTTON3_MASK)){
+				e.consume();
+				focusToMouse();
+			}
+			if( e.isClicked() && e.isMouseDown( BUTTON2_MASK)){
+				renameGuide( "pen", "tmp");	//	コンテキストメニューの間ガイド表示を継続。。。
+				e.consume();
+				local fn = showContextMenu( e);
+				removeGuide( "tmp");
+				return fn;
+			}
+			break;
+		}
+		case MOUSE_WHEEL_MOVED:
+		{
+			if( e.modifiers & CTRL_MASK){
+				incParameter( e);
+			}
+		}
+		case KEY_PRESSED:
+		{
+			switch( e.keycode){
+			case VK_F :
+				focusToMouse();
+				break;
+			case VK_ALT :	//	スポイトモード化
+				return startSpoit();
+			}
+			break;
+		}
+		}
+	}
+
+	function getDefaultContextMenu( e){
+		local ed = editor;
+		local hb = rayTest( e, BLK_SOLID, true);
+		local menu = [
+			{ lbl="$T.editor_map_tool", submenu=@() MapEditor.toolids.map( @( v){
+				local btn = ed.tools.findChild( v);
+				return { lbl=btn.tips, icon=btn.findChild( "icon").getText(), toolid=btn.name, }
+			})},
+			"-"
+			{ lbl="$T.menu_debug_here", icon="\uf06a", uid="menu_debug_here", disable=!hb, mapid=ed.mapid, pos=hb&&[hb.bx*0.5,(hb.by+1)*0.5,hb.bz*0.5,0], }
+		];
+		return menu;
+	}
+
+	function processDefaultContextMenu( e, m){
+		if( m["uid"] == "menu_debug_here"){
+			if( editor.isFileChanged()){
+				//	現在の作業データをテンポラリに保存
+				local f = FileRef( "tmp/debugconf.json");
+				local bb = encodeJSON({ [`map.${editor.mapid}`]=editor.data, }, 5, ByteBuffer());
+				bb.pos = 0;
+				f.save( bb);
+				local bf = FileRef( "tmp/debugmap.bw");
+				local bb = ObjectOutput.encode( editor.bw);
+				bb.pos = 0;
+				bf.save( bb);
+				m ... {bwpath=bf.path, confpath=f.path};
+			}
+			startDebugMenu( m);
+		}else
+		if( m["toolid"]){
+			editor.changeTool( m.toolid);
+		}
+	}
+
+	//	
+	function showContextMenu( e){
+		local menu = getDefaultContextMenu( e);
+		local m = MenuPopup.run( menu);
+		return processDefaultContextMenu( e, m);
+	}
+
+	function incParameter( e){
+	}
+
+	//	
+	function updateFunc( dt){
+	}
+
+	//	
+	function execMenu( m){
+	}
+
+	//	
+	function refresh(){
+	}
+
+	//	
+	function pickBlock( hb){
+		if( !selblk) return false;
+		local v = selblk.getBlockItem( hb);
+		if( v){
+			if( hb.blk){
+				v = selblk.selectBlock( hb.blk);
+			}else
+			if( hb.fbtype){
+				local fb = editor.bw.getFreeBlock( hb.fbuid);
+				selblk.selectFreeBlock( fb);
+				v = freeBlockPicked( fb);
+			}
+			selblk.view.postActionEvent( v);
+			return true;
+		}else{
+			return false;
+		}
+	}
+
+	function freeBlockPicked( fb){
+	}
+
+	////////////////////////////////////////////////////////////////////////////////////////////
+	//	ベクトル計算
+	
+	//	指定したフラグでBlockWorldに対してレイテスト。mousemove,mousedown時に大体使う。
+	//	HitBlockを返す。
+	//	
+	function rayTest( e, blkflag, hitgnd=false){
+		if( e["getMouseState"] && e.id < TARGET_DRAG_ENTER){	//	
+			local m = e.getMouseState();
+			if( m.entered != canvas.view) return null;
+		}
+		canvas.bwcol.ref.setFlagMask( blkflag);
+		local qw = canvas.getRay( e.lx, e.ly), q = qw[0], w = qw[1]-qw[0];
+		local hb = _raytest( q, w, hitgnd);
+		return hb;
+	}
+
+	function _raytest( q, w, hitgnd=false){
+		local b3res = scn.b3world.rayTest( 1, q, q+w, -1, G_STAGE);	//	closest
+		foreach( br in b3res){
+			if( br.bodyb == canvas.bwcol){
+				local hb = br.bodyb.ref.getHitBlock( br, HitBlock());	//	毎回インスタンス作る。。。
+				return hb;
+			}
+		}
+		if( hitgnd && w.y<0){
+			local t = -q.y / w.y;
+			if( t >= 0.0 && t < 1.0){
+				local p = w.scale( t).add( q), bw = editor.bw;
+				if( p.x >= 0.0 && p.x < bw.w*0.5 && p.z >= 0.0 && p.z < bw.d*0.5){
+					local hb = HitBlock();
+					hb.bx = (p.x*2.0)|0; hb.by = -1; hb.bz = (p.z*2.0)|0;
+					hb.ny = 1.0;
+					hb.fx = p.x; hb.fy = p.y; hb.fz = p.z;
+					hb.blk = 1;
+					return hb;
+				}
+			}
+		}
+	}
+
+	//	attachの時とかに。
+	function groundTest( e){
+		local g = #Plane( 0.0, 1.0, 0.0, 0.5);
+		local w = q[1]-q[0];
+		local t = p.getIntersectTime( q[0], w);
+		if( t < 0.0 || t > 1.0) return null;
+		local fp = w.scale( t).add( q[0]);
+		local bx = (fp.x*2)-hb0.nx, by = (fp.y*2)-hb0.ny, bz = (fp.z*2)-hb0.nz, bw = editor.bw;
+		if( bx<0 || by<0 || bz<0 || bx>=bw.w || by>=bw.h || bz>=bw.d){	//	
+			return null;
+		}
+		local hb = HitBlock();
+		hb.bx = bx; hb.by = by; hb.bz = bz;	//	f=0, n=(0,1,0)は初期化で代入済み
+		return hb;
+	}
+
+	//	
+	function chooseCameraPlane( fw, p0){
+		local p = Plane();
+		if( Math.abs( fw.y) > 0.44){	//	XZ平面
+			p.setParam( 0, 1, 0, p0.x, p0.y, p0.z);
+		}else{
+			local nx = 1, nz = 0;
+			if( Math.abs( fw.x) < Math.abs( fw.z)){ nx = 0; nz = 1;}
+			p.setParam( nx, 0, nz, p0.x, p0.y, p0.z);
+		}
+		return p;
+	}
+	
+	//	hb0の平面の周りのヒットブロックの位置を返す。
+	//	hb0 : HitBlock ... mousedown時にヒットした情報
+	//	
+	function planeTest( e, hb0){
+		local p = #Plane();
+		p.setParam( hb0.nx, hb0.ny, hb0.nz, hb0.fx, hb0.fy, hb0.fz);
+		local q = canvas.getRay( e.lx, e.ly), w = q[1]-q[0];
+		local t = p.getIntersectTime( q[0], w);
+		if( t < 0.0 || t > 1.0) return null;
+		local fp = w.scale( t).add( q[0]);
+		local bx = ((fp.x*2)-hb0.nx*0.1)|0, by = Math.ifloor((fp.y*2)-hb0.ny*0.1), bz = ((fp.z*2)-hb0.nz*0.1)|0, bw = editor.bw;
+		if( bx<0 || by< -1 || bz<0 || bx>=bw.w || by>=bw.h || bz>=bw.d){	//	
+			return null;
+		}
+		local hb = #HitBlock();
+		hb.set( hb0);
+		hb.bx = bx; hb.by = by; hb.bz = bz;
+		hb.fx = fp.x; hb.fy = fp.y; hb.fz = fp.z;
+		return hb;
+	}
+	
+	function adjustPlane( hb0, hb){
+		local ax = chooseAxis( hb0, hb);
+		if( ax!=0) hb.bx = hb0.bx;
+		if( ax!=1) hb.by = hb0.by;
+		if( ax!=2) hb.bz = hb0.bz;
+		return hb;
+	}
+
+	//	shift操作で自由な軸を取得する
+	function chooseAxis( hb0, hb1){
+		local dx = Math.abs( hb1.bx-hb0.bx);
+		local dy = Math.abs( hb1.by-hb0.by);
+		local dz = Math.abs( hb1.bz-hb0.bz);
+		if( (dx|dy|dz) == 0) return -1;
+		return (dx>=dy&&dx>=dz) ? 0 : (dz>=dy) ? 2 : 1;
+	}
+
+	//	ドラッグでhb0の法線軸にそって動かしたベクトルの高さを返す。
+	//	※hb0.fx,fy,fzには正しい値が入っている事！！！！
+	function planeHeight( e, hb0){
+		local cam = canvas.view.renderer.camera;
+		local p = #Plane();
+		local n = (#Vector3D())( hb0.nx, hb0.ny, hb0.nz);
+		local p0 = Vector3D( hb0.fx, hb0.fy, hb0.fz);
+		local pn = cam.fw;
+		p.setParam( pn.x, pn.y, pn.z, p0.x, p0.y, p0.z);
+		local q = canvas.getRay( e.lx, e.ly), w = q[1]-q[0];
+		local t = p.getIntersectTime( q[0], w);
+		if( t < 0.0 || t > 1.0) return null;
+		local v = w.scale( t).add( q[0]);
+		v.sub( p0);
+		return v.dot( n);	// return v.length() * (v.normalize() * v.dot( n));
+	}
+
+	//	
+	function planeFaceHeight( e, hb0, f){
+		local facen = #( (0,1,0), (0,0,-1), (-1,0,0), (0,0,1), (1,0,0), (0,-1,0));
+		local cam = canvas.view.renderer.camera;
+		local p = #Plane();
+		local n = (#Vector3D())( facen[f]);
+		local p0 = Vector3D( hb0.fx, hb0.fy, hb0.fz);
+		local pn = cam.fw;
+		p.setParam( pn.x, pn.y, pn.z, p0.x, p0.y, p0.z);
+		local q = canvas.getRay( e.lx, e.ly), w = q[1]-q[0];
+		local t = p.getIntersectTime( q[0], w);
+		if( t < 0.0 || t > 1.0) return null;
+		local v = w.scale( t).add( q[0]);
+		v.sub( p0);
+		return v.dot( n);	// return v.length() * (v.normalize() * v.dot( n));
+	}
+
+	//	カメラの向いてる方向を4方向のrotとして取得
+	function getCameraRot(){
+		local cam = canvas.view.renderer.camera;
+		local ri = (#Vector3D())( cam.ri).scale( 1, 0, 1);
+		if( Math.abs( ri.x) > Math.abs( ri.z)){
+			return ri.x>=0 ? 0:2;
+		}else{
+			return ri.z>=0 ? 3:1;
+		}
+	}
+
+	//	指定したフリーブロックの配置位置を調整しつつ取得
+	function rayTestFB( e, blkflag, fb, rot){
+		local hb = rayTest( e, blkflag, true);
+		if( !hb) return null;
+		local fbt = ::fblks[fb.fbtype], va = fbt.variations[fb.fbparam&0xfff];
+		local fbr = fb.br, rr = IRect3D( fbr).rotate( rot);
+		switch( va["plc"]){
+		case PLC_WALL:
+			if( hb.f==0 || hb.f==5){	//	上下配置の時は置けない
+				return null;
+			}
+			break;
+		case PLC_DOOR:
+		case PLC_FLOOR:
+			if( hb.f!=0){	//	上配置以外では置けない。が、下に向けて壁を下る
+				local q = Vector3D( hb.bx, hb.by, hb.bz).add( hb.nx, hb.ny, hb.nz).add( 0.5).scale( 0.5);
+				local w = Vector3D( 0, -rr.h *0.5, 0);
+				local hb0 = hb;
+				hb = _raytest( q, w, true);
+				if( !hb) return null;
+				hb.bx = hb.bx + hb.nx - hb0.nx;	//	レイテスト用に手前に寄せた座標を元に戻す
+				hb.by = hb.by + hb.ny - hb0.ny;
+				hb.bz = hb.bz + hb.nz - hb0.nz;
+				hb.setFace( hb0.f);
+			}
+			hb.by += rr.h/2;
+			break;
+		case PLC_ANY:
+			if( hb.f == 0){
+				hb.by += rr.h/2;
+			}
+			break;
+		}
+		return hb;
+	}
+
+	////////////////////////////////////////////////////////////////////////////////////////////
+	//	表示関係
+	//	ガイド、ギズモ
+
+	function clearGuides(){
+		foreach( v in guides) v.kill();
+		Table.clear( guides);
+	}
+
+	function addGuide( key, sk3d){
+		guides[key]?.kill();
+		scn.addObject( sk3d);
+		canvas.view.repaint();
+		return guides[key] <- sk3d;
+	}
+
+	function removeGuide( key){
+		local ret = delete guides[key];
+		ret?.kill();
+		canvas.view.repaint();
+		return ret;
+	}
+
+	function renameGuide( oldkey, newkey){
+		local g = delete guides[oldkey];
+		if( g) guides[newkey] <- g;
+	}
+
+	function setHitInfo( hb){
+		canvas.setHitInfo( hb);
+	}
+
+	//	指定したフリーブロックに付いているギズモを取得する
+	function getFBGizmo( fbuid){
+		foreach( v in canvas.evgizmomap){
+			if( v["data"]["mdl"]["fbuid"] == fbuid) return v;
+		}
+	}
+
+	//	指定したイベントを消去。ギズモも一緒に消す
+	function removeEventAndGizmo( evid){
+		delete editor.data.event[evid];
+		canvas.removeEventGizmo( evid);
+	}
+	
+	//	フリーブロックに付いているギズモを現在の状態に同期する。
+	//	変化したギズモは以前の状態をテーブルにして返す。
+	function syncFBGizmo( ret){
+		Table.clear( ret);
+		foreach( v in canvas.evgizmomap){
+			if( v["data"]["mdl"]["fbuid"]){
+				local fb = editor.bw.getFreeBlock( v.data.mdl.fbuid);
+				if( !fb){	//	消えた！FreeBlockが消去された
+					ret[v.id] <- v.data;
+					removeEventAndGizmo( v.id);
+				}else{ //	位置の変化をチェック。fbtype,fbparamは変化しないと仮定
+					local p = (fb.x,fb.y-fb.br.h/2,fb.z,fb.rot);
+					if( p <> v.data.pos){
+						ret[v.id] <- clone v.data;	//	deepcloneしないで良い
+						v.data.pos = p;
+						v.setBlockPosition( p);
+					}
+				}
+			}
+		}
+	}
+
+	//	syncFBGizmoでの変化前の状態に戻す。restoreFBGizmoで消えることは無い。
+	function restoreFBGizmo( t){
+		foreach( evid, ev in t){
+			ev = clone ev;
+			editor.data.event[evid] <- ev;
+			canvas.placeEventGizmo( evid, ev);
+		}
+	}
+
+	//	
+	function place3DGizmo( r, mask, mode, rot=0){
+		local sk3d = guides["box"];
+		local br = clone r;
+		local cx = br.x+br.w/2, cy = br.y+br.h/2, cz = br.z+br.d/2;
+		br.offset( -cx, -cy, -cz);
+		if( 1){
+			sk3d?.kill();
+			sk3d = SK3DGizmo( canvas, br, mask, mode);
+			addGuide( "box", sk3d);
+		}
+		sk3d.pos( cx, cy, cz).add( 0.5).scale( 0.5);
+		sk3d.rot.set( MapTool.rotquat[rot&3]);
+		sk3d.matdirty = 1;
+		sk3d.ref = r;
+		return sk3d;
+	}
+
+	////////////////////////////////////////////////////////////////////////////////////////////
+	//	ペン、ガイド
+	
+	static rotmat  = ( hpbmat(0,0,0), hpbmat(90,0,0), hpbmat(180,0,0), hpbmat(270,0,0));
+	static penmat  = ( hpbmat(0,0,0), hpbmat(0,-90,0), hpbmat(0,0,90), hpbmat(0,90,0), hpbmat(0,0,-90), hpbmat(0,180,0));
+	static penquat = ( hpbquat(0,0,0), hpbquat(0,-90,0), hpbquat(0,0,90), hpbquat(0,90,0), hpbquat(0,0,-90), hpbquat(0,180,0));
+	static rotquat = ( hpbquat(0,0,0), hpbquat(90,0,0), hpbquat(180,0,0), hpbquat(270,0,0), );
+	
+	static function getPenmap(){
+		return #( @(){
+			//
+			local t = {};
+			local vc = ::getResourceContent( "/resource/vox/_sys/pen.vox");
+			for( local l = 0;;l ++){
+				local p = vc.partsAt( l);
+				if( !p) break;
+				local vd = p.vd8;
+				//	6面に回転
+				local piv;
+				if( p.name.startsWith( "p1")){
+					piv = (vd.w/2, vd.h/2, vd.d/2);
+				}else{
+					piv = (vd.w/2, 0, vd.d/2);
+				}
+				// printf( "%S : %d %d %d ... %d %d %d\n", p.name, vd.w,vd.h,vd.d, piv[0],piv[1],piv[2]);
+				local a = tuple( 6);
+				for( local f = 0; f < 6; f ++){
+					local whdf = Rect3D( 0, 0, 0, vd.w*0.5, vd.h*0.5, vd.d*0.5).transform( penmat[f]);
+					local v2 = VoxelData8( Math.round(whdf.r*2.0), Math.round(whdf.s*2.0), Math.round(whdf.t*2.0));
+					local m = Matrix().translate( whdf.r, whdf.s, whdf.t).mult34( penmat[f]).translate( -vd.w*0.5, -vd.h*0.5, -vd.d*0.5);
+					local p2f = Rect3D( piv[0]+0.5, piv[1]+0.5, piv[2]+0.5, 0.5, 0.5, 0.5).transform( m);
+					local p2 = (p2f.x|0, p2f.y|0, p2f.z|0);
+					// printf( " f[%d]: %d %d %d ... %d %d %d\n", f, v2.w,v2.h,v2.d, p2[0],p2[1],p2[2]);
+					v2.pivot = p2;
+					vd.transform( m.invert44(), v2);	//	v2に変形して描画
+					a[f] = v2;
+				}
+				t[p.name] <- a;
+			}
+			return t;
+		}());
+	}
+
+	//	指定したペンで指定したヒットブロックのガイド表示をする。キーは"pen"
+	//	penのメッシュは常に回転0。回転はsk3dの方で施す
+	function placePen( hb, pen, mode){
+		setHitInfo( hb);
+		if( !hb) return removeGuide( "pen");
+		local sk3d = guides["pen"];
+		if( !sk3d || sk3d.ref[0]!=pen || sk3d.ref[1]!=mode || sk3d.ref[2]!=hb.f){
+			sk3d?.kill();
+			sk3d = createPen( pen, mode);
+			addGuide( "pen", sk3d);
+			sk3d.ref = (pen,mode,hb.f,null);
+		}
+		sk3d.ref[3] = hb;
+		movePen( hb, sk3d);
+	}
+
+	function movePen( hb, sk3d){
+		sk3d.pos( hb.bx, hb.by, hb.bz).scale( 0.5).add( 0.25);
+		sk3d.rot.set( penquat[hb.f]);
+		sk3d.matdirty = 1;
+	}
+
+	function createPen( pen, mode){
+		local pm = RPGToolMesh.createPenMesh( pen, mode);	//	face[0]
+		local bm = RPGToolMesh.createBlockMesh( 1, mode);
+		local sk3d = SK3DObject( pm);
+		local b3d = SK3DObject( bm);
+		b3d.pos( sk3d.pivot).scale( -1);
+		sk3d.addChild( b3d);
+		return sk3d;
+	}
+
+	function placeSelectPen( hb, pen, mode){
+		setHitInfo( hb);
+		if( !hb) return removeGuide( "pen");
+		if( hb.blk) return placePen( hb, pen, mode);
+		if( hb.fbuid) return placeFBBound( hb, mode);
+	}
+
+	//	FreeBlockの場合はboundを表示
+	function placeFBBound( hb, mode){
+		setHitInfo( hb);
+		//	fb!
+		local sk3d = guides["pen"];
+		if( !sk3d || sk3d.ref[0]!=hb.fbuid){
+			sk3d?.kill();
+			local fb = editor.bw.getFreeBlock( hb.fbuid), br = fb.br;
+			local pm = RPGToolMesh.createVolumeMesh( br.w, br.h, br.d, mode);
+			sk3d = SK3DObject( pm);
+			sk3d.pos( br.x, br.y, br.z).scale( 0.5);
+			addGuide( "pen", sk3d);
+			sk3d.ref = (hb.fbuid,-1,-1,-1);
+		}
+	}
+
+	function getFBPlacePos( fb, hb, rot){
+		local fbt = ::fblks[fb.fbtype], va = fbt.variations[fb.fbparam&0xfff];
+		local pu = va["push"];
+		pu = IMat( rot).transform( (0,pu[0],pu[1]));	//	undefinedも0にキャストされる
+		if( hb.f == 0) pu[0] = pu[2] = 0;
+		return (hb.bx+hb.nx+pu[0], hb.by+hb.ny+pu[1], hb.bz+hb.nz+pu[2]);
+	}
+
+	//	FreeBlockの配置用のガイドを配置する。
+	//	FreeBlockの実体のボクセルと、配置位置のブロック
+	function placeFBPlace( fb, hb, rot, face=true){
+		setHitInfo( hb);
+		if( !hb) return removeGuide( "fb");
+		local sk3d = guides["fb"];
+		local key = (fb.fbtype,fb.fbparam,hb.f,rot)
+		if( !sk3d || sk3d.ref<>key){
+			sk3d?.kill();
+			sk3d = createFBPlace( fb, hb, rot, face);
+			addGuide( "fb", sk3d);
+			sk3d.ref = key;
+		}
+		local fbp = getFBPlacePos( fb, hb, rot);
+		sk3d.pos( fbp).scale( 0.5).add( 0.25);
+		sk3d.rot.set( rotquat[rot&3]);
+		sk3d.matdirty = 1;
+	}
+
+	static oppof = (5,3,4,1,2,0);
+
+	function createFBPlace( fb, hb, rot, face=true){
+		local pm = RPGToolMesh.createFreeBlockMesh( fb);	//	face[0]
+		foreach( f in pm.face){
+			local m = f.m;
+			m.alphatest = 1; m.alpharef = 0.5;
+			m.polygonoffset1 = -1130;
+		}
+		local sk3d = SK3DObject( pm);
+		if( face){
+			local fbt = ::fblks[fb.fbtype], va = fbt.variations[fb.fbparam&0xfff];
+			local pu = va["push"] || #(0,0);
+			local br = fb.br;
+			local f = hb.f; if( f>=1 && f<=4){ f = ((f-1-rot)&3)+1; }
+			local vm = RPGToolMesh.createFaceMesh( br.w, br.h, br.d, PEN_ATTACH, 1<<oppof[f]);
+			local vm3d = SK3DObject( vm);
+			local br = fb.br, p = (-br.w/2, -br.h/2, -br.d/2);
+			vm3d.pos( p).add( 0, 0, f?-pu[1]:0).scale( 0.5);
+			sk3d.addChild( vm3d);
+		}
+		return sk3d;
+	}
+
+	//	FreeBlockの選択状態のガイドを配置する。
+	//	FreeBlockの実体ボクセルとギズモ。
+	function placeFBGizmo( fb, mask){
+		local sk3d = guides["gz"];
+		local rr = fb.br, br = unrotateRect( rr, fb.rot);
+		local cx = br.x+br.w/2, cy = br.y+br.h/2, cz = br.z+br.d/2;	//	cxyz == fb.xyz
+		br.x -= cx; br.y -= cy; br.z -= cz;
+		if( !sk3d || sk3d.ref[0]!=fb || sk3d.ref[1]!=mask){
+			sk3d?.kill();
+			sk3d = SK3DGizmo( canvas, br, mask);
+			addGuide( "gz", sk3d);
+			sk3d.ref = (fb,mask);
+		}
+		sk3d.pos( cx, cy, cz).add( 0.5).scale( 0.5);
+		sk3d.rot.set( rotquat[fb.rot&3]);
+		sk3d.matdirty = 1;
+		sk3d.ref = fb;
+		return sk3d;
+	}
+
+	function placeBox( br){
+		local sk3d = guides["box"];
+		if( !sk3d || sk3d.ref[0]<>br){
+			sk3d?.kill();
+			local ew = 2.0/8.0;
+			local pm = ::RPGToolMesh.createVolumeMesh( br.w+ew, br.h+ew, br.d+ew, PEN_SELECT);
+			local pos = Vector3D( br.x, br.y, br.z).sub( ew*0.5).scale( VOX_SCALE*8.0);
+			sk3d = SK3DObject( pm);
+			sk3d.pos << pos;
+			addGuide( "box", sk3d);
+			sk3d.ref = br;
+		}
+	}
+
+	function place2DRegion( br, mode){
+		local sk3d = SK3D2DRegion( br, mode);
+		addGuide( "box", sk3d);
+		return sk3d;
+	}
+	
+	////////////////////////////////////////////////////////////////////////////////////////////
+	//	共通機能
+
+	function _getlocalmouse(){
+		local ms = ::rootview.mouses[0];
+		local pv = canvas.view, p = Vector3D( ms.mousex, ms.mousey, 0.0).transform( pv.getInvMatrix());
+		if( p.x < 0 || p.y < 0 || p.x >= pv.bnd.w, p.y >= pv.bnd.h){
+			return null;
+		}
+		return {lx:p.x, ly:p.y};	//	lx,lyでアクセスできるように、、、
+	}
+
+	//	現在のマウス位置にフォーカスする。
+	function focusToMouse(){
+		local p = _getlocalmouse();
+		if( !p) return false;
+		local q = canvas.getRay( p.lx, p.ly);
+		local b3res = scn.b3world.rayTest( 1, q[0], q[1], -1, G_STAGE);	//	closest
+		foreach( br in b3res){
+			local fp = br.pointb;
+			canvas.camwork.moveTo( fp, canvas.camwork.hpb, 15.0);
+			return true;
+		}
+		return false;
+	}
+
+	//	※このイベントハンドリング中にツールが切り替わることがある！toolfunc自体は切り替わらない。
+	//	
+	function startSpoit(){
+		removeGuide( "pen");
+		removeGuide( "fb");
+		local blkflag = BLK_SOLID|BLK_LIQUID|BLK_PLANT|BLK_BARRIOR|BLK_SOLIDFB|BLK_DECAL, mode = 4;	//	4:すぽいと、、
+		local pens = getPenmap()["p01"], pen = pens[0];
+		local editor = editor, _gz = ptr();
+		local selgz( gz){
+			if( gz != ~_gz){
+				if( ~_gz && (~_gz).stat!=3) (~_gz).setState( 0);
+				_gz << gz;
+				if( gz && gz.stat!=3) gz.setState( 2);
+			}
+		}
+		{
+			local p = _getlocalmouse();
+			local hb = p && rayTest( p, blkflag);
+			placeSelectPen( hb, pen, PEN_SPOIT);
+			selgz( rayTestEVMK( p)["gz"]);
+		}
+		local fn( e){
+			local self = editor.tool;
+			e.consume();
+			e.computeLocal( self.canvas.view.getInvMatrix());
+			switch( e.id){
+			case MOUSE_MOVED:
+			case MOUSE_DRAGGED:
+				if( !e.isAltDown()){
+					self.removeGuide( "pen");
+					return null;
+				}
+				local gz = self.rayTestEVMK( e)["gz"];
+				if( gz){
+					selgz( gz);
+					self.removeGuide( "pen");
+				}else{
+					selgz( null);
+					local hb = self.rayTest( e, blkflag);
+					self.placeSelectPen( hb, pen, PEN_SPOIT);
+				}
+				break;
+			case MOUSE_PRESSED:
+				local gz = self.rayTestEVMK( e)["gz"];
+				if( gz){
+					local tool = self.editor.toolmap["tool_event"];
+					self.editor.changeTool( "tool_event");
+					tool.selectGizmo( gz);
+				}else{
+					local hb = self.rayTest( e, blkflag);
+					self.removeGuide( "pen");
+					if( hb){
+						if( !self.pickBlock( hb)){
+							foreach( id in ::MapEditor.toolids){
+								local tool = self.editor.toolmap[id];
+								if( tool!=self && tool.pickBlock( hb)){
+									self.editor.changeTool( id);
+									break;
+								}
+							}
+						}
+					}
+				}
+				break;
+			// case MOUSE_RELEASED:
+			// case MOUSE_CANCELLED:
+			// 	return null;
+			case KEY_RELEASED:
+				if( e.keycode == VK_ALT){
+					self.removeGuide( "pen");
+					selgz( null);
+					return null;
+				}
+				break;
+			}
+			return fn;
+		};
+		return fn;
+	}
+
+	function rayTestEVMK( e){
+		local q = canvas.getRay( e.lx, e.ly);
+		local b3res = scn.b3world.rayTest( 0, q[0], q[1], -1, G_EVENT);	//	all
+		foreach( br in b3res){
+			local ref = br.bodyb["ref"];
+			if( ref instanceof SK3DEventGizmo || ref instanceof SK3DMarkerGizmo){
+				return { gz:ref, part:br.partidb, pos:clone br.pointb};
+			}
+		}
+	}
+
+	function rayTestGZ( e){
+		// canvas.bwcol.ref.setFlagMask( blkflag);
+		local q = canvas.getRay( e.lx, e.ly);
+		local b3res = scn.b3world.rayTest( 1, q[0], q[1], -1, G_GIZMO);	//	closest
+		foreach( br in b3res){
+			if( br.bodyb["ref"] instanceof SK3DGizmo){
+				return { gz:br.bodyb["ref"], part:br.partidb, pos:clone br.pointb};
+			}
+		}
+	}
+
+	//	ギズモ操作開始前イベント。
+	//	canvaseventから予め呼び出す。
+	//	rayTestGZは{sk3d:SK3DGizmo,part}を返す。
+	//	partは-+x, -+y, -+z, o。
+	//	gzfunc( op, arg);
+	//	
+	function gizmoevent( e, gzfunc, reffunc){
+		switch( e.id){
+		case MOUSE_MOVED:
+			local gzt = rayTestGZ( e);
+			if( gzt){
+				removeGuide( "pen");
+				removeGuide( "fb");
+				gzt.gz.selectParts( 1<<gzt.part);
+				canvas.view.repaint();
+				e.consume();
+			}else{
+				local gz = guides["gz"] || guides["box"];
+				if( gz){
+					gz.selectParts( 0);
+					canvas.view.repaint();
+				}
+			}
+			break;
+		case MOUSE_PRESSED:
+			local gz = rayTestGZ( e);
+			if( gz){
+				return startGizmoMove( e, gz, gzfunc, reffunc);
+			}
+			break;
+		case ACTION_PERFORMED:	//	回転はGPUIButton
+			switch( e.src["name"]){
+			case "rot_cw": case "rot_ccw":
+				if( e.isMouseDown( BUTTON1_MASK)){
+					gzfunc( e.src.parent.ref, e.src.name);
+				}
+				break;
+			}
+			break;
+		}
+	}
+
+	//	ドラッグ操作でギズモを動かす。
+	function startGizmoMove( e, gz0, gzfunc, reffunc){
+		removeGuide( "pen");
+		removeGuide( "fb");
+		local trk = "gzmv"..skGetTime();
+		local part = gz0.part;
+		local self = this, editor = editor, cam = canvas.camwork.cam;
+		local p0 = gz0.pos, n, absn, pl;
+		switch( part){
+		case 0:		//	free
+			pl = chooseCameraPlane( cam.fw, gz0.pos); break;
+		case 1: case 2:	//	x
+		case 3: case 4:	//	y
+		case 5: case 6:	//	z
+			//	回転でx,zが入れ替わる
+			local pv = #( Vector3D( 1,0,0), Vector3D( 0,1,0), Vector3D( 0,0,1));
+			local pn = cam.fw;
+			n = gz0.gz.rot * pv[(part-1)/2]; absn = Vector3D( n).scale( n);	//	abs
+			pl = Plane(); pl.setParam( pn.x, pn.y, pn.z, p0.x, p0.y, p0.z); break;
+		}
+		// printf( "pl %S %S %S %S\n", pl.a,pl.b,pl.c,pl.d);
+		local fn( e){
+			e.consume();
+			e.computeLocal( self.canvas.view.getInvMatrix());
+			switch( e.id){
+			case MOUSE_DRAGGED:
+			{
+				local q = self.canvas.getRay( e.lx, e.ly), w = q[1]-q[0];
+				local t = pl.getIntersectTime( q[0], w);
+				if( t < 0.0) break;
+				local d = #(0,0,0), d0 = #(0,0,0)
+				local dot = 0;
+				if( part == 0){
+					local fd = w.scale( t).add( q[0]).sub( p0).scale( 2.0);
+					d.set( fd.x|0, fd.y|0, fd.z|0);
+				}else{
+					local v = w.scale( t).add( q[0]).sub( p0);
+					dot = (v.dot( n) * 2.0)|0;
+					local fd = v.scale( absn).scale( 2.0);
+					d.set( fd.x|0, fd.y|0, fd.z|0);
+				}
+				if( d <> d0){
+					gzfunc( gz0.gz, "move", { part:part, d:(d[0]-d0[0],d[1]-d0[1],d[2]-d0[2]), dot:dot, trk:trk });
+					d0.set( d[0], d[1], d[2]);
+				}
+				break;
+			}
+			case MOUSE_MOVED:	//	来ない
+			case MOUSE_PRESSED:	//	来ない
+				break;
+			case MOUSE_RELEASED:
+			case MOUSE_CANCELLED:
+				return reffunc;
+			}
+			return fn;
+		};
+		return fn;
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////////////
+//
+//	block / freeblockを選択できる
+//	
+class SelectBlock
+{
+	colcnt = 0;
+	view = null;
+	listview = null;
+	tablist = null;
+	
+	pagetype = null;	//	0:block, 1:freeblock
+	pagesrc = null;		//	
+	fbstat = 0;
+
+	pages = null;		//	[[{blk,name,}],...]
+	selitem = null;		//	pages[selpage][x]
+
+	dnd = 0;
+
+	static texcache = {};
+
+	static function clearPreviewTexCache(){
+		Table.clear( texcache);
+	}
+
+	static function getPreviewTex( v, fn){
+		local i = v["blk"]? v.blk : sprintf( "%x.%x", v.fblk.fbtype, v.fblk.fbparam);
+		if( texcache[i]) return fn( texcache[i]);
+		//
+		local queue = #[];
+		local qi = queue.indexOf( i);
+		if( qi >= 0) queue[qi].list .. fn; else queue .. { i:i, v:clone v, list:[fn] };
+		//
+		local th = #(null,);
+		local imgpreview = #BlockImagePreview( 128, 128, Vector3D( -30*Math.DTOR, 30*Math.DTOR));
+		if( !th[0]){
+			th[0] = newthread( "BlockImagePreview");
+			local ththread(){
+				suspend();	//	最初に一拍
+				local sust = skGetTime(), n = 0;
+				while( length( queue)){
+					local q = delete queue[0], v = q.v;
+					if( texcache[q.i]){
+						foreach( fn in q.list) fn( texcache[q.i]);
+						continue;
+					}
+					if( skGetTime( sust) >= 8){
+						// printf( "previewtex suspend dt=%S n=%S / %S\n", skGetTime( sust), n, length( queue));
+						suspend(); sust = skGetTime(); n = 0;
+					}
+					local ret, t0 = skGetTime();
+					if( v["blk"]){	//	ブロックのプレビューはBlockWorldが必要！
+						local bw = #BlockWorld( 2, 2, 2);
+						bw.fillBlock( #IRect3D( 0, 0, 0, 2, 2, 2), v.blk);
+						local vd = #VoxelData( 16, 24, 16);
+						local req = { bw:bw, br:#IRect3D(0,0,0,2,3,2), vd:vd, id:i };
+						local res = BlockRenderer.createVoxelDatas( [req]);
+						ret = texcache[q.i] <- imgpreview.getVoxelDataImage( vd);
+					}else{	//	フリーブロックのプレビューは直接PM化
+						//	屋根、階段などはparamを
+						ret = texcache[q.i] <- imgpreview.getFreeBlockImage( v.fblk);
+					}
+					foreach( fn in q.list) fn( ret);
+					++n;
+				}
+				// printf( "previewtex alldone dt=%S n=%S\n", skGetTime( sust), n);
+				th[0] = null;	//	threadおわり
+			}
+			th[0].start( ththread, this);
+		}
+	}
+	
+	constructor( v, cc=4){
+		view = v;
+		listview = v.findChild( "LIST");
+		tablist = ListBehavior( v.findChild( "tablist"));
+		tablist.multisel = true;
+		setColumnCount( cc);
+		tablist.listview.addEventListener( ITEM_EVENT, tabevent);
+		listview.addEventListener( ACTION_EVENT, actionevent);
+		v.findChild( "selallbtn").addEventListener( ACTION_EVENT, actionevent);
+		v.addEventListener( DRAGSOURCE_EVENT, dragevent);
+	}
+
+	function setColumnCount( c){
+		if( colcnt == c) return;
+		colcnt = c;
+		local rowpath = `/plugin/rpgtools/mapeditor/ui/block${c}.ui`;
+		listview.setRowPath( rowpath);
+		listview.setRowCount( 0);
+	}
+
+	//	ブロックIDのリストを指定してページをセットアップ。
+	function setBlockPages( bids){
+		pagetype = 0;
+		pagesrc = bids;
+		pages = [];
+		foreach( pi,b in bids){
+			local bt = ::blks[b];
+			local a = [];
+			foreach( i,v in bt["variations"]){
+				if( v["hide"]) continue;
+				a .. {
+					blk : b|(i<<5),
+					name : v["name"]||"noname",
+				};
+			}
+			pages .. {
+				idx : pi,
+				lbl : bt["name"]||"nani?"..b,
+				list : a,
+			};
+		}
+		tablist.setListItems( pages);
+		tablist.selectAll();
+		setPageBits( (1<<length( bids))-1);
+	}
+
+	static catglblmap = {
+		[FB_EXDOOR]="$T.blk_door",
+		[FB_EXLAMP]="$T.blk_lamp",
+		[FB_EXTERIOR]="$T.blk_exterior",
+		[FB_INDOOR]="$T.blk_door",
+		[FB_INLAMP]="$T.blk_lamp",
+		[FB_INTERIOR]="$T.blk_interior",
+		[FB_COLUMN]="$T.blk_column",
+		[FB_LADDER]="$T.blk_ladder",
+		[FB_SLOPE]="$T.blk_slope",
+		[FB_STAIR]="$T.blk_stair",
+		[FB_ROOF]="$T.blk_roof",
+		[FB_TREE]="$T.blk_treerock",
+		[FB_ROCK]="$T.blk_treerock",
+	};
+
+	//	フリーブロックのカテゴリ配列を指定してページをセットアップ
+	function setFreeBlockPages( catgs, stat=0){
+		pagetype = 1;
+		pagesrc = catgs;
+		pages = array( length( catgs));
+		foreach( i,_ in pages){ pages[i] = { lbl:"", list:[], idx:-1 }};
+		//
+		foreach( fbtype,fbt in ::fblks){
+			foreach( vari,v in fbt["variations"]){
+				if( v["hide"]) continue;
+				local pi = catgs.findi( @( catg) catg & v.catg);
+				if( pi >= 0){
+					local fb = _makefb( fbtype, vari, stat);
+					pages[pi].list .. {
+						fblk : fb,
+					};
+				}
+			}
+		}
+		foreach( i,p in pages){
+			p.idx = i;
+			p.lbl = catglblmap[catgs[i]];
+		}
+		tablist.setListItems( pages);
+		tablist.selectAll();
+		setPageBits( (1<<length( pages))-1);
+	}
+
+	function _makefb( fbtype, vari, stat){
+		local fbt = ::fblks[fbtype], va = fbt.variations[vari];
+		local fbparam = vari;
+		switch( fbt.cls){
+		case "column": fbparam |= (4<<26); break;
+		case "slope": fbparam |= (4<<20)|(4<<26); break;
+		case "roof": fbparam |= (4<<14)|(6<<20)|(4<<26); break;
+		default : fbparam |= (stat<<31); break;
+		}
+		return FreeBlock.create({fbtype:fbtype, fbparam:fbparam});
+	}
+
+	function reloadPages(){
+		switch( pagetype){
+		case 0: return setBlockPages( pagesrc);
+		case 1: return setFreeBlockPages( pagesrc);
+		}
+	}
+
+	function setPage( i){
+		// setPageBits( 1<<i);
+		currentthread().printStackTrace();
+	}
+
+	function setPageBits( pb){
+		findView( selitem)?.setSelected( false);
+		//	
+		local list = [];
+		for( local l = 0;l < 8;l ++){
+			if( pb&(1<<l)){
+				list ... pages[l].list;
+				while( length( list)%colcnt) list .. null;
+			}
+		}
+		local rowcnt = (length( list)+colcnt-1) / colcnt;
+		local n = colcnt * rowcnt;
+		listview.setRowCount( rowcnt);
+		local va = [], prevv;
+		for( local l = 0;l < n;l ++){
+			local r = listview.rows[l/colcnt].findChild( "i"..(l%colcnt));
+			local v = list[l];
+			r.setVisible( !!v);
+			r.dragsource = this;
+			if( v){
+				r.ref = v;
+				va .. r;
+			}
+		}
+		//	プレビューロード
+		foreach( v in va){
+			getPreviewTex( v.ref, @( tex){ v.findChild( "icon").setSprite( Sprite( tex)); });
+		}
+		findView( selitem)?.setSelected( true);
+	}
+
+	function getBlockItem( hb){
+		local blk = hb.blk & 0x3ff, fbtype = hb.fbtype, fbparam = hb.fbparam&0x3ff;
+		foreach( pi, page in pages){
+			foreach( i, v in page.list){
+				if( blk && (v["blk"]&0x3ff) == blk) return v;
+				if( v["fblk"]){
+					if( v.fblk.fbtype == fbtype && (v.fblk.fbparam&0x3ff) == fbparam) return v;
+				}
+			}
+		}
+	}
+
+	//	指定したブロックを選択する。ページも切り替わる。
+	function selectBlock( blk){
+		foreach( pi, page in pages){
+			foreach( i, v in page.list){
+				if( (v["blk"]&0x1fff) == (blk&0x1fff)){
+					local iv = findView( v);
+					if( !iv){
+						// setPage( pi); iv = findView( v);
+					}
+					findView( selitem)?.setSelected( false);
+					iv?.setSelected( true);
+					selitem = v;
+					if( iv){ listview.updateMatrixAll(); listview.gpui.scrollViewToVisible( iv, 0); }
+					return v;
+				}
+			}
+		}
+	}
+
+	function selectFreeBlock( fb){
+		foreach( pi, page in pages){
+			foreach( i, v in page.list){
+				local f = v["fblk"];
+				if( f.fbtype==fb.fbtype && (f.fbparam&0x3ff)==(fb.fbparam&0x3ff)){
+					local iv = findView( v);
+					findView( selitem)?.setSelected( false);
+					iv?.setSelected( true);
+					selitem = v;
+					if( iv){ listview.updateMatrixAll(); listview.gpui.scrollViewToVisible( iv, 0); }
+					return v.fblk;
+				}
+			}
+		}
+	}
+	
+	function deselect(){
+		if( selitem){
+			findView( selitem)?.setSelected( false);
+			selitem = null;
+		}
+	}
+
+	function findView( i){
+		if( !i) return null;
+		foreach( r in listview.rows){
+			foreach( v in r.children){
+				if( v.ref == i) return v;
+			}
+		}
+	}
+
+	function tabevent( e){
+		if( e.id == ITEM_SELECTIONS){
+			local a = e.actioncmd;
+			local pb = a.reduce( @( v, x) x|(1<<v.idx), 0);
+			setPageBits( pb);
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "selallbtn":
+			tablist.selectAll();
+			setPageBits( (1<<length( pages))-1);
+			break;
+		default:
+			local cmd = e.src["ref"];
+			if( cmd["blk"] || cmd["fblk"]){
+				if( selitem != cmd){
+					findView( selitem)?.setSelected( false);
+					selitem = cmd;
+					e.src.setSelected( true);
+					view.postActionEvent( cmd, e.count, e.modifiers);
+				}else
+				if( e.count==2){
+					view.postActionEvent( cmd, e.count, e.modifiers);
+				}
+			}
+			break;
+		}
+		e.consume();
+	}
+
+	function dragevent( e){
+		switch( e.id){
+		case SOURCE_DRAG_ENTER:
+		case SOURCE_DRAG_EXIT:
+		case SOURCE_DRAG_OVER:
+			if( dragsp){
+				local tool = ::skstudio.editor.tool;
+				dragsp.visible = !length( tool.guides);	//	なんらかガイドが表示されてたら表示オフ
+			}
+			break;
+		case SOURCE_DROP:
+			break;
+		}
+	}
+
+	//	DragSource
+
+	dragsp = null;
+	
+	//	ドラッグ中描画処理
+	function dndrender( m){
+		skDrawSprite( dragsp, m.mousex, m.mousey);
+	}
+	
+	//	ドラッグ有効チェック
+	function acceptDrag( e){
+		if( !(dnd&1)) return false;
+		if( e.modifiers & (SHIFT_MASK|ALT_MASK|CTRL_MASK|BUTTON2_MASK|BUTTON3_MASK)) return false;
+		local src = e.src;
+		e.computeLocal( src.getInvMatrix());
+		//
+		dragsp = src.capture();
+		dragsp.color = 0x99999999;
+		local p0 = Vector3D( 0).transform( src.mat).sub( e.x, e.y, 0.0);
+		dragsp.bnd.x = p0.x;
+		dragsp.bnd.y = p0.y;
+		return true;
+	}
+	
+	//	DropTarget ... nasi
+	
+	function acceptDrop( ds, x, y){
+		return false;
+	}
+}
+///////////////////////////////////////////////////////////////////////////////////////
+//	
+//	2D選択矩形
+//	
+
+class SK3D2DRegion extends SK3DObject
+{
+	constructor( br, mode){
+		super( null);
+		local pm = ::PrimitiveMeshes.createBox( br.w*0.25-0.01, 64.01, br.d*0.25-0.01);
+		local m = pm.face[0].m = clone pm.face[0].m;
+		m.tec = skFXFindTechnique( "rpgtool.reg2d");
+		m.visiblemask = SK_VISIBLE_TRANSPARENT;
+		m.depthtest = SK_GREATER;
+		m.depthmask = 0;
+		m.cullface = SK_CW;
+		m.blend = SK_MIX;
+		local c = ::penmodecol[mode];
+		m.Kd = (c<<24)|((c<<8)&0xff0000)|((c>>8)&0xff00)|0x70 ;//0x00d9ff70;
+		setPolygonMesh( pm);
+		pos( br.x*0.5+br.w*0.25, 64.0, br.z*0.5+br.d*0.25);
+		//
+		local mm = m.miscmat0 = Matrix();
+		mm[0] = pos.x;	mm[1] = br.w*0.25;
+		mm[2] = pos.z;	mm[3] = br.d*0.25;
+	}
+
+	function setAlpha( a){
+		local m = mesh.face[0].m;
+		m.Kd = (m.Kd&0xffffff00) | a;
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////////////
+//
+//	ギズモのSK3DObject。
+//	
+
+class SK3DGizmo extends SK3DObject
+{
+	canvas = null;		//	MapCanvas
+
+	br = null;			//	IRect3D
+	mask = -1;
+
+	partobjs = null;	//	array[7]
+
+	mode = PEN_GIZMO;
+
+	static partcols1 = [0xffff00ff, 0xff0000ff,0xff0000ff, 0x00ff00ff,0x00ff00ff, 0x0000ffff,0x0000ffff];
+	static partcols2 = [0xffffffff, 0xff9999ff,0xff9999ff, 0x99ff99ff,0x99ff99ff, 0x9999ffff,0x9999ffff];
+
+	constructor( c, r, m, mo=PEN_GIZMO){
+		canvas = c;
+		mask = m;
+		mode = mo;
+		setRect( r);
+	}
+
+	//	rはローカル。
+	function setRect( r){
+		br = clone r;
+		local pm = ::RPGToolMesh.createVolumeMesh( r.w, r.h, r.d, mode);
+		local piv = Vector3D( r.x, r.y, r.z).sub( 0.5).scale( VOX_SCALE*8.0);
+		setPolygonMesh( pm);
+		setPivot( piv);
+		local shp = b3Shape.createCompound();
+		local cp = Vector3D( r.w, r.h, r.d).scale( 0.25);
+		//	o
+		clearChildren();
+		partobjs = array( 7);
+		{
+			// local om = PrimitiveMeshes.createSphere( 0.24, 12, 12);
+			local om = PrimitiveMeshes.createWireBox( 0.22, 0.22, 0.22, 0.015);
+			_setmtl( om, partcols1[0]);
+			local cm = SK3DObject( om);
+			cm.pos << cp;
+			addChild( cm);
+			local cs = b3Shape.createBox( 0.27, 0.27, 0.27);
+			shp.addChild( cs, Matrix.fromTranslate( cp), 0, 0);
+			partobjs[0] = cm;
+		}
+		//	x,y,z
+		for( local l = 0;l < 3;l ++){
+			if( !(mask&(1<<l))) continue;
+			local v = Vector3D(), w = Vector3D();
+			v[l] = cp[l]+0.01; w[l] = 0.01; w[(l+1)%3] = w[(l+2)%3] = 0.2;
+			//	-,+
+			for( local j = 0; j < 2;j ++){
+				local pi = 1+l*2+j;
+				local om = PrimitiveMeshes.createBox( w.x, w.y, w.z);
+				local cm = SK3DObject( om);
+				_setmtl( om, partcols1[pi]);
+				cm.pos( v).scale( j*2-1).add( cp);
+				addChild( cm);
+				local cs = b3Shape.createBox( w.x+0.05, w.y+0.05, w.z+0.05);
+				shp.addChild( cs, Matrix.fromTranslate( cm.pos), pi, 0);
+				partobjs[pi] = cm;
+			}
+		}
+		if( b3body){
+			b3body.setShape( shp);
+		}else{
+			b3body = b3Body( 0.0, shp, mat, G_GIZMO, G_CHARA|G_OBJECT);
+			b3body.ref = this;
+		}
+	}
+
+	function _setmtl( pm, col){
+		foreach( f in pm.face){
+			local m = f.m;
+			m.tec = skFXFindTechnique( "decal.def");
+			m.Kd = col;
+			m.polygonoffset1 = -40000;
+		}
+	}
+
+	function setFreeBlock( fb){
+		ref = fb;
+		local r = unrotateRect( fb.br, fb.rot);
+		local cx = r.x+r.w/2, cy = r.y+r.h/2, cz = r.z+r.d/2;
+		r.x -= cx; r.y -= cy; r.z -= cz;
+		if( br <> r) setRect( r);
+		//	
+		pos( cx, cy, cz).add( 0.5).scale( 0.5);
+		rot.set( MapTool.rotquat[fb.rot&3]);
+		matdirty = true;
+	}
+	
+	//	1: O
+	//	6: X
+	//	24: Y
+	//	96: Z
+	function selectParts( bits){
+		for( local l = 0;l < 7;l ++){
+			if( partobjs[l]){
+				_setmtl( partobjs[l].mesh, ((bits&(1<<l))?partcols2:partcols1)[l]);
+			}
+		}
+	}
+}

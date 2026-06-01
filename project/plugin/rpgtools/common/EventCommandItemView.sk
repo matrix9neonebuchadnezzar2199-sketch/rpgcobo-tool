@@ -1,0 +1,273 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+const LINEH = 26;	//	固定値。中のEventCommandItemViewは全てLINEHの倍数の高さの必要あり
+
+local srcdir = dirname( callee().getSourceName());
+
+class EventCommandItemView extends SKLibView
+{
+	static cmdcolor = 0x0000ffff;
+	static sepicon = null;
+
+	cmddef = null;		//	コマンド定義。
+	cmd = null;			//	コマンドデータ。
+	
+	h0 = 0;				//	view読み込み時の基準高
+	h1 = 0;				//	view幅で調整済みの高さ
+	
+	stretchg = null;	//	ストレッチ領域
+	cmdextra = null;		//	SKLabelView : nullあり、複数行
+	cmdblockviews = null;	//	CommandBlockView[] : 子のあるコマンドはこれが増える
+
+	//	
+	static function fromCommand( c){
+		local cmddef = ::RPGSystem.eventcmd[c.cmd];
+		local viewpath = "/ui/evcmd.ui";
+		if( !cmddef){	//	コマンドない場合
+			local v = ::loadSKView( srcdir..viewpath, EventCommandItemView);
+			v.cmd = c;
+			v.cmddef = { name = c.cmd, color = #[0xff0000ff,0xff0000ff], icon = "\ueb8b", };
+			v.setup( null);
+			return v;
+		}else{
+			local cmdinfo = fget( cmddef, "cmdinfo", cmddef, c);	//	cmdinfoの中身からviewpathを判断。
+			if( cmdinfo["extra"]){
+				viewpath = cmdinfo["info"] ? "/ui/evcmd_ex.ui" : "/ui/evcmd_info.ui";
+			}else
+			if( cmdinfo["topblkname"]){
+				viewpath = "/ui/evcmd_choose.ui";
+			}
+			local v = ::loadSKView( srcdir..viewpath, EventCommandItemView);
+			v.cmd = c;
+			v.cmddef = cmddef;
+			v.setup( cmdinfo);
+			return v;
+		}
+	}
+
+	function setup( cmdinfo){
+		local col = cmdinfo["color"] || cmddef.color;
+		local ic = cmdinfo["icon"] || cmddef.icon;
+		local nm = cmdinfo["name"] || cmddef.name;
+		//
+		stretchg = findChild( "stretchg");
+		local cmdicon = findChild( "icon");
+		local cmdiconbg = findChild( "iconbg");
+		cmdicon.setText( ic);
+		cmdicon.setColor( col[0]);
+		local cmdname = findChild( "name");
+		if( cmdname){
+			cmdname.setText( nm);
+			cmdname.setColor( col[1]);
+		}
+		local infolbl = findChild( "info");
+		if( infolbl){
+			infolbl.setColor( col[1]);
+			local i = (cmdinfo["info"] || "");
+			infolbl.setText( i=="" ? "" : ("||  "..i));
+		}
+		local cmdextra = findChild( "extra");
+		if( cmdextra){
+			cmdextra.setText( cmdinfo["extra"] || "");
+			cmdextra.setColor( (col[1]&0xffffff00) | (cmdextra.getColor()&0xff));	//	α変わってる
+			//	行数に応じてhを増加
+			local tb = cmdextra.textbox, tbh = tb.bnd.h, exh = cmdextra.bnd.h;
+			if( tbh >= exh){
+				cmdextra.bnd.h = tbh; cmdextra.updateLayout();
+				bnd.h = int( bnd.h+(tbh-exh)+LINEH-1) / LINEH * LINEH;
+			}
+		}
+		local topblkname = findChild( "topblkname");
+		if( topblkname){
+			topblkname.setText( cmdinfo["topblkname"] || "");
+			topblkname.setColor( (col[1]&0xffffff00) | (topblkname.getColor()&0xff));	//	α変わってる
+			local topblkicon = findChild( "topblkicon");
+			topblkicon.setText( ic);
+			topblkicon.setColor( col[0]);
+		}
+		local y = h0 = h1 = bnd.h;
+		foreach( i, cmdlist in cmd["cmdblocks"]){
+			local v = ::EventCommandBlockView.create( cmd, cmdlist, 40);	//	indent
+			local blkicon = v.findChild( "blkicon");
+			local blkname = v.findChild( "blkname");
+			local indent = v.findChild( "indent");
+			blkicon.setText( ic);
+			blkicon.setColor( col[0]);
+			blkname.setText( cmdinfo["blknames"][i]);
+			blkname.setColor( col[0]);
+			indent.setColor( col[0]);
+			indent.setVisible( true);
+			v.pos.y = y;
+			y += v.bnd.h;
+			addChild( v);
+			if( cmdblockviews) cmdblockviews .. v; else cmdblockviews = [v];
+		}
+		bnd.h = y;
+	}
+	
+	function updateHeight(){
+		local y = h1;
+		foreach( v in cmdblockviews){
+			if( y != v.pos.y){
+				v.pos.y = y;
+				v.matdirty = 1;
+			}
+			y += v.bnd.h;
+		}
+		bnd.h = y;
+	}
+
+	function revalidate(){
+		updateHeight();
+		parent.revalidate();
+	}
+	
+	function setWidth( w){
+		stretchg.stretchSize( w, bnd.h);
+		//	伸張する領域はcmdextraのみ
+		if( cmdextra){
+			local tb = cmdextra.textbox;
+			local li = tb.getColumnLine( tb.length-1, #(0,0));
+			if( li[1] > 0){
+				h1 = h0 + li[1]*LINEH;
+			}else{
+				h1 = h0;
+			}
+			stretchg.stretchSize( w, h1);	//	意味は無いけど、、、
+		}
+		foreach( b in cmdblockviews){
+			b.setWidth( w);
+		}
+		updateHeight();
+	}
+	
+	function commandAt( ly){
+		if( ly >= 0.0 && ly < bnd.h){
+			foreach( b in cmdblockviews){
+				local by = ly-b.pos.y;
+				local r = b.commandAt( by); if( r) return r;
+				if( by >= 0.0 && by < b.bnd.h) return b;
+			}
+			return this;
+		}
+		return null;
+	}
+
+	function getDepth(){
+		local d = -1, p = parent;
+		while( p instanceof EventCommandBlockView){
+			++d; p = p.parent.parent;
+		}
+		return d;
+	}
+}
+
+class EventCommandBlockView extends SKLibView
+{
+	static nostretchinner = true;
+
+	parentcmd = null;			//	cmd : このcmdの親コマンド。parentcmdはcmdblocks[n]でアクセス可能。cmd_ifならn=1~2, cmd_loopならn=1
+	cmdblock = null;			//	cmd[] : 
+	stretchg = null;			//	ストレッチ領域
+	cmdviews = null;			//	EventCommandItemView[] : 
+	indent = 0;					//	ルートのみ0、他は40
+
+	static function create( p, a, indent){
+		local v = ::loadSKView( srcdir.."/ui/evcmdblk.ui", this);
+		v.indent = indent;
+		v.setup( p, a);
+		return v;
+	}
+	
+	function setup( p, a){
+		parentcmd = p;
+		cmdblock = a;
+		cmdviews = [];
+		local h = 0;
+		foreach( cmd in a){
+			local v = ::EventCommandItemView.fromCommand( cmd);
+			v.pos.y = h;
+			h += v.bnd.h;
+			cmdviews .. v;
+		}
+		bnd.h = h+LINEH;
+		stretchg = findChild( "stretchg");
+		stretchg.stretchSize( bnd.w, h+LINEH);	//	フッター分下に拡張
+		foreach( v in cmdviews){
+			addChild( v);
+		}
+	}
+
+	function updateHeight(){
+		local h = 0;
+		foreach( v in cmdviews){
+			v.pos.x = indent;
+			v.pos.y = h;
+			v.matdirty = true;
+			h += v.bnd.h;
+		}
+		if( h+LINEH != bnd.h){	//	umm
+			bnd.h = h+LINEH;
+			stretchg.stretchSize( bnd.w, h+LINEH);	//	フッター分下に拡張
+		}
+		repaint();
+	}
+
+	function revalidate(){
+		updateHeight();
+		parent?.revalidate();
+	}
+	
+	//	ルートのcmdblocksのみ呼び出される
+	function setStretchRect( x, y, w, h){
+		if( bnd.w != w){
+			setWidth( w);
+		}
+	}
+
+	//	ウィンドウサイズの変更などで幅が変わった際に呼び出す。
+	function setWidth( w){
+		bnd.w = w;
+		foreach( v in cmdviews){
+			v.setWidth( w-indent);
+		}
+		updateHeight();
+	}
+
+	function commandAt( ly){
+		if( ly >= 0.0 && ly < bnd.h){
+			foreach( v in cmdviews){
+				local r = v.commandAt( ly - v.pos.y); if( r) return r;
+			}
+		}
+		return null;
+	}
+
+	function changeCommand( i, cv){
+		cmdviews[i].removeFromParent();
+		cmdviews[i] = cv;
+		cmdblock[i] = cv.cmd;
+		addChild( cv);
+		cv.setWidth( bnd.w-indent);
+		revalidate();
+	}
+
+	function insertCommands( i, cvlist){
+		foreach( c, cv in cvlist){
+			cmdviews[i+c] <- cv;
+			cmdblock[i+c] <- cv.cmd;
+			cv.setWidth( bnd.w-indent);
+			addChild( cv);
+		}
+		revalidate();
+	}
+
+	function deleteCommands( s, e=-1){
+		for( local l = e>s?e-s-1:0; l >= 0;l --){
+			(delete cmdviews[s]).removeFromParent();
+			delete cmdblock[s];
+		}
+		revalidate();
+	}
+}

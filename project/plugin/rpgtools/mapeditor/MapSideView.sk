@@ -1,0 +1,551 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+local getGroupMaps( g){
+	switch( g.id){
+	case 0: //	全てのマップ
+	{
+		local a = [];
+		foreach( i, _ in ::conf.map){
+			if( i.startsWith( "M")) a .. i;
+		}
+		foreach( m in ::conf.map._meta.groups.find( @( v) v.id==-4).maps){	//	テンプレートは外しちゃう
+			a.removeValue( m);
+		}
+		return a;
+	}
+	default: return g["maps"] || [];
+	}
+}
+
+//	グループ
+//	id=0は全てのマップ、id=-1は未分類。グループを削除すると、そのグループ内のマップはid=-1に移動する。
+//	
+class MapSideView extends SKView
+{
+	//	タイプ
+	grouplist = null;			//	ListBehavior : 
+	selgroup = null;			//	
+	selmap = null;				//	
+
+	//	項目
+	maplist = null;				//	GPUIListView : 
+	groupmaps = null;			//	グループの項目。100項目ごとにページに分かれる
+	page = 0;					//	
+	pagenum = 1;				//	
+	pager = null;				//	
+
+	op = null;					//	
+
+	static function createSideView(){
+		local v = ::loadSKView( srcdir.."/ui/mapside.ui", MapSideView);
+		v.init();
+		return v;
+	}
+	
+	static function setgroupview( la, v, i){
+		local lbl = v.findChild( "lbl"), icon = v.findChild( "icon"), sep = v.findChild( "sep");
+		lbl.visible = icon.visible = true; sep.visible = false;
+		local cnt = length( getGroupMaps( i));
+		lbl.setValue( i.name .. ("(%d)" % cnt));
+		icon.setValue( i["icon"]);
+		v.tips = i["tips"] || null;
+		if( cnt > 0){
+			lbl.textbox.colormask = icon.textbox.colormask -1;
+		}else{
+			lbl.textbox.colormask = icon.textbox.colormask = 0x999999ff;
+		}
+		v.pickable = false;
+	}
+
+	function init(){
+		op = OperationStack();
+		grouplist = ListBehavior( findChild( "grouplist"), []);
+		grouplist.dndfunc = 3;
+		grouplist.setviewfunc = setgroupview;
+		grouplist.listview.addEventListener( ITEM_EVENT, groupevent);
+		grouplist.listview.addEventListener( ACTION_EVENT, groupevent);
+		maplist = findChild( "maplist");
+		maplist.addEventListener( ACTION_EVENT, mapevent);
+		pager = PagerBehavior( findChild( "pager"));
+		addEventListener( ACTION_EVENT, actionevent);
+		addEventListener( BROADCAST_EVENT, broadevent);
+		updateGroupList();
+		grouplist.setSelectedIndex( 0);
+
+		setGroup( grouplist.items[0]);
+		setPage( 0);
+	}
+
+	function updateGroupList(){
+		grouplist.setListItems( ::conf.map._meta.groups);
+	}
+
+	function setGroup( g){
+		selgroup = g;
+		groupmaps = [];
+		local a = clone getGroupMaps( g);
+		a.sort();
+		foreach( id in a){
+			groupmaps .. {
+				id = id,
+				data = ::conf.map[id],
+			};
+		}
+		pagenum = (length( groupmaps)+99) / 100;
+		pager.setPageNum( pagenum);
+	}
+
+	function setMap( m){
+	}
+
+	function setPage( p){
+		page = p;
+		pager.setPage( p);
+		local maps = groupmaps.slice( p*100, Math.min( p*100+100, length( groupmaps)));
+		local rownum = (length( maps)+1)/2, num = rownum*2;
+		maplist.setRowCount( rownum);
+		for( local l = 0;l < num;l ++){
+			local c = maplist.rows[l/2].findChild( "c"..(l%2));
+			local m = maps[l];
+			c.setVisible( !!m);
+			if( m){
+				c.setValue( "pic", "/data/mapdata/%S.webp"%m.id);
+				c.setValue( "id", m.id);
+				c.setValue( "name", m.data.name);
+				c.ref = m;
+			}
+		}
+	}
+
+	function findMapGroup( mid){
+		return (clone grouplist.items).reverse().find( @( v) getGroupMaps( v).contains( mid));
+	}
+
+	function setCurrentPath( path){
+		local r = ::getResource( path), g;
+		if( !r.getContent()) return;	//	消えたマップを指す場合がある。。。
+		if( getGroupMaps( selgroup).contains( r.name)){
+			g = selgroup;
+		}else{
+			local getGroupMaps = getGroupMaps;
+			g = (clone grouplist.items).reverse().find( @( v) getGroupMaps( v).contains( r.name));
+			setGroup( g);
+			grouplist.setSelectedItem( g);
+		}
+		local i = groupmaps.findi( @( v) v.id==r.name);
+		setPage( i/100);
+		local c = maplist.rows[(i%100)/2].findChild( "c"..(i%2));
+		selectmapitem( c);
+	}
+
+	//	グループに対するコンテキストメニュー
+	//	新規マップ、新規グループ、グループ削除、グループ名の変更
+	//	マップ操作のundo, redo
+	function groupContextMenu( e, group){
+		local menudata = [
+			{ id="newmap", lbl="$T.ctxmenu_mapside_newmap", icon="\ue147" },
+			{ id="newgroup", lbl="$T.ctxmenu_mapside_newgroup", icon="\ue2cc" },
+		]
+		if( group){
+			local lock = group["lock"];
+			menudata ... [
+			"-",
+			{ id="rename", lbl="$T.ctxmenu_mapside_rengroup", icon=lock?"\ue897":"\ue3c9", disable=lock },
+			{ id="delete", lbl="$T.ctxmenu_mapside_delgroup", icon=lock?"\ue897":"\ue872" , disable=lock },
+			];
+		}
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "newmap":
+			showNewMap();
+			break;
+		case "explor":
+			break;
+		case "copy":
+			break;
+		case "rename":
+			break;
+		case "delete":
+			if( Dialogs.confirm( {msg=rtf( T.confirm_mapside_delgroup), icon="\ue002"})){
+				deleteGroup( group.id);
+			}
+			break;
+		}
+	}
+
+	function deleteGroup( gid){
+		local g = grouplist.items.find( @( v) v.id==gid);
+		local ung = grouplist.items.find( @( v) v.id==-1);
+		ung.maps ... g.maps;
+		grouplist.items.removeValue( g);
+		updateGroupList();
+		grouplist.setSelectedItem( ung);
+		setGroup( ung);
+		setPage( 0);
+	}
+
+	//	マップに対するコンテキストメニュー
+	//	新規マップ、コピーして新規、マップの削除、
+	//	マップ操作のundo, redo
+	function mapContextMenu( e){
+		
+		
+	}
+
+	function showNewMap(){
+		local mapgid = selgroup.id;
+		if( mapgid == 0) mapgid = -1;
+		local ret = NewMapDialog.run( mapgid);
+		printf( "showNewMap %S\n", encodeJSON( ret));
+		if( ret){			//	以下undo不可操作
+			local dir = ::getResource( "/data/mapdata").file;
+			local srcbwf = FileRef( dir, ret.tempmid .. ".bw");
+			local srcwebpf = FileRef( dir, ret.tempmid .. ".webp");
+			local dstbwf = FileRef( dir, ret.mid .. ".bw");
+			local dstwebpf = FileRef( dir, ret.mid .. ".webp");
+			local data = deepclone( ::conf.map[ret.tempmid]);
+			data.name = `$T.lbl_map $ret.mid`;
+			//	コピー操作！
+			::conf.map[ret.mid] <- data;
+			local g = ::conf.map._meta.groups.find( @( v) v.id==ret.mapgid);
+			g.maps .. ret.mid;
+			srcbwf.copyTo( dstbwf);
+			srcwebpf.copyTo( dstwebpf);
+			::getResource( "/.x/map").save();
+			::skstudio.fileview.refreshDir( "/data/mapdata");
+			::skstudio.fileview.refreshDir( "/.x/map");
+			updateGroupList();
+			setGroup( g);
+			setPage( pager.pagenum-1);
+		}
+	}
+	
+	function _makemap( mid, srcmid, name, mapgid){
+		local srcmap = ::conf.map[srcmid];
+		local dir = ::getResource( "/data/mapdata").file;
+		local srcbwf = FileRef( dir, srcmid .. ".bw");
+		local srcwebpf = FileRef( dir, srcmid .. ".webp");
+		local dstbwf = FileRef( dir, mid .. ".bw");
+		local dstwebpf = FileRef( dir, mid .. ".webp");
+		local data = deepclone( ::conf.map[srcmid]);
+		data.name = name;
+		//	コピー操作！
+		::conf.map[mid] <- data;
+		local g = ::conf.map._meta.groups.find( @( v) v.id==mapgid);
+		g.maps .. mid;
+		srcbwf.copyTo( dstbwf);
+		srcwebpf.copyTo( dstwebpf);
+		::getResource( "/.x/map").save();
+		::skstudio.fileview.refreshDir( "/data/mapdata");
+		::skstudio.fileview.refreshDir( "/.x/map");
+		updateGroupList();
+		setGroup( g);
+		setPage( pager.pagenum-1);
+	}
+
+	function _grouplist(){
+		return grouplist.items.map( @( v) (v.id==0?undefined : { lbl=v.name, icon=v.icon, val=v.id, g=v}))
+	}
+
+	function showMoveMap( srcmid){
+		local glist = _grouplist();
+		local gid = glist.find( @( v) v.g.maps.contains( srcmid))["val"] ?? -1;
+		local propdef = {
+			name = "$T.lbl_changeid",
+			props = [
+				{ pid="mapid", lbl="$T.dlg_newmap_mapid", type=LIST, list=NewMapDialog.makemapidmenu(), },
+				{ pid="gid", lbl="$T.lbl_group", type=LIST, list=glist, }
+			],
+		}
+		local ret = PropertyEditPopup_OK.run( null, propdef, { mapid=NewMapDialog.nextmapid(), gid=gid});
+		if( ret){
+			//	conf, bw, webpの移動。まずはduplicateして元を削除。これなら失敗しても元のデータは残る
+			local name = ::conf.map[srcmid].name;
+			_makemap( ret.mapid, srcmid, name, ret.gid);
+			//	次に今のidを消す
+			deleteMap( srcmid);
+		}
+	}
+	
+	function showDuplicateMap( srcmid){
+		local glist = _grouplist();
+		local gid = glist.find( @( v) v.g.maps.contains( srcmid))["val"] ?? -1;
+		local propdef = {
+			name = "$T.ctxmenu_mapside_duplicate",
+			props = [
+				{ pid="mapid", lbl="$T.dlg_newmap_mapid", type=LIST, list=NewMapDialog.makemapidmenu(), },
+				{ pid="gid", lbl="$T.lbl_group", type=LIST, list=glist, }
+			],
+		}
+		local ret = PropertyEditPopup_OK.run( null, propdef, { mapid=NewMapDialog.nextmapid(), gid=gid});
+		if( ret){
+			_makemap( ret.mapid, srcmid, `$T.lbl_map $ret.mapid`, ret.gid);
+		}
+	}
+	
+	function groupevent( e){
+		switch( e.id){
+		case ITEM_SELECTED:
+			local v = e.actioncmd;
+			setGroup( v);
+			setPage( 0);
+			break;
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON2_MASK)){
+				if( !grouplist.isItemSelected( e.actioncmd)){
+					grouplist.setSelectedItem( e.actioncmd);
+				}
+				groupContextMenu( e, e.actioncmd);
+			}
+			break;
+		}
+	}
+
+	function selectmapitem( v){
+		foreach( r in maplist.rows){
+			for( local l = 0;l < 2;l ++){
+				local c = r.findChild( "c"..l);
+				local b = c==v;
+				if( c.isSelected() != b) c.setSelected( b);
+			}
+		}
+	}
+
+	function mapevent( e){
+		switch( e.id){
+		case ACTION_PERFORMED:
+			selectmapitem( e.src);
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showMapContextMenu( e);
+			}else
+			if( e.count == 2){
+				local path = "/.x/map/" .. e.src.ref.id;
+				::skstudio.openEditor( path);
+			}
+			break;
+		}
+	}
+
+	function showMapContextMenu( e){
+		local map = e.src.ref;
+		local g = findMapGroup( map.id);
+		local glist = grouplist.items.map( @( v) (v.id==0?undefined : { id="moveg", lbl=v.name, icon=v.icon, val=v, checked=v==g}));
+		local menudata = [
+			{ id="edit", lbl="$T.lbl_edit", icon="\ue745" },
+			{ id="moveg", lbl="$T.ctxmenu_mapside_movgroup", icon="\ue675" submenu=glist },
+			"-",
+			{ id="moveid", lbl="$T.lbl_changeid", icon="\ue9ef" },
+			{ id="dup", lbl="$T.ctxmenu_mapside_duplicate", icon="\ue14d" },
+			"-",
+			{ id="delete", lbl="$T.ctxmenu_mapside_delete", icon="\ue872" },
+		];
+		local path = "/.x/map/" .. map.id;
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "edit":
+			::skstudio.openEditor( path);
+			break;
+		case "moveg":
+			local glist = ::conf.map._meta.groups;
+			local mapgid = ret.val.id;
+			local newg = glist.find( @( v) v.id==mapgid);
+			if( newg){
+				foreach( g in glist){
+					g["maps"]?.removeValue( map.id);
+				}
+				newg.maps .. map.id;
+				::getResource( "/.x/map").save();
+				::skstudio.fileview.refreshDir( "/.x/map");
+				updateGroupList();
+				setCurrentPath( path);
+			}
+			break;
+		case "moveid":
+			showMoveMap( map.id);
+			break;
+		case "dup":
+			showDuplicateMap( map.id);
+			break;
+		case "delete":
+			local d = ::conf.map[map.id];
+			if( Dialogs.confirm( {msg=rtf( tmpl( T.tmpl_confirm_erace_noundo, {v=`$map.id:$d.name`})), icon="\ue002" })){
+				deleteMap( map.id);
+			}
+			break;
+		}
+	}
+
+	function deleteMap( mid){
+		local dir = ::getResource( "/data/mapdata").file;
+		local dstbwf = FileRef( dir, mid .. ".bw");
+		local dstwebpf = FileRef( dir, mid .. ".webp");
+		//	削除操作！
+		delete ::conf.map[mid];
+		foreach( g in ::conf.map._meta.groups){	//	グループから削除
+			g["maps"]?.removeValue( mid);
+		}
+		dstbwf.deleteFile();
+		dstwebpf.deleteFile();
+		::getResource( "/.x/map").save();
+		::skstudio.fileview.refreshDir( "/data/mapdata");
+		::skstudio.fileview.refreshDir( "/.x/map");
+		updateGroupList();
+		local pi = pager.page;
+		setGroup( selgroup);
+		setPage( pager.pagenum-1);
+		::skstudio.flushEditor( "/.x/map/"..mid);
+	}
+
+	function actionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "menubtn":
+			groupContextMenu( e, null);
+			break;
+		case "pager":
+			setPage( pager.page);
+			break;
+		}
+	}
+
+	//	受け取るブロードキャストコマンド
+	//	"dir_refreshed": フォルダがリフレッシュされた。マップの保存で起きる
+	//	
+	function broadevent( e){
+		local bc = e["actioncmd"];
+		switch( bc["cmd"]){
+		case "dir_refreshed":
+			if( bc.dir.path.startsWith( "/.x/map")){
+				setGroup( selgroup);
+				setPage( page);
+			}
+			break;
+		}
+	}
+}
+
+class NewMapDialog extends Dialog
+{
+	mapid = null;			//	選択mapid
+	mapidmenu = null;
+	mapgmenu = null;
+	templist = null;
+
+	seltemp = null;			//	
+
+	constructor( v, mid, gid){
+		super( v);
+		local idmenudata = makemapidmenu();
+		mapidmenu = MenuBehavior( view.findChild( "mapidmenu"), idmenudata);
+		mapidmenu.selectItem({
+			lbl=mid, mid=mid, rlbl=null
+		})
+		local glist = ::conf.map._meta.groups.map( @( v) (v.id==0?undefined : { id=v.id, lbl=v.name, icon=v.icon, val=v}));
+		mapgmenu = MenuBehavior( view.findChild( "mapgmenu"), glist);
+		mapgmenu.selectItem( @( v) v.id==gid);
+		//
+		templist = view.findChild( "templist");
+		local maps = clone ::conf.map._meta.groups.find( @( v) v.id==-4).maps;	//	-3==template
+		maps.sort();
+		local rownum = (length( maps)+3)/4, num = rownum*4;
+		templist.setRowCount( rownum);
+		for( local l = 0;l < num;l ++){
+			local mid = maps[l];
+			local c = templist.rows[l/4].findChild( "c"..(l%4));
+			c.setVisible( !!mid);
+			if( mid){
+				c.ref = mid;
+				local d = ::conf.map[mid];
+				c.setValue( "name", d.name);
+				c.setValue( "size", sprintf( "%d x %d", d.size[0], d.size[2]));
+				c.setValue( "pic", "/data/mapdata/%S.webp"%mid);
+				if( !seltemp){ seltemp = c; c.setSelected( true); }
+			}
+		}
+		templist.addEventListener( ACTION_EVENT, tempevent);
+	}
+
+	function tempevent( e){
+		if( seltemp != e.src){
+			seltemp?.setSelected( false);
+			seltemp = e.src;
+			seltemp.setSelected( true);
+		}
+	}
+
+	static function nextmapid(){
+		for( local l = 0;l < 1000;l ++){
+			local mid = "M%03d" % l;
+			if( !::conf.map[mid]) return mid;
+		}
+	}
+
+	static function makemapidmenu(){
+		local idmenudata = [];
+		for( local l = 0;l < 10;l ++){
+			idmenudata .. { lbl=("M%d00"%l), submenu=idsubmenu( l), }
+		}
+		return idmenudata;
+	}
+	
+	static function idsubmenu( i){
+		// return @(){
+			local a = [];
+			for( local l = 0;l < 100;l ++){
+				local mid = "M%03d" % (i*100+l);
+				local map = ::conf.map[mid];
+				a .. {
+					lbl=mid, mid=mid, rlbl=map["name"], disable=!!map, val=mid
+				}
+			}
+			return a;
+		// }
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		}
+		super.actionevent( e);
+	}
+
+	static function run( mapgid){
+		//	mapid check
+		local mid = nextmapid();
+		//
+		local dlg = this( srcdir.."/ui/newmapdialog.ui", mid, mapgid);
+		dlg.show();
+		if( dlg.ret){
+			local mid = dlg.mapidmenu.selitem.mid;
+			local tempmid = dlg.seltemp.ref;
+			local mapgid = dlg.mapgmenu.selitem.id;
+			return { mid=mid, tempmid=tempmid, mapgid=mapgid}
+		}
+	}
+}
+
+
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+with( skstudio){
+	registerMenu( { uid="editor_map_newmap", parentid="menu_file", order=-1000, lbl="$T.ctxmenu_mapside_newmap", icon="\ue147", 
+		func=@(){
+			local sv = skstudio.openSideView( "side_map");
+			sv.showNewMap();
+		}
+	});
+
+	registerActivity( {uid:"act_map", order:-100, sideview="side_map", icon="\uf11e", tips="$T.side_map", slbl="$T.lbl_map"});
+	registerSideView( {
+		uid:"side_map", lbl="$T.side_map", icon="\uf11e", createSideView=MapSideView.createSideView, defkey="^_W"
+		matches = @( path){
+			local dbtype = getdbtype( path);
+			return dbtype=="map";
+		}
+	});
+}

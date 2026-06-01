@@ -1,0 +1,120 @@
+import VirtualKeyCode;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	スキルテスト用のバトル処理
+//	
+//	指定したスキルを敵味方共に使いまくる？
+//	
+
+//	
+class SkillTestBattleRunner extends BattleRunnerBase
+{
+	useskill = "S010";	//	アイテムの場合もあり
+
+	//	stage.launch内で自動イベント実行前に呼び出される
+	function start( st){
+		useskill ??= battledata["skillid"];
+		//
+		super.start( st);
+		setupCharas();				//	バトルキャラ配置。
+		setupBattleUI();			//	バトルUIを配置。
+		emitOption( "prebattle", null);		//	こいつが呼ばれるときはまだワイプアウト時。
+		//	ここからスレッドを切り離して
+		thread = newthread( "SkillTestBattle Thread");
+		thread.call( runSkillTestBattle, this);
+	}
+
+	//	
+	function update( dt){
+		thread.wakeup( dt);
+		//	アクティブバトルの場合はここでゲージを進める
+	}
+	
+	//	
+	function runSkillTestBattle(){
+		//	ここからタイミング取って戦闘シーン開始。まだワイプは閉じてる。
+		battleStart();
+		waitMainEvent();
+		try{
+			for( ;;){
+				battleTurn();
+				suspend();
+				waitMainEvent();
+			}
+		}catch( ex){
+			printexception( ex);
+			skExit( 0);	//	owari
+		}
+	}
+
+	//	バトル開始。
+	//	・カメラを戦闘用に切り替えて、登場演出をキャラごとに指定して、、、って処理はオートイベントで行う。これで特別な演出を入れられる
+	function battleStart(){
+		foreach( v in members){
+			local p3d = getChara3D( v);
+			p3d?.anime2( {id="stand"});
+		}
+		sleep( 600);
+	}
+	
+	//	1ターンの処理。敵も味方もオート
+	function battleTurn(){
+		emitOption( "preturn", turn);	//	ターン開始前
+		//	コマンド入力
+		cmdqueue = [];
+		local autocharas = charas;	//	コマンドを選択出来ないパーティメンバー＋敵全員
+		foreach( pc in autocharas){
+			if( !pc.isCommandable()){
+				local skill = ::rpgdata["S000"];
+				cmdqueue .. SkillCommand( pc, skill, [pc]);
+			}else{
+				local skill = ::rpgdata[useskill];
+				local dst = chooseRandomTarget( pc, skill.cmdtgt);
+				local dsts = dst && getCommandTargets( pc, dst, skill.cmdtgt, false);
+				pc.setSkill( skill);
+				cmdqueue .. SkillCommand( pc, skill, dsts);
+			}
+		}
+		//	素早さ等でコマンドをソート
+		cmdqueue.sort( @( v) v.order);
+		//	ターン開始
+		//	
+		emitOption( "preturn", turn);	//	ターン開始。マクロとかでキャラの行動を入れ替えたりとかも出来る。
+		//	コマンド処理。メインイベント実行とは排他的。
+		while( cmdqueue[0]){
+			suspend();
+			if( stage.mainevent) continue;	//	メインイベント動作中。
+			local cmd = delete cmdqueue[0];
+			cmd.exec();
+			checkBattleEnd();
+			resetPosition();
+		}
+		//	ターン終了処理。防御解除、毒ダメージ、他？
+		//	※ターン終了時に大きな攻撃みたいなスキルはどうすればいいかなー？cmdに入れるか？単にorder値目一杯上げるだけでいいか
+		emitOption( "postturn", turn);
+		dieCheck( null);	//	cmd=null
+		foreach( chr in charas){	//	ターン経過で解除されるコンディションをチェック。
+			local rems = chr.spendTurn();
+			if( rems){
+				local rp3d = getChara3D( chr);
+				rp3d.manuaction.act( @(){
+					foreach( r in rems){
+						chr.removeCondition( r.dataid);
+						if( r.data.showpop){
+							popcond( r.dataid, "rem");
+							wait( 300);
+						}
+					}
+				});
+			}
+		}
+		checkBattleEnd();
+		foreach( pc in charas) pc.setSkill( null);	//	何もしないスキルはskillが残ってるのでここでリセット
+		++turn;
+	}
+
+	//	勝利演出出さない
+	function showVictoryUI(){
+	}
+}

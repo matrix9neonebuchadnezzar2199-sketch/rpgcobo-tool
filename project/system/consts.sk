@@ -1,0 +1,761 @@
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//
+//	Constants
+//
+
+//	basic keycode
+enum VirtualKeyCode
+{
+	VK_UNDEFINED = 0
+	VK_CANCEL = 3
+	VK_BACK_SPACE = 8
+	VK_TAB = 9
+	VK_ENTER = 10
+	VK_CLEAR = 12
+	VK_SHIFT = 16
+	VK_CONTROL = 17
+	VK_ALT = 18
+	VK_PAUSE = 19
+	VK_CAPS_LOCK = 20
+	VK_KANA = 21
+	VK_FINAL = 24
+	VK_KANJI = 25
+	VK_ESCAPE = 27
+	VK_CONVERT = 28
+	VK_NONCONVERT = 29
+	VK_ACCEPT = 30
+	VK_MODECHANGE = 31
+	VK_SPACE = 32
+	VK_PAGE_UP = 33
+	VK_PAGE_DOWN = 34
+	VK_END = 35
+	VK_HOME = 36
+	VK_LEFT = 37
+	VK_UP = 38
+	VK_RIGHT = 39
+	VK_DOWN = 40
+	VK_COMMA = 44
+	VK_MINUS = 45
+	VK_PERIOD = 46
+	VK_SLASH = 47
+	VK_0 = 48
+	VK_1 = 49
+	VK_2 = 50
+	VK_3 = 51
+	VK_4 = 52
+	VK_5 = 53
+	VK_6 = 54
+	VK_7 = 55
+	VK_8 = 56
+	VK_9 = 57
+	VK_COLON = 58
+	VK_SEMICOLON = 59
+	VK_EQUALS = 61
+	VK_A = 65
+	VK_B = 66
+	VK_C = 67
+	VK_D = 68
+	VK_E = 69
+	VK_F = 70
+	VK_G = 71
+	VK_H = 72
+	VK_I = 73
+	VK_J = 74
+	VK_K = 75
+	VK_L = 76
+	VK_M = 77
+	VK_N = 78
+	VK_O = 79
+	VK_P = 80
+	VK_Q = 81
+	VK_R = 82
+	VK_S = 83
+	VK_T = 84
+	VK_U = 85
+	VK_V = 86
+	VK_W = 87
+	VK_X = 88
+	VK_Y = 89
+	VK_Z = 90
+	VK_OPEN_BRACKET = 91
+	VK_BACK_SLASH = 92
+	VK_CLOSE_BRACKET = 93
+	VK_NUMPAD0 = 96
+	VK_NUMPAD1 = 97
+	VK_NUMPAD2 = 98
+	VK_NUMPAD3 = 99
+	VK_NUMPAD4 = 100
+	VK_NUMPAD5 = 101
+	VK_NUMPAD6 = 102
+	VK_NUMPAD7 = 103
+	VK_NUMPAD8 = 104
+	VK_NUMPAD9 = 105
+	VK_MULTIPLY = 106
+	VK_ADD = 107
+	VK_SEPARATER = 108
+	VK_SUBTRACT = 109
+	VK_DECIMAL = 110
+	VK_DIVIDE = 111
+	VK_F1 = 112
+	VK_F2 = 113
+	VK_F3 = 114
+	VK_F4 = 115
+	VK_F5 = 116
+	VK_F6 = 117
+	VK_F7 = 118
+	VK_F8 = 119
+	VK_F9 = 120
+	VK_F10 = 121
+	VK_F11 = 122
+	VK_F12 = 123
+	VK_DELETE = 127
+	VK_DEAD_GRAVE = 128
+	VK_DEAD_ACUTE = 129
+	VK_DEAD_CIRCUMFLEX = 130
+	VK_DEAD_TILDE = 131
+	VK_DEAD_MACRON = 132
+	VK_DEAD_BREVE = 133
+	VK_DEAD_ABOVEDOT = 134
+	VK_DEAD_DIAERESIS = 135
+	VK_DEAD_ABOVERING = 136
+	VK_DEAD_DOUBLEACUTE = 137
+	VK_DEAD_CARON = 138
+	VK_DEAD_CEDILLA = 139
+	VK_DEAD_OGONEK = 140
+	VK_DEAD_IOTA = 141
+	VK_DEAD_VOICED_SOUND = 142
+	VK_DEAD_SEMIVOICED_SOUND = 143
+	VK_NUM_LOCK = 144
+	VK_SCROLL_LOCK = 145
+	VK_AMPERSAND = 150
+	VK_ASTERISK = 151
+	VK_QUOTEDBL = 152
+	VK_LESS = 153
+	VK_PRINTSCREEN = 154
+	VK_INSERT = 155
+	VK_HELP = 156
+	VK_META = 157
+	VK_GREATER = 160
+	VK_BRACELEFT = 161
+	VK_BRACERIGHT = 162
+	VK_BACK_QUOTE = 192
+	//	extra keycode
+	VK_F13 = 200
+	VK_F14 = 201
+	VK_F15 = 202
+	VK_F16 = 203
+	VK_F17 = 204
+	VK_F18 = 205
+	VK_F19 = 206
+	VK_F20 = 207
+	VK_F21 = 208
+	VK_F22 = 209
+	VK_F23 = 210
+	VK_F24 = 211
+	VK_QUOTE = 212
+	VK_KP_UP = 213
+	VK_KP_DOWN = 214
+	VK_KP_LEFT = 215
+	VK_KP_RIGHT = 216
+	VK_ALPHANUMERIC = 217
+	VK_KATAKANA = 218
+	VK_HIRAGANA = 219
+	VK_FULL_WIDTH = 220
+	VK_HALF_WIDTH = 221
+	VK_ROMAN_CHARACTERS = 222
+	VK_ALL_CANDIDATES = 223
+	VK_PREVIOUS_CANDIDATE = 224
+	VK_CODE_INPUT = 225
+	VK_JAPANESE_KATAKANA = 226
+	VK_JAPANESE_HIRAGANA = 227
+	VK_JAPANESE_ROMAN = 228
+	VK_KANA_LOCK = 229
+	VK_INPUT_METHOD_ON_OFF = 230
+	VK_AT = 231
+	VK_COLON = 232
+	VK_CIRCUMFLEX = 233
+	VK_DOLLAR = 234
+	VK_EURO_SIGN = 235
+	VK_EXCLAMATION_MARK = 236
+	VK_INVERTED_EXCLAMATION_MARK = 237
+	VK_LEFT_PARENTHESIS = 238
+	VK_NUMBER_SIGN = 239
+	VK_PLUS = 240
+	VK_RIGHT_PARENTHESIS = 241
+	VK_UNDERSCORE = 242
+	VK_CUT = 243
+	VK_COPY = 244
+	VK_PASTE = 245
+	VK_UNDO = 246
+	VK_AGAIN = 247
+	VK_FIND = 248
+	VK_PROPS = 249
+	// VK_STOP = 250
+	// VK_COMPOSE = 251
+	// VK_ALT_GRAPH = 252
+	//	mouse button vk
+	VK_MOUSE_BUTTON1 = 250
+	VK_MOUSE_BUTTON2 = 251
+	VK_MOUSE_BUTTON3 = 252
+	VK_MOUSE_BUTTON4 = 253
+	VK_MOUSEWHEEL_DEC = 254
+	VK_MOUSEWHEEL_INC = 255
+}
+
+// modifiers
+enum ModifiersMask
+{
+	SHIFT_MASK = 1
+	CTRL_MASK = 2
+	META_MASK = 4
+	ALT_MASK = 8
+	ALT_GRAPH_MASK = 16
+	BUTTPN0_MASK = 32		//	TouchPad down
+	BUTTON1_MASK = 64
+	BUTTON2_MASK = 128
+	BUTTON3_MASK = 256
+	BUTTON4_MASK = 512
+	
+	TOUCH_MASK = 32768
+	VIRTUAL_MASK = 65536
+	GPUI_MASK = 131072
+}
+
+enum GamepadType
+{
+	GAMEPAD_XINPUT    = 1,
+	GAMEPAD_DS4       = 2,
+	GAMEPAD_SWITCH    = 3,
+	GAMEPAD_MISC      = 4,
+	GAMEPAD_VIRTUAL   = 9,
+}
+
+// 大体プラットフォーム共通
+enum GamepadButtonCode
+{
+	// button
+	BTN_UP		= 0
+	BTN_DOWN	= 1
+	BTN_LEFT	= 2
+	BTN_RIGHT	= 3
+	BTN_START	= 4
+	BTN_BACK	= 5
+	BTN_LS		= 6
+	BTN_RS		= 7
+	BTN_LB		= 8
+	BTN_RB		= 9
+	BTN_A		= 10		// ×
+	BTN_B		= 11		// 〇
+	BTN_X		= 12		// □
+	BTN_Y		= 13		// △
+	BTN_ZL		= 14
+	BTN_ZR		= 15
+	// axis - 取るときに&31する
+	AXIS_L_U	= 32		// 左スティック上
+	AXIS_L_D	= 33		// 左スティック下
+	AXIS_L_L	= 34		// 左スティック左
+	AXIS_L_R	= 35		// 左スティック右
+	AXIS_R_U	= 36		// 右スティック上
+	AXIS_R_D	= 37		// 右スティック下
+	AXIS_R_L	= 38		// 右スティック左
+	AXIS_R_R	= 39		// 右スティック右
+	AXIS_ZL		= 40
+	AXIS_ZR		= 41
+	// ヘルプ用
+	BTN_CURSOR	= -1		// カーソル。ゲームパッドの場合は左スティックかカーソルボタン
+	BTN_LR		= -2		// LRボタン
+	BTN_ZLR		= -3		// Z LRボタン/トリガー
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+//	Event ID
+
+const QUIT_REQUESTED = 1
+const APP_ACTIVATED = 2
+const APP_DEACTIVATED = 3
+const SCREEN_RESIZED = 4
+const SCREEN_REPAINT = 5
+const SIGNAL_CAUGHT = 6
+const ACTIVESTATE_CHANGED = 7
+const MOUSE_CLICKED = 100
+const MOUSE_PRESSED = 101
+const MOUSE_RELEASED = 102
+const MOUSE_MOVED = 103
+const MOUSE_DRAGGED = 104
+const MOUSE_WHEEL_MOVED = 105
+const MOUSE_HWHEEL_MOVED = 106
+const MOUSE_ENTERED = 107
+const MOUSE_EXITED = 108
+const MOUSE_CANCELLED = 109
+const MOUSE_PAN = 110
+const MOUSE_PINCH = 111
+const MODAL_MOUSE_CLICKED	 = 120;
+const MODAL_MOUSE_PRESSED	 = 121;
+const MODAL_MOUSE_RELEASED	 = 122;
+const MODAL_MOUSE_MOVED		 = 123;
+const MODAL_MOUSE_DRAGGED	 = 124;
+const MODAL_MOUSE_WHEEL_MOVED =125;
+const MODAL_HMOUSE_WHEEL_MOVED=126;
+const MODAL_MOUSE_OFFSET	 = 20;
+const KEY_TYPED = 200
+const KEY_PRESSED = 201
+const KEY_REPEATED = 202
+const KEY_RELEASED = 203
+const IMTEXT_CHANGED = 300
+const ACTION_PERFORMED = 400
+const ACTION_CANCELED = 401
+const ITEM_SELECTED = 500
+const ITEM_REMOVE = 501
+const ITEM_HOVER = 502
+const ITEM_DESELECTED = 503
+const ITEM_SORT = 504
+const ITEM_SELECTIONS = 505
+const VALUE_CHANGED = 510
+const TEXT_CHANGED = 600
+const TEXT_RESTART = 601
+const FOCUS_GAINED = 700
+const FOCUS_LOST = 701
+//
+const SOURCE_DRAG_BEGIN = 800
+const SOURCE_DRAG_ENTER = 801
+const SOURCE_DRAG_EXIT = 802
+const SOURCE_DRAG_OVER = 803
+const SOURCE_DROP = 804
+const SOURCE_DROP_ACTION_CHANGED = 805
+const TARGET_DRAG_ENTER = 900
+const TARGET_DRAG_EXIT = 901
+const TARGET_DRAG_OVER = 902
+const TARGET_DROP = 903
+const TARGET_DROP_ACTION_CHANGED = 904
+const TEXTINPUT_DONE = 1000
+const TEXTINPUT_CANCELED = 1001
+const TEXTINPUT_CHANGED = 1002
+const TEXTINPUT_VIEWPORT = 1003
+const TEXTINPUT_IMTEXT_CHANGED = 1004
+const TEXTINPUT_SEND = 1005
+const IAP_INIT_SUCCESS = 1100
+const IAP_INIT_FAIL = 1101
+const IAP_INFO_SUCCESS = 1102
+const IAP_INFO_FAIL = 1103
+const IAP_OWN_SUCCESS = 1104
+const IAP_OWN_FAIL = 1105
+const IAP_PURCHASE_SUCCESS = 1106
+const IAP_PURCHASE_FAIL = 1107
+const IAP_CONSUME_SUCCESS = 1108
+const IAP_CONSUME_FAIL = 1109
+const EVENT_REPOST = 1200
+const NOTIFY_STATUS = 1300
+const NOTIFY_ERROR = 1301
+const BROADCAST = 1400
+const GPUI_PRESSED = 1500
+const GPUI_REPEATED = 1501
+const GPUI_RELEASED = 1502
+const GPUI_SELECTED = 1503
+const GPUI_DESELECTED = 1504
+const GPUI_GAMEPAD_CHANGED = 1510
+const GPUI_GAMEPAD_NOTICE = 1511
+
+const APP_EVENT = 0
+const MOUSE_EVENT = 1
+const KEY_EVENT = 2
+const IM_EVENT = 3
+const ACTION_EVENT = 4
+const ITEM_EVENT = 5
+const VALUE_EVENT = 5
+const TEXT_EVENT = 6
+const FOCUS_EVENT = 7
+const DRAGSOURCE_EVENT = 8
+const DROPTARGET_EVENT = 9
+const TEXTINPUT_EVENT = 10
+const IAP_EVENT = 11
+// const COMMAND_EVENT = 12
+const NOTIFY_EVENT = 13
+const BROADCAST_EVENT = 14
+const GPUI_EVENT = 15
+
+
+///////////////////////////////////////////////////////////////////////////////
+//	Screen Type
+
+enum AppActiveState
+{
+	APPACTIVE_NOTLAUNCH  = 0
+	APPACTIVE_ACTIVE     = 1
+	APPACTIVE_INACTIVE   = 2
+	APPACTIVE_BACKGROUND = 3
+	APPACTIVE_SUSPENDED  = 4
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+//	Screen Type
+
+enum ScreenType
+{
+	SCREENTYPE_FULLSCREEN = 0
+	SCREENTYPE_GAMEWINDOW = 1
+	SCREENTYPE_APPWINDOW = 2
+	SCREENTYPE_POPUPWINDOW = 3
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//	Cursor Type
+
+enum CursorType
+{
+	CURSOR_ARROW = 0
+	CURSOR_IBEAM = 1
+	CURSOR_CROSS = 2
+	CURSOR_HAND  = 3
+	CURSOR_NO	 = 4
+	CURSOR_SIZE  = 5
+	CURSOR_WAIT  = 6
+	CURSOR_NONE  = 7
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//	Socket
+
+const SO_LINGER = 1
+const SO_SNDBUF = 2
+const SO_RCVBUF = 3
+const SO_REUSEADDR = 4
+const SO_KEEPALIVE = 5
+const TCP_NODELAY = 6
+
+const SOCKET_NOTOPEN		= 0
+const SOCKET_CONNECTING		= 1
+const SOCKET_CONNECTED		= 2
+const SOCKET_BOUND			= 2
+const SOCKET_CLOSED			= 3
+const SOCKET_ERROR			= 4
+const SOCKET_DISPOSED		= 5
+const SOCKET_ACCEPTED		= 6
+
+///////////////////////////////////////////////////////////////////////////////
+//	Text Edit
+
+enum TextEditFlags
+{
+	//	type flags &15
+	TEXTEDIT_TEXT = 0
+	TEXTEDIT_PASSWORD = 1
+	TEXTEDIT_EMAIL = 2
+	TEXTEDIT_NUMBER = 3
+	TEXTEDIT_PHONE = 4
+	TEXTEDIT_SEARCH = 5
+	TEXTEDIT_MULTILINE = 6
+	TEXTEDIT_CHAT = 7
+	//	option flags
+	TEXTEDIT_NOFULLSCREEN = 16
+	TEXTEDIT_INLINE = 32
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//	File Dialog
+
+enum FileDialogMode
+{
+	FILEDIALOG_OPEN = 0
+	FILEDIALOG_SAVE = 1
+	FILEDIALOG_SELECT = 2
+	FILEDIALOG_SELECTDIR  = 3
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//	Clipboard
+
+enum ClipboardType
+{
+	CLIPBOARD_TEXT = 1
+	CLIPBOARD_FILELIST = 2
+	CLIPBOARD_IMAGE = 3
+	CLIPBOARD_WAVE = 4
+	CLIPBOARD_DATA = 5
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//	Graphics
+
+//	Clear buffer bit
+const SK_CLEAR_COLOR = 1
+const SK_CLEAR_DEPTH = 2
+const SK_CLEAR_STENCIL = 4
+
+//const SKImage/FBO format
+const SK_RGBA8		 = 0
+const SK_SRGBA8		 = 1
+//	FBO format
+const SK_R16I	 = 9
+const SK_RGBA16I	 = 10
+const SK_R16F	 = 11
+const SK_RGBA16F	 = 12
+const SK_R32F	 = 13
+const SK_RG32F	 = 14
+const SK_RGBA32F	 = 15
+const SK_DEPTH16	 = 16
+const SK_DEPTH24	 = 17
+const SK_R8      = 18
+const SK_DEPTH32     = 19
+const SK_R32I	 = 20
+const SK_RG32I	 = 21
+const SK_R11G11B10F	 = 22
+const SK_RGB9E5      = 23
+const SK_RGBA32UI		= 24
+const SK_R32UI	 = 25
+const SK_RG32UI	 = 26
+const SK_R16UI	 = 27
+
+//	VertexBuffer bind
+const SK_POSITION	 = 0
+const SK_NORMAL    = 1
+const SK_COLOR1    = 2
+const SK_COLOR2    = 3
+const SK_UV1		 = 4
+const SK_UV2		 = 5
+const SK_UV3		 = 6
+const SK_UV4		 = 7
+const SK_UV5		 = 8
+	//	alias
+const SK_EDGENORMAL	 = 5
+const SK_WEIGHTIDX	 = 6
+const SK_WEIGHT		 = 7
+const SK_TANGENT	 = 8
+
+//	Matrix type
+const SK_MATRIX_WORLD		 = 0
+const SK_MATRIX_VIEW		 = 1
+const SK_MATRIX_PROJECTION	 = 2
+const SK_MATRIX_WV			 = 3
+const SK_MATRIX_WVP			 = 4
+const SK_MATRIX_P			 = 5
+
+//	component type
+const SK_FLOAT		 = 1
+const SK_HALF		 = 2
+const SK_USHORT		 = 3
+const SK_SHORT		 = 4
+const SK_UBYTE		 = 5
+const SK_BYTE		 = 6
+const SK_UINT		 = 7
+const SK_INT		 = 8
+
+//	VertexBuffer / IndexBuffer
+const SK_VBO_STATIC		 = 0
+const SK_VBO_DYNAMIC	 = 1
+const SK_VBO_MEMORY		 = 2
+
+//	Texture flags
+const SK_MIPMAP			 = 1
+const SK_MIPMAP_AUTOGEN	 = 2
+const SK_CUBE			 = 4
+const SK_RENDER_TARGET	 = 8
+const SK_WRITE_ONLY		 = 16
+
+//	Primitive type
+const SK_POINTS			 = 1
+const SK_LINES			 = 2
+const SK_LINESTRIP		 = 3
+const SK_TRIANGLES		 = 4
+const SK_TRIANGLESTRIP	 = 5
+const SK_TRIANGLEFAN	 = 6
+
+//	Matrix ID
+const SK_WORLD			 = 0
+const SK_VIEW			 = 1
+const SK_PROJECTION		 = 2
+const SK_WV				 = 3	//	auto gen
+const SK_WVP			 = 4	//	auto gen
+
+//const SK State type
+const SK_DEPTHTEST		= 1
+const SK_DEPTHMASK		= 2
+const SK_FILLMODE		= 3
+const SK_SHADEMODE		= 4
+const SK_BLEND			= 5
+const SK_BLENDALPHA		= 6
+const SK_BLENDCOLOR		= 7
+const SK_CULLFACE		= 8
+const SK_INVERTFACE		= 9
+const SK_STENCILTEST	= 10
+const SK_COLORMASK		= 11
+const SK_POLYGONOFFSET	= 12
+const SK_DEPTHRANGE		= 13
+
+//const SK State value
+//
+//	off/on
+const SK_OFF			= 0
+const SK_NONE			= 0
+const SK_ON				= 1
+//	alpha depth stencil func
+const SK_LESS			= 1
+const SK_LEQUAL			= 2
+const SK_GREATER		= 3
+const SK_GEQUAL			= 4
+const SK_EQUAL			= 5
+const SK_NOTEQUAL		= 6
+const SK_ALWAYS			= 7
+const SK_NEVER			= 8
+//	blend type
+const SK_MIX			= 1
+const SK_PMAMIX			= 2
+const SK_ADD			= 3
+const SK_MULT			= 4
+const SK_MIXADD			= 5
+const SK_MASKMIX		= 6
+const SK_MASKALPHA		= 7
+const SK_PMASRCMIX		= 9
+const SK_MIXDST			= 10
+//	fill mode
+const SK_FILL			= 0
+const SK_LINE			= 1
+const SK_POINT			= 2
+//	shade mode
+const SK_SMOOTH			= 0
+const SK_FLAT			= 1
+//	cull mode
+const SK_CW				= 1
+const SK_CCW			= 2
+//	material use
+//
+const SK_INHERIT		= 127
+
+//const SK Texture Sampling States
+//
+const SK_WRAP			= 1
+const SK_CLAMP			= 2
+const SK_CLAMPBORDER	= 3
+const SK_MIRROR			= 4
+
+const SK_LINEAR			= 1
+const SK_NEAREST		= 2
+const SK_LINEAR_MIP_LINEAR= 3
+
+
+const SK_VISIBLE_MAIN				 = 7
+const SK_VISIBLE_OPAQUE				 = 1
+const SK_VISIBLE_TRANSPARENT		 = 2
+const SK_VISIBLE_DECAL				 = 4	
+const SK_VISIBLE_SELECTOR			 = 8	
+const SK_VISIBLE_DEPTH				 = 16	
+const SK_VISIBLE_DEBUG				 = 32
+const SK_VISIBLE_SHADOW_CASTER		 = 64
+const SK_VISIBLE_SHADOW_RECEIVER	 = 128
+
+const SK_VISIBLE_WATER				 = 1024
+const SK_VISIBLE_TRANSPARENT_INWATER = 2048
+
+const SK_VISIBLE_OVERLAY			 = 12288
+
+
+const SK_RGBAIMAGE		= 1
+const SK_KTXIMAGE		= 2
+
+//	Image codec
+const SK_JPEG			= 1
+const SK_PNG24			= 2
+const SK_PNG32			= 3
+
+const SK_FONT_MONO		 = 1
+const SK_FONT_BOLD		 = 2
+const SK_FONT_ITALIC		 = 4
+const SK_FONT_UNDELINE	 = 8
+
+enum SoundID
+{
+	SK_WAVE_UBYTE		= 1
+	SK_WAVE_SHORTLE	 	= 2
+	SK_WAVE_MSADPCM		= 3
+	SK_WAVE_IMEADPCM	= 4
+	SK_WAVE_FLOAT		= 5
+	
+	SK_SND_TYPE = 10,
+	SK_SND_GAIN = 11,
+	SK_SND_PAN  = 12,
+	SK_SND_PITCH = 13,
+	SK_SND_SEND = 14,
+	SK_SND_LOOP = 15,
+	SK_SND_PAUSE = 16,
+	SK_SND_PCMTIME = 17,
+	
+	SK_SND_INSEFX = 20,
+	SK_SND_SENDEFX = 21,
+	SK_SND_MASTEFX = 22,
+	
+	SK_SND_PUSHSTREAM = 30,
+	SK_SND_BUFREMAINING = 31,
+
+	SK_SND_MIX3D = 40,
+	SK_SND_PANMODEL = 41,
+	SK_SND_POSITION = 42,
+	SK_SND_LISTENER = 43,
+	SK_SND_SOURCE3D = 44,
+	SK_SND_DIRECTION = 45,
+	SK_SND_MUTECOUNT = 46,
+
+	SK_SND_CALC3D = 50,
+	
+	SK_SND_READY = 0,
+	SK_SND_PLAYING = 1,
+	SK_SND_PAUSED = 2,
+	SK_SND_STOPPED = 3,
+	SK_SND_DONE = 4,
+
+	SK_SND_NO3D = 0,
+	SK_SND_STEREO3D = 1,
+	SK_SND_HRTF3D = 2,
+	SK_SND_HRTF3DFFT = 2,
+	SK_SND_HRTF3DFIR = 3,
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//	MoviePlayer
+
+enum MoviePlayerState
+{
+	STATE_INIT  = 0,
+	STATE_OPEN  = 1,
+	STATE_LOAD  = 2,
+	STATE_READY = 3,
+	STATE_PLAY  = 4,
+	STATE_PAUSE = 5,
+	STATE_CLOSE = 6,
+	STATE_ERROR = -1,
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//	SystemFlags
+
+enum SystemFlags
+{
+	SYSFLAG_MOUSE = 1,
+	SYSFLAG_TOUCHPANEL = 2,
+	SYSFLAG_KEYBOARD = 4,
+	SYSFLAG_TOUCHPAD = 8,
+	SYSFLAG_TOUCHPEN = 16,
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+//	MoveScreenFlags
+
+enum MoveScreenFlags
+{
+	MOVESCREEN_DELTA = 1,
+	MOVESCREEN_ABS = 2,
+	MOVESCREEN_SIZE = 4,
+	MOVESCREEN_MINIMIZE = 8,
+	MOVESCREEN_MAXIMIZE = 16,
+	MOVESCREEN_RESTORE = 32,
+	MOVESCREEN_HIDE = 40,
+}
+
+enum JsonEncodingBit
+{
+	JSON_FORMAT = 1,
+	JSON_ESCAPE_WCHAR = 2,
+	JSON_KEYSORT = 4,
+}

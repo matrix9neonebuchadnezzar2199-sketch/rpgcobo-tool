@@ -1,0 +1,556 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ビルドは、ツールメニュー
+//	
+//	
+
+local outdirprop = { pid="outdir", lbl="$T.lbl_outdirname", type=STRING, }
+local exe_invals = "\"<>|:*?\\/";
+
+local ownticketnum(){
+	local d = ::account["ticket_d"] || 0;
+	local x = ::account["ticket_x"] || 0;
+	return d+x;
+}
+
+local ownticketlbl(){
+	local d = ::account["ticket_d"] || 0;
+	local x = ::account["ticket_x"] || 0;
+	return "$T.lbl_owntickets  ×%S%S" % (d, 1?" +"+x:"");
+}
+
+
+local buildtargets = [
+	{
+		id = "webgl"
+		lbl = "$T.build_webgl"
+		icon = "\ue051"
+		desc = "$T.build_webgl_desc"
+		props = [
+			outdirprop,
+			{ pid="usesw", lbl="$T.lbl_usesw", type=BOOL, defval=true },
+			{ pid="debuggl", lbl="$T.lbl_debuggl", type=BOOL, defval=false },
+		],
+	},
+	{
+		id = "win32"
+		lbl = "$T.build_win32"
+		icon = "\ueb75"
+		desc = "$T.build_win32_desc"
+		props = [
+			outdirprop,
+			{ pid="exename", lbl="$T.lbl_exename", type=STRING,
+				format=@( val) {
+					foreach( v in exe_invals) val = val.replace( v, '-');
+					if( !globMatch( "*.exe", val.toLowerCase())) val = val .. ".exe"
+					return val;
+				}
+				defval = "rpgexe.exe"
+			}
+		],
+	},
+	{
+		id = "android"
+		lbl = "Android (gradle)"
+		icon = "\ue859"
+		desc = "$T.build_android_desc"
+		props = [
+			outdirprop,
+			{ pid="apkpackage", lbl="$T.lbl_apkpackage", type=STRING,
+				format=@( val) {
+					local pc = '.', a = [], cmnum=0;
+					foreach( c in val.toLowerCase()){
+						if( c>='0' && c<='9'){
+							if( pc == '.') c = 'x';
+						}else
+						if( c=='.'){
+							if( pc == '.' || (cmnum++)>=4) c = 'x';
+						}else{
+							if( c<'a' || c>'z') c = 'x';
+						}
+						a .. char( c);
+						pc = c;
+					}
+					return a.join();
+				},
+				deflbl = "com.rpgcobo.${rpgid}",
+				defval = "",
+			},
+		],
+	},
+	{
+		id = "ios"
+		lbl = "iOS (xcode)"
+		icon = "\ue027"
+		desc = "$T.build_ios_desc"
+		props = [
+			outdirprop,
+		],
+	},
+];
+
+//	ビルド用にzipした時のハッシュ
+buildziphash <- 0;
+
+//	ビルドが開始されたらBuildingDialogに切り替わる。
+//	workspace.buildにビルド関係のプロパティは保存される。また、ビルドサーバーに送られる。
+//	
+class BuildDialog extends UndoableDialog
+{
+	targetmenu = null;				//	MenuBehavior
+	proplist = null;				//	ListBehavior
+	zipg = null;
+	conf = null;					//	workspace.build
+	
+	//	BuildingDialogに渡す
+	zipfile = null;
+	zipthread = null;
+	buildserv = null;				//	host
+	
+	constructor( v){
+		super( v);
+		conf = deepclone( ::workspace["build"]) || {target="webgl", outdir="", };
+		foreach( v in buildtargets){
+			setDefaultProperties( v.props, conf);
+		}
+		zipg = view.findChild( "zipg");
+		zipg.setVisible( false);
+		targetmenu = MenuBehavior( view.findChild( "targetmenu"), buildtargets);
+		proplist = PropertyListBehavior( view.findChild( "proplist"), null);
+		proplist.immediate = true;	//	テキストを即時入力
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+
+		local tgt = buildtargets.find( @( v) v.id==conf.target);
+		setTarget( tgt || buildtargets[0]);
+
+		view.setValue( "msg", "$T.lbl_build_zipping");
+	}
+
+	function setTarget( t){
+		targetmenu.selectItem( t);
+		view.setValue( "targetdesc", t.desc);
+		proplist.bindProperties( t.props);
+		//	conf変更
+		conf.target = t.id;
+		local d = Date();
+		conf.outdir = sprintf( "%S-%02d%02d%02d", t.id, d.tm_year%100, d.tm_mon+1, d.tm_mday);
+		proplist.setParameters( conf);
+	}
+
+	function refresh(){
+		proplist.setParameters( conf);
+	}
+
+	function shown(){
+		local g = zipg, rlbl = zipg.findChild( "rlbl");
+		local prgptr = ptr( 0.0);
+		local prgfunc( p, s){
+			if( p > ~prgptr+0.02 || (p>=1.0 && ~prgptr<1.0)){
+				g.anime( p>=2.0 ? 12 : p>=1.0 ? 11 : p*10.0);
+				rlbl.setText( s);
+				prgptr << p;
+				suspend();
+			}
+		}
+		zipg.setVisible( true);
+		zipthread = newthread();
+		zipthread.start( @(){
+			::skstudio.freezeEditorView( true);	//	editorの再描画を抑制して並列処理を高速化
+			startZip( prgfunc);
+			::skstudio.freezeEditorView( false);
+		}, this);
+	}
+
+	//	
+	function startZip( prgfunc){
+		prgfunc( 0.0, "");
+		local t0 = skGetTime();
+		local srcdir = FileRef( "project");
+		//	zipするファイルを集める
+		local ziplist = [];
+		local visitfile( f, chkfn){
+			if( chkfn( f)){
+				local fn = f.name;
+				if( f.isDirectory()){
+					foreach( cf in f.getList()) visitfile( cf, chkfn);
+				}else{
+					ziplist .. f;
+				}
+			}
+		}
+		//	プラグイン以外をまず入れる
+		foreach( f in srcdir.getList()) visitfile( f, @( f) f.name!="plugin" && f.name!="tmp");
+		//	プラグインを選択的に入れる
+		visitfile( FileRef( srcdir, "plugin/plugin.json"), @( f) 1);
+		foreach( plug in Module.plugs){
+			local f = plug.res.file;
+			if( plug["doPakckagePath"]){
+				visitfile( f, @( f) plug.doPakckagePath( f));
+			}else{
+				visitfile( f, @( f) f.name!="tmp");
+			}
+		}
+		//	
+		local num = length( ziplist), size = 0;
+		local bb = ziplist.reduce( @( f, bb){
+			bb.putt( f.path); bb.puti( f.size); bb.putl( f.lastmodified); return bb;
+		}, ByteBuffer());
+		bb.pos = 0;
+		zipfile = FileRef( "tmp/uploading.zip");
+		local hash = bb.hashcode();
+		if( zipfile.exists() && ::buildziphash == hash){
+			printf( "HASH ONAJI! %S\n", hash);
+			size = zipfile.size;
+			goto SKIP;
+		}
+		//
+		//	zip実行。6並列で高速化
+		local zip = ZipWriter( zipfile);
+		local fa = [];
+		for( local l = 0;l < num;l ++){
+			local f = ziplist[l];
+			fa .. (f, ::getRelativePath( srcdir.path, f.path));
+			if( length( fa)>=6 || l==num-1){
+				size += zip.writeLocalFilesAtOnce( fa);
+				fa.clear();
+				prgfunc( l * 1.0 / num, sizestr( size));
+			}
+		}
+		zip.writeCentral();
+		zip.close();
+		zipfile.refresh();
+		printf( "ZIPPED TIME=%S\n", skGetTime( t0));
+		::buildziphash = hash;
+	SKIP:
+		prgfunc( 1.0, sizestr( size));
+		view.findChild( "rung").anime( 1);
+	}
+
+	function getProjectVer(){
+		local f = FileRef( "rpgcobo.ver");
+		if( f.exists()){
+			try{
+				local t = decodeJSON( f.load());
+				return t.tag;
+			}catch( ex){}
+		}
+		return null;
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "targetmenu":
+			setTarget( e.actioncmd);
+			break;
+		case "btn_run":
+		{
+			local resdir = FileRef( "%S/build/%S" % (skGetCurrentDir(), conf.outdir));
+			if( resdir.exists()){
+				if( !Dialogs.confirm( {msg="$T.confirm_overwrite_outdir"})){
+					return;
+				}
+			}
+			try{
+				local r = ::account.requestAPI( {api="buildserv", token=::account.token, zipsize=zipfile.size, tag=getProjectVer() });
+				printf( "api/buildserv : %S\n", encodeJSON( r));
+				if( r["error"]){	//	チケットが足りない、ビルドサーバーが動いてないなど
+					switch( r.error){
+					case "not enough tickets":
+						Popups.showError( tmpl( T.tmpl_build_noticket, {own=r.owntickets, use=r.usetickets}));
+						break;
+					default:
+						Popups.showError( "$T.pop_build_starterr");
+						break;
+					}
+				}else{
+					buildserv = r.buildserv;
+					printf( "Build Server detected... %S\n", encodeJSON( r));
+					if( Dialogs.confirm( {msg=rtf( tmpl( T.tmpl_build_confirm, {own=r.owntickets, use=r.usetickets})), icon="\uef48"})){
+						ret = 1;
+						workspace.build <- conf;
+						close();
+					}
+				}
+			}catch( ex){	//	これは接続エラーかな
+				printexception( ex);
+			}
+			break;
+		}
+		}
+		super.actionevent( e);
+	}
+
+	function checkCancel( c){
+		if( c == VK_ENTER) return true;	//	enterで始まらんように
+		return super.checkCancel( c);
+	}
+
+	function propevent( e){
+		e.consume();
+		local cmd = e.actioncmd;
+		if( cmd.cmd == "prop"){
+			local prop = cmd.prop;
+			local data = conf;
+			local val = cmd.val;
+			local trk = null;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+			//	
+			// ::setProperty( cmd.prop, conf, cmd.val);
+			// if( cmd.prop["refresh"]){
+			// 	local props = fget( propdef, "props", propdef, data);
+			// 	proplist.bindProperties( props);
+			// 	proplist.setParameters( data);
+			// }
+		}
+	}
+	
+	static function run(){
+		local dlg = this( "/plugin/rpgtools/common/ui/builddialog.ui");
+		dlg.show();
+		local r;
+		if( dlg.zipfile && dlg.ret){
+			try{
+				r = ::BuildingDialog.run( dlg.zipfile, dlg.buildserv);
+			}catch( ex){
+				printexception( ex);
+			}
+		}
+		return r;
+	}
+}
+
+//	
+//	
+class BuildingDialog extends Dialog
+{
+	infile = null;					//	FileRef : BuildDialogから渡される
+	buildserv = null;				//	string : BuildDialogから渡される
+	resdir = null;					//	FileRef : 
+	runthread = null;				//	
+	btng = null;
+
+	session = null;
+
+	function shown(){
+		btng = view.findChild( "btng");
+		runthread = newthread();
+		runthread.start( runBuild, this);
+	}
+
+	function runBuild(){
+		try{
+			runBuildBody();
+		}catch( ex){
+			printexception( ex);
+			btng.anime( 2);
+		}
+		newthread().start( @(){	//	アカウント状態の更新。念のため毎回
+			sleep( 1000);	//	チケット消費とかのタイミングが微妙。。。
+			::account.checkAccountState( true);
+		});
+	}
+
+	function runBuildBody(){
+		//	setup
+		local prg = [[0,""],[0,""],[0,""],];
+		view.bindValues({
+			"step0" = @() prg[0][0]?prg[0][0]*10.0+1.0:0.0
+			"step0.rlbl" = @() prg[0][1]
+			"step1" = @() prg[1][0]?prg[1][0]*10.0+1.0:0.0
+			"step1.rlbl" = @() prg[1][1]
+			"step2" = @() prg[2][0]?prg[2][0]*10.0+1.0:0.0
+			"step2.rlbl" = @() prg[2][1]
+			"msg" = "$T.lbl_build_connect"
+		});
+		local conf = ::workspace.build;
+		local rpgid = ::conf.setting["rpgid"];
+		//	※ビルドサーバーのセッション開始までが接続処理
+		try{
+			//	initリクエストでセッション開始。
+			session = ::account.requestAPI( {api="build_init", method="POST", buildserv=buildserv, params={ token=::account.token, ...conf, rpgid=rpgid}});
+		}catch( ex){
+			view.bindValue( "msg", rtf( T.lbl_error_build_connect));
+			throw ex;
+		}
+		try{
+			local t0 = skGetTime();
+			view.bindValue( "msg", @() rtf( tmpl( T.tmpl_build_running, { v=skGetTime( t0)/1000})));
+			//	uploadリクエストでアップロード
+			local prg = prg;
+			::account.requestAPI( {api="build_upload", method="PUT", buildserv=buildserv, session=session.sid, file=infile, listener=@( http, id, v){
+				if( id=="send"){
+					prg[0].set( v.w*1.0 / v.size, sizestr( v.w));
+				}
+			}});
+			prg[0].set( 1.0, "OK");
+			//	state=="done"をひたすら待つ。
+			for( ;;){
+				local stat = ::account.requestAPI( {api="build_status", buildserv=buildserv, session=session.sid, });
+				if( stat.phase == "done") break;
+				if( stat["error"]){
+					view.bindValue( "msg", rtf( `$T.lbl_error_build\n${stat.error["message"]}`));
+				}
+				//	ここちょっとスムーズにしないと。。。
+				prg[1].set( stat.progress, int( stat.progress*100).."%");
+				sleep( 1000);
+			}
+			prg[1].set( 1.0, "OK");
+		}catch( ex){
+			view.bindValue( "msg", rtf( T.lbl_error_build));
+			throw ex;
+		}
+		//////////////////////////////////////////////////////////////////////////////////////////////////////////
+		//	ここまでいったらビルドは成功している。ダウンロードが完了した時点でチケット消費（サーバー側がパケットを流し切った時の判定）
+		//	downloadリクエストでビルド結果をダウンロード。失敗したら再挑戦。
+		local dlfile;
+		for( local l = 0;l < 3;l ++){
+			try{
+				local tmpfile = FileRef( "build/dl.zip");
+				dlfile = ::account.requestDownload( {api="build_download", buildserv=buildserv, session=session.sid, file=tmpfile, listener=@( http, id, v){
+					if( id=="recv"){
+						prg[2].set( v.w*1.0 / v.size, sizestr( v.w));
+					}
+				}});
+				break;
+			}catch( ex){
+				printexception( ex);
+				sleep( 2000);
+			}
+		}
+		prg[2].set( 1.0, "OK");
+		//	完了したのでclean
+		::account.requestAPI( {api="build_clean", buildserv=buildserv, session=session.sid, });
+		//	build/$outdirに展開
+		resdir = FileRef( "%S/build/%S" % (skGetCurrentDir(), conf.outdir));
+		resdir.mkdirs();
+		unzipFile2( dlfile, resdir);
+		dlfile.deleteFile();
+		if( !rpgid){
+			printf( "New rpgid set!!!!!!!!! %S\n", session.rpgid);
+			::skstudio.flushEditor( "/.x/game/setting");
+			local r = ::getResource( "/.x/game/setting");
+			::conf.setting.rpgid <- session.rpgid;
+			r.save( ::conf.setting);
+		}
+		//	終わり！
+		btng.anime( 1);
+		view.bindValue( "msg", rtf( T.lbl_build_completed));
+	}
+	
+	//	※この関数はexe,dllの書き込み制限のため実行不可能。unzipFile2で行う。
+	function unzipFile( zipfile, outdir){
+		local zip = ZipReader();
+		zip.open( zipfile);
+		local entries = zip.entries, num = length( entries);
+		local ea = [], dirmap = {};
+		for( local l = 0;l < num;l ++){
+			local e = entries[l];
+			ea .. e;
+			if( length( ea)>=6 || l==num-1){
+				local ra = zip.readEntriesAtOnce( ea);
+				ea.clear();
+				//	okk
+				foreach( r in ra){
+					local i = r.fn.lastIndexOf( "/");
+					if( i >= 0){
+						local dir = r.fn.substring( 0, i);
+						if( !dirmap[dir]){ FileRef( outdir, dir).mkdirs(); dirmap[dir]<-1; }
+					}
+					local f = FileRef( outdir, r.fn);
+					f.save( r.data);
+				}
+			}
+		}
+		zip.close();
+	}
+
+	//	unzip_build.ps1を実行することでzip解凍。条件として、入力と出力のフォルダは固定される。
+	function unzipFile2( zipfile, outdir){
+		local exe = FileRef( "tools/unzip_build.ps1");
+		local p = popen_s();
+		p.open( exe, [zipfile.name, outdir.name]);
+		while( p.isrunning()){
+			suspend();
+		}
+		p.close();
+	}
+
+	//	
+	function stopBuild(){
+		runthread.wakeupThrow( "interrupt");
+		::account.requestAPI( {api="build_clean", session=session.sid, });
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_stop":
+			stopBuild();
+			break;
+		case "btn_opendir":
+			skOpenURL( "dir://" .. resdir.path);
+			break;
+		}
+		super.actionevent( e);
+	}
+	
+	static function run( f, b){
+		local dlg = this( "/plugin/rpgtools/common/ui/buildingdialog.ui");
+		dlg.infile = f;
+		dlg.buildserv = b;
+		dlg.show();
+	}
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+
+local showBuildMenu( btn){
+	if( ::account.status != 1){
+		Popups.showInfo( "$T.pop_loginforbuild");
+		return;
+	}
+	local menudata = [
+		{ id="build", lbl="$T.dialog_build", icon="\ue869", modkey="F7"},
+		{ id="ticket", lbl=ownticketlbl, icon="\uf11f", submenu=[
+			{ id="buyticket", lbl="$T.lbl_buyticket", icon="\ue8cc"},
+		]},
+		{ id="refer", lbl="$T.lbl_openoutdir", icon="\ue89e"},
+	];
+	switch( MenuPopup.run( menudata, btn)["id"]){
+	case "build": BuildDialog.run(); break;
+	case "buyticket": ::account.openWeb({ page="ticket", token=::account.token, }); break;
+	case "refer": skOpenURL( "dir://" .. skGetCurrentDir() .. "/build"); break;
+	}
+}
+
+//	setting activity
+local activity = {
+	uid="act_build",
+	place="bottom",
+	order=75,
+	icon="\uef48",
+	badge=null,
+	tips="$T.act_build"
+	slbl="$T.lbl_build"
+	
+	func = showBuildMenu,
+}
+
+with( ::skstudio){
+	registerActivity( activity);
+	registerMenu( { parentid="menu_tool", separator="*b"});
+	registerMenu( { uid="menu_tool_build", parentid="menu_tool", lbl="$T.dialog_build", icon="\uef48", defkey="F7", func=@(){ BuildDialog.run(); }, disable=@()::account.status!=1});
+	registerMenu( { uid="menu_tool_ticket", parentid="menu_tool", lbl=ownticketlbl, icon="\uf11f", disable=@()::account.status!=1, submenu=[
+		{ id="buyticket", lbl="$T.lbl_buyticket", icon="\ue8cc", func = @() ::account.openWeb({ page="ticket", token=::account.token, }) },
+	]});
+}

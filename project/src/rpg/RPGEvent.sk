@@ -1,0 +1,1268 @@
+import CommandTargetType;
+
+local v_0 = Vector3D(), v_1 = Vector3D();
+local r_0 = Rect3D(), r_1 = Rect3D();
+local m_0 = Matrix(), m_1 = Matrix();
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	マクロイベント、ステージ中のイベント、バトルイベント
+//	
+//	イベントデータから実行可能なイベントとして生成される。RPGEventRunnerで実行される。
+//	stage.events[eventid] : RPGEventRunner。マップで定義したイベントは全てステージ生成時に作られる。
+//	
+//	マクロイベントは、ステージを跨いで実行可能。また、カウントダウンなんかのポップアップは表示が切れない。
+//	ステージ移動、カメラ演出、会話みたいな一連の動作を出来る。
+//	
+//	自動実行のマクロ全てにRPGEventRunnerが生成される。
+
+class RPGEventCompiler
+{
+	hb = null;		//	functionのヘッダ部分。local locals = null; return function( arg=null, label=null) から始まる
+	sb = null;		//	function本体。
+	indcnt = 0;
+	locals = null;	//	locals[i]として参照可能なcmdテーブル等
+
+	constructor(){
+		locals = [];
+		hb = StringBuffer();
+		sb = StringBuffer();
+	}
+
+	function push( s){ sb .. s; return this; }
+	function indent( i){ indcnt += i; return this; }
+	function lf(){ sb .. "\n"; for( local l = 0;l < indcnt;l ++){ sb .. "\t"; }; return this; }
+
+	function newlocal( v){ locals .. v; return length( locals)-1; }
+	
+	function compile( cmdblock, srcname="unknown"){
+		hb .. "local locals = null; return @( arg=null, label=null){\n";
+		parseblock( cmdblock, false);
+		//	hb,sbを結合してコンパイル
+		hb .. sb .. "}";
+		printf( "COMPILE EVENT COMMAND BLOCK\n%S\n", hb);
+		local fn = hb.compile( srcname)();	//	※ここでエラーが起きる場合はどのコマンドでコンパイルエラーが起きたかわかるように。
+		if( fn["setOuters"]){	//	空メソッドはnclosureになっちゃう
+			fn.setOuters( [locals]);	//	outers[0]をlocalsに置換。まれに[0]が無い場合もあるが問題なし。
+		}
+		fn.setName( srcname);
+		return fn;
+	}
+
+	function addLabel( lbl){
+		hb .. `if( label=="${lbl}") goto ${lbl};` .. "\n";
+	}
+	
+	//	
+	function parseblock( cmdblock, bracket=true){
+		if( bracket) push( "{").indent( 1).lf();
+		foreach( cmd in cmdblock){
+			parsecmd( cmd);
+		}
+		if( bracket) indent( -1).push( "}");	//	※一回bsを入れないと
+	}
+
+	function parsecmd( cmd){
+		local cmddef = ::RPGSystem.eventcmd[cmd.cmd];
+		local func = cmddef["parsecode"] || parsedefault;
+		func( cmd);
+	}
+
+	//	定義されたもの以外のコマンドを処理する
+	function parsedefault( cmd){
+		if( cmd["reqs"]){	//	コマンド内condがある場合。
+			push( "if( "); parsereqs( cmd.reqs); push( ")");
+		}
+		push( sprintf( "execCommand( locals[%d]);", newlocal( cmd))).lf();	//	runner.execCommand()が呼ばれる
+	}
+	
+	//	
+	function parsereqs( reqs){
+		push( sprintf( "::reqchk( locals[%d], this)", newlocal( reqs)));
+	}
+}
+
+local funccache = {};
+
+//	イベントに埋め込まれたスクリプトをコンパイルして結果をキャッシュする。
+//	コンパイルや実行時のエラーを適切に処理できるようにラップしたfunctionを返す
+function compileEventScriptFunc( code){
+	local fn = funccache[code];
+	if( fn) return fn;
+	try{
+		fn = compilestring( code);
+	}catch( ex){
+		//	コンパイルエラー。。。実行時にエラーが起きて処理を継続するかのダイアログ表示する表示
+		fn = @(){	//	this=RPGEventRunnerBase
+			throw Exception( "Script Compile Error : "..code);
+		}
+	}
+	//	実際返すfunctionはエラーをハンドリングするものに
+	local fn2 = @(){	//	this=RPGEventRunnerBase
+		try{
+			return fn();
+		}catch( ex){
+			//	ここでエラーダイアログ表示。どのイベントでエラー起きたか見つけられるように！
+			//	ツールからの起動じゃなかった場合はデバッグ系の表示はしないように。
+			
+			return 0;	//	エラーを無視して進む場合は適当な値を返す必要がある
+		}
+	}
+	return funccache[code] <- fn2;
+}
+
+::operatorToString <- {
+	"==":"＝"
+	"!=":"≠"
+	">=":"≧"
+	">" :"＞"
+	"<=":"≦"
+	"<" :"＜"
+	//
+	"=":"＝"
+	"+" :"＋"
+	"-" :"ー"
+	"*" :"×"
+	"/" :"÷"
+	"%" :"％"
+};
+
+//	ロールで共通化されたデータを固有設定のプロパティ値で置き換えて完全なイベントデータにする
+//	
+function makeRoleEventData( role, ow){
+	//	ロールの基本データをcloneする。この時、コマンドブロックだけはcloneしないように
+	local data = clone role.data;
+	data.page = clone data.page;
+	foreach( i, p in data.page) data.page[i] = clone p;
+	//
+	foreach( i, v in ow){
+		if( i != "role"){
+			setField( data, i, v);
+		}
+	}
+	return data;
+}
+
+//	イベントの共通処理を持つ。ステージ内に配置されるRPGStageEventRunnerと、自動実行マクロのRPGMacroEventRunnerの親。
+//	
+class RPGEventRunner
+{
+	evid = null;				//	event-id : "?"が含まれるとインスタントイベント？
+	data = null;				//	table : イベントデータ。ロールを展開して完全なイベントデータになっている
+	stage = null;				//	RPGStageScene | RPGBattleScene : ※マクロではnull。グローバルからステージは取れるが、、、
+	rp3d = null;				//	RPG3DObject : ※マクロではスポーンしないが、コマンドハンドラでrp3dが存在するかチェックされる
+	
+	wvar = null;				//	{W,X,Y,Z} : ワーク変数。イベント動作中の時のみ。
+	evar = null;				//	{A,B,C,D} : イベント変数。外部から渡す。
+	
+	thread = null;				//	1イベント1スレッド！
+	mode = 0;					//	0:sleep, 1:scout, 2:running
+
+
+	static inievar = {A=false,B=false,C=false,D=false};
+	static iniwvar = {W=false,X=false,Y=false,Z=false};
+	
+	//	ワーク変数、イベント変数、ゲーム変数にアクセス
+	function _get( key){
+		local v = wvar[key] ?? evar[key] ?? ::rpgvar[key];
+		return v;
+	}
+	
+	function _set( key, val){
+		if( key in wvar) return wvar[key] = val;
+		if( key in evar) return evar[key] = val;
+		if( key in ::rpgvar) return ::rpgvar[key] = val;
+		return undefined;
+	}
+	
+	function isRunning(){
+		return mode==2;
+	}
+	
+	//	※イベントコマンドのバトルでバトル終了後に再び元のステージに戻ってイベントは進む。
+	function runCommandBlock( cmdblock, wv, label=null){
+		local func = RPGEventCompiler().compile( cmdblock);
+		local wvar0 = wvar;	//	現在のワーク変数を退避。
+		wvar = wv;
+		for( ;;){	//	ページジャンプ命令によってcontinueされる
+			try{
+				~(func, this, null, label);		//	@( arg, label) : 
+			}catch( ex){
+				if( ex["jumpfunc"]){			//	ジャンプ先の関数がスローされたら実行しなおし。
+					func = ex.jumpfunc;
+					continue;
+				}else{
+					//	普通のエラーの場合はスローする。run_runningがキャッチしてエラーを表示
+					//	どのコマンドでエラーが出たか取得できる？ex.locals[1]でarg[0]が取れるか。
+					wvar = wvar0;
+					throw ex;
+				}
+			}
+			break;
+		}
+		wvar = wvar0;
+		return wv;
+	}
+
+	//	コマンドを実行する
+	//	RPGEventCompilerで各コマンドの実行はこのメソッドの実行になる
+	function execCommand( cmd){
+		local evdef = ::RPGSystem.eventcmd[cmd.cmd];
+		//	変数にリンクされたパラメータを置き換える
+		if( length( cmd["_var"])){
+			cmd = clone cmd;
+			foreach( i, v in cmd["_var"]) cmd[i] <- ::getvar( v, this);
+		}
+		// printf( "execCommand %S fn %S\n", encodeJSON( cmd), fn);
+		local fn = evdef["exec"];	//	nullもありえる
+		fn( this, cmd);
+	}
+	
+	/////////////////////////////////////////////////////////////////////////////////////////////////////
+	//	個別コマンド
+
+	//	マクロの手動呼び出し。自動実行のマクロに対して呼び出したら何もせずに返す
+	//	※呼び出し時にイベント変数をマクロのものに切り替えている。この方法で問題ないかな？？？
+	function callMacro( cmd){
+		local macro = ::conf.macro[cmd.macroid];
+		if( !macro["cmdblock"]){
+			printf( "WARNING!!!!! Macro not found : %S\n", cmd.macroid);
+			if( cmd["retvar"]) this[cmd.retvar] = false;
+			return;
+		}
+		local ev0 = evar;	//	退避
+		local ev1 = ::rpgstat.mvarmap[cmd.macroid];
+		if( !ev1) ev1 = ::rpgstat.mvarmap[cmd.macroid] <- clone inievar;
+		try{
+			evar = ev1;
+			local wv = runCommandBlock( macro.cmdblock, clone wvar, null);		//	
+			evar = ev0;
+			if( cmd["retvar"]){
+				// printf( "RETVAR!!!!!!!!!!!! %S   %S    %S\n", cmd.retvar, wv.W, encodeJSON( wv));
+				this[cmd.retvar] = wv.W;	//	マクロ側は常にWに戻り値を設定する
+			}
+		}catch( ex){
+			evar = ev0;
+			throw ex;
+		}
+	}
+
+	//	RPGStageEventRunnerのみ実行
+	function pageJump( cmd){
+	}
+
+	function setGlobalSetting( cmd){
+		local pid = cmd.pid;
+		local prop = ::RPGSystem.settingprops.find( @( v) v.pid==pid);
+		::rpgstat.settingmap[pid] <- cmd.val;
+		if( prop["setfunc"]){
+			prop.setfunc( prop, cmd.val);
+		}
+	}
+
+	function getSetting( cmd){
+		local pid = cmd.pid;	//	グローバル設定、マップ設定どちらか
+		local v = ::rpgstat.settingmap[pid] ?? ::rpgstage.stat.statmap[pid] ?? 0;	//	どっちにもなかったら0入れとく
+		if( cmd["retvar"]) this[cmd.retvar] = v;
+		return v;
+	}
+
+	//	HP,MPを変化。死亡しているキャラには無効
+	function changeHPMP( cmd){
+		local a = null;	//	RPGCharaBase[]
+		if( cmd.cmdtgt == TGT_PARTY_SINGLE){
+			local chr = cmd.charaid["chr"] || ::rpgstat.playermap[cmd.charaid];	//	RPGObjectRefの場合は.chrでRPGCharaBaseが取れる
+			a = [chr];
+		}else{
+			a = ::rpgstat.members;
+		}
+		local func = (#[
+			@( chr, pid, val) chr.setPoint( pid, val), 
+			@( chr, pid, val) chr.setPoint( pid, val*chr["MAX"..pid]/100), 
+			@( chr, pid, val) chr.addPoint( pid, val), 
+			@( chr, pid, val) chr.addPoint( pid, val*chr["MAX"..pid]/100), 
+		])[cmd.op];
+		foreach( chr in a){
+			if( !chr || chr.isDead()) continue;	//	死んでる状態では操作無効
+			local val = ::getvar( cmd["val"], chr);	//	RPGCharaBaseをthisに
+			func( chr, cmd.pid, val);
+			if( cmd["hp1"] && chr.HP <= 0) chr.HP = 1;	//	死亡させない
+		}
+	}
+
+	function moneyOp( cmd){
+		::rpgvar.ERROR = 0;
+		switch( cmd.op){
+		case 0:
+			if( ::rpgstat.money+cmd.amount > 99999999){	// 9999万でカンスト？
+				::rpgstat.money = 99999999;
+				::rpgvar.ERROR = 45664;
+			}else{
+				::rpgstat.money += cmd.amount;
+			}
+			break;
+		case 1:
+			if( ::rpgstat.money < cmd.amount){
+				::rpgstat.money = 0;
+				::rpgvar.ERROR = 45667;
+			}else{
+				::rpgstat.money -= cmd.amount;
+			}
+			break;
+		case 2:
+			::rpgstat.money = cmd.amount;
+			break;
+		}
+	}
+
+	function expOp( cmd){
+		::rpgvar.ERROR = 0;
+		local a = null;	//	RPGCharaBase[]
+		if( cmd.cmdtgt == TGT_PARTY_SINGLE){
+			local p = cmd.playerid["player"] || ::rpgstat.playermap[cmd.playerid];	//	RPGObjectRefの場合は.playerでRPGPlayerが取れる
+			a = [p];
+		}else{
+			a = ::rpgstat.members;
+		}
+		local pid = cmd.param;	//	exp | jxp
+		local val = cmd.amount;
+		foreach( p in a){
+			if( !p) continue;
+			if( pid=="jxp") p.addJobExp( val);
+			else if( pid=="exp") p.addExp( val);
+		}
+	}
+
+	function itemOp( cmd){
+		::rpgvar.ERROR = 0;
+		if( cmd["op"]==1){
+			if( !::rpgstat.reduceItemID( cmd.itemid, cmd.num)) ::rpgvar.ERROR = 1234;
+		}else{
+			::rpgstat.addItemID( cmd.itemid, cmd.num);	//	追加時にはエラーは出ない？
+		}
+	}
+	
+	function memberOp( cmd){
+		::rpgvar.ERROR = 0;
+		local p = cmd.playerid["player"] || ::rpgstat.playermap[cmd.playerid];	//	RPGObjectRefの場合は.playerでRPGPlayerが取れる
+		local slot = cmd.slot;
+		switch( slot){
+		case null:		//	leave
+			local idx = ::rpgstat.members.indexOf( p);
+			if( idx < 0){	//	指定したプレイヤーはメンバーにいない
+				::rpgvar.ERROR = 13124;
+				return;
+			}
+			rpgstat.members[idx] = null;
+			break;
+		case -1:		//	any
+			slot = ::rpgstat.members.findi( @( v) !v);
+			if( slot < 0){	//	メンバーが満杯
+				::rpgvar.ERROR = 13126;
+				return;
+			}
+		default:
+			if( slot in ::rpgstat.members){	//	
+				::rpgstat.members = p;
+			}else{
+				::rpgvar.ERROR = 13127;
+			}
+			break;
+		}
+		//	表示キャラを変更？
+		
+	}
+
+	function jobOp( cmd){
+		::rpgvar.ERROR = 0;
+		local p = cmd.playerid["player"] || ::rpgstat.playermap[cmd.playerid];	//	RPGObjectRefの場合は.playerでRPGPlayerが取れる
+		if( !p) return;
+		switch( cmd.op){
+		case 0:	//	追加(設定)
+		{
+			local job = p.ownjobs.find( @( v) v.dataid==cmd.jobid);
+			if( !job){ job = RPGObject.create( jobid); p.ownjobs .. job; }
+			local si = cmd.slot;
+			if( typeof( si) == SS_INTEGER && !p.jobs.contains( job)){	//	既についている場合は無視
+				if( si < 0){
+					si = p.jobs.findi( @( v, i) !p.jobs[i] && (job.jobslotbits & (1<<i)));
+				}
+				if( si in p.jobs) p.jobs[si] = job;
+			}
+			break;
+		}
+		case 1:	//	削除。装備中でも強制的に
+		{
+			foreach( v in p.ownjobs){
+				if( v.dataid==cmd.jobid) removei;
+			}
+			foreach( v in p.jobs){
+				if( v.dataid==cmd.jobid) removei;
+			}
+			break;
+		}
+		}
+		if( p.updateOptions()) p.updateScoreMap();
+	}
+
+	function equipOp( cmd){
+		::rpgvar.ERROR = 0;
+		local p = ::rpgstat.playermap[cmd.playerid];	//	todo ObjectRef
+		
+		
+		
+	}
+
+	function condOp( cmd){
+		local a = null;	//	RPGCharaBase[]
+		if( cmd.cmdtgt == TGT_PARTY_SINGLE){
+			local chr = cmd.charaid["chr"] || ::rpgstat.playermap[cmd.charaid];	//	RPGObjectRefの場合は.chrでRPGCharaBaseが取れる
+			a = [chr];
+		}else{
+			a = ::rpgstat.members;
+		}
+		local condids = bitlist( cmd.condbits).map( @( i) "K%03d" % i);
+		local func;
+		switch( cmd.op){
+		case 0:	func = @( chr){ foreach( v in condids) chr.putCondition( v); }; break;
+		case 1: func = @( chr){ foreach( v in condids) chr.removeCondition( v); }; break;
+		case 2: func = @( chr) chr.clearConditions(); break;
+		}
+		foreach( chr in a){
+			if( !chr) continue;
+			if( cmd["ignoredead"] && chr.isDead()) continue;
+			func( chr);
+		}
+	}
+
+	//	キャラ情報取得
+	function getCharaInfo( cmd){
+		if( cmd["retvar"]) this[cmd.retvar] = 0;		//	先にデフォルト値として0を入れとく
+		local pc = cmd.charaid["chr"] || ::rpgstat.playermap[cmd.charaid];	//	RPGObjectRefの場合は.chrでRPGPlayer又はRPGEnemyが取れる
+		local cidef = ::RPGSystem.charainfodef[cmd.key];
+		if( !pc || !cidef) return;			//	見つからないエラー
+		local ret = cidef.calc( pc, cmd);
+		if( cmd["retvar"]) this[cmd.retvar] = ret;
+		return ret;
+	}
+	
+	//	メッセージ表示
+	function showMessage( cmd){
+		showUI( cmd);
+	}
+
+	//	選択肢表示。結果を返す
+	function showChoices( cmd){
+		cmd = replaceTemplate( cmd);
+		local msg = ::rootview.findChild( "message_talk");
+		msg?.action( "darken");
+		local ret = RPGMain.showUI( { key="dialog_choices", ...cmd, backop=cmd["backenable"]?1:0 });
+		msg?.action( "lighten");
+		return ret;
+	}
+	
+	static tmplmap = {
+		"name":1, "text":1, "desc":1, "msg":1, "title":1, "texts":1, "text0":1, "text1":1, "text2":1, "text3":1, "text4":1, "text5":1, "text6":1, "text7":1, 
+	};
+
+	function replaceTemplate( cmd){
+		local notchange = true;
+		foreach( i, v in cmd){
+			if( tmplmap[i] && typeof( v)==SS_STRING && v.contains( "$")){
+				if( notchange){ notchange = false; cmd = clone cmd;}
+				for( local l = 0;l < 3;l ++){	//	3回まで多段$展開
+					try{
+						local fn = ::compiletemplate_c( v);
+						v = fn();
+						if( !v.contains( "$")) break;
+					}catch( ex){
+						printf( "replaceTemplate failure => %S\n", v);
+						v = v.replace( "$", "*");
+					}
+				}
+				cmd[i] = v;
+			}
+		}
+		return cmd;
+	}
+
+	//	コマンドからのshowUI。
+	//	※cmd内のテキストはRPGMain.showUIに渡す前にテンプレート展開しておく必要がある。
+	//	
+	function showUI( cmd){
+		cmd = replaceTemplate( cmd);
+		local ret = RPGMain.showUI( cmd);
+		//	クローズタイミング
+		if( ret instanceof SKView){
+			local n = "uiclose" .. cmd.key;
+			_removestopfunc( n);	//	今ついてるcloseuifuncがあれば消去
+			switch( cmd["uiclose"]){
+			case 1:
+				_setstopfunc( n, @() ret.actionAndDie( "hide") );
+				break;
+			case 2:
+				ret.actionAndDie( "hide");
+				break;
+			}
+		}
+	}
+	
+	//	カスタムUI操作。
+	//	
+	function customUI( cmd){
+		local vn = "custon_%02d" % cmd.idx;
+		local v = ::rootview.findChild( vn);
+		switch( cmd["op"]){
+		case "show":
+		{
+			if( v) v.removeFromParent();
+			v = ::RPGMain.showView( cmd);
+			v.name = vn;
+			if( cmd["wait"]) v.waitAction();
+			break;
+		}
+		case "hide":
+			if( v){
+				v.name = null;
+				if( length( cmd["action"])){
+					v.actionAndDie( cmd.action);
+					if( cmd["wait"]) v.waitAction();
+				}else{
+					v.removeFromParent();
+				}
+			}
+			break;
+		case "action":
+			if( v){
+				if( length( cmd["action"])){
+					v.action( cmd.action);
+					if( cmd["wait"]) v.waitAction();
+				}
+			}
+			break;
+		case "value":
+			if( v){
+				local val = ::getvar( cmd["val"], this);
+				v.setValue( cmd["target"], val);
+			}
+			break;
+		}
+	}
+
+	//	UIイベント入力
+	//	イベントの種類、ビュー名、詳細をそれぞれ変数に代入する。
+	function inputUI( cmd){
+		local ebuf = #[];
+		local self = this, type = cmd["typeset"], name = cmd["nameset"];
+		//	
+		if( type) this[type] = "idle";
+		if( name) this[name] = "";
+		while( length( ebuf)){
+			local e = delete ebuf[0];
+			if( skGetTime( e.time) < 500){	//	500ms以内のイベントは有効
+				if( type) this[type] = e.id;
+				if( name) this[name] = e["src"]["name"] || "";
+				return;
+			}
+		}
+		local fn = @( e){ e.time <- skGetTime(); ebuf .. e; }
+		//	
+		::RPGMain.uiLoop( {
+			click=fn, back=fn, action=fn, select=fn, drag=fn, back=fn, page=fn,
+			idle = @( e) 1,
+		});
+	}
+
+	//	UIのフォーカスを移動。カメラのフォーカスとかと混同しないようにUIフォーカスとしてる
+	function focusUI( cmd){
+		local v = ::rootview.findChild( cmd["focusto"]);
+		if( v["gpui"]){
+			//	wait指定の場合、カーソルが移動可能になるまで待つ。
+			//	※これ、無限ループの可能性あるからタイムアウト入れないと！！！！！！！！
+			while( cmd["wait"]){
+				if( v.gpui.isPickable()) break;
+				suspend();
+			}
+			::gpui.moveCursorTo( v.gpui);
+		}
+	}
+
+	function lockUI( cmd){
+		local b = !!cmd["lock"];
+		::RPGMain.lockUI( b);
+		if( b){
+			_setstopfunc( "lockui", @() ::RPGMain.lockUI( false));
+		}else{
+			_removestopfunc( "lockui");
+		}
+	}
+
+	//	マップ間の移動。暗転明転処理なども込み。
+	function moveMap( cmd){
+		//	pauseされた瞬間にイベントスレッドが止まるため、自律スレッドでマップ移動は行なわれる。
+		//	startMoveMapはptrを返し、マップ移動の処理完了を伝える。
+		//	※同じマップ内の移動、又はマクロでの移動はこのイベントの処理が続く。
+		local doneptr = ::RPGMain.moveMap( cmd);
+		while( !(~doneptr)){
+			suspend();
+		}
+	}
+
+	static function _getastbw( id){
+		local bw64 = ::conf._resource.map_asset[id]["bw64"];
+		local bb = uncompressZSTD( decodeBASE64( bw64, ByteBuffer()));
+		return ObjectInput.decode( bb);
+	}
+	
+	//	マップアセットの配置。
+	//	{"id":"evcmd","type":"skstudio","data":[{"idx":0,"parma":false,"asset":{"resid":"MA000","pos":[67,1,56,0],"blend":0},"cmd":"cmd_mapasset"}]}
+	function placeMapAsset( cmd){
+		local ast = {...cmd.asset, bw=_getastbw( cmd.asset.resid), idx=cmd.idx, parma=cmd.parma};
+		local bw = ::rpgstage.bw;
+		bw.placeDynamicAsset( ast);
+	}
+
+	function removeMapAsset( cmd){
+		local bw = ::rpgstage.bw;
+		bw.removeDynamicAsset( cmd.idx);
+	}
+	
+	//	バトル開始。バトルマップに移動し、バトルが終了したらこのイベントをそのまま続行する。（敗北時は別）
+	//	バトル処理のstagerunnerを同時に走らせる以外はマップ間の移動と同じ。あと移動方法がバトル用。
+	function enterBattle( cmd){
+		local doneptr = ::RPGMain.enterBattle( cmd);
+		//	doneptrは戦闘が終わるまで待つ。callbackで戦闘終了、このマップに戻ってくるまで。
+		while( !(~doneptr)){
+			suspend();
+		}
+	}
+
+	//	アニメーション再生
+	function startAnime( cmd){
+		local rp3d = cmd.who["rp3d"] || (cmd.who=="player" ? stage.player3d : (stage.getEvent( cmd.who)["rp3d"] || rp3d));
+		rp3d?.anime2( cmd.ani);
+	}
+
+	//	向き合う。
+	function faceToFace( cmd){
+		local p = ::rpgstage.player3d, e = rp3d;
+		local h = ::aimdir( p.pos, e.pos);
+		local ani = { id="stand"};
+		switch( cmd.who){
+		case 1:
+			setManualAction( p).anime( ani);
+			p.dir = h;
+			break;
+		case 2:
+			setManualAction( e).anime( ani);
+			e.dir = h+Math.PI;
+			break;
+		case 4:
+			setManualAction( p).anime( ani);
+			setManualAction( e).anime( ani);
+			p.dir = h; e.dir = h+Math.PI;
+			break;
+		}
+	}
+
+	function setManualAction( rp3d){
+		if( !rp3d.manuaction){	//	予めついてる場合は何もしない。バトル時は最初に付く
+			rp3d.manuaction = ManualMoveAction( rp3d);
+			local mact = rp3d.mainaction;
+			// mact?.setSuspended( true);
+			local al = rp3d.animlayers.layers[0];	//	
+			_setstopfunc( "manuaction"..rp3d, @(){
+				rp3d.manuaction = null;
+				// mact?.setSuspended( false);
+				rp3d.setAnimeLayer( al);
+			});
+		}
+		return rp3d.manuaction;
+	}
+
+	//	キャラを移動
+	function moveChara( cmd){
+		local rp3d = cmd.who["rp3d"] || (cmd.who=="player" ? stage.player3d : (stage.getEvent( cmd.who)["rp3d"] || rp3d));
+		if( rp3d){
+			setManualAction( rp3d);
+			local p0 = rp3d.pos;
+			// if( bp==1 || cmd.who=="player"){ v_0( rp3d.pos).scale( 2).round(); p0 = [v_0.x,v_0.y,v_0.z]; }	//	playerの時は常に現在位置から
+			local p = Vector3D( cmd.pos[0], 0.0, cmd.pos[1]).add( p0);
+			// ::rpgstage.adjustFloorPos( p);		//	移動先の地面Y座標を正確に
+			local astat = rp3d.manuaction.act( @(){
+				move( {target = p, aim = true, spd = cmd.movespd, movetype=cmd.movetype, playani=cmd["playani"] });
+				// if( cmd["playani"]) anime( {id="stand"});
+			});
+			if( cmd["wait"]) astat.wait();
+		}
+	}
+
+	//	一定時間イベントを硬直させる。イベントが終了しても効果は継続する。
+	function freezeEvent( cmd){
+		local dst3d = null;	//	RPG3DObject
+		dst3d = cmd["who"]==1 ? stage.player3d : rp3d;	//	要RPGObjectRef対応
+		//
+		if( dst3d){
+			stage.subthread( @(){
+				dst3d.timescale = 0.0;
+				sleep( cmd.time);
+				dst3d.timescale = 1.0;
+			}, this);
+		}
+	}
+	
+	function timeScale( cmd){
+		stage.setTimeScale( cmd.timescale*0.01);
+	}
+
+	//	カメラワーク変更
+	function setCamerawork( cmd){
+		if( !cmd["type"]){
+			::rpgstage.resetCamerawork( cmd);
+		}else{
+			::rpgstage.setCamerawork( cmd);
+		}
+	}
+
+	function addCameraMotion( cmd){
+		::rpgstage.addCameraMotion( cmd);
+	}
+
+	//	マニュアルアクションを再生する。
+	//	イベントが終了したタイミングでmanuactionは消去される
+	function playManualAction( cmd){
+		local st = ::rpgstage;
+		local waits = [];
+		foreach( i, v in cmd){
+			if( !length( v["actions"])) continue;
+			local rp3d = cmd.who=="player" ? st.player3d : cmd.who=="event" ? this.rp3d : st.getEvent( cmd.who)["rp3d"];
+			if( rp3d){
+				setManualAction( rp3d);	//	ここでmainactionの設定とイベント終了時に消す処理
+				local astat = rp3d.manuaction.act( @() playData( v.actions, 0, this.rp3d));
+				if( v["wait"]) waits .. astat;
+			}
+		}
+		foreach( v in waits) v.wait();
+	}
+	
+	//	エフェクトの再生
+	//	{"cmd":"cmd_efx","efxid":"FX020","pos":[0.0,0.0,0.0],"wait":true,"who":1}
+	function showEffect( cmd){
+		local p = null;
+		switch( cmd["who"]){
+		case 0: break;
+		case 1: p = rpgstage.player3d; break;
+		case 2: p = this["rp3d"]; break;
+		default: p = cmd.who["rp3d"]; break;
+		}
+		local e = p.effect( { id=cmd.efxid, });
+		if( cmd["wait"] && e["efx"]["waittime"]){
+			sleep( e.efx.waittime);
+		}
+	}
+	
+	//	効果音の再生
+	function playSound( cmd){
+		local p = null;
+		switch( cmd["who"]){
+		case 0: break;
+		case 1: p = ::rpgstage.player3d; break;
+		case 2: p = this["rp3d"]; break;
+		default: p = cmd.who["rp3d"]; break;
+		}
+		if( p){
+			p.playSound( cmd.sndid);
+		}else{
+			::playSound( cmd.sndid);
+		}
+	}
+
+	//	BGMの再生
+	//	※restoreじゃない場合はrpgstage.stat.bgmidが変更される。
+	function playBGM( cmd){
+		local bgmid = cmd.bgmid;
+		local oldbgm = ::soundmanager.currentbgm;
+		local bgm = cmd["fadetime"] ? ::fadeBGMID( bgmid, cmd.fadetime) : ::playBGMID( bgmid);
+		local sv = ::rpgstage.view;
+		sv.removeUpdateFunc( @( o) o.getName() == "restorebgm");	//	今ついてるrestorebgmがあれば消去
+		if( cmd["restore"]){
+			local ev = this;
+			_setstopfunc( "restorebgm", @(){
+				bgm.fadeout( 400);
+				(::soundmanager.currentbgm = oldbgm).fadein( 400);	//	頭から再生してるなー
+			});
+		}else{
+			_removestopfunc( "restorebgm");
+			::rpgstage.stat.statmap.bgmid <- bgmid;		//	保存される
+		}
+	}
+
+	//	ライトの発生
+	function setLight( cmd){
+		local p = null;
+		switch( cmd["who"]){
+		case 0: p = ::rpgstage.cam3d; break;
+		case 1: p = ::rpgstage.player3d; break;
+		case 2: p = this["rp3d"]; break;
+		default: p = cmd["who"]["rp3d"]; break;
+		}
+		if( !p) p = rp3d;
+		p.setLight( cmd);
+	}
+
+	//	スクリーンエフェクト
+	function screenEffectOn( cmd){
+		::rpgstage.screenfx.screenEffectOn( cmd);
+	}
+
+	function screenEffectOff( cmd){
+		::rpgstage.screenfx.screenEffectOff( cmd);
+	}
+	
+	//	バトルを強制的に終了する。このコマンドを呼び出したマクロが終了した直後に戦闘終了。
+	//	
+	function battleEnd( cmd){
+		local b = ::rpgstage["battle"];
+		if( b){
+			b.forceend = cmd.result;
+		}
+	}
+
+
+	
+	/////////////////////////////////////////////////////////////////////////////////////
+	//	イベント終了時にリセットが必要な処理に対応
+	
+	stopfuncmap = null;
+
+	//
+	function _setstopfunc( name, func){
+		_removestopfunc( name);
+		if( !stopfuncmap) stopfuncmap = {name=func}; else stopfuncmap[name] <- func;
+	}
+
+	function _removestopfunc( name){
+		delete stopfuncmap[name];
+	}
+	
+	function finishEventRunning(){
+		if( stopfuncmap){
+			foreach( fn in stopfuncmap) fn();
+			stopfuncmap = null;
+		}
+	}
+}
+
+
+//	ステージに配置されるイベント。
+//	
+//	ページあり
+//	ページが切り替わるとイベント処理、アニメ、トリガー、移動モード、吹き出し、が変わる。
+//	ページ選択はイベント処理実行中は切り替わらないが、スポーン時には毎フレーム切り替えチェックを行う。
+//	スリープ時にはページはなにも選択されていない
+//	どのページも選択されない場合はデスポーンされるがスリープにはならないで、引き続きページ選択が毎フレーム行われる。
+//	
+//	トリガーの判定処理や、それに応じて3Dモデルをスポーンしたり、距離が離れたら消滅させたり。
+//	以下の3モードを行き来して
+//	(1) スリープモード : イベントとしては何も動いていない状態。距離を詰めると(2)に移る。キャラは+-0.5画面分、ドア、ポータルは5m以内で生成。
+//	(2) スカウトモード : ページを選択して3Dモデルをスポーンし、うろうろしたりするトリガー待ちモード。位置が離れたらまた(1)に移る。トリガーされると(3)に移る。
+//	(3) ランニングモード : イベント処理が実行中のモード。処理が終了すると(2)に戻る。
+//	
+//	spawndistの距離に達したらスカウトモードに移る。ページを選択してモデルをスポーン。また、通常のイベントは画面外に出て5秒でスリープモードに戻る。
+//	
+//	イベントには主イベントと並列イベントがある。主イベント実行中は他の主イベントはトリガーされず、アクティブバトルのコマンド実行も待たされる。
+//	
+//	※RPG3DObjectとRPGStageEventRunnerの関係
+//	・基本的に双方独立したオブジェクト。
+//	・runnerはRPGStageのアップデート、rp3dはSK3DSceneのアップデートで更新処理が行われる。
+//	・runnerはrp3dの生成、消去、移動パターン設定の影響を与える。
+//	・rp3dはrunnerに直接影響を与えることは無い。
+//	
+class RPGStageEventRunner extends RPGEventRunner
+{
+	spawnpos = null;			//	(x,y,z,dir) : イベントの登場基準位置。event.data.bposのブロック座標から変換済みのもの。スリープ時に現在位置で上書きする。
+	spawndist = 0;				//	イベントのスポーン条件。event.data.spawndist
+	
+	pagelist = null;			//	
+	page = null;				//	現在のページ。
+	trgcooltime = 0;			//	トリガー後のクールタイム
+	trgdisable = false;			//	連続トリガー阻止のためのキャンセルフラグ
+	
+	spawnandran = false;		//	スポーン後にイベントが実行したか。     ※※保存しないといけない => 保存はなし。ロード時にも実行される
+
+	constructor( ei, ed, stg, evr){
+		evid = ei;
+		data = ed;
+		stage = stg;
+		spawndist = data.spawndist;
+		local p = data.pos;
+		spawnpos = (p[0]*0.5, p[1]*0.5, p[2]*0.5, p[3]*Math.HPI);
+		evar = clone (evr || inievar);
+		pagelist = data["page"] || RPGSystem.eventrole[data["role"]]["defpage"];
+	}
+
+	//	マップに保存された状態を復元する。※イベントの開始前に呼ぶ必要がある。
+	//	
+	function setEventSnapshot( es){
+		mode = es["mode"] ? 1 : 0;	//	mode=2は並列実行中。イベント実行を途中から再開は出来ないのでscout状態から再開するように。。。
+		// spawnandran = !!es["spawnandran"];
+		if( es["spawnpos"]) spawnpos = es.spawnpos;		//	この位置は保存時のイベントの位置を指す。
+		//	移動アクションの復元を最低限できるようにする。。。主にManualPlayActionの移動ルートを途中から再生したい。
+		local act = es["act"];
+		if( act){	//	これ入ってる時点で
+			local p = pagelist[es["pageidx"]];
+			if( p){
+				setPage( p);
+				if( rp3d["mainaction"]["setSnapshot"] && es["act"]) rp3d.mainaction.setSnapshot( act);	//	pageセットされてないとactも復帰不能
+			}
+		}
+	}
+
+	//	
+	function getEventSnapshot(){
+		if( !mode && !spawnandran) return null;		//	セーブデータ肥大化防止に必要ないイベント状態は無視
+		local es = { mode = mode, };
+		local pageidx = pagelist.indexOf( page);
+		if( pageidx >= 0) es.pageidx <- pageidx
+		// if( spawnandran) es.spawnandran <- true;
+		if( rp3d){
+			es.spawnpos <- (rp3d.pos.x, rp3d.pos.y, rp3d.pos.z, rp3d.dir);	//	spawnposは現在スポーンしてたらその位置を入れる。
+			if( rp3d.mainaction["getSnapshot"]){
+				local act = rp3d.mainaction.getSnapshot(); if( act) es.act <- act;
+			}
+		}
+		return es;
+	}
+	
+	//	イベントをステージ等に配置してから呼び出す
+	function start(){
+		thread = newthread( "RPGEvent thread[%S]" % evid);
+		thread.call( mode? run_scout : run, this);	//	ロード時に登場してたら
+	}
+	
+	function run(){
+		for(;;){
+			try{
+				run_sleep();
+			}catch( ex){
+				printexception( ex);
+				suspend();
+			}
+		}
+	}
+
+	function update( dt){
+		thread?.wakeup( dt);
+	}
+
+	//	
+	function stop(){
+	}
+
+	//
+	function despawn(){
+		if( rp3d){
+			local p = rp3d.pos;
+			spawnpos = (p.x,p.y,p.z,rp3d.dir);	//	保存される
+			rp3d.kill();
+			rp3d = null;
+		}
+		page = 0;
+		trgcooltime = 0;
+		trgdisable = false;
+	}
+
+	//	ページ
+	function setPage( p){
+		local isnew = (p && !rp3d);
+		if( isnew){
+			rp3d = ::RPG3DObject.create3DObject( data);
+			rp3d.setPosition( spawnpos);
+			rp3d.event = this;
+			// rp3d.setBaloon( p["baloon"]);
+			stage.scn.addObject( rp3d);
+			rp3d.anime2( {id="stand"});
+		}else
+		if( !p && rp3d){
+			despawn();
+		}
+		page = p;
+		trgcooltime = 0;
+		trgdisable = false;
+		if( rp3d && p["standani"]){
+			local pani = p.standani;
+			if( isnew) pani = { ...pani, part=AnimationPart.EN};	//	登場時にはアニメーションの最後のフレームを再生。ただし、ループ時は無視される。
+			rp3d.anime2( pani);
+		}
+		//	移動アクション変更
+		if( rp3d){
+			local ma = p["moveaction"] || data["moveaction"];
+			local cls = ::RPGSystem.moveaction[ma]["cls"] || null;
+			local oldcls = rp3d.mainaction && getclassname( rp3d.mainaction);
+			if( cls != oldcls){
+				if( rp3d.mainaction["finish"]){
+					rp3d.mainaction.finish();
+				}
+				if( cls){
+					rp3d.mainaction = cls( rp3d);
+				}else{
+					rp3d.mainaction = null;
+				}
+			}
+		}
+	}
+	
+	//	spawndistの登場条件が満たされたかチェックして、登場可能ならrp3dを生成してscoutモードに移行する。
+	//	
+	function run_sleep(){
+		mode = 0;
+		despawn();
+		for( ;;){
+			// printf( "spawnnnn? %S  %S %S %S    %S\n", data.name, spawnpos[0], spawnpos[1], spawnpos[2], spawnDistantCheck( v_0( spawnpos)));
+			if( spawnDistantCheck( v_0( spawnpos))){
+				return run_scout();	//	末尾再帰でコールスタックを積まないように。
+			}
+			sleep( 100);	//	全てのイベントが同じタイミングでspawnのチェックはいらないようにしたい
+		}
+	}
+	
+	//	登場したイベントを自律的に動かせつつ、トリガー条件に合えばイベント実行開始
+	//	画面外に出たりした場合はモデルを消して再びスリープに。
+	//	
+	function run_scout(){
+		mode = 1;
+		local despawncnt = 5000, dt = 1, t0 = skGetTime();
+		for( ;;){
+			local p = selectPage();
+			if( p != page){
+				setPage( p);
+			}
+			if( p){
+				if( trgcooltime) trgcooltime=Math.max( trgcooltime-dt, 0);
+				if( trgdisable) trgdisable=eventTriggerCheck();
+				if( eventTriggerable() && eventTriggerCheck()){
+					// trgdisable = true;
+					return run_running();
+				}
+			}
+			if( despawnDistantCheck( rp3d ? rp3d.pos : v_0( spawnpos))){	//	デスポーン時にはspawnposでチェック。。。
+				if( (despawncnt-=dt) <= 0){
+					despawncnt = 0;
+					return run_sleep();	//	モデルを消去したりしてスリープ状態に移行
+				}
+			}else{
+				despawncnt = 5000;
+			}
+			suspend();
+			local t1 = skGetTime();
+			dt = t1 - t0; t0 = t1;
+		}
+	}
+
+	function makewvar(){
+		local wv = clone iniwvar;
+		foreach( i, k in page["wvarmap"]){	//	会話とか宝とか、設定されたデータをワーク変数に設定
+			if( k == "data"){
+				wv[i] = data;
+			}else{
+				wv[i] ??= deepclone( data[k]);
+			}
+		}
+		return wv;
+	}
+
+	//	ページ0のイベント処理を実行する。ロールに渡す引数はここで渡す
+	function run_running(){
+		mode = 2;
+		spawnandran = true;		//	スポーン時に実行用のフラグ
+		if( !data["pararun"]) rpgstage.mainevent = this;
+		//	元に戻すための現在位置取得。
+		local p0 = clone rp3d.pos, d0 = rp3d.dir;
+		//	実行！！！！
+		local wv = makewvar();
+		runCommandBlock( page.cmdblock, wv);
+		if( !data["pararun"]) rpgstage.mainevent = null;
+		//	※要検討。位置が変化してたら向きは元に戻さない。
+		if( p0.hypot( rp3d.pos) < 0.1){
+			rp3d.dir = d0;
+		}
+		trgcooltime = 200;	//	クールタイムテスト
+		//	イベント実行が終わったらスカウト状態に戻る
+		finishEventRunning();
+		return run_scout();
+	}
+
+	//	距離的にスポーン可能かチェック
+	function spawnDistantCheck( p){
+		switch( spawndist){
+		case 0:
+		{
+			return false;		//	スポーンしない。イベントコマンド等で明示的にスポーン
+		}
+		case 1: //	画面内に入る。マージンを3m取る。
+		{
+			return stage.cam.isInside( p, 3.0);
+		}
+		case 2: case 3: case 4:	//	プレイヤーの4m, 8m, 12m以内に入る
+		{
+			local pp = stage.player["pos"];
+			return pp && pp.hypot( p) < (spawndist-1)*4.0;
+		}
+		case 5:
+		{
+			return true;		//	常にスポーン
+		}
+		}
+		return false;
+	}
+
+	//	
+	function despawnDistantCheck( p){
+		switch( spawndist){
+		case 0: case 5:
+			return false;		//	自動で登場の場合はdespawnはしない。
+		default:	//	その他の場合はカメラから4m以上離れた状態が5秒以上続いたらdespawnに
+			return !stage.cam.isInside( p, 4.0);
+		}
+	}
+
+	//	イベントで設定したスポーン条件を満たしたかチェック。
+	function selectPage(){
+		for( local l = length( pagelist)-1; l >= 0; l --){
+			local p = pagelist[l], reqs = p["reqs"] || data["reqs"..l];
+			if( ::reqchk( reqs, this)) return p;
+		}
+		return null;
+	}
+
+	//	イベント実行可能か。メインイベントの同時起動、イベント前回起動からのクールタイム、イベント前回起動からの連続トリガーキャンセル
+	function eventTriggerable(){
+		if( !data["pararun"] && stage["mainevent"]) return false;		//	pararunは並行イベントフラグ
+		if( trgcooltime) return false;
+		if( trgdisable) return false;
+		return true;
+	}
+
+	//	イベントを実行状態に出来るかチェックする。
+	function eventTriggerCheck(){
+		if( !stage) return false;
+		if( rp3d && rp3d.timescale <= 0.001) return false;	//	フリーズ中はトリガーしない
+		local p = stage.player3d, pr = p.gbnd, e = rp3d, er = e.gbnd;
+		switch( page.trigger){
+		case 0:	//	なし
+			return false;
+		case 1: //	調べる(近|遠)。※プレイヤーの操作として調べるボタン押した対象がRPGStageに100ms程残る
+		case 2:	
+			return (stage.searchdst == e && stage.searchpush);
+		case 3:	//	接触。
+			if( r_0.set( er).expand( 0.1).contacts( pr)){	//	大まかチェック
+				p.b3body.getRawTransform( m_0);
+				e.b3body.getRawTransform( m_1);
+				local v = m_1.getTranslation( v_1).sub( m_0.getTranslation( v_0)).normalize().scale( 0.05);
+				m_0.ltranslate( v);	//	プレイヤーの方のMatrixを5cmだけイベントに近づける
+				local br = skContactTest( 1, p.b3body.getShape(), m_0, e.b3body.getShape(), m_1);
+				return !!br.len();
+			}
+			return false;
+		case 4:	//	近づく(1m) 近づく(2m)
+			local dist = 1.5;//page.trigger-2;
+			if( r_0.set( er).expand( dist).contacts( pr)){	//	大まかチェック
+				//	※シェイプを考慮する必要なし。円型ではなく四角型の距離チェックとなる
+				// r_0.set( pr).expand( dist); return r_0.contacts( er);
+				return true;
+			}
+			return false;
+		case 5:	//	中に入る。イベントの判定内にプレイヤーの中心位置が完全に含まれているか。ポータルや透明イベント
+			r_0.set( p.pos.x, p.pos.y+0.25, p.pos.z, 0.5, 0.01, 0.5);	//	プレイヤーの幅が0.5と決め打ちして、十分中に入ったといえる幅
+			return r_0.insideof( er);
+		case 6:	//	スポーン時実行。
+			return !spawnandran;
+		case 7:	//	実行し続ける。
+			return !trgdisable;
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////////
+	//	
+
+	//	ページにジャンプはRPGStageEventRunnerのみ実行可能
+	function pageJump( cmd){
+		local p = pagelist[cmd.page];
+		if( p){
+			setPage( p);	//	run_running内でも強制的にページ切り替え！
+			throw { jumpfunc = RPGEventCompiler().compile( p.cmdblock) };
+		}
+	}
+}
+
+//	自動実行マクロイベント用のrunner。
+//	マップ移動時に毎回初期化され、条件が合えば実行。実行終了後は動作は停止し、再びマップ移動したときに条件チェックから実行を始める。
+//	※UIやオプション等でマクロ実行を直指定して実行した場合もこのrunnerが一時的に生成されて実行される。
+//	
+class RPGMacroEventRunner extends RPGEventRunner
+{
+	macroid = null;
+	data = null;			//	macro data
+
+	constructor( mi, md){
+		evid = mi;
+		macroid = mi;
+		data = md;
+		evar = ::rpgstat.mvarmap[macroid];
+		if( !evar) evar = ::rpgstat.mvarmap[macroid] <- clone inievar;
+	}
+
+	//	
+	function run_scout(){
+		for(;;){
+			mode = 1;
+			try{
+				if( eventTriggerable() && ::reqchk( data.reqs, this)){
+					return run_running();
+				}
+			}catch( ex){
+				printexception( ex);
+			}
+			suspend();
+		}
+	}
+
+	function run_running(){
+		mode = 2;
+		local wv = clone (data["wvar"] || iniwvar);
+		local ismain = data["runmode"]<=1, oldevent;	//	手動も実行時はmain扱い。
+		if( ismain){ oldevent = rpgstage.mainevent; rpgstage.mainevent = this; }	//	oldeventはメインメニューの場合!=nullがある
+		runCommandBlock( data.cmdblock, wv);
+		if( ismain){ rpgstage.mainevent = oldevent; }
+		finishEventRunning();
+		mode = 0;
+		suspend();
+		// return run_scout();	//	scoutモードには移行しない（ない）。このまま実行終了。
+	}
+	
+	function eventTriggerable(){
+		local m = rpgstage["mainevent"];
+		if( m){
+			if( data["runmode"] != 2){
+				if( !(data["runatmenu"] && (m instanceof ::MenuEventRunner))) return false;	//	irannnnnnn
+			}
+		}
+		return true;
+	}
+
+	function update( dt){
+		if( !thread){
+			thread = newthread( "Macro thread[%S]" % macroid);
+			thread.call( run_scout, this);
+		}else{
+			thread.wakeup( dt);
+		}
+	}
+}
+
+//	メインメニュー表示時にrpgstage.maineventに設定されるダミーのEventRunner。
+//	自動マクロのrunatmenuが有効なものは例外的にこのrunnerがmaineventに設定されているときに上書きして実行可能。
+//	
+class RPGMenuEventRunner extends RPGEventRunner
+{
+}

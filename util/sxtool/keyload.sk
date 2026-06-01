@@ -1,0 +1,76 @@
+﻿
+function decodeASN1( bb){
+	local tag = bb.getb()&0xff;
+	local len = bb.getb();
+	if( len & 0x80){	//	multi byte
+		local n = len&127; len = 0;
+		for( local l = 0;l < n;l ++) len = (len<<8) | (bb.getb()&255);
+	}
+	//printf( "%02x   %d\n", tag, len);
+	switch( tag){
+	// 0x30 : SEQUENCE
+	case 0x30:
+		local p1 = bb.pos + len;
+		local r = [];
+		do{
+			r .. decodeASN1( bb);
+		}while( bb.pos < p1);
+		return r;
+	//	0x04 : OCTET STRING
+	case 0x04:
+		local sb = ByteBuffer();
+		sb.putBuffer( bb, len);
+		sb.pos = 0;
+		return sb;
+	// 0x05 : NULL
+	case 0x05:
+		return null;
+	// 0x06 : OBJECT_ID
+	case 0x06:
+		local r = ByteBuffer( len);
+		r.putBuffer( bb, len);
+		r.pos = 0;
+		return r;
+	//	0x03 : BIT STRING
+	case 0x03 :
+		local unused = bb.getb();	//	0のみ対応
+		local r = decodeASN1( bb);
+		return r;
+	//	0x02 : INTEGER (bigint)
+	case 0x02 :
+		local r = bigint( bb, bb.pos, len); bb.pos += len;
+		return r;
+	}
+	throw Exception( "tag error : "..tag);
+}
+
+//	プライベートキーのstringをByteBufferに
+function loadPrivateKey( pkstr){
+	local sstr = "-----BEGIN PRIVATE KEY-----";
+	local estr = "-----END PRIVATE KEY-----";
+	
+	local s = pkstr.indexOf( sstr);
+	local e = pkstr.lastIndexOf( estr);
+	local vstr = pkstr.substring( s+length( sstr), e).trim();
+	vstr = vstr.replace( "\n", "");
+	
+	local bb = decodeBASE64( vstr, ByteBuffer());
+	local asn = decodeASN1( bb);
+	//	中に更にASNが入ってる。
+	local asn2 = decodeASN1( asn[2]);
+	return {
+		publicexp = asn2[2],
+		publicmod = asn2[1],
+		privateexp = asn2[3],
+	}
+}
+
+function loadPrivateKeyFile( path){
+	local f = FileRef( skGetCurrentDir().."/"..path);
+	if( !f.exists()){
+		printf( "PrivateKey not found : %S\n", f.path);
+		skExit( 1);
+	}
+	local s = f.load().asText();
+	return loadPrivateKey( s);
+}

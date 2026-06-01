@@ -1,0 +1,350 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorSkill : スキル編集。アイテム編集でも同一の
+//	
+//	
+
+////////////////////// 基本プロパティ ///////////////////////
+
+local eqtypeprop = {
+	pid = "eqtypebits"
+	lbl = "$T.lbl_eqtypebits",
+	type = CHECKBITS
+	list = @() ::conf.type.eqtype.filter( @( v, i) isWeapon( i)),
+	defval = @(){
+		local x = 0;
+		foreach( i, v in ::conf.type.eqtype) x |= (isWeapon( i)<<i);
+		return x;
+	}
+};
+
+//	お金とか減らすのもなしではないか
+local consumeprop = {
+	pid = "consume"
+	lbl = "$T.skillconsume"
+	type = LIST_SCALAR
+	list = [
+		{ lbl:"$T.skillconsume0", val:0},
+		{ lbl:"$T.skillconsume1", val:1},
+		{ lbl:"$T.skillconsume2", val:2},
+		{ lbl:"$T.skillconsume3", val:3},
+		{ lbl:"$T.skillconsume4", val:4},
+		{ lbl:"$T.skillconsume5", val:5},
+	],
+	range = (0,1000)
+	defval = [0,1]
+};
+
+//	スキル使用条件。敵AIの条件と被るものも多い。これはコマンド選択時に評価されて発動時は再チェックしない
+//	これいらないでしょ！
+// local reqprop = {
+// 	pid = "reqire"
+// 	lbl = "$T.lbl_requse"
+// 	type = LIST
+// 	list = @() ::RPGSystem.skillreq._list
+// 	defval = null
+// }
+
+// //	使用場面
+// local occasionprop = {
+// 	pid = "occasion"
+// 	lbl = "$T.occasion"
+// 	type = LIST
+// 	list = [
+// 		{ lbl:"$T.occasion0", val:0},
+// 		{ lbl:"$T.occasion1", val:1},
+// 		{ lbl:"$T.occasion2", val:2},
+// 		{ lbl:"$T.occasion3", val:3},
+// 	],
+// 	defval = 1,
+// };
+
+//	スキルタイプ、のテンプレート
+local stproptmpl = {
+	pid = "skilltype"
+	lbl = "$T.skilltype"
+	cnt = "cnt8.ui"
+	type = LIST
+	list = @() ::RPGSystem.skilltype._list.map( @( v) ({ lbl=v.lbl, val=v.key}))
+	defval = @() ::RPGSystem.skilltype._list[0].key
+	refresh = true
+	//	set()を入れる！！！
+};
+
+class DBEditorSkill extends EditorViewBase
+{
+	//	スキルの基本パラメータ。基本拡張はできない。が、プラグインでここ拡張することは可能。
+	static baseprops1 = [
+		RPGProperties.nameiconprop,
+		RPGProperties.descprop,
+	];
+	
+	//	右側に表示されるパラメータ。扱いは1と同じ
+	static baseprops2 = [
+		eqtypeprop,
+		consumeprop,
+		// reqprop,
+		{ lbl="$T.lbl_addskilllist", pid="addlist", type=BOOL1, defval=true, cnt="cnt5.ui" },
+		{ lbl="$T.lbl_enemyuse", pid="enemyuse", type=BOOL1, defval=false, cnt="cnt5.ui" },
+	];
+
+	//////////////////////////////////////////////////////////////////////////////////////
+
+	res = null;				//	Resource : 
+	data = null;			//	S000等のデータのコピー。
+	
+	//	view
+	baseproplist1 = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	baseproplist2 = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	proplist = null;			//	PropertyListBehavior : 
+	optionlist = null;			//	OptionList : 汎用オプションパネル＋LV設定も可能に。
+
+	defskilltype = "noop";
+
+	function init( path){
+		op = OperationStack();
+		baseproplist1 = PropertyListBehavior( findChild( "baseproplist1"), null, "cnt3.ui");
+		baseproplist1.bindProperties( baseprops1);
+		baseproplist1.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist1.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist1.ref = this;
+		
+		baseproplist2 = PropertyListBehavior( findChild( "baseproplist2"), null, "cnt3.ui");
+		baseproplist2.bindProperties( baseprops2);
+		baseproplist2.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist2.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist2.ref = this;
+		//
+
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		
+		optionlist = OptionList( findChild( "optionlist"), this);
+		// lvpreview = LVPreview( findChild( "lvpreview"));
+		
+		res = ::getResource( path);
+		data = deepclone( res.getContent()) || {name:"",icon:"",desc:""};
+		//	データ補間。存在しないプロパティにデフォルト値を挿入
+		if( !data["skilltype"]) data.skilltype <- defskilltype;
+		local st = ::RPGSystem.skilltype[data.skilltype];
+		setDefaultProperties( baseprops1, data);
+		setDefaultProperties( baseprops2, data);
+		setDefaultProperties( fget( st, "props", st, data), data, this);
+		if( !data["option"]) data.option <- [];
+		//
+		refresh();
+	}
+
+	function bindSkillProperties(){
+		local props = [];
+		//	スキルアクションとターゲット選択
+		local self = this;
+		props .. {	//	プロパティセットを追加。。。。
+			...stproptmpl,
+			set = @( prop, data, val) self.changeSkillType( val),
+		};
+		// props .. { pid="G1", lbl="", type=PropertyType.HEADER, cnt="header0.ui"};
+		local st = ::RPGSystem.skilltype[data.skilltype];
+		props ... fget( st, "props", st, data);	//	アクションに必要なプロパティは全て定義されている
+		//	ユーザー追加プロパティ
+		//	done!!!
+		proplist.bindProperties( props);
+	}
+	
+	//	スキルアクションを変更する。付随するプロパティを変更する
+	function changeSkillType( skilltype){
+		local newdata = deepclone( data);
+		newdata.skilltype = skilltype;
+		local oldst = ::RPGSystem.skilltype[data.skilltype], oldprops = fget( oldst, "props") || [];
+		local newst = ::RPGSystem.skilltype[skilltype], newprops = fget( newst, "props") || [];
+		foreach( v in oldprops){
+			local pid = v.pid;
+			if( !newprops.find( @( a) pid==a.pid)) delete newdata[pid];	//	変更後のアクションに存在しないプロパティは消す。
+		}
+		//	※※※※ cmdtgt, dmgtypeはpidは同一でも選択制限に違いがある。
+		//	prop実体が違う場合は無理やりdefval入れちゃうほうが良いかも
+		foreach( v in newprops){
+			if( !(v.pid in newdata) || v != oldprops.find( @( p) p.pid==v.pid)){
+				local defval = fget( v, "defval");
+				newdata[v.pid] <- deepclone( defval);
+			}
+		}
+		Table.clear( data) ... newdata;
+		//	↓はprop.refreshで行われるのでここでは呼ばない！
+		// bindSkillProperties();
+		// refresh();
+	}
+
+	function refresh(){
+		baseproplist1.setParameters( data);
+		baseproplist2.setParameters( data);
+		bindSkillProperties();
+		proplist.setParameters( data);
+		optionlist.setOptions( data.option);		//	このやり方で良いかな・・・？
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	//	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			setPropOp( e);
+		}else
+		if( cmd["cmd"] == "menu" && cmd.prop["pid"] == "HACT"){
+			switch( cmd["val"]["id"]){
+			case "copy":
+				local a = proplist.getItemsInHeader( "HACT");
+				local cbdata = a.map( @( v) +{ pid=v.prop.pid, val=data[v.prop.pid]});
+				putClipboard( "skillact", cbdata);
+				break;
+			case "paste":
+				local cbdata = getClipboard( "skillact");
+				if( cbdata){
+					local data = this.data, olddata = clone data, newdata = clone data;
+					foreach( v in cbdata){
+						if( v.pid in newdata) newdata[v.pid] = v.val;
+					}
+					local self = this;
+					local redo = [@(){ Table.clear( data) ... newdata; }];
+					local undo = [@(){ Table.clear( data) ... olddata; }];
+					submitOp( redo, undo, null);
+					refresh();
+				}
+				break;
+			}
+		}
+	}
+
+	function setPropOp( e){
+		local cmd = e.actioncmd;
+		local prop = cmd.prop;
+		local data = this.data;
+		local val = cmd.val;
+		local trk = null;
+		local oldval = ::getProperty( prop, data, this);
+		local olddata = prop["refresh"] ? deepclone( data) : null;
+		//	refresh有効時にはpid以外に色々変化してる場合があるので、olddata丸ごとコピーする。。。
+		local self = this;
+		local redo = [@(){ ::setProperty( prop, data, val, self); }];
+		local undo = [@(){ ::setProperty( prop, data, oldval, self); if( olddata){ Table.clear( data) ... olddata; }}];
+		submitOp( redo, undo, trk);
+		//
+		if( prop["refresh"]){
+			refresh();
+		}
+	}
+
+	function testAction(){
+		//	現在の作業データをテンポラリに保存
+		local f = FileRef( "tmp/debugconf.json");
+		local dbtype = getdbtype( res.path);
+		local bb = encodeJSON({ [`${dbtype}.${res.name}`]={...data, consume=[0,0], }}, 5, ByteBuffer());	//	消費0にして確実に打てるように
+		bb.pos = 0;
+		f.save( bb);
+		local m = { uid="menu_debug_battle", mapid="M001", gid=1, skillid=res.name, confpath=f.path, };
+		startDebugMenu( m);
+	}
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	アイテムはスキルとほぼ同じ構成なのでついでにここで
+//	
+
+local priceprop = {
+	pid = "price"
+	lbl = "$T.lbl_price"
+	type = SCALAR
+	range = (0, 1000000)
+	defval = 100,
+}
+
+local itemtypeprop = {
+	pid = "itemtype"
+	lbl = "$T.itemtype"
+	type = LIST
+	list = [
+		{ lbl:"$T.itemtype0", val=0},
+		{ lbl:"$T.itemtype1", val=1},
+	]
+	defval = 0,
+	// set = @( prop, data, val, ref){ data[prop.pid]<-val; if( val!=1) ref.changeSkillType( "unusable"); }
+	refresh = true,
+}
+
+local itemconsumeprop = {
+	pid = "consume"
+	lbl = "$T.itemconsume"
+	type = LIST
+	list = [
+		{ lbl:"$T.itemconsume0", val=0},
+		{ lbl:"$T.itemconsume1", val=1},
+		{ lbl:"$T.itemconsume2", val=2},
+		{ lbl:"$T.itemconsume3", val=3},
+	]
+	defval = 1,
+	hide = @( pl) pl.getParam( "itemtype")==1,
+}
+
+local itemstacknumprop = {
+	pid = "stacknum"
+	lbl = "$T.lbl_stacknum"
+	type = SCALAR
+	range = (1,999)
+	defval = 99
+}
+
+//	
+//	
+class DBEditorItem extends DBEditorSkill
+{
+	//	スキルとはここが違う
+	static baseprops2 = [
+		priceprop,
+		itemstacknumprop,
+		itemtypeprop,
+		itemconsumeprop,
+	];
+
+	defskilltype = "unusable"
+
+	function init( path){
+		super.init( path);
+		setValue( "titlelbl", "$T.lbl_dbedit : $T.side_dbview_item");
+	}
+}

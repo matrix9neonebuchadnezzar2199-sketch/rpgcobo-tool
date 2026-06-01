@@ -1,0 +1,137 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorSetting : システム設定
+//	
+//	
+
+class DBEditorSetting extends EditorViewBase
+{
+	//////////////////////////////////////////////////////////////////////////////////////
+
+	res = null;				//	Resource : 
+	data = null;			//	conf.setting
+	appicon = null;			//	RGBAImage : 128x128程度。32~512までかな
+	
+	//	view
+	baseproplist = null;		//	PropertyListBehavior : 基本パラメータ。拡張はできない。
+	proplist = null;			//	PropertyListBehavior : 
+
+	function init( path){
+		//	appiconはeditor内のを使うのでbasepropsはstatic化出来ない。。。
+		local self = this;
+		local baseprops = [
+			{
+				pid = "gametitle",
+				lbl = "",
+				cnt = "cnt5.ui"
+				type = GAMETITLE
+				get = @( prop, data) (data.title,data.projname,self.appicon)
+				set = @( prop, data, val) (data.title=val[0],data.projname=val[1],self.appicon=val[2])
+			}
+			{ pid="subtitle", lbl="$T.lbl_subtitle", type=STRING, defval="SUBTITLE" }
+			RPGProperties.descprop,
+		];
+		appicon = ::getResourceContent( "/resource/icon/appicon.png");
+		//
+		op = OperationStack();
+		baseproplist = PropertyListBehavior( findChild( "baseproplist"), null, "cnt3.ui");
+		baseproplist.bindProperties( baseprops);
+		baseproplist.listview.addEventListener( ACTION_EVENT, propevent);
+		baseproplist.listview.addEventListener( ITEM_EVENT, propevent);
+		baseproplist.ref = this;
+		//
+
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		
+		res = ::getResource( path);
+		data = deepclone( res.getContent()) || {};
+		//	データ補間。存在しないプロパティにデフォルト値を挿入
+		setDefaultProperties( baseprops, data);
+		setDefaultProperties( ::RPGSystem.settingprops, data);
+		//
+		bindSettingProperties();
+		refresh();
+	}
+	
+	//	
+	function bindSettingProperties(){
+		local props = [];
+		props.. { pid="H0", lbl="$T.setting_basic", type=HEADER, }
+		props... ::RPGSystem.settingprops.filter( @( v) v["part"]=="basic");
+		props.. { pid="H1", lbl="$T.setting_startup", type=HEADER, }
+		props... ::RPGSystem.settingprops.filter( @( v) v["part"]=="startup");
+		// props.. { pid="H2", lbl="$T.setting_status", type=HEADER, }
+		// props... ::RPGSystem.settingprops.filter( @( v) v["part"]=="status");
+		props.. { pid="H3", lbl="$T.setting_ui", type=HEADER, }
+		props... ::RPGSystem.settingprops.filter( @( v) v["part"]=="ui");
+		props.. { pid="H4", lbl="$T.setting_command", type=HEADER, }
+		props... ::RPGSystem.settingprops.filter( @( v) v["part"]=="command");
+		//
+		proplist.bindProperties( props);
+	}
+
+	function refresh(){
+		baseproplist.setParameters( data);
+		proplist.setParameters( data);
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			//	appiconセーブ！
+			local icondir = getResource( "/resource/icon");
+			local pngbb = appicon.encodePNG(); pngbb.pos = 0;
+			local pngf = FileRef( icondir.file, "appicon.png");
+			pngf.save( pngbb);
+			//	
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			::skstudio.fileview.refreshDir( "/resource/icon");
+			return true;
+		}
+		return false;
+	}
+
+	//	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;//"-"..pid;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+		}
+	}
+}

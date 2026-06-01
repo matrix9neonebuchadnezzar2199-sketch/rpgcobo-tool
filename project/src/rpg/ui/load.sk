@@ -1,0 +1,9 @@
+
+runsk( "InfoUI.sk");
+runsk( "DialogUI.sk");
+runsk( "MessageUI.sk");
+runsk( "WipeUI.sk");
+runsk( "MainMenuUI.sk");
+runsk( "SystemMenuUI.sk");
+runsk( "StoreUI.sk");
+runsk( "MiscUI.sk");

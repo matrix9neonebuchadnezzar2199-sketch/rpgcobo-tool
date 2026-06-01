@@ -1,0 +1,447 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorIcon : アイコンの編集
+//	
+//	絵文字レイヤー構造
+//	0 : twiemoji
+//	1 : default icons
+//	2 : user icons
+//	このエディタでは2のユーザーアイコンを編集する。
+//	
+//	
+
+//	
+class ResEditorIcon extends EditorViewBase
+{
+	iconlist = null;		//	GPUIListView
+	iconviewmap = null;		//	
+
+	//	
+	res = null;				//	usericon.json
+	emjidx = null;			//	[{cp,offs,size,w,h,}] : 
+	emjdata = null;			//	ByteBuffer : 保存時にバキューム
+
+	function init( path){
+		op = OperationStack();
+		//	load res
+		res = ::getResource( "/resource/icon/usericon.json")
+		if( res){
+			emjidx = decodeJSON( res.loadData());
+			emjdata = FileRef( res.file, "../usericon.bin").load( ByteBuffer());
+		}else{
+			emjidx = [];
+			emjdata = ByteBuffer();
+		}
+		//
+		iconlist = findChild( "iconlist");
+		iconviewmap = {};
+		local glist = IconSelectPopup.icongrouplist;
+		local rowcnt = glist.reduce( @( v, c) c + (v.range[1]-v.range[0]+15)/16, 0);
+		iconlist.setRowCount( rowcnt);
+		local ri = 0, rows = iconlist.rows;
+		local ds = IconDropTarget();
+		foreach( g in glist){
+			local grc = (g.range[1]-g.range[0]+15)/16;
+			for( local l = 0;l < grc;l ++){
+				local r = rows[ri];
+				local cp = g.range[0]+l*16;
+				if( l == 0){
+					r.setValue( "codepnt", g.lbl.. sprintf( " : %x",cp).toUpperCase());
+				}else{
+					r.setValue( "codepnt", sprintf( "%x",cp).toUpperCase());
+				}
+				for( local j = 0; j < 16; j ++){
+					local c = r.findChild( "c"..j);
+					local lyr = Emoji.getEmojiLayer( Emoji.getEmojiCode( cp+j));
+					if( lyr >= 0){
+						c.setValue( "icon", char( cp+j));
+					}else{
+						c.setValue( "icon", "・");
+					}
+					c.findChild( "tgl").anime( lyr==2?10:0);
+					c.ref = cp+j;
+					c.tips = sprintf( "%04X", cp+j);
+					iconviewmap[cp+j] <- c;
+					c.dragsource = ds;
+				}
+				ri ++;
+			}
+		}
+		iconlist.addEventListener( ACTION_EVENT, iconevent);
+		iconlist.addEventListener( DROPTARGET_EVENT, dropevent);
+	}
+
+	//	指定したコードポイントのアイコン表示を更新
+	function updateIcon( cp){
+		local c = iconviewmap[cp];
+		if( !c) return;
+		local lyr = Emoji.getEmojiLayer( Emoji.getEmojiCode( cp));
+		if( lyr >= 0){
+			c.setValue( "icon", char( cp));
+		}else{
+			c.setValue( "icon", "・");
+		}
+		c.findChild( "tgl").anime( lyr==2?10:0);
+	}
+
+	function updateAllIcons(){
+		foreach( cp, _ in iconviewmap){
+			updateIcon( cp);
+		}
+	}
+	
+	function refresh(){
+	}
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			local d = buildEmojiData();
+			local dir = ::getResource( "/resource/icon").file;
+			FileRef( dir, "usericon.json").save( d[0]);
+			FileRef( dir, "usericon.bin").save( d[1]);
+			return true;
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		}
+		return false;
+	}
+
+	//	emjidxとemjdataから保存用のデータを作成
+	function buildEmojiData(){
+		local idx = deepclone( emjidx);
+		idx.sort( @( v) v.cp);
+		local data = ByteBuffer();
+		foreach( v in idx){
+			data.pos = v.offs;
+			data.putBuffer( emjdata, v.size);
+			v.offs = data.size-v.size;
+		}
+		data.pos = 0;
+		emjdata.pos = 0;
+		local idxbb = encodeJSON( idx, 5, ByteBuffer());
+		idxbb.pos = 0;
+		return (idxbb, data);
+	}
+
+	//	
+	function iconevent( e){
+		local cp = e.src.ref;
+		showContextMenu( cp, e);
+	}
+
+	function dropevent( e){
+		local c = e.src;
+		if( typeof( c.ref) != SS_INTEGER) return;
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+			c.findChild( "drop").anime( 10);
+			break;
+		case TARGET_DRAG_EXIT:
+			c.findChild( "drop").anime( 0);
+			break;
+		case TARGET_DROP:
+			c.findChild( "drop").anime( 0);
+			local f = e.dragsrc.filelist[0];
+			local imgbb = f.load( ByteBuffer());
+			local img = skLoadImage( imgbb);
+			if( checkImage( img)){
+				imgbb.pos = 0;
+				local op = changeIconOp( c.ref, img, imgbb);
+				submitOp( op[0], op[1]);
+			}
+			break;
+		}
+	}
+
+	function showContextMenu( cp, e){
+		local lyr = Emoji.getEmojiLayer( Emoji.getEmojiCode( cp));
+		local menudata = [
+			{ id="hsv", lbl="$T.lbl_hsv", disable=lyr<0},
+			{ id="load", lbl="$T.lbl_load_img", icon="\ue89e"},
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=lyr!=2},
+			"*",
+			{ id="copycode", lbl="$T.lbl_copy_code", icon="\uf1c6" },
+			{ id="copyimg", lbl="$T.lbl_copy_img", icon="\ue14d", disable=lyr<0},
+			{ id="pasteimg", lbl="$T.lbl_paste_img", icon="\ue14f" },
+			"*",
+			{ id="import", lbl="$T.lbl_import_dir", icon="\ue675" },
+		];
+		local ret = MenuPopup.run( menudata, e.src);
+		switch( ret["id"]){
+		case "load":
+			local imgpath = skstudio.showFileOpen( { filter=["*.png","*.webp"], abspath=true, pathgroup="icondir" });
+			if( imgpath){
+				local f = FileRef( imgpath);
+				local imgbb = f.load( ByteBuffer());
+				local img = skLoadImage( imgbb);
+				if( checkImage( img)){
+					imgbb.pos = 0;
+					local op = changeIconOp( cp, img, imgbb);
+					submitOp( op[0], op[1]);
+				}
+			}
+			break;
+		case "delete":
+			local op = deleteIconOp( cp);
+			submitOp( op[0], op[1]);
+			break;
+		case "hsv":
+			local newimg = IconHSVPopup.run( e.src, Emoji.getEmojiImage( Emoji.getEmojiCode( cp)));
+			if( newimg){
+				local imgbb = newimg.encodeWebp( 100);
+				imgbb.pos = 0;
+				local op = changeIconOp( cp, newimg, imgbb);
+				submitOp( op[0], op[1]);
+			}
+			break;
+		case "copycode":
+			skPutClipboardData( "\\u%04x" % cp);
+			break;
+		case "copyimg":
+			local img = Emoji.getEmojiImage( Emoji.getEmojiCode( cp));
+			if( img){
+				skPutClipboardData( img);
+			}
+			break;
+		case "pasteimg":
+		{
+			if( skCheckClipboardType( ClipboardType.CLIPBOARD_IMAGE)) {
+				local img = skGetClipboardData( ClipboardType.CLIPBOARD_IMAGE);
+				if( checkImage( img)){
+					local imgbb = img.encodeWebp( 100);
+					imgbb.pos = 0;
+					local op = changeIconOp( cp, img, imgbb);
+					submitOp( op[0], op[1]);
+				}
+			}
+			break;
+		}
+		case "import":
+			showImportDialog();
+			break;
+		}
+	}
+
+	function showImportDialog(){
+		local d = FileDialog();
+		d.setTitle( "インポートフォルダを指定する");
+		d.setMode( FileDialogMode.FILEDIALOG_SELECTDIR);
+		// if( editor.basedir){
+		// 	local dir = FileRef( editor.basedir, editor.data.imagedir);
+		// 	d.setFile( dir);
+		// }
+		d.show();
+		while( d.isShown()){
+			sleep( 100);
+		}
+		local p = d.getResult();
+		if( p){
+			importDirectory( FileRef( p));
+		}
+	}
+
+	function importDirectory( dir){
+		local redo = [], undo = [];
+		local n = 0;
+		foreach( f in dir.getList()){
+			local str = f.name.substring( 0, f.name.lastIndexOf( "."));
+			local cp = int( str, 16);	//	
+			if( cp >= 0xf240 && cp < 0xf840){
+				local imgbb = f.load( ByteBuffer());
+				local img = skLoadImage( imgbb);
+				if( checkImage( img)){
+					imgbb.pos = 0;
+					// printf( "CP %S IMG %S %S   %S CRC %d\n", cp, img.width, img.height, imgbb.size, imgbb.crc32( 0));
+					local op = changeIconOp( cp, img, imgbb, false);
+					redo ... op[0];
+					undo ... op[1];
+					++n;
+				}
+			}
+		}
+		if( n){
+			local self = this;
+			local fn(){
+				Emoji.registerEmoji( self.emjidx, self.emjdata, 2);
+				self.updateAllIcons();
+			}
+			redo .. fn;
+			undo .. fn;
+			submitOp( redo, undo);
+			//	最後に情報表示
+			Popups.showInfo( "%S 個のアイコンが読み込まれました" % n);
+		}else{
+			Popups.showError( "インポートする画像が見つかりません");
+		}
+	}
+
+	function checkImage( img){
+		if( !img) return false;
+		if( img.width < 16 || img.width > 64 || img.height < 16 || img.height > 64){
+			return false;
+		}
+		return true;
+	}
+
+	//	指定したコードのアイコンを変更する
+	function changeIconOp( cp, img, imgbb, immed=true){
+		local emjidx = this.emjidx, emjdata = this.emjdata;
+		local self = this;
+		local oldidxptr = ptr(), iptr = ptr();
+		local oldsize = emjdata.size;
+		local redo = [@(){
+			local i = emjidx.findi( @( v) v.cp==cp);
+			local newidx = { cp=cp, offs=oldsize, size=imgbb.size, w=img.width, h=img.height};
+			oldidxptr << emjidx[i];
+			iptr << i;
+			//
+			if( i >= 0) emjidx[i] = newidx; else emjidx .. newidx;
+			emjdata.pos = oldsize;
+			imgbb.pos = 0;
+			emjdata.putBuffer( imgbb);
+			emjdata.pos = 0;
+			if( immed){
+				Emoji.registerEmoji( emjidx, emjdata, 2);
+				self.updateIcon( cp);
+			}
+		}];
+		local undo = [@(){
+			if( ~oldidxptr) emjidx[~iptr] = ~oldidxptr; else emjidx.pop();
+			emjdata.size = oldsize;
+			if( immed){
+				Emoji.registerEmoji( emjidx, emjdata, 2);
+				self.updateIcon( cp);
+			}
+		}];
+		return (redo, undo);
+	}
+
+	//	指定したコードのアイコンを削除する
+	function deleteIconOp( cp){
+		local self = this;
+		local emjidx = this.emjidx, emjdata = this.emjdata;
+		local i = emjidx.findi( @( v) v.cp==cp), oldidx = emjidx[i];
+		local redo = [@(){
+			delete emjidx[i];
+			Emoji.registerEmoji( emjidx, emjdata, 2);
+			self.updateIcon( cp);
+		}];
+		local undo = [@(){
+			emjidx[i] <- oldidx;
+			Emoji.registerEmoji( emjidx, emjdata, 2);
+			self.updateIcon( cp);
+		}];
+		return (redo, undo);
+	}
+}
+
+
+class ResEditorIcon.IconDropTarget
+{
+	function acceptDrag( e){
+		return false;
+	}
+	
+	function isDropable( f){
+		local n = f.name.toLowerCase();
+		if( n.endsWith( ".png")) return true;
+		if( n.endsWith( ".webp")) return true;
+		return false;
+	}
+	
+	function acceptDrop( ds, x, y){
+		if( ds instanceof FileDragSource){
+			local a = ds.filelist;
+			foreach( f in a){
+				if( isDropable( f)) return true;
+			}
+		}
+		return false;
+	}
+
+	function dropimage( f){
+		if( !isDropable( f)) return;
+		local fn = f.name;
+		local img = skLoadImage( f.load());
+	}
+}
+
+class ResEditorIcon.IconHSVPopup extends PropertyEditPopup
+{
+	static POPUPUIPATH = srcdir .. "/ui/iconhsvpopup.ui";
+
+	static hsvpropdef = {
+		name = "hsv",
+		props = [
+			{ pid="hsv", lbl="$T.lbl_hsv", type=VEC3, ui="bar", range=((-180,180),(-100,100),(-100,100)) defval=[0,0,0], dynamic=true},
+		]
+	}
+
+	orgimg = null;	//	RGBAImage
+	colormat = null;
+
+	function shown(){
+		local tex = Texture();
+		tex.load( orgimg);
+		tex.setSamplerState( #SamplerState( SK_CLAMP, SK_CLAMP, SK_POINT, SK_POINT));
+		local sp = Sprite( tex); sp.blend = SK_PMAMIX;
+		sp.colormat = colormat = Matrix();
+		local iv = view.findChild( "iconimg");
+		iv.setSprite( sp);
+		//
+		super.shown();
+	}
+
+	function propevent( e){
+		super.propevent( e);
+		//	hsv
+		local hsv = data.hsv;
+		local hv = Math.lerp( -Math.PI, Math.PI, hsv[0]/360.0+0.5);
+		local sv = Math.lerp( 0.0, 2.0, hsv[1]/200.0 + 0.5);
+		local vv = Math.lerp( 0.0, 2.0, hsv[2]/200.0 + 0.5);
+		colormat.set( Matrix.fromHSV( hv, sv, vv));
+	}
+
+	static function run( cv, iconimg){
+		local p = this( ::loadSKView( POPUPUIPATH), hsvpropdef, {hsv=[0,0,0]}, null);
+		p.orgimg = clone iconimg;
+		p.orgimg.premultAlpha();
+		cv = cv || ::getMousePos( 0);
+		p.show( null, cv);
+		local hsv = p.data.hsv;
+		if( p.ret && (hsv[0] || hsv[1] || hsv[2])){
+			local ni = clone iconimg;
+			local w = ni.width, h = ni.height, n = w*h;
+			local m = p.colormat;
+			local v = Vector3D();
+			for( local l = 0;l < n;l ++){
+				local c = ni[l];
+				v( c&255, (c>>>8)&255, (c>>>16)&255).scale( 1.0/255.0);
+				v.transform( m).saturate().scale( 255.0);
+				ni[l] = (v.x) | (v.y<<8) | (v.z<<16) | (c&0xff000000);
+			}
+			return ni;
+		}
+	}
+}

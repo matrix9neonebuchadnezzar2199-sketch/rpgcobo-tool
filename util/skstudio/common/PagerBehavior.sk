@@ -1,0 +1,56 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+//	ページネーションを実装する
+//	
+
+class PagerBehavior
+{
+	//	view
+	view = null;		//	SKView : 
+	pageedit = null;	//	GPUITextEdit : ページ表示＋編集
+	page = -1;			//	表示上は1。
+	pagenum = 1;		//	
+	
+	constructor( v){
+		view = v;
+		pageedit = view.findChild( "pageedit");
+		v.addEventListener( ACTION_EVENT, actionevent);
+	}
+	
+	function setPageNum( i){
+		pagenum = Math.max( 1, i);	//	最低1ページ
+		view.setValue( "maxlbl", sprintf( "/%3d", i));
+	}
+
+	function setPage( i){
+		local p = Math.clamp( i, 0, pagenum-1);
+		pageedit.setText( string( p+1));
+		local b = page != (page = p);
+		return b;
+	}
+
+	function actionevent( e){
+		if( e.src == view) return;
+		e.consume();
+		switch( e.src["name"]){
+		case "pageedit":
+			local i = int( pageedit.getText()) - 1;
+			setPage( i);
+			view.postActionEvent( page);
+			break;
+		case "topbtn": 
+			if( setPage( 0)) view.postActionEvent( page);
+			break;
+		case "lastbtn": 
+			if( setPage( pagenum-1)) view.postActionEvent( page);
+			break;
+		case "decbtn": 
+			if( setPage( page-1)) view.postActionEvent( page);
+			break;
+		case "incbtn": 
+			if( setPage( page+1)) view.postActionEvent( page);
+			break;
+		}
+	}
+}

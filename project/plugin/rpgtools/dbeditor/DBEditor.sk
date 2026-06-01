@@ -1,0 +1,97 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	実装状況
+//	player  : 7 レベルカーブ実装中。
+//	job     : 9 大体完了か
+//	cond    : 9 懸念は解決。
+//	skill   : 7 
+//	item    : 9 skillとほぼ同一
+//	weapon  : 7 追加オプションの設定。ナイフ+1,+2みたく。
+//	armor   : 7 ※盾の見た目はoptionで行う。。かなー
+//	enemy   : 9 バトルAI実装中
+//	store   : 7 アイテムショップ、スキルグループ、ランダム宝箱。基本の仕組みはできた。
+//	quest   : - 初期バージョンではいらないかもしれん
+//	macro   : 8 マクロ編集としてはもう出来てるような
+//	point   : C ※ツールで実装不要。
+//	
+//	setting : 9 一通りできたかな？
+//	type    : 9 ソートも完
+//	gvar    : 7 なんもないか。初期値設定もうちょいちゃんと？ソート？
+//	dict    : 7 折りたたみ。
+//	
+
+//	パスからDBのタイプを取得。無いならnull
+function getdbtype( path){
+	local r = getResource( path);
+	if( r instanceof ::GameConfigResource) return r.name;
+	if( r instanceof ::ConfigItemResource) return r.pres.name;
+	return null;
+}
+
+class DBEditor 
+{
+	static function createEditor( path){
+		local dbtype = getdbtype( path);
+		if( !dbtype) return null;
+		local ed;
+		switch( dbtype){
+		case "player": ed = ::loadSKView( srcdir.."/ui/dbeditor_player.ui", DBEditorPlayer); break;
+		case "job": ed = ::loadSKView( srcdir.."/ui/dbeditor_job.ui", DBEditorJob); break;
+		case "skill": ed = ::loadSKView( srcdir.."/ui/dbeditor_skill.ui", DBEditorSkill); break;
+		case "item": ed = ::loadSKView( srcdir.."/ui/dbeditor_skill.ui", DBEditorItem); break;
+		case "armor": ed = ::loadSKView( srcdir.."/ui/dbeditor_skill.ui", DBEditorArmor); break;
+		case "weapon": ed = ::loadSKView( srcdir.."/ui/dbeditor_skill.ui", DBEditorWeapon); break;
+		case "cond": ed = ::loadSKView( srcdir.."/ui/dbeditor_cond.ui", DBEditorCond); break;
+		case "enemy": ed = ::loadSKView( srcdir.."/ui/dbeditor_enemy.ui", DBEditorEnemy); break;
+		case "setting": ed = ::loadSKView( srcdir.."/ui/dbeditor_setting.ui", DBEditorSetting); break;
+		case "type": ed = ::loadSKView( srcdir.."/ui/dbeditor_type.ui", DBEditorType); break;
+		case "dict": ed = ::loadSKView( srcdir.."/ui/dbeditor_dict.ui", DBEditorDict); break;
+		case "gvar": ed = ::loadSKView( srcdir.."/ui/dbeditor_gvar.ui", DBEditorGvar); break;
+		case "macro": ed = ::loadSKView( srcdir.."/ui/dbeditor_macro.ui", DBEditorMacro); break;
+		case "store": ed = ::loadSKView( srcdir.."/ui/dbeditor_store.ui", DBEditorStore); break;
+		}
+		ed?.init( path);
+		return ed;
+	}
+
+	// static function createTabMenus( path){
+	// 	local dbtype = getdbtype( path);
+	// 	local fn = @(){
+	// 		local dbside = ::skstudio.getSideView( "side_dbview");
+	// 		dbside.setCurrentPath( path);
+	// 		::skstudio.openSideView( "side_dbview");
+	// 	};
+	// 	return [
+	// 		{ lbl="データベースに表示", icon="\uf120", fn=fn},
+	// 	];
+	// }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//	register SKStudio
+
+FileIcons["db"] <- ("\ue80b",0x77ddddff)
+
+with( skstudio){
+	registerEditor( {
+		uid = "editor_db",
+		matches = @( path){
+			local dbtype = getdbtype( path);
+			switch( dbtype){
+			case "map": case "map_asset": return false;
+			case "setting": case "gvar": case "type": case "dict": return "game";
+			default: return dbtype;
+			}
+		}
+		createEditor = DBEditor.createEditor,
+		// createTabMenus = DBEditor.createTabMenus,
+		sideview = "side_dbview"
+	});
+}

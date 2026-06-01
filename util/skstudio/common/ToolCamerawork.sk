@@ -1,0 +1,322 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import MoveScreenFlags;
+
+
+//	3D操作をするキャンバスの基本機能を提供する
+//	EfxEditor, PMEditor, StageEditor
+//	WorldEditor
+//	
+//	操作
+//	左ドラッグ : 選択、ツール
+//	右ドラッグ : キャンバス回転
+//	中ドラッグ(or Shift+右ドラッグ) : キャンバス移動
+//	ホイール : カメラズーム。(WASD移動時には速度の変更)
+//	右クリック : コンテキストメニュー
+//	WASD : XZ移動
+//	Shift+WS : Y移動
+//	F : 注視点の移動
+//	
+//	表示
+//	無限平面グリッド : all
+//	スカイボックス : all
+//	レンダープロファイル選択 : all
+//	ボーン : PMEditor
+//	物理有効化 : PMEditor
+//	タイムライン表示 : PMEditor, EfxEditor
+//	ボクセルグリッド : WorldEditor
+//	
+//	メニュー
+//	エディット 全選択、
+//	カメラ 6面、ortho/pers、
+//	
+//	回転キューブ
+//	6面
+//	
+
+//	PMEditor, EfxEditor, SceneEditor, MapEditorはカメラ制御にこのクラスを用いる
+//	UIでの
+//	
+class ToolCamerawork
+{
+	view = null;			//	SK3DView : 参照するビュー。
+	scn = null;				//	SK3DScene : レイテストなど
+	cam = null;				//	Camera : 更新するカメラ。※プロジェクション情報なども上書きされる
+
+	funcmask = -1;			//	UIの状況でいくつかの操作をロックするためのマスク
+
+	to = null;				//	Vector3D : 注視点
+	eye = null;				//	== cam.eye
+	zoom = 10.0;			//	カメラの焦点で10mの視野がある
+	hpb = null;				//	Vector3D : h,p,b
+
+	//	カメラパラメータ
+	zoomi = 20;			//	ズームのインデックス値。100の時に10m。
+	fovy = 60.0;			//	>0の場合はパース
+	znear = 0.04;
+	zfar = 200.0;
+
+	//	mouse motion
+	mot = 0;				//	int : 0:なし, 1:回転, 2:移動
+	mod = 0;				//	int : modifiers。
+	mx = 0.0;
+	my = 0.0;
+
+	//	key motion
+	wasd = null;			//	Vector3D|null : wasd移動のベクトル
+	qe = 0.0;				//	float : qe回転速度
+	wasdspeed = 8.0;		//	WASDの秒速。
+	moving = false;
+
+	//	rotcube
+	rotcube = null;			//	SK3DObject : scnに追加される。
+
+
+	static function getZoomScale( i){
+		return Math.pow( 2.0, (zoomi-20)*0.2) * 10.0;
+	}
+
+	static function getZoomIndex( z){
+		return int( Math.log2( z/10.0)/0.2) + 20;
+	}
+
+	constructor( v){
+		view = v;
+		scn = v.scn;
+		cam = v.renderer.camera;	//	ここで決まってる？
+		eye = cam.eye;
+		to = Vector3D();
+		hpb = Vector3D(0,15*Math.DTOR,0);
+	}
+
+	function setCamera( c){
+		cam = c;
+		eye = c.eye;
+		updateCamera( 0);
+	}
+
+	function setTo( v){
+		to << v;
+	}
+
+	function setRotation( r){
+		hpb << r;
+	}
+
+	function setZoom( z){
+		zoom = z;
+		zoomi = getZoomIndex( z);
+	}
+
+	function getCameraData(){
+		local cd = SK3DCameraData();
+		cd.to = clone to;
+		cd.hpb = clone hpb;
+		cd.zoom = zoom;
+		cd.fovy = fovy;
+		cd.znear = znear;
+		cd.zfar = zfar;
+		return cd;
+	}
+
+	function setCameraData( cd){
+		to << cd.to;
+		hpb << cd.hpb;
+		zoom = cd.zoom;
+		fovy = cd.fovy;
+		znear = cd.znear;
+		zfar = cd.zfar;
+		zoomi = getZoomIndex( zoom);
+		updateMatrix();
+		view.repaint();
+	}
+
+	function moveCameraData( cd1, time=100){
+		local cd0 = getCameraData();
+		local cd = #SK3DCameraData();
+		local dt = 10;
+		moving = true;
+		for( local t = 0; t < time; t += dt){
+			local w = t*1.0/time;
+			w = Math.sqrt( w);
+			cd0.lerp( cd1, w, cd);
+			setCameraData( cd);
+			sleep( dt);
+		}
+		suspend();
+		moving = false;
+		setCameraData( cd1);
+	}
+
+	//	処理中はスレッドをブロックする
+	function moveTo( p, r, z, time=100){
+		local cd1 = getCameraData();
+		cd1.to << p;
+		cd1.hpb << r;
+		cd1.zoom = z;
+		moveCameraData( cd1, time);
+	}
+
+	//	r:Rect3D
+	function moveFocus( r){
+		local p = r;
+		moveTo( p, hpb, zoom, 200);
+	}
+
+	//	指定したgbndにフィットするようにカメラを調整する
+	function fitZoom( gbnd){
+		to( gbnd.x, gbnd.y, gbnd.z);
+		//	zoomはパースを考慮する必要あり。
+		local asp = 1.0*view.bnd.w/view.bnd.h;
+		local tr = Rect3D( gbnd).transform( cam.viewmat);
+		local s = Math.max( tr.s, tr.r/asp);
+		local ts = 1.0 + tr.t / s * Math.tan( cam.fovy*0.5*Math.DTOR);
+		zoom = s * 2.0 * ts;
+		zoomi = getZoomIndex( zoom);
+		updateMatrix();
+	}
+
+	//	基本的に毎フレーム呼び出す。
+	//	persとorthoはzoomの調整方法が違う。persはto,eye間の距離、orthoはprojmatで調整する
+	function updateCamera( dt){
+		if( wasd){
+			local wasdspd = Math.lerp( 0.2, 0.8, (::workspace["canvaswasdspd"]??50)*0.01);
+			local z = Math.max( 5.0, zoom);
+			local v = (wasd * (dt*0.001*z*wasdspd)).rotate( Vector3D( hpb.x, 0, 0));
+			to.add( v);
+			view.repaint();
+		}
+		if( qe){
+			local qespd = Math.lerp( 0.2, 1.8, (::workspace["canvasqespd"]??50)*0.01);
+			hpb.x += qe * dt*0.001 * qespd;
+			view.repaint();
+		}
+		if( moving){
+			view.repaint();
+		}
+		updateMatrix();
+	}
+
+	//	
+	function updateMatrix(){
+		local dz = 0.0, asp = 1.0*view.bnd.w/view.bnd.h;
+		//	↓の処理は毎フレームやる必要もないが、特に重くもないのでやっている感じ
+		if( fovy > 0.0){
+			dz = -(zoom*0.5) / Math.tan( cam.fovy*0.5*Math.DTOR);	//	fovy=0の時dzは無限
+			cam.perspective( fovy, asp, znear, zfar);
+		}else{
+			local sy = zoom*0.5, sx = sy * asp;
+			cam.ortho( -sx, sx, -sy, sy, -zfar, zfar);
+		}
+		cam.viewmat.identity().translate( to).rotate( hpb).translate( 0.0, 0.0, dz);
+		cam.eye( 0.0).transform( cam.viewmat);
+		cam.viewmat.invert34u( cam.viewmat);
+		scn.applyQuake( cam);
+		cam.viewmat.lscale( 1.0, 1.0, -1.0);
+		cam.updatePlanes();
+		cam.focus = -dz;	//	焦点距離
+	}
+
+	//	マウスボタンからmotタイプを取得
+	function motype( mod){
+		return (mod&BUTTON3_MASK) ? 2 : (mod&BUTTON2_MASK) ? (mod&SHIFT_MASK) ? 2 : 1 : 0;
+	}
+
+	//	WASDの状態を更新する
+	function updateWASD(){
+		local dx = 0, dy = 0;
+		if( skIsKeyPressed( VK_S)) dy =-1; else if( skIsKeyPressed( VK_W)) dy = 1;
+		if( skIsKeyPressed( VK_A)) dx =-1; else if( skIsKeyPressed( VK_D)) dx = 1;
+		if( dx|dy){
+			wasd = (wasd||Vector3D())( dx, 0.0, 0.0);
+			// wasd[skIsKeyPressed( VK_SHIFT)?"y":"z"] = dy;
+			if( skIsKeyPressed( VK_SHIFT)) wasd.y = dy; else wasd.z = dy;
+		}else{
+			wasd = null;
+		}
+		if( skIsKeyPressed( VK_Q)) qe = -1.0; else if( skIsKeyPressed( VK_E)) qe = 1.0;
+		else qe = 0.0;
+	}
+
+	function moveFor( dx, dy){
+		//	移動
+		local z = Math.max( 5.0, zoom);
+		local d = z / view.bnd.h;
+		local vx = Vector3D( -dx*d, 0.0, 0.0).rotate( hpb[0], 0, 0), vyz = Vector3D();
+		if( Math.abs( Math.sin( hpb.y)) < 0.44){
+			vyz( 0, dy*d, 0);
+		}else{
+			vyz( 0, 0, dy*d).rotate( hpb[0], 0, 0);
+		}
+		to.add( vx).add( vyz);
+		view.repaint();
+	}
+
+	//	uiイベントの処理。キー、右ドラッグ、中ドラッグ、ホイール
+	function uievent( e){
+		switch( e.id){
+		case FOCUS_LOST:
+			wasd = null;
+			break;
+		case KEY_PRESSED:
+		case KEY_RELEASED:
+			if( !(e.modifiers & (CTRL_MASK|ALT_MASK))){
+				updateWASD();
+			}
+			break;
+		case MOUSE_PRESSED:
+			// if( !mot && !(e.modifiers&(CTRL_MASK|ALT_MASK))) {	//	shiftはwasdと組み合わせ出来る。。。
+			if( !mot) {	//	右、中プレスはctrl,alt等が押されててもカメラ操作優先で。。。
+				if( mot = motype( e.modifiers)){
+					e.consume();
+					e.computeLocal( view.getInvMatrix());
+					mx = e.lx, my = e.ly;
+				}
+			}
+			break;
+		case MOUSE_RELEASED:
+			if( mot && mot==motype( e.modifiers)){
+				if( !e.isClicked()) e.consume();	//	右クリックとかは判定できるように
+				mot = 0;
+			}
+			break;
+		case MOUSE_DRAGGED:
+			if( mot){
+				e.consume();
+				e.computeLocal( view.getInvMatrix());
+				local dx = e.lx-mx, dy = e.ly-my;
+				mx = e.lx, my = e.ly;
+				if( mot==1){ //	回転
+					hpb.x = Math.mod2( hpb.x + dx*0.01, -Math.PI, Math.PI);
+					hpb.y = Math.mod2( hpb.y + dy*0.01, -Math.PI, Math.PI);
+					view.repaint();
+				}else{
+					moveFor( dx, dy);
+				}
+			}
+			break;
+		case MOUSE_WHEEL_MOVED:
+			if( !mot && !(e.modifiers&(CTRL_MASK|SHIFT_MASK|ALT_MASK))){
+				zoomi = Math.clamp( zoomi+e.count, 0, 50);
+				zoom = getZoomScale( zoomi);
+				e.consume();
+			}
+			break;
+		case MOUSE_PINCH:
+			zoomi = Math.clamp( zoomi+e.dx/100, 0, 50);
+			zoom = getZoomScale( zoomi);
+			e.consume();
+			view.repaint();
+			break;
+		case MOUSE_PAN:
+			if( e.modifiers & SHIFT_MASK){
+				hpb.x = Math.mod2( hpb.x + e.dx*0.01, -Math.PI, Math.PI);
+				hpb.y = Math.mod2( hpb.y + e.dy*0.01, -Math.PI, Math.PI);
+				view.repaint();
+			}else{
+				moveFor( e.dx, e.dy);
+			}
+			break;
+		}
+	}
+}

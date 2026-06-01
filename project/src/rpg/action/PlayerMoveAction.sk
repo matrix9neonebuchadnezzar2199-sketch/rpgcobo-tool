@@ -1,0 +1,438 @@
+import ControlID;
+import GamepadButtonCode;
+import VirtualKeyCode;
+import ModifiersMask;
+import CollisionGroupID;
+import AnimationPart;
+
+local v_0 = Vector3D(), v_1 = Vector3D(), v_2 = Vector3D(), v_3 = Vector3D(), m_1 = Matrix(), r_1 = Rect3D();
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	PlayerMoveAction
+//	rpgstage.player3dに設定される。キーボード、ゲームパッド、バーチャルパッドの入力を操作キャラに与えて
+//	移動、落下、ハシゴ昇降などのアクションを実行させる。
+//	
+//	EventAction
+//	EventRunnerからスポーンされるRPG3DObjectに設定される。AIからのコントロール入力を受けてPlayerMoveActionと
+//	同様にアクションを実行させる。※ただしハシゴ昇降はEventActionでは実装しない。ジャンプもいらないか。
+//	色々なAIタイプがあり、主にランダム移動、追いかけるの組み合わせやバリエーション。
+//	
+//	RPG3DObject.mainactionに設定され、SK3DSceneのupdateSceneの中で諸々処理される。
+//	共通メソッドはupdateAction, resetAction, isNewtralの3つ。
+//	
+
+class PlayerMoveAction
+{
+	rp3d = null;			//	rpgstage.player3d
+	ctr = null;				//	PlayerMoveController : 
+	
+	active = 0;				//	ステージのコントロール可能フラグでチェック。
+	cdir = 0;				//	0:入力無し 1~16:16方向
+
+	vec = null;				//	移動ベクトル。
+	landed = true;			//	着地フラグ。着地してないとジャンプや調べるが出来ない。
+	crimbing = false;		//	ハシゴ昇降中フラグ。
+	stuck = 0.0;			//	移動時に障害物等で先に進めない場合に増加していく。AIでアクション変更の評価基準なんかに
+	ctrlock = 0;			//	コントローラーの入力をロック。操作ごとにロックできるとなおいいが
+	lastpos = null;
+
+	mvfunc = null;			//	function
+
+	ani = null;
+
+	constructor(){
+		vec = Vector3D();
+		lastpos = Vector3D();
+		ani = {id="stand",spd=1.0,part=ST_EN};
+	}
+	
+	function setPlayer3D( p, c=null){
+		rp3d = p;
+		ctr = c || PlayerMoveController();
+	}
+	
+	static function climbvec( cdir){
+		return cdir && ((cdir<=3||cdir>=15) ? 1 : (cdir>=7&&cdir<=11)? -1 : 0);
+	}
+
+	function updateAction( dt){
+		if( !rpgstage) return;
+		lastpos << rp3d.pos;
+		//	アクションが指定されていれば優先的に使用してその間コントロール移動は行わない。
+		if( mvfunc && (mvfunc = mvfunc( dt))) return;
+		
+		//	それぞれのキー入力に対する処理。コントロールロック中やメインイベント中は通さないように
+		if( !(ctrlock=Math.max( ctrlock-dt, 0))){
+			ctr.setActive( !rpgstage.mainevent && !rpgstage.ctrlock && rpgstage.stat.statmap.ctrmode!=0);	//	
+			ctr.updateControl( dt);
+			local st;
+			while( st = ctr.nextChange()){
+				local cid = st.cid, v = st.val;
+				switch( cid){
+				case CTRL_MOVE:
+					cdir = v;
+					break;
+				case CTRL_JUMP:
+					if( v && landed && !crimbing){
+						landed = false;
+						vec.y = 7.0;
+					}
+					break;
+				case CTRL_SEARCH:
+					// if( v) printf( "CTRL_SEARCH %S   %S\n", landed, rpgstage.searchdst);
+					if( v && landed && rpgstage.searchdst){
+						rpgstage.searchpush = 80;	//	80ms調べる操作を有効化
+					}
+					break;
+				case CTRL_MENU:
+					if( v && landed && ::rpgstage.stat.statmap["menuopenable"]){
+						rpgstage.mainevent = 100;
+						rpgstage.setTimeScale( 0.0);
+						ctr.setActive( false);
+						newthread().start( @(){	//	このスレッドはブロック不能なので新しいスレッドでメニューを開く。
+							::playSound( "SE005");
+							RPGMain.showUI( { key="menu_main"});		//	このメソッドはメニューを閉じるまでブロックする。
+							rpgstage.mainevent = null;
+							rpgstage.setTimeScale( 1.0);
+						}, this);
+					}
+					break;
+				case CTRL_AUTO:
+					if( v){
+						rpgstage.toggleAuto();		//	ここでやるものじゃないなーーー
+					}
+					break;
+				}
+			}
+		}
+		//	実際の移動処理
+		updateActionBody( dt);
+	}
+
+	function standbyAction( dt){
+		ctr.setActive( false);
+	}
+
+	///////////////////////////////////////////////////////////////////////////////////
+	//	移動処理
+	function updateActionBody( dt){
+		local spd = ::rpgstat.settingmap.walkspd;	//	操作モードでスピード変化？
+		if( crimbing){
+			vec( 0.0, climbvec( cdir) * spd, 0.0);
+			if( vec.y < 0.0){	//	降りてる場合は地面に立ったら終わり
+				local r = rp3d.move( vec, dt, -0.05);
+				if( r.gy){
+					crimbing = false; landed = true; vec( 0.0);
+				}
+			}else
+			if( vec.y > 0.0){	//	登ってる場合はハシゴの端に着いたかチェック。
+				local r = rp3d.move( vec, dt);
+				if( !checkLadder()){	//	登り先でハシゴが無い
+					//	ハシゴを降りるスペースがあるかチェック
+					local spcbox = #b3Shape.createBox( 0.4, 0.22, 0.22);
+					if( hasSpace( m_1.identity().translate( rp3d.pos).rotate( rp3d.dir, 0, 0).translate( 0.0, 0.75, 0.5), spcbox)){
+						local p = Vector3D( 0, 0.5, 0.75).rotate( rp3d.dir, 0, 0).add( rp3d.pos);
+						p.y = (p.y*2.0|0)*0.5;	//	ブロックのY座標に丸める
+						mvfunc = rp3d.moveTo({ pos=p, spd=3.0 });	//	登り先の位置まで
+						crimbing = false; landed = true; vec( 0.0);
+					}else{	//	ハシゴを降りる場所が無い＝壁でハシゴが途切れた。
+						rp3d.move( vec, -dt);
+					}
+				}
+			}
+			ani.id = "crimb";
+			ani.part = cdir ? ST_EN : ST;
+		}else{
+			if( cdir) rp3d.dir = (cdir-1)*(Math.PI2/16.0) + ::rpgstage.camdir;
+			vec( 0, vec.y, !!cdir*spd).rotate( rp3d.dir, 0, 0);
+			//	ハシゴ登りチェック。pからvに向けてハシゴのコリジョンがあるか、そのハシゴの正面からぶつかったかもしくは、真下にハシゴがある
+			local li = cdir && checkLadder();	// li: ladder info
+			if( li){
+				crimbing = true;
+				mvfunc = rp3d.moveTo( {pos=li.pos, dir=li.dir, spd=3.0});	//	liの位置はハシゴの目の前、dirはハシゴに向かう向き
+			}else{	//	ハシゴが無いので普通の移動
+				if( !landed){	//	ジャンプ又は落下中
+					if( vec.y > 0.0) ani.id = "jump";
+					local ref = rp3d.move( vec, dt);
+					if( ref.gy){
+						vec.y = 0.0;
+						landed = true;
+					}else{
+						vec.y = Math.max( -16.0, vec.y-0.03*dt);
+					}
+				}else{	//	歩行中／停止中
+					local ref = rp3d.move( vec, dt, -Math.max( 0.25, vec.length()*dt*0.001+0.1));
+					if( !ref.gy){	//	地面が無くなった=落下開始
+						ctrlock = 100;
+						vec.y = 0.4;	//	落下開始時には少しだけ上方向のベクトルを与える
+						landed = false;
+					}
+					//	anime
+					ani.id = cdir?"dash":"stand";
+					ani.part = ST_EN;
+				}
+			}
+		}
+		rp3d.anime2( ani);
+	}
+
+	//	※RPG3DObjectのメソッドとして作ってもいいが、使うのがここぐらいなので
+	//	ハシゴの正面にぶつかっている場合、もしくは上からハシゴの上端に乗った場合
+	function checkLadder(){
+		local b3body = rp3d.b3body, shp = b3body.getShape(), b3world = rpgstage.b3world;
+		local pos1 = v_1( 0, 0.8, 0.01).rotate( rp3d.dir, 0, 0).add( rp3d.pos);
+		local b3res = b3world.contactTest( 0, shp, pos1, -1, G_STAGE);
+		local chkbtm = false;
+		if( !b3res.len()){	//	横方向のコリジョン未検出。この場合に上からのチェックに移行
+			pos1.y -= 0.52;
+			b3res = b3world.contactTest( 0, shp, pos1, -1, G_STAGE);
+			chkbtm = true;
+		}
+		foreach( br in b3res){
+			local bwcol = br.bodyb["ref"];
+			if( !bwcol["getHitBlock"]) continue;
+			local hb = bwcol.getHitBlock( br, #HitBlock());
+			if( !hb.fbuid || ::fblks[hb.fbtype].variations[hb.fbparam&0xfff]["ctype"]!=1) continue;	//	ctype=1がハシゴ
+			//
+			local fb = bwcol.bw.getFreeBlock( hb.fbuid);
+			if( chkbtm){	//	下のハシゴに上から乗った場合。
+				local p = Vector3D( 0, 0, -0.5).rotate( fb.rot*Math.HPI).add( fb.x*0.5, rp3d.pos.y-0.75, fb.z*0.5);
+				return { pos=p, dir= fb.rot*Math.HPI };
+			}else{
+				local fbn = v_1( 0, 0, 1).rotate( fb.rot * Math.HPI);
+				local n = v_2( hb.nx, hb.ny, hb.nz);
+				if( fbn.dot( n) <= -0.99){	//	柱の正面に接触している場合、完全に正面に立てるように位置を計算して返す。
+					local p = Vector3D( fb.x*0.5, rp3d.pos.y, fb.z*0.5).add( hb.nx*0.5, 0, hb.nz*0.5);	//	y座標は同じ
+					return { pos=p, dir= fb.rot*Math.HPI };
+				}
+			}
+		}
+	}
+
+	function hasSpace( mat, shp){
+		local b3world = rpgstage.b3world;
+		local b3res = b3world.contactTest( 1, shp, mat, -1, G_STAGE);
+		return !b3res.len();
+	}
+	
+	//	メインイベントが開始してキャラの自動移動が入った際に、まず呼び出される。
+	//	PlayerMoveActionではハシゴ昇降中だとどうするべきか
+	function resetAction(){
+	}
+
+	//	メインイベントが開始してキャラの自動移動が入った際に、まずmainactionがニュートラル状態になるまで待つ。
+	//	(1)mvactionが無い (2)着地している xxxxx(3)ハシゴ昇降中ではないxxxxxx←これやるとハマるなー
+	function isNewtral(){
+		return true;
+	}
+}
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//	PlayerMoveController用入力関数類
+
+local kbbutton( vk){
+	switch( vk){
+	case VK_MOUSE_BUTTON1: case VK_MOUSE_BUTTON2: case VK_MOUSE_BUTTON3: case VK_MOUSE_BUTTON4:
+		local mod = BUTTON1_MASK << (vk-VK_MOUSE_BUTTON1);
+		local mousestat = ::rootview.mouses[0];
+		return @() (mousestat.modifiers&mod) ? 1 : 0;
+	default:
+		return @() skIsKeyPressed( vk) ? 1 : 0;
+	}
+}
+
+//	いずれかのキーが押されてたら
+local kbbuttons( a){
+	local btns = a.map( kbbutton);
+	return @() btns.find( @( b) b()) ? 1 : 0;
+}
+
+local dirmap = #(15,1,3,13,0,5,11,9,7);
+
+local kbaxis( wk, ak, sk, dk){
+	local wf = kbbutton( wk), af = kbbutton( ak), sf = kbbutton( sk), df = kbbutton( dk);
+	return @(){
+		local dx = 1+df()-af(), dy = 1+sf()-wf();
+		return dirmap[dy*3+dx];
+	}
+}
+
+local gpbutton( vb){
+	switch( vb){
+	case AXIS_ZL: return @() gp["axis4"]>0.2 ? 1:0;
+	case AXIS_ZR: return @() gp["axis5"]>0.2 ? 1:0;
+	}
+	local vbbit = 1<<vb;
+	return @() (::gpui.getGPUIDevice()["gp"]["buttonmask"] & vbbit) ? 1 : 0;
+}
+
+//	どれか押されてたら1
+local gpbuttons( gp, ...){
+	local btns = varguments().map( @( vb) gpbutton( gp, vb));
+	return @() btns.find( @( b) b()) ? 1 : 0;
+}
+
+local gpaxis( xa, ya,  wk, ak, sk, dk){
+	local wf = gpbutton( wk), af = gpbutton( ak), sf = gpbutton( sk), df = gpbutton( dk);
+	local btn(){
+		local dx = 1+df()-af(), dy = 1+sf()-wf();
+		return dirmap[dy*3+dx];
+	}
+	local stk(){
+		local gp = ::gpui.getGPUIDevice()["gp"];
+		local vx = gp[xa]||0.0, vy = gp[ya]||0.0;
+		local vv = Math.sqrt( vx*vx + vy*vy);
+		if( vv < 0.3){
+			return 0;
+		}else{
+			vx /= vv; vy /= vv;
+			local dir16 = (Math.mod2( Math.atan2( vx, vy)+Math.PI2/32.0, 0.0, Math.PI2) / Math.PI2 * 16.0) & 15;
+			return 1+dir16;
+		}
+		return 0;
+	}
+	return @(){
+		return btn() || stk();
+	}
+}
+
+class buttonstate
+{
+	cid = 0;
+	devfunc = null;		//	function : on/offを判定する関数。
+	val = 0;			//	0=off, 1=on
+	devval = 0;
+	active = true;
+
+	constructor( c, func){
+		cid = c;
+		devfunc = func;
+	}
+
+	function reset(){
+		devval = active ? devfunc() : 0;
+		// val = !devval;
+		val = devval;	//	ボタンは現在の状況を継続する。axisはちがう。。。
+	}
+
+	function update( dt){
+		devval = active ? devfunc() : 0;
+	}
+
+	function getChange(){
+		return (val!=devval) ? (val=devval) : null;
+	}
+}
+
+//	角度を取る。速度は取らない。
+class axisstate
+{
+	cid = 0;
+	devfunc = null;
+	val = 0;
+	devval = 0;
+	active = true;
+
+	constructor( c, func){
+		cid = c;
+		devfunc = func;
+	}
+
+	function reset(){
+		devval = active ? devfunc() : 0;
+		val = -1;
+	}
+
+	function update( dt){
+		devval = active ? devfunc() : 0;
+	}
+
+	function getChange(){
+		return (val!=devval) ? (val=devval) : null;
+	}
+}
+
+local any( ...){
+	local a = varguments( []);
+	return @(){
+		foreach( v in a){
+			local r = v(); if( r) return r;
+		}
+		return 0;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//	PlayerMoveController
+//	PlayerMoveAction専用のコントロール入力実装。
+
+class PlayerMoveController
+{
+	gp = null;				//	接続されてたゲームパッド
+	stats = null;			//	入力状態配列。優先度順は、ゲームパッド、バーチャルパッド、キーボード
+	active = true;
+	
+	constructor(){
+		setup();
+	}
+
+	function setup(){
+		stats = [];
+		// //	ゲームパッド（又はバーチャルパッド）。
+		// stats .. buttonstate( CTRL_SEARCH, gpbutton( BTN_A));
+		// stats .. buttonstate( CTRL_JUMP, gpbutton( BTN_B));
+		// stats .. buttonstate( CTRL_MENU, gpbutton( BTN_X));
+		// stats .. axisstate( CTRL_MOVE, gpaxis( "axis0", "axis1", BTN_UP, BTN_LEFT, BTN_DOWN, BTN_RIGHT));
+		// //	キーボード。ゲームパッドと同時に使用可能
+		// stats .. buttonstate( CTRL_SEARCH, kbbuttons( bkmap[BTN_A]));
+		// stats .. buttonstate( CTRL_JUMP, kbbuttons( bkmap[BTN_B]));
+		// stats .. buttonstate( CTRL_MENU, kbbuttons( bkmap[BTN_X]));
+		// stats .. axisstate( CTRL_MOVE, kbaxis( VK_UP, VK_LEFT, VK_DOWN, VK_RIGHT));
+
+		local bkmap = { ...ClientConfig.def_keybtnmap, ...clientconf["keyboard"]};
+
+		stats .. buttonstate( CTRL_SEARCH, any( gpbutton( BTN_A), kbbuttons( bkmap[BTN_A])) );
+		stats .. buttonstate( CTRL_JUMP, any( gpbutton( BTN_B), kbbuttons( bkmap[BTN_B])) );
+		stats .. buttonstate( CTRL_MENU, any( gpbutton( BTN_X), kbbuttons( bkmap[BTN_X])) );
+		stats .. axisstate( CTRL_MOVE, any(
+			gpaxis( "axis0", "axis1", BTN_UP, BTN_LEFT, BTN_DOWN, BTN_RIGHT), kbaxis( VK_UP, VK_LEFT, VK_DOWN, VK_RIGHT)
+		));
+	}
+	
+	// function resetAxis(){
+	// 	foreach( st in stats){
+	// 		if( st.cid == CTRL_MOVE) st.reset();
+	// 	}
+	// }
+	
+	function setActive( a){
+		if( active != a){
+			active = a;
+			foreach( st in stats){
+				st.active = a;
+				if( a) st.reset();
+			}
+		}
+	}
+	
+	function updateControl( dt){
+		if( gp){
+			gp.poll( dt);
+			if( gp.mapping) gp.applyMapping( gp.mapping);
+		}
+		foreach( st in stats) st.update( dt);
+	}
+
+	function nextChange(){
+		foreach( st in stats){
+			local v = st.getChange();
+			if( v != null) return st;
+		}
+	}
+}

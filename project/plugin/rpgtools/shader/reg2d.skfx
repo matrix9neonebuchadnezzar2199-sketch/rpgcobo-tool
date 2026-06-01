@@ -1,0 +1,279 @@
+declare rpgtool;
+
+module mod_math;
+module mod_transform;
+module mod_material;
+
+
+/////////////////////// SK3D2DRegion
+
+param reg2d
+{
+	attribute mediump vec4 in_col <id=COLOR1>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform sampler2D coltex1 <id=COLORTEX1>;
+	uniform mediump usampler2D uztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp vec3 zrange <id=DEPTHRANGE>;
+	
+	uniform highp mat4 uvmat <id=UVMAT>;
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform highp mat4 invvmat <id=ENV3MAT>;
+	uniform highp mat4 pmat <id=PMAT>;
+	uniform highp mat4 reg <id=MISC1MAT>;		//	x,w,z,d
+	
+	varying mediump vec4 v_uv;
+	varying mediump vec4 v_col;
+	varying highp vec3 v_wvp;
+	varying highp vec4 v_wvpp;
+}
+
+vs reg2d
+{
+	void main(){
+		highp mat4 transmat = getTransformedVectors();
+		v_wvp = transmat[0].xyz;
+		v_wvpp = pmat * transmat[0];
+		gl_Position = v_wvpp;
+		$(COLORTEX1){
+			$(UVMAT) { v_uv = vec4( (uvmat * vec4( in_uv.xy, 0.0, 1.0)).xy, in_uv.zw); } : { v_uv = in_uv; }
+		}
+		$(COLOR1) v_col = in_col;
+	}
+}
+
+fs reg2d
+{
+	void main(){
+		mediump vec4 pix;
+		$(COLOR1) { pix = v_col * Kd; } : { pix = Kd; }
+		$(COLORTEX1) pix *= texture2D( coltex1 , TEXUV1( v_uv));
+		$(ALPHATEST) if( pix.w*alpharef < bayer4( gl_FragCoord.xy)) discard;
+		$(COLORMAT) pix = colormat * pix;
+		//	depth reproject
+		highp vec2 wvpxy = v_wvpp.xy / v_wvpp.w;
+		highp vec4 rp = vec4( 1.0/pmat[0].x, 1.0/pmat[1].y, zrange.y / 65535.0, zrange.x);
+		mediump uint uz = texture( uztex, wvpxy.xy*0.5+0.5).x;
+		highp vec3 wvp = reconstructWVP( wvpxy.xy, uz, rp);
+		highp vec4 wp = invvmat * vec4( wvp, 1.0);
+		vec2 r = abs( wp.xz-reg[0].xz) - reg[0].yw;
+		if( r.x > -0.005 || r.y > -0.005){
+			pix.w *= 0.2;
+		}
+		FRAGOUT
+	}
+}
+
+/////////////////// renderpass variations ///////////////////////
+
+param fragout_legacy
+{
+	fragout mediump vec4 fragcolor;
+}
+
+define fragout_legacy
+{
+	#define FRAGOUT fragcolor = pix;
+}
+
+param fragout_pbrforward
+{
+	fragout mediump vec4 fragcolor;
+}
+
+define fragout_pbrforward
+{
+	#define FRAGOUT fragcolor = vec4( tonemap_inv( toLinear( clamp( pix.xyz, 0.0, 1.0))), pix.w);
+}
+
+param fragout_pbrdeferred
+{
+	fragout lowp vec4 frag0;
+	fragout highp uint frag1;
+	fragout highp uint frag2;
+}
+
+define fragout_pbrdeferred
+{
+	#define FRAGOUT frag0 = vec4( toLinear( clamp( pix.xyz, 0.0, 1.0)), 0.5); frag1 = (1<<29)|(63<<23)|((1024)|(1024<<11)|(1<<22)); frag2 = 0;
+}
+
+/////////////////////////////////////////////////////////////////
+
+technique reg2d
+{
+	apilevel = 30;
+	tag = "3d shading particle";
+	
+	//	legacy pass | forward+tonemap pass = direct pass (default)
+	pass {
+		using transform, reconstwvp;
+		using material, bayer, texuvutil;
+		using fragout_legacy;
+		
+		passfilter = 511;
+		param = reg2d;
+		vs = reg2d;
+		fs = reg2d;
+	}
+	
+	//	pbr forward pass
+	pass {
+		using transform, reconstwvp;
+		using material, bayer, texuvutil;
+		using colorspace, tonemapping, fragout_pbrforward;
+		
+		passfilter = 512;
+		param = reg2d;
+		vs = reg2d;
+		fs = reg2d;
+	}
+	
+	//	pbr deferred pass
+	pass {
+		using transform, reconstwvp;
+		using material, bayer, texuvutil;
+		using colorspace, fragout_pbrdeferred;
+		
+		passfilter = 1024;
+		param = reg2d;
+		vs = reg2d;
+		fs = reg2d;
+	}
+}
+
+/////////////////////// MapToolEtc.barrior (2D)
+
+param barrior
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform sampler2D coltex1 <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform sampler2D coltex2 <id=COLORTEX2>;
+	uniform mediump usampler2D uztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform highp vec2 coltex1scale <id=COLORTEX1_PIX>;
+
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform highp mat4 pmat <id=PMAT>;
+	uniform highp mat4 invvmat <id=INVVMAT>;
+	uniform highp vec3 zrange <id=DEPTHRANGE>;
+	
+	varying highp vec4 v_wvpp;
+	
+	fragout lowp vec4 fragcolor;
+}
+
+vs barrior
+{
+	void main(){
+		v_wvpp = in_pos;
+		gl_Position = in_pos;
+	}
+}
+
+fs barrior
+{
+	void main(){
+		//	depth reproject
+		highp vec2 wvpxy = v_wvpp.xy / v_wvpp.w;
+		highp vec4 rp = vec4( 1.0/pmat[0].x, 1.0/pmat[1].y, zrange.y / 65535.0, zrange.x);
+		mediump uint uz = texture( uztex, wvpxy.xy*0.5+0.5).x;
+		//	depth reproject
+		if( uz >= 65500u){
+			fragcolor = vec4( 0.0);
+		}else{
+			highp vec3 wvp = reconstructWVP( wvpxy.xy, uz, rp);
+			highp vec4 wp = invvmat * vec4( wvp, 1.0);
+			mediump float xzmask = mod( floor( wp.x)+floor( wp.z), 2.0);//  texture2D( coltex1 , wp.xz*coltex1scale);
+			mediump float mask = texture2D( coltex1 , (wp.xz*2.0)*coltex1scale).x;
+			highp vec2 inuv = fract( wp.xz*2.0);
+			mediump vec4 pix = mix( vec4( 1.0, 0.0, 0.0, 0.0), vec4( 1.0, 0.0, 0.0, 0.8), mask*0.8*texture2D( coltex2, inuv)+xzmask*0.2);
+			$(COLORMAT) pix = colormat * pix;
+			fragcolor = pix;
+		}
+	}
+}
+
+technique barrior
+{
+	apilevel = 30;
+	
+	//	legacy pass | forward+tonemap pass = direct pass (default)
+	pass {
+		using reconstwvp;
+
+		passfilter = 255;
+		param = barrior;
+		vs = barrior;
+		fs = barrior;
+	}
+}
+
+/////////////////////// RPGPropertyBehavior.VoxPalette
+
+param palimg
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	attribute lowp vec4 in_col <id=COLOR1>;
+	
+	uniform sampler2D coltex1 <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	uniform isampler2D seltex <id=COLORTEX2>;	//	256x1 ubyte1
+	
+	uniform highp mat4 p1 <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	varying lowp vec4 v_col;
+	
+	fragout lowp vec4 fragcolor;
+}
+
+vs palimg
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv;
+		v_col = in_col;
+	}
+}
+
+fs palimg
+{
+	int palidx( highp vec2 uv){
+		ivec2 p = ivec2( floor( uv * p1[0].zw));	//	pixel pos
+		return p.y*16 + p.x;
+	}
+
+	void main(){
+		highp vec2 uv = v_uv.xy;
+		lowp vec4 pix = $(COLORTEX1) { texture2D( coltex1 , uv) * v_col; } : { v_col; }
+		int i = palidx( uv);
+		int sel = texelFetch( seltex, ivec2( i, 0), 0).x;
+		if( sel!=0){	//	draw border
+			int i0 = palidx( uv + p1[0].xy*vec2( 0.0,-3.0));
+			int i1 = palidx( uv + p1[0].xy*vec2( 0.0, 3.0));
+			int i2 = palidx( uv + p1[0].xy*vec2(-3.0, 0.0));
+			int i3 = palidx( uv + p1[0].xy*vec2( 3.0, 0.0));
+			int b = (i^i0)|(i^i1)|(i^i2)|(i^i3);
+			if( b!=0){
+				highp float p = mod( gl_FragCoord.x+gl_FragCoord.y, 2.0);
+				pix = mix( pix, vec4( p, p, p, 1.0), 0.75);
+			}
+		}
+		fragcolor = pix;
+	}
+}
+
+technique palimg
+{
+	apilevel = 30;
+
+	pass {
+		CULLFACE = OFF;
+		
+		param = palimg;
+		vs = palimg;
+		fs = palimg;
+	}
+}

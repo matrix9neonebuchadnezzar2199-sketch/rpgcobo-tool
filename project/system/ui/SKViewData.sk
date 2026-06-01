@@ -1,0 +1,164 @@
+import SKViewPropertyID;
+
+/**
+ *	JSONベースのSKViewコンポーネントのシリアライズデータ。
+ *	×××スクリプトは別ファイルに存在する。　⇒　actionmapに移行。
+ *
+ */
+class SKViewData extends Serializable
+{
+	static SerialUID = 31;
+
+	<ser_o> version = 0;
+	<ser_o> reserved = null;
+	<ser_o> rootdata = null;	//	SKViewEntityData
+
+	// res = null;
+
+	function init(){
+		rootdata = ::SKViewEntityData();
+		rootdata.staticparams = [
+			( SIZE_STATIC, (400,240)),
+			( PIVOT_STATIC, (0,0)),
+		]
+	}
+
+	// function loaded( r){
+		// res = r;
+		// rootdata.rootres = r;
+		// @( v){
+		// 	foreach( c in v.children){ c.parent = v; callee() (c); }	//	GPUIListView用。。。もっと軽くできないか
+		// }( rootdata);
+	// }
+	
+	/**
+	 *	このSKViewDataからComponentを生成する。
+	 */
+	function createSKView( uiclass=null){
+		local v = rootdata.createSKView( uiclass||::SKLibView);
+		return v;
+	}
+}
+
+class SKViewEntityData extends Serializable
+{
+	static SerialUID = 32;
+
+	<ser_o> name = null;
+	<ser_i> layerflags = 3;			//	int ... visible=1, unlock=2, selflock=4, inlib=8
+	<ser_o> link = null;			//	String|null
+	<ser_o> cls = null;				//	String|null
+	<ser_o> motion = null;			//	MotionTimeline[]
+	<ser_o> staticparams = null;	//	[[id,val],...]
+	<ser_o> fxdata = null;			//
+	<ser_o> children = null;
+
+	// rootres = null;
+	
+	//	重い
+	function findChild( n){
+		if( n == name) return this;
+		foreach( c in children){
+			local v = c.findChild( n);
+			if( v) return v;
+		}
+		return null;
+	}
+	
+	function createSKView( uiclass=null, callfinish=true){
+		local c = null, checkbindrect = false;
+		local clz = uiclass || ::[cls] || ::SKGroupView;
+		if( link){
+			local cd = ::getResourceContent( link);
+			c = cd.rootdata.createSKView( clz, false);
+			checkbindrect = true;
+		}else{
+			c = clz();
+		}
+		c.name = name;
+		c.layerflags = layerflags;
+		//	fx data
+		if( length( fxdata)){
+			local a = fxdata.map( @( v) createFX( v));
+			c.setFXList( a);
+		}
+		//	children ... addChildする必要なし。
+		if( length( children)){
+			local a = c.children = array( length( children));
+			foreach( i, cd in children){
+				a[i] = cd.createSKView( null);
+				a[i].parent = c;
+			}
+			//	↓の方が速いだろうがクロージャ生成でアロケートがある。。。あとmap内でスタックが増加するケースでバグあり。読み込み処理はスタックを大量に消費するのでmapは良くない。
+			// c.children = children.map( @( v){ local cc = v.createSKView( null); cc.parent = c; return cc; });
+		}
+		c.setSKViewEntityData( this);
+		if( checkbindrect){
+			local orgr = c.getOriginalSize(), cr = c.bnd;
+			c.bindrect = ((-cr.x,-cr.y),(cr.w,cr.h));	//	ロード時点の矩形でストレッチをバインドする
+			if( orgr[0] != cr.w || orgr[1] != cr.h){
+				c.stretchSize( cr.w, cr.h, true);
+			}
+		}
+		if( callfinish && c["loadFinished"]){
+			c.loadFinished();
+		}
+		return c;
+	}
+
+	function getStatic( pid){
+		foreach( v in staticparams){
+			if( v[0] == pid) return v[1];
+		}
+	}
+
+	function setStatic( pid, val){
+		foreach( v in staticparams){
+			if( v[0] == pid) return v[1]=val;
+		}
+	}
+
+	function getMotion( pid){
+		foreach( m in motion){
+			if( m.pid == pid) return m;
+		}
+	}
+
+	static function createFX( d){
+		local clz = getroottable()[d.fxclass];
+		if( !clz) return undefined;
+		local fx = clz();
+		foreach( v in d["staticparams"]){
+			fx.setParam( v[0], v[1]);
+		}
+		fx.motion = d.motion;
+		fx.moveFrame( null, 0.0);
+		return fx;
+	}
+}
+
+function loadSKView( r, uiclass=null){
+	if( typeof( r) == SS_STRING){
+		local _r = ::getResource( r);
+		if( !_r) throw Exception( "resource not found : " .. r);
+		r = _r;
+	}
+	local d = r.getContent();
+	local v = d.createSKView( uiclass);
+	return v;
+}
+
+::contentloaders ..
+	function( name, exp, bbuf, res){
+		switch( exp){
+		case "ui":
+			try{
+				return ObjectInput.decode( bbuf);
+			}catch( ex){
+				printf( "ERR ? %S %S %S\n", bbuf, bbuf.pos, bbuf.size);
+				printf( "%S\n", bbuf.asText());
+				throw ex;
+			}
+		}
+		return null;
+	}

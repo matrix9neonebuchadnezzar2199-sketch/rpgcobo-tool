@@ -1,0 +1,1092 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import SoundID;
+import AnimationPart;
+
+//	リソースをプレビュー
+//	・vox, cvox			... cvox=キャラvox+mot。ファイルとしては存在しない。
+//	・ptd,sk3,pm???     ... ptd,pmにsk3に近い機能を入れてしまうのが良いのか
+//	・webp,png,jpg,exr,cpic   ... cpic=webpに顔位置など入ったメタデータ。インポートから行う
+//	・bw				... マップアセット表示用。大きなマップは表示してはいけない！！！
+//	
+//	※同じセッションはカメラを共通化。stringでグループ
+//	※100個のSK3DScene, SK3DRendererが同時に存在。pbr_fwでは重いのでpbr_prevというシャドウもバッファもないモードを。b3worldも無し。
+//	
+//	
+//	また、クリックでITEM_SELECTED, ダブルクリックでACTION_PERFORMEDをポスト。
+//	
+
+
+local srcdir = dirname( callee().getSourceName());
+
+//	
+//	
+class ResourcePreviewList
+{
+	listview = null;
+	collen = 4;
+	selview = null;
+	dndfunc = 0;
+	items = null;
+
+	//	リスト内全てのカメラ
+	cam = null;
+	camdist = 3.0;
+	hpb = null;
+	mx = 0;
+	my = 0;
+	rot0 = Quaternion.fromHPB( 90*Math.DTOR, 0, 0);
+	rot1 = Quaternion.fromHPB( 0, 90*Math.DTOR, 0);
+
+	showpartstree = false;
+
+	thread = null;
+
+	constructor( lv){
+		listview = lv;
+		collen = length( lv.rowedata.children);
+		hpb = Vector3D();
+		lv.window.addEventListener( MOUSE_EVENT, listevent);
+		lv.window.addEventListener( KEY_EVENT, listevent);
+		lv.window.addEventListener( ACTION_EVENT, listevent);
+		cam = Camera();
+		cam.perspective( 40.0, 1.0, 0.1, 100.0);
+	}
+
+	//	
+	function setItemList( items){
+		if( thread) thread.wakeupThrow( "interrupt");
+		this.items = items;
+		local n = length( items), rowlen = (n+collen-1)/collen;
+		listview.setRowCount( rowlen);
+		local fn = @(){
+			for( local l = 0;l < rowlen*collen;l ++){
+				local c = listview.rows[l/collen].findChild( "c"..(l%collen));
+				local v = items[l];
+				c.gpui.enablerclick = false;
+				c.setVisible( !!v);
+				if( v){
+					local pc = ResourcePreviewCanvas( c);
+					pc.dndfunc = dndfunc;
+					pc.showpartstree = showpartstree;
+					c.ref = (v, l, pc);
+					pc.setResourceData( v.id, v.data);
+					pc.view3d.renderer.setCamera( cam);
+					if( pc.sk3d) suspend();
+				}else{
+					c.ref = null;
+				}
+				updateRotates();
+			}
+			thread = null;
+		};
+		(thread=newthread()).start( fn, this);
+	}
+
+	function selectItem( id){
+		local v = getItemView( id);
+		if( v != selview){
+			selview?.setSelected( false);
+			selview = v;
+			v?.setSelected( true);
+		}
+	}
+
+	function getItem( id){
+		local v = getItemView( id);
+		return v["ref"][0] || null;
+	}
+	
+	function updateItemView( id, data){
+		local c = getItemView( id);
+		if( c) c.ref[2].setResourceData( id, data);
+	}
+
+	function getItemView( id){
+		local rowlen = length( listview.rows);
+		for( local l = 0;l < rowlen*collen;l ++){
+			local c = listview.rows[l/collen].findChild( "c"..(l%collen));
+			if( c["ref"][0]["id"] == id) return c;
+		}
+	}
+
+	function setEfxPlaying( id, b){
+		local c = getItemView( id);
+		local v3 = c.findChild( "3d");
+		local sk3d = b ? _playingEfx( c.ref[0]) : _pausedEfx( c.ref[0]);
+		v3.scn.clearObjects();
+		v3.scn.addObject( sk3d);
+	}
+
+	function updateRotates(){
+		cam.viewmat.identity().rotate( hpb).translate( 0.0, 0.0, -camdist).invert34u( cam.viewmat);
+		cam.viewmat.lscale( 1.0, 1.0, -1.0);
+		cam.updatePlanes();
+		listview.content.repaint();
+	}
+
+	function setSelectedView( v){
+		if( v != selview){
+			selview?.setSelected( false);
+			selview = v;
+			v?.setSelected( true);
+		}
+	}
+
+	function listevent( e){
+		local v = e.src;
+		switch( e.id){
+		case MOUSE_PRESSED:
+			e.computeLocal( listview.getInvMatrix());
+			listview.requestFocus();
+			mx = e.lx; my = e.ly;
+			e.consume();
+			break;
+		case MOUSE_DRAGGED:
+			if( e.modifiers & BUTTON2_MASK){
+				e.computeLocal( listview.getInvMatrix());
+				local dx = e.lx-mx, dy = e.ly-my; mx = e.lx; my = e.ly;
+				hpb.x += dx*0.02;
+				hpb.y += dy*0.02;
+				updateRotates();
+			}
+			e.consume();
+			break;
+		case MOUSE_RELEASED:
+			if( (e.modifiers & BUTTON2_MASK) && e.isClicked()){
+				setSelectedView( v);
+				listview.postActionEvent( v.ref[0], 1, e.modifiers);
+			}
+			e.consume();
+			break;
+		case MOUSE_ENTERED:
+			printf( "RES!!!!!!!!! %S %S\n", e.src["name"], e.src["ref"][0]);
+			break;
+		case MOUSE_EXITED:
+			break;
+		case MOUSE_PAN:
+			if( e.isShiftDown()){
+				hpb.x += e.dx*0.02;
+				hpb.y += e.dy*0.02;
+				updateRotates();
+				e.consume();
+			}
+			break;
+		case KEY_PRESSED:
+		case KEY_REPEATED:
+		{
+			local d = 0;
+			switch( e.keycode){
+			case VK_UP: d = -collen; break;
+			case VK_DOWN: d = collen; break;
+			case VK_RIGHT: d = 1; break;
+			case VK_LEFT: d = -1; break;
+			}
+			e.consume();
+			break;
+		}
+		case ACTION_PERFORMED:
+			if( v != selview){
+				setSelectedView( v);
+				listview.postActionEvent( v.ref[0], 1);
+			}else{
+				if( e.count==2){
+					listview.postActionEvent( v.ref[0], e.count, e.modifiers);
+				}
+			}
+			e.consume();
+		}
+	}
+}
+
+//	DBEditorやEventEditor系でリソースの表示を行うための
+//	
+class ResourcePreviewCanvas
+{
+	BASESIZE = 0.8;			//	
+
+	view = null;			//	SKView
+	view3d = null;
+	sk3d = null;			//	SK3DView
+	
+	rot0 = Quaternion.fromHPB( 90*Math.DTOR, 0, 0);
+	rot1 = Quaternion.fromHPB( 0, 90*Math.DTOR, 0);
+
+	showpartstree = false;
+	wheelenabled = false;
+	camh = null;
+
+	mdlid = null;
+	rsetid = "pbr_draft";
+
+	dndfunc = 0;
+
+	constructor( v, handlecamera=false){
+		view = v;
+		view3d = view.findChild( "3d");
+		view3d.renderer.setEnvironment( ::RenderSettings.getEnvironment( rsetid));
+		if( handlecamera){
+			camh = CameraHandler( this);
+		}
+		view.dragsource = this;
+		view.removeEventListener( DRAGSOURCE_EVENT, dndevent);
+		view.removeEventListener( DROPTARGET_EVENT, dndevent);
+		view.addEventListener( DRAGSOURCE_EVENT, dndevent);
+		view.addEventListener( DROPTARGET_EVENT, dndevent);
+	}
+
+	//	val["vox"]があればボクセル、val["pic"]が存在すればピクチャー、val["efx"]があればエフェクト
+	//	カメラはタイプによって初期設定が変わる。カメラへのフィットはpmのスケールで調整可能。
+	//	
+	function setResourceData( id, val){
+		mdlid = id;
+		view.setValue( "id", id=="rem" ? "$T.lbl_none" : id);
+		view.setValue( "subid", length( val["name"])?"- ".. ::lang(val["name"]) : "");
+		local v3 = view3d, vp = view.findChild( "pic");
+		v3.layerflags &= ~1;
+		if( vp) vp.layerflags &= ~1;
+		sk3d = null;
+		if( val["vox"]||val["vp0"]||val["vp1"]){
+			sk3d = _makevox3d( val);
+		}else
+		if( val["pic3d"]){
+			sk3d = _makepic3d( val);
+			sk3d.setPivot( null);
+		}else
+		if( vp && val["pic"]){
+			vp.layerflags |= 1;
+			local sp = _makepicsp( val);
+			vp.setSprite( sp);
+			vp.updateLayout();
+		}else
+		if( val["efx"]){
+			sk3d = _pausedEfx( val);
+		}else
+		if( val["preview"]){
+			local pm = ::PrimitiveMeshes.createBox( 0.5, 0.5, 0.5);
+			pm.face[0].m.fillmode = SK_LINE;
+			sk3d = RPG3DObject();
+			sk3d.setSource( pm);
+		}else
+		if( val["bw64"]){
+			local bb = uncompressZSTD( decodeBASE64( val.bw64, ByteBuffer()));
+			local bw = ObjectInput.decode( bb);
+			local bw3d = SK3DBlockWorld( bw);
+			bw3d.rembottom = false;
+			bw3d.setPivot( Vector3D( -bw.w*0.25, -bw.h*0.25, -bw.d*0.25));
+			bw3d.updateMatrix( true);
+			bw3d.generateAllMesh();
+			sk3d = bw3d;
+			local r = sk3d.gbnd;
+			local sc = 1.0/Math.sqrt( r.r*r.r+r.s*r.s+r.t*r.t);
+			sk3d.scale( sc);
+			sk3d.matdirty = true;
+		}
+		if( sk3d){
+			v3.layerflags |= 1;
+			v3.scn.clearObjects();
+			v3.scn.addObject( sk3d);
+		}
+	}
+	
+	function _pausedEfx( v){
+		local r = ::getResource( v["efx"]);
+		if( !r) return;
+		local sk3d = SK3DObject( r);
+		foreach( pg in sk3d.ptc["groups"]){
+			pg.defseed = 132;
+		}
+		if( v["hsv"]) sk3d.setHSV( v.hsv);
+		local ptd = sk3d.ptc.ptdata;
+		if( ptd["prof"]){
+			local r = ptd.prof.showbnd, sc = Math.min( BASESIZE/r[3], BASESIZE/r[4], BASESIZE/r[5]);
+			sk3d.scale( sc);
+			sk3d.updateMatrix();
+			sk3d.ptc.start();
+			for( local t = 0; t < ptd.prof.showtime;){
+				sk3d.ptc.update( 20); t += 20;
+			}
+			sk3d.timescale = 0.0;
+		}
+		return sk3d;
+	}
+
+	function _playingEfx( v){
+		local sk3d = SK3DObject( v["efx"]);
+		if( v["hsv"]) sk3d.setHSV( v.hsv);
+		if( ptd["prof"]){
+			local r = ptd.prof.showbnd, sc = Math.min( BASESIZE/r[3], BASESIZE/r[4], BASESIZE/r[5]);
+			sk3d.scale( sc);
+			sk3d.updateMatrix();
+		}
+		sk3d.ptc.start();
+		return sk3d;
+	}
+
+	static function _makevox3d( v){
+		local sk3d;
+		if( v["mot"]){	//	motがある場合はキャラボクセル。
+			sk3d = RPG3DVoxChara();
+			sk3d.setCharaVox( v);		//	データそのままぶっこめる
+			sk3d.pos.set( 0, -sk3d.bnd.y, 0);
+			sk3d.setDir( Math.PI);
+			// sk3d.scale( 0.9);
+			return sk3d;
+		}
+		if( v["type"]){
+			local blkconf = testBlockConf( v);
+			// printf( "BLKCONF====== %S\n", encodeJSON( blkconf, 1));
+			sk3d = RPGToolMesh.createTestXBlockObject( blkconf);
+			local r = sk3d.bnd;
+			local sc = 1.0/Math.sqrt( r.r*r.r+r.s*r.s+r.t*r.t);
+			sk3d.scale( sc);
+			return sk3d;
+		}
+		local vox = v["vox"] || v["vp0"] || v["vp1"];
+		if( typeof( vox)==SS_ARRAY){	//	[path,parts]の構造。装備など。
+			local vc = vox[0].startsWith( "/") ? ::getResourceContent( vox[0]) : VoxelContainer.getGlobal( vox[0]);	//	vcネームで取得可
+			if( !vc) return null;
+			local vp = vc.findParts( vox[1]), vd = vp.vd8;
+			local pal = vc.pal, palmod = v["pal"]||v["pal0"]||v["pal1"];
+			if( palmod){	//	パレット置き換え
+				pal = pal.getModPalette( palmod);
+			}
+			if( showpartstree){
+				//	パーツツリー全体を表示。
+				sk3d = _makepartsvox( vp, pal);
+				local r = vp.wholebnd().toRect3D() * VOX_SCALE;
+				local sc = 1.0/Math.sqrt( r.r*r.r+r.s*r.s+r.t*r.t);
+				sk3d.scale( sc);
+			}else{
+				if( !vd){
+					local vp1 = vp.findChild( "1"); vd = vp1["vd8"];
+					if( !vd){
+						vp1 = vp.children; vd = vp1["vd8"];
+					}
+				}
+				local pm = RPGToolMesh.getVoxelMesh( vd, pal);
+				sk3d = SK3DObject( pm);
+				if( vd.w > vd.h){
+					sk3d.rot << rot1;
+				}else{
+					sk3d.rot << rot0;
+				}
+				local r = sk3d.bnd;
+				local sc = 1.0/Math.sqrt( r.r*r.r+r.s*r.s+r.t*r.t);
+				sk3d.scale( sc);
+			}
+		}else{	//	voxそのものを使うリソースはなさそう？なんかしらの構造になってるかな
+			local vc = ::getResourceContent( vox);
+			// sk3d = SK3DObject( pm);
+		}
+		return sk3d;
+	}
+
+
+	//	パーツのchildren,nextを辿って全てのモデルをメッシュ化
+	//	
+	function _makepartsvox( p, pal){
+		local sk = SK3DObject();
+		local vd8 = p.vd8;
+		if( vd8){
+			local vmd = VoxelMeshBuilder.createVoxelMeshData( vd8, null, 0, 63, (vd8.w/2,vd8.h/2,vd8.d/2));
+			sk.setSource( vmd.createPolygonMesh( pal || vd8.pal));
+			// sk.setPivot( Transform( -vd8.w/2 * VOX_SCALE, -vd8.h/2 * VOX_SCALE, -vd8.d/2 * VOX_SCALE));
+		}else
+		if( p.children){
+			for( p = p.children; p; p = p.next){
+				local ck = _makepartsvox( p, pal);
+				ck.pos( p.x, p.y, p.z).scale( VOX_SCALE);
+				ck.rot.setHPB( p.rot*Math.PI*0.5 , 0, 0);
+				ck.matdirty = true;
+				sk.addChild( ck);
+			}
+		}
+		return sk;
+	}
+	
+	function _makepic3d( v){
+		sk3d = RPG3DPicture();
+		sk3d.setPicture( v);		//	データそのままぶっこめる
+		sk3d.pos( 0, -sk3d.bnd.y, 0);
+		sk3d.setDir( Math.PI);
+		local r = sk3d.bnd;
+		local sc = 1.0/Math.sqrt( r.r*r.r+r.s*r.s+r.t*r.t);
+		sk3d.scale( sc);
+		return sk3d;
+	}
+
+	function _makepicsp( v){
+		local tex = ::getTexture( v["pic"], 16);	//	16=PMA
+		local aniu = 1, aniv = 1;
+		if( v["aniuv"]){
+			aniu = Math.max( 1, v.aniuv[0]);
+			aniv = Math.max( 1, v.aniuv[1]);
+		}
+		local w = tex.width / aniu, h = tex.height / aniv;
+		local sp = Sprite( tex);
+		sp.setSubBounds( Rect2D( 0, 0, w, h));
+		if( "blend" in v) sp.blend = v.blend;
+		return sp;
+	}
+
+	function setZoom( z){
+		camh.camdist = z;
+		camh.updateRotates();
+	}
+
+	//	DragSource
+
+	dragsp = null;
+	
+	//	ドラッグ中描画処理
+	function dndrender( m){
+		skDrawSprite( dragsp, m.mousex, m.mousey);
+	}
+	
+	//	ドラッグ有効チェック
+	//	複数選択のドラッグ表示。。。ウィンドウのバッファをうまく使うとか
+	function acceptDrag( e){
+		if( !(dndfunc&1)) return false;
+		if( e.modifiers & (SHIFT_MASK|ALT_MASK|CTRL_MASK|BUTTON2_MASK|BUTTON3_MASK)) return false;
+		local src = e.src;
+		e.computeLocal( src.getInvMatrix());
+		//
+		dragsp = src.capture();
+		dragsp.color = 0x99999999;
+		local p0 = Vector3D( 0).transform( src.mat).sub( e.x, e.y, 0.0);
+		dragsp.bnd.x = p0.x;
+		dragsp.bnd.y = p0.y;
+		return true;
+	}
+	
+	//	DropTarget ... nasi
+	
+	function acceptDrop( ds, x, y){
+		if( !(dndfunc&2)) return false;
+		if( ds == this) return false;
+		if( !(ds instanceof ResourcePreviewCanvas)) return false;
+		return true;
+	}
+
+	function dndevent( e){
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			view.setSelected( true);
+			e.consume();
+			break;
+		case TARGET_DRAG_EXIT:
+			view.setSelected( false);
+			e.consume();
+			break;
+		case TARGET_DROP:
+			view.setSelected( false);
+			e.consume();
+			local cmd = { from=e.dragsrc, to=this, way=0};
+			view.parent.postIDEvent( ITEM_SORT, cmd, 1, e.modifiers);
+			break;
+		}
+	}
+}
+
+class ResourcePreviewCanvas.CameraHandler
+{
+	preview = null;		//	ResourcePreviewCanvas
+
+	cam = null;
+	camdist = 3.0;
+	hpb = null;
+	mx = 0;
+	my = 0;
+	
+	constructor( v){
+		preview = v;
+		cam = Camera();
+		hpb = Vector3D();
+		cam.perspective( 40.0, 1.0, 0.1, 100.0);
+		v.view3d.renderer.setCamera( cam);
+		v.view3d.scn.maincamera = cam;
+		updateRotates();
+		v.view.addEventListener( MOUSE_EVENT, listevent);
+	}
+	
+	function updateRotates(){
+		cam.viewmat.identity().rotate( hpb).translate( 0.0, 0.0, -camdist).invert34u( cam.viewmat);
+		cam.viewmat.lscale( 1.0, 1.0, -1.0);
+		cam.updatePlanes();
+		preview.view3d.repaint();
+	}
+	
+	function listevent( e){
+		local v = e.src;
+		switch( e.id){
+		case MOUSE_PRESSED:
+			e.computeLocal( preview.view3d.getInvMatrix());
+			mx = e.lx; my = e.ly;
+			e.consume();
+			break;
+		case MOUSE_DRAGGED:
+			if( e.modifiers & BUTTON2_MASK){
+				e.computeLocal( preview.view3d.getInvMatrix());
+				local dx = e.lx-mx, dy = e.ly-my; mx = e.lx; my = e.ly;
+				hpb.x += dx*0.02;
+				hpb.y += dy*0.02;
+				updateRotates();
+				e.consume();
+			}
+			break;
+		case MOUSE_RELEASED:
+			if( e.isMouseDown( BUTTON2_MASK) && e.isClicked()){
+				e.consume();
+				preview.view.postActionEvent( null, 1, e.modifiers);
+			}
+			break;
+		case MOUSE_ENTERED:
+			break;
+		case MOUSE_EXITED:
+			break;
+		case MOUSE_WHEEL_MOVED:
+			if( preview.wheelenabled){
+				if( e.count > 0){
+					camdist *= 1.1;
+				}else{
+					camdist *= 0.9;
+				}
+				e.consume();
+				updateRotates();
+				e.consume();
+			}
+			break;
+		case MOUSE_PAN:
+			local dx = e.dx, dy = e.dy;
+			hpb.x += dx*0.01;
+			hpb.y += dy*0.01;
+			updateRotates();
+			e.consume();
+			break;
+		}
+	}
+}
+
+//	特定フォルダに入ってるリソースファイルの選択ダイアログ。リソースエディタから使われる。
+//	
+class ResourceFileSelectDialog extends Dialog
+{
+	prop = null;
+	tablist = null;
+	previewlist = null;		//	
+	
+	constructor( v, p){
+		super( v);
+		view.setValue( "title", "$T.dialog_resid_title")
+		prop = p;
+		previewlist = ResourcePreviewList( view.findChild( "LIST"));
+		if( p["showpartstree"]) previewlist.showpartstree = true;
+		view.findChild( "selallbtn").setVisible( false);
+		view.findChild( "tablist").setVisible( false);
+
+		//	setup list
+		switch( p.restype){
+		case "chara_vox": setupCharaVoxelList(); break;
+		case "voxparts": setupVoxelPartsList(); break;
+		case "enemy_pic": setupEnemyPicList(); break;
+		case "event_pic": setupEventPicList(); break;
+		case "efx": setupEffectList(); break;
+		case "texture": setupTextureList(); break;
+		}
+	}
+
+	function setupCharaVoxelList(){
+		local dir = ::getResource( fget( prop, "dir"));
+		::skstudio.fileview.refreshDir( dir.path);
+		local a = [];
+		foreach( r in dir.getList()){
+			if( !r.name.endsWith( ".vox")) continue;
+			local vc = r.getContent();
+			local mottype = vc.meta["mot"];
+			if( !mottype) continue;
+			local mot = ::getResource( "/resource/mot/"..mottype)?.getList()[0].path;
+			a .. { id=r.name, data={ res = r, vox = r.path, mot = mot, ret = r.path }}
+		}
+		previewlist.setItemList( a);
+	}
+
+	function setupVoxelPartsList(){
+		local dir = ::getResource( fget( prop, "dir"));
+		::skstudio.fileview.refreshDir( dir.path);
+		local a = [];
+		foreach( r in dir.getList()){
+			if( !r.name.endsWith( ".vox")) continue;
+			local vc = r.getContent();
+			for( local l = 0, vp; vp = vc.partsAt( l); l++){
+				if( vp.parent) continue;
+				local vox = (r.path, vp.name);
+				a .. { id=r.name, data={ res = r, vox = vox, name = vp.name, ret = vox }}
+			}
+		}
+		a.sort( @( a,b) a.id<>b.id || a.data["name"]<>b.data["name"] )
+		previewlist.setItemList( a);
+	}
+
+	function setupEnemyPicList(){
+		local dir = ::getResource( fget( prop, "dir"));
+		::skstudio.fileview.refreshDir( dir.path);
+		local a = [];
+		foreach( r in dir.getList()){
+			if( !r.name.endsWith( ".webp") && !r.name.endsWith( ".png")) continue;
+			a .. { id=r.name, data={ res = r, pic = r.path, ret = r.path }}
+		}
+		previewlist.setItemList( a);
+	}
+
+	function setupEventPicList(){
+		local dirs = fget( prop, "dir");
+		local a = [];
+		foreach( path in dirs){
+			local dir = ::getResource( path);
+			::skstudio.fileview.refreshDir( dir.path);
+			foreach( r in dir.getList()){
+				if( !r.name.endsWith( ".webp") && !r.name.endsWith( ".png")) continue;
+				a .. { id=r.name, data={ res = r, pic = r.path, ret = r.path }}
+			}
+		}
+		previewlist.setItemList( a);
+	}
+
+	function setupEffectList(){
+		local dir = ::getResource( fget( prop, "dir"));
+		::skstudio.fileview.refreshDir( dir.path);
+		local a = [];
+		foreach( r in dir.getList()){
+			if( !r.name.endsWith( ".ptd")) continue;
+			a .. { id=r.name, data={ res = r, efx = r.path, name = r.name, ret = r.path }}
+		}
+		previewlist.setItemList( a);
+	}
+
+	function setupTextureList(){
+		local dir = ::getResource( fget( prop, "dir"));
+		::skstudio.fileview.refreshDir( dir.path);
+		local a = [];
+		foreach( r in dir.getList()){
+			if( !r.name.endsWith( ".webp") && !r.name.endsWith( ".png")) continue;
+			a .. { id=r.name, data={ res = r, pic = r.path, name = r.name, ret = r.path }}
+		}
+		previewlist.setItemList( a);
+	}
+
+	function actionevent( e){
+		if( e.src == previewlist.listview){
+			if( e.count == 2){
+				ret = 1;
+				return close();
+			}
+		}
+		switch( e.src["name"]){
+		case "btn_import":
+			showImport( e);
+			break;
+		}
+		super.actionevent( e);
+	}
+
+	function showImport( e){
+		local d = FileDialog();
+		d.setTitle( "$T.lbl_fileopen");
+		d.setMode( FileDialogMode.FILEDIALOG_SELECT);
+		// d.setFile( dir);
+		// if( t["filter"]) d.setFilters( t.filter);
+		d.show();
+		while( d.isShown()){
+			suspend();
+			sleep( 100);
+		}
+		local p = d.getResult();
+		printf( "---------------------------------------- %S\n", p);
+		printf( "---------------------------------------- %S\n", encodeJSON( p.split( "\n")));
+		if( p){
+		}
+	}
+	
+	static function run( prop){
+		local dlg = ResourceFileSelectDialog( srcdir.."/ui/resdialog.ui", prop);
+		dlg.show();
+		if( dlg.ret){
+			local selview = dlg.previewlist.selview;
+			return selview["ref"][0]["data"]["ret"];
+		}
+	}
+}
+
+//	
+//	
+class ResourceSelectDialog extends Dialog
+{
+	prop = null;
+	tablist = null;
+	previewlist = null;		//	
+	
+	constructor( v, p, sel=null){
+		super( v);
+		view.setValue( "title", "$T.dialog_resid_title")
+		prop = p;
+		previewlist = ResourcePreviewList( view.findChild( "LIST"));
+		view.findChild( "btn_import").setVisible( false);
+		local restypes = (typeof(prop.restype)==SS_ARRAY) ? prop.restype : [prop.restype];
+		tablist = ListBehavior( view.findChild( "tablist"), restypes.map( @( v)({
+			lbl="$T.side_res_"..v, restype=v,
+		})));
+		tablist.listview.addEventListener( ITEM_EVENT, tabevent);
+		tablist.multisel = true;
+		tablist.selectAll();
+		updateList();
+		if( sel) previewlist.selectItem( sel);
+	}
+
+	function updateList(){
+		local restypes = [];
+		foreach( i,v in tablist.items){
+			if( tablist.isItemSelected( v)) restypes .. v.restype;
+		}
+		local a = [];
+		if( prop["nullable"]){
+			a .. { id="rem", data={}};
+		}
+		foreach( rt in restypes){
+			local b = [];
+			switch( rt){
+			case "chara_etc":
+			case "chara_vox":
+			case "equip_vox":
+			case "enemy_pic":
+			case "event_pic":
+			case "efx":
+			case "map_asset":
+				setupGraphicList( b, rt); break;
+			}
+			b.sort( @( v) v.id);
+			a ... b;
+		}
+		previewlist.setItemList( a);
+	}
+
+	function setupGraphicList( a, restype){
+		local data = ::conf._resource[restype];
+		local filter = prop["filter"] || @() 1;
+		foreach( i, d in data){
+			if( i.startsWith( "_")) continue;
+			if( !filter( i, d)) continue;
+			a .. { id=i, data=d};
+		}
+	}
+
+	function tabevent( e){
+		switch( e.id){
+		case ITEM_SELECTIONS:
+			updateList();
+			break;
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "LIST":
+			if( e.count == 2){
+				ret = 1;
+				return close();
+			}
+			break;
+		case "selallbtn":
+			tablist.selectAll();
+			updateList();
+			break;
+		}
+		super.actionevent( e);
+	}
+	
+	static function run( e, prop, sel=null){
+		if( prop.restype[0] == "snd" || prop.restype == "snd"){
+			return SoundSelectPopup.run( e, prop, sel);
+		}
+		if( prop.restype[0] == "bgm" || prop.restype == "bgm"){
+			return BGMSelectPopup.run( e, prop, sel);
+		}
+		::skstudio.freezeEditorView( true);
+		local dlg = ResourceSelectDialog( srcdir.."/ui/resdialog.ui", prop, sel);
+		dlg.show();
+		::skstudio.freezeEditorView( false);
+		if( dlg.ret){
+			local selview = dlg.previewlist.selview;
+			return selview["ref"][0]["id"];
+		}
+	}
+}
+
+class BGMSelectPopup extends Popup
+{
+	static UIPATH = "/skstudio/ui/dialog/sndselectpopup.ui";
+
+	modalclose = 2;
+
+	prop = null;
+	bgmlist = null;
+
+	mixer2d = null;
+	curbgm = null;
+
+	retid = null;
+
+	static function run( e, prop){
+		local p = BGMSelectPopup( ::loadSKView( UIPATH), prop);
+		p.show( null, e.src);
+		p.stopbgm();
+		if( p.ret){
+			return p.retid;
+		}
+	}
+	
+	static function setsndview( la, v, i){
+		v.setValue( "resid", i.id);
+		v.setValue( "lbl", i.lbl);
+		v.pickable = false;
+	}
+
+	constructor( v, p){
+		super( v);
+		prop = p;
+		bgmlist = ListBehavior( view.findChild( "sndlist"));
+		bgmlist.setviewfunc = setsndview;
+		view.findChild( "catglist").setVisible( false);
+		//
+		local data = ::conf._resource.bgm;
+		local a = [], filter = p["filter"] || @() 1;
+		foreach( i, d in data){
+			if( i.startsWith( "_")) continue;
+			if( !filter( i, d)) continue;
+			a .. { id=i, data=d, lbl=d.name};
+		}
+		a.sort( @( v) v.id);
+		bgmlist.setListItems( a);
+
+		::soundmanager.checkctx();
+		local ctx = ::soundmanager.ctx;
+		mixer2d = ctx.createMixer();
+		mixer2d[SK_SND_SEND] = 0;
+		mixer2d.connect();
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_rem":
+		{
+			retid = "rem";
+			ret = 1;
+			close();
+			break;
+		}
+		case "sndlist":
+		{
+			local cmd = e.actioncmd;
+			if( cmd["src"]["name"] == "playbtn"){
+				playbgm( cmd.item.data);
+				bgmlist.setSelectedItem( cmd.item);	//	一応選択もしておくか
+			}else{
+				retid = cmd.id;
+				ret = 1;
+				close();
+			}
+			break;
+		}
+		}
+		super.actionevent( e);
+	}
+
+	function playbgm( d){
+		if( curbgm){
+			local ok = stopbgm();
+			if( ok && curbgm.param == d) return;
+		}
+		curbgm = BGMThread( d);
+		curbgm.mixer = mixer2d;
+		curbgm.start();
+	}
+
+	function stopbgm(){
+		return curbgm?.stop();
+	}
+}
+
+
+local bonelist = [
+	{ lbl="$T.bone_leg2", val = "leg2", },
+	{ lbl="$T.bone_box", val = "box", },
+];
+
+local animepartlist = [
+	{ lbl="$T.animepart0", val = ST_EN, },
+	{ lbl="$T.animepart1", val = ST_MD, },
+	{ lbl="$T.animepart2", val = MD_EN, },
+	{ lbl="$T.animepart3", val = EN_ST, },
+	{ lbl="$T.animepart4", val = ST, },
+	{ lbl="$T.animepart5", val = MD, },
+	{ lbl="$T.animepart6", val = EN, },
+];
+
+
+//	アニメーション選択ポップアップ
+//	{id="stand", spd=1.0, part=0, mdlid="CV000"}
+//	
+//	編集のため余分なパラメータも含む。
+//	mdlid="CV001" : 体形とプレビュー表示のためにモデルを保存しておく。デフォルトはCV000。
+//	CVとEPが有効。EPの場合はピクチャ用のアニメ？いるかな
+//	
+class AnimeEdit
+{
+	view = null;
+	animelist = null;		//	ListBehavior
+	partmenu = null;		//	MenuBehavior
+	spdval = null;			//	NumInputBehavior
+	
+	preview = null;			//	ResourcePreviewCanvas
+	
+	prop = null;
+
+	bonetype = null;
+	
+	static function setsndview( la, v, i){
+		v.setValue( "resid", i.id);
+		v.setValue( "lbl", i.lbl);
+		v.pickable = false;
+	}
+
+	constructor( v, p){
+		view = v;
+		prop = p;
+		animelist = ListBehavior( view.findChild( "animelist"));
+		// animelist.setviewfunc = setsndview;
+		preview = ResourcePreviewCanvas( view.findChild( "mdlbtn"), true);
+		preview.view.gpui.enablerclick = false;
+		spdval = createNumInputBehavior( view.findChild( "spdval"));
+		spdval.setRange( 0.1, 4.0, 100);
+		partmenu = MenuBehavior( view.findChild( "partmenu"), animepartlist);
+		//
+		animelist.listview.addEventListener( ACTION_EVENT, listevent);
+		animelist.listview.addEventListener( ITEM_EVENT, listevent);
+		preview.view.addEventListener( ACTION_EVENT, actionevent);
+		spdval.view.addEventListener( ACTION_EVENT, actionevent);
+		partmenu.view.addEventListener( ACTION_EVENT, actionevent);
+		//
+	}
+
+	function setData( v){
+		local mdlid = v["mdlid"] || "CV000";
+		local restype = ::RPGResource.getResourceType( mdlid);
+		local mdl = ::conf._resource[restype][mdlid];
+		preview.setResourceData( mdlid, mdl);
+		local rp3d = preview.sk3d;
+		setBoneType( rp3d.bonetype);
+		local aid = v["id"] || "stand", i = animelist.items.findi( @( v) v.val==aid);
+		if( aid >= 0){
+			animelist.setSelectedIndex( i);
+			animelist.scrollIndexToVisible( i);
+		}
+		spdval.setValue( v["spd"] ?? 1.0);
+		local part = v["part"] ?? 0;
+		partmenu.selectItem( @( v) v.val==part);
+		startAnime();
+	}
+
+	function getData(){
+		local id = animelist.getSelectedItems()[0].val;
+		if( !id) return "rem";
+		local v = {};
+		v.mdlid <- preview.mdlid;
+		v.id <- id;
+		v.spd <- spdval.getValue();
+		v.part <- partmenu.selitem.val;
+		return v;
+	}
+
+	function setBoneType( t){
+		bonetype = t;
+		local ma = RPG3DObject.animelistmap[t].map( @( v)({
+			lbl="$T.anim_"..v.id, icon="\uf2c0", val=v.id,
+		}));
+		if( prop.type == RPGPropertyType.ANIME_POPUP && prop["nullable"]){
+			ma[0] <- { lbl="$T.lbl_notset", icon="\ue15b", val=null, }
+		}
+		animelist.setListItems( ma);
+		animelist.listview.updateMatrixAll();
+	}
+
+	function startAnime(){
+		local id = animelist.getSelectedItems()[0].val;
+		if( id){
+			local part = partmenu.selitem.val;
+			local spd = spdval.getValue();
+			local rp3d = preview.sk3d;
+			rp3d.anime2( {id=id, part=part, spd=spd});
+		}
+	}
+
+	//	※メニューボタンは外部にあるため、手動で呼ぶべし
+	function showContextMenu( e){
+	}
+
+	function listevent( e){
+		e.consume();
+		switch( e.id){
+		case ITEM_SELECTED:
+			view.postActionEvent();
+			startAnime();
+			break;
+		case ACTION_PERFORMED:
+			view.postActionEvent( "ok");
+			break;
+		}
+	}
+
+	function actionevent( e){
+		e.consume();
+		switch( e.src["name"]){
+		case "mdlbtn":
+			if( e.isMouseDown( BUTTON1_MASK)) startAnime();
+			e.consume();
+			return;
+		}
+		view.postActionEvent();
+	}
+}
+
+class AnimeEditPopup extends Popup
+{
+	static UIPATH = srcdir .. "/ui/animepopup.ui";
+
+	modalclose = 2;
+
+	prop = null;
+	aniedit = null;
+
+	static function run( e, prop, data){
+		local p = AnimeEditPopup( ::loadSKView( UIPATH), prop, data);
+		p.show( null, e.src);
+		if( p.ret) return p.aniedit.getData();
+	}
+
+	function actionevent( e){
+		if( e.id==ACTION_PERFORMED && e.src==aniedit.view && e.actioncmd=="ok"){
+			ret = 1;
+			close();
+			return;
+		}
+		super.actionevent( e);
+	}
+	
+	constructor( v, p, d){
+		super( v);
+		prop = p;
+		aniedit = AnimeEdit( view.findChild( "animeedit"), prop);
+		aniedit.setData( d);
+	}
+}

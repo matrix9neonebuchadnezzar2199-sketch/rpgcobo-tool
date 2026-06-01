@@ -1,0 +1,343 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+//	
+//	
+class PMCanvas extends CanvasBehavior
+{
+	editor = null;		//	PMEditor
+	//	view
+	physchk = null;		//	GPUIButton :
+	bndchk = null;		//	GPUIButton :
+	bonechk = null;		//	GPUIButton :
+	gridchk = null;		//	GPUIButton :
+	skychk = null;		//	GPUIButton :
+	timeline = null;	//	TimelineBarBehavior :
+	
+	//	sk3d
+	sk3d = null;		//	SK3DObject : 
+	bndsk = null;		//	SK3DObject : 
+	bonesk = null;		//	BoneGroup : 
+
+	//	selection
+	mouseon = null;
+	selection = null;
+	
+	constructor( e){
+		super( e.findChild( "3D"), e.findChild( "head"));
+		editor = e;
+		
+		physchk = e.findChild( "physchk");
+		bndchk = e.findChild( "bndchk");
+		bonechk = e.findChild( "bonechk");
+		gridchk = e.findChild( "gridchk");
+		skychk = e.findChild( "skychk");
+		
+		bndchk.setSelected( true);
+		bonechk.setSelected( true);
+		gridchk.setSelected( true);
+		
+		//////////////////////// sk3d
+		//	bnd mesh
+		local bndpm = ::PrimitiveMeshes.createWireBox( 1.0001,1.0001,1.0001, 0.005);	//	offsetだとなんかダメ
+		with( bndpm.face[0].m){ visiblemask = SK_VISIBLE_DECAL; blend = SK_MIX; Kd = 0xffffff44; depthmask = 0; polygonoffset0 = -10000.0; polygonoffset1 = -40000.0; }
+		bndsk = SK3DObject( bndpm);
+		//	bone group
+		bonesk = BoneGroup();
+		scn.addObject( bonesk);
+		//
+		view.scn.disablesimulation = true;
+	}
+
+	function setPM( pm){
+		if( sk3d) scn.removeObject( sk3d);
+		sk3d = SK3DObject( pm);
+		sk3d.addChild( bndsk);
+		sk3d.addChild( bonesk);
+		scn.addObject( sk3d);
+		bonesk.clearBones();
+		bonesk.addBones( sk3d);
+		resetRigidBody();
+	}
+
+	function resetRigidBody(){
+		sk3d.disablePhysicalBones();
+		sk3d.enablePhysicalBones();
+		bonesk.resetRigidBodies( sk3d);
+	}
+
+	//	毎フレーム呼ばれる
+	function updateFunc( dt){
+		camwork.updateCamera( dt);
+		if( sk3d){
+			local r = sk3d.bnd;
+			bndsk.pos( r.x, r.y, r.z);
+			bndsk.scale( r.r, r.s, r.t);
+			bndsk.matdirty = true;
+		}
+		bonesk.updateBoneMatrices();
+		return true;
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "gridchk":
+		case "bndchk":
+		case "bonechk":
+			updateChecks();
+			break;
+		}
+		if( !e.consumed) super.actionevent( e);
+	}
+
+	function updateChecks(){
+		gridsk.setVisible( gridchk.isSelected());
+		bndsk.setVisible( bndchk.isSelected());
+		bonesk.setVisible( bonechk.isSelected());
+	}
+
+	/////////////////////////////////////////////////////
+	//	
+
+	function defevent( e){
+		e.computeLocal( view.getInvMatrix());
+		local p = getObjectAt( e.lx, e.ly);
+		switch( e.id){
+		case MOUSE_PRESSED:	//	sk3d移動,回転
+			e.consume();
+			break;
+		case MOUSE_DRAGGED:
+			e.consume();
+			break;
+		case MOUSE_MOVED:
+			if( mouseon!=p) setMouseOn( p);
+			e.consume();
+			break;
+		case MOUSE_RELEASED:
+			setSelection( p);
+			e.consume();
+			break;
+		}
+	}
+
+	//
+	function setMouseOn( v){
+		mouseon?.setFlag( mouseon.flag & ~2);
+		v?.setFlag( v.flag | 2);
+		view.repaint();
+		mouseon = v;
+	}
+	
+	//	
+	function setSelection( v){
+		selection?.setFlag( selection.flag & ~1);
+		v?.setFlag( v.flag | 1);
+		view.repaint();
+		selection = v;
+		if( v) editor.rightpanel.partspanel.selectBone( v.bone);
+	}
+
+	//	PMPartsPanelから呼ばれる
+	
+	function mouseonBoneParts( bp){
+		local bn = bonesk.nodes.find( @( v) v.bone.parts == bp);
+		if( bn) setMouseOn( bn);
+	}
+
+	function selectBoneParts( bp){
+		local bn = bonesk.nodes.find( @( v) v.bone.parts == bp);
+		if( bn) setSelection( bn);
+	}
+}
+
+class PMCanvas.BoneGroup extends SK3DObject
+{
+	nodes = null;
+	axis = null;
+
+	constructor(){
+		bnd.set( 0, 0, 0, 1000, 1000, 1000);
+		gbnd.set( 0, 0, 0, 1000, 1000, 1000);
+		nodes = [];
+		local axispm = ToolMesh.createBoneAxis();
+		axis = SK3DRenderNode();
+		axis.visiblemask = SK_VISIBLE_OPAQUE | SK_VISIBLE_SELECTOR;
+		axis.mesh = axispm;
+		axis.gbnd.set( 0, 0, 0, 100, 100, 100);
+		axis.sortval = 10000.0;
+	}
+
+	//	b3bodyからBoneNodeを検索する
+	function findBoneNodeByBody( body){
+		foreach( bn in nodes){
+			if( bn.bonebody == body || bn.rbbody == body) return bn;
+		}
+		return null;
+	}
+	
+	function findBoneNode( name){
+		foreach( bn in nodes){
+			if( bn.bone["name"] == name) return bn;
+		}
+		return null;
+	}
+
+	function customDisplayList( displist, visiblemask){
+		foreach( o in nodes){
+			displist .. o;
+			if( o.rbnode) displist .. o.rbnode;
+		}
+		if( axis.gmat) displist .. axis;
+	}
+
+	//	含まれるボーンを全てクリアしてb3bodyも全て消去する
+	function clearBones(){
+		foreach( bn in nodes){
+			if( bn.bonebody){
+				scn.b3world.removeBody( bn.bonebody);
+			}
+		}
+		nodes.clear();
+	}
+
+	static function aimQuaternion( v){
+		return Quaternion.from2Axis( #Vector3D(0,0,1), Vector3D( v).normalize());
+	}
+
+	function addBones( o){
+		visiblemask = SK_VISIBLE_TRANSPARENT;	//	ここでやらんと変なのが入ってる
+		local a = o.bones;
+		foreach( bo in a){
+			local ca = getBoneChildren( bo, a);
+			local invmat = bo.mat.invert34()// bo.parts.invbindpose;
+			printf("addBone id[%d] name=%S parent=%d children=%d\n",bo.parts.id, bo.parts.name, bo.parts.parentid, length( ca));
+			if( ca){
+				local vlen = bo.parts.length, vec = #Vector3D(0,1,0);
+				if( !vlen){
+					local vm = invmat.mult34( ca[0].mat);
+					vec = vm.getTranslation();
+					vlen = Math.max( 0.01, vec.length());
+				}
+				local amesh = clone #ToolMesh.createArrow();
+				local bn = PMCanvas.BoneNode();
+				bn.bone = bo;
+				bn.mesh = amesh;
+				bn.sortval = 4000.0;
+				nodes .. bn;
+				local q = aimQuaternion( vec);//Quaternion.from2Axis( Vector3D(0,0,1), vec);
+				bn.adjustmat << q.toMatrix();
+				bn.adjustmat.scale( vlen);
+				// b3body
+				local shp = ToolMesh.createArrowShape();
+				shp.setLocalScaling( vlen);
+				bn.bonebody = b3Body( 0.0, shp, Matrix(), 1, -1);
+				bn.bonebody.setCollisionFlags( 4);
+				bn.bonebody.ref = bn;
+				scn.b3world.addBody( bn.bonebody);
+			}else{
+				local amesh = clone #ToolMesh.createCap();
+				local bn = PMCanvas.BoneNode();
+				bn.bone = bo;
+				bn.mesh = amesh;
+				bn.sortval = 4000.0;
+				nodes .. bn;
+				// b3body
+				local shp = ToolMesh.createCapShape();
+				bn.bonebody = b3Body( 0.0, shp, Matrix(), 1, -1);
+				bn.bonebody.setCollisionFlags( 4);
+				bn.bonebody.ref = bn;
+				scn.b3world.addBody( bn.bonebody);
+			}
+		}
+	}
+
+	function getBoneChildren( bo, bones){
+		local pid = bo.parts.id;
+		local a = null;
+		foreach( b in bones){
+			if( pid == b.parts.parentid){
+				if( a) a .. b else a = [b];
+			}
+		}
+		return a;
+	}
+
+	function updateBoneMatrices(){
+		if( !parent) return;
+		foreach( bn in nodes){
+			bn.updateMatrix( parent.gmat);
+		}
+	}
+
+	//	
+	function resetRigidBodies( o){
+		foreach( bn in nodes){
+			bn.rbnode = null;
+			bn.rbbody = null;
+		}
+		if( !o.mesh || !o.mesh.rbdataset) return;
+		local rbdataset = o.mesh.rbdataset;
+		foreach( b in o.bones){
+			local bn = findBoneNode( b.name);
+			local rbdata = rbdataset[b.name];
+			local rb = b.rigidbody;
+			if( !bn || !rbdata || !rb) continue;
+			local shp = rb.getShape();
+			if( !shp) continue;
+			//	
+			local rn = SK3DRenderNode();
+			rn.visiblemask = SK_VISIBLE_OPAQUE | SK_VISIBLE_SELECTOR;
+			rn.mesh = shp.createPolygonMesh();
+			rn.sortval = 4000.0;
+			bn.rbbody = rb;
+			bn.rbnode = rn;
+			bn.setFlag( bn.flag);
+		}
+		animating = true;
+		o.animlayers?.markAnimating();
+	}
+}
+
+
+class PMCanvas.BoneNode extends SK3DRenderNode
+{
+	bone = null;			//	Bone : pm.bones[i]
+	rbdata = null;			//
+
+	bonebody = null;		//	b3Body : ボーンのヒットテスト用のrigidbody
+	rbbody = null;			//	b3Body : pm.bones[i]に仕込まれたrigidbody。こっちもヒットテストに使われる
+	rbnode = null;			//	SK3DRenderNode : rbbody.shpの表示用メッシュ
+
+	adjustmat = null;		//	ボーンの方向補正
+	orgmat = null;			//	adjustmat前
+
+	flag = 0;				//
+
+	constructor(){
+		orgmat = Matrix();
+		adjustmat = Matrix();
+		visiblemask = SK_VISIBLE_DECAL | SK_VISIBLE_SELECTOR;
+	}
+
+	function updateMatrix( parentmat){
+		parentmat.mult34( bone.mat, orgmat).mult34( adjustmat, gmat);
+		if( bonebody){
+			local _m = #Matrix();
+			bonebody.setTransform( _m.set( gmat).scale( 1.0/gmat.getScale().length()));
+		}
+		if( rbnode){
+			rbbody.getTransform( rbnode.gmat);
+		}
+	}
+
+	static cols = [(0xffffff77,0x0066ff77), (0xff3300ff,0x0000ffff), (0xff6600ff,0x00ffff77), (0xff3300ff,0x0000ffff)]
+
+	function setFlag( f){
+		flag = f;
+		local c = cols[f]||cols[0];
+		foreach( f in mesh.face) f.m.Kd = c[0];
+		if( rbnode){
+			foreach( f in rbnode.mesh.face) f.m.Kd = c[1];
+		}
+	}
+}

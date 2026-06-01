@@ -1,0 +1,81 @@
+
+//	クラス定義、テーブル定義内でミックスイン機能
+//	classをミックスインするときはstatic属性が外れないようにする
+function mixin( t){
+	if( typeof( t) == SS_CLASS){
+		foreach( i, v in t){
+			newslot( this, i, t[i], v==1 ? 1:0);
+		}
+	}else
+	foreach( i, v in t){
+		this[i] <- v;
+	}
+}
+
+//	1000000を1,000,000の形式の文字列に変換する
+function commanum( i){	//	int
+	local sb = #StringBuffer(); sb.clear();
+	while( i >= 1000){
+		sb[0] <- ",%03d" % (i%1000); i /= 1000;
+	}
+	sb[0] <- string( i);
+	return string( sb);
+}
+
+function sizestr( s){
+	if( s > 100_000_000){
+		s /= 100_000; return sprintf( "%d.%d MB", s/10, s%10);
+	}
+	if( s > 100_000){
+		s /= 10_000; return sprintf( "%d.%02d MB", s/100, s%100);
+	}
+	s /= 10; return sprintf( "%d.%02d KB", s/100, s%100);
+}
+
+//	埋め込みスクリプトなど実行時に細かくコンパイルされるようなスクリプトはキャッシュして再利用する。
+//	SKViewやParticleEffectのアクション、ダメージ式、コマンド内のスクリプト等。
+//	※時間でキャッシュクリアなんかも実装する
+function compilestring_c( src, srcname="noname", flags=0){
+	local compilecache = #{};
+	local v = compilecache[src];
+	if( !v){
+		v = compilecache[src] <- (compilestring( src, srcname), 0);
+	}
+	v[1] = skGetTime();
+	return v[0];
+}
+
+//	SKLabelViewやRichTextなど、頻繁に同じラベルを処理するならこれでキャッシュする。
+function compiletemplate_c( src, flags=0){
+	local compilecache = #{};
+	local v = compilecache[src];
+	if( !v){
+		v = compilecache[src] <- (compiletemplate( src), 0);
+	}
+	v[1] = skGetTime();
+	return v[0];
+}
+
+//	
+function tmpl( tmplstr, vals){
+	return ~(compiletemplate_c( ::lang( tmplstr)), vals);
+}
+
+
+//	キャプチャ変数の中身を更新できるように
+//	初期化 local p = ptr( 100);
+//	設定 p << 3000; p( 3000);
+//	取得 ~p p()
+class ptr
+{
+	val = null;
+	
+	constructor( v=null){ val = v; }
+	
+	function _shl( v){ return val = v; }
+	function _bwnot(){ return val; }
+
+	function _call( self, setval=undefined){
+		return setvall==undefined ? val : val=setvall;
+	}
+}

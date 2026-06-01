@@ -1,0 +1,62 @@
+declare sp3dsound;
+
+//	描画するもの
+//	(1) 距離円
+//	(2) 前方
+//	(3) ソース外円
+//	(4) ソース内円
+//	(5) 中心円
+//	miscmat
+//	[0] = scale
+//	[1] = srcx, srcy, srcvx, srcvy
+//	[2] = maxdist, refdist, conein, coneout
+//	
+
+param common
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform highp mat4 miscmat <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	
+	fragout lowp vec4 fragcolor;
+}
+
+vs def
+{
+	void main(){
+		gl_Position = in_pos;
+		highp vec2 uv = (in_uv.xy*2.0-1.0);
+		v_uv = vec4( uv * miscmat[0].x, uv);
+	}
+}
+
+fs def
+{
+	void main(){
+		lowp vec4 bg = vec4( mod( floor( length( v_uv)/20.0), 2.0) * vec3( 0.1) , 1.0);
+		if( v_uv.y < 0.0 && -v_uv.y >= abs( v_uv.x)) bg.xyz = vec3(0.1)-bg.xyz;
+		highp vec2 pos = miscmat[1].xy, vec = miscmat[1].zw;
+		highp float d = length( pos-v_uv.xy);
+		highp float th = dot( vec, normalize( pos-v_uv.xy));
+		highp vec4 sc = vec4( 0.0, 1.0, 0.0, 0.7);
+		if( d  > miscmat[2].x) sc.w *= 0.0; else if( d  > miscmat[2].y) sc.y *= 0.6;
+		if( th > miscmat[2].z) sc.w *= 0.0; else if( th > miscmat[2].w) sc.y *= 0.6;
+		bg = mix( bg, sc, sc.w);
+		bg.xy += step( length( v_uv.zw), 0.05) * 0.8;
+		fragcolor = bg;
+	}
+}
+
+technique def
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = common;
+		vs = def;
+		fs = def;
+	}
+}

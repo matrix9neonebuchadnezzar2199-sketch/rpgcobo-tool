@@ -1,0 +1,15 @@
+
+runsk( "ResSideView.sk");
+runsk( "ResEditor.sk");
+runsk( "ResEditorCharaVox.sk");
+runsk( "ResEditorEquipVox.sk");
+runsk( "ResEditorEnemyPic.sk");
+runsk( "ResEditorEfx.sk");
+runsk( "ResEditorIcon.sk");
+runsk( "ResEditorSnd.sk");
+runsk( "ResEditorBGM.sk");
+runsk( "ResEditorMapVox.sk");
+runsk( "ResEditorMapAsset.sk");
+runsk( "ResEditorVoice.sk");
+runsk( "ResEditorUI.sk");
+runsk( "MapVoxCollisionDialog.sk");

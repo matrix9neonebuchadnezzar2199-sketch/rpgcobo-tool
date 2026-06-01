@@ -1,0 +1,564 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorEquipUI : UIマッピングの編集
+//	showUIでの読み込む.uiパスを置き換える。
+//	getActualUIPath( uipath)でbaseuiに引っかかるUIを返す。言語ごとに使用する.uiを変更できる
+//	
+/*
+	uimap:{
+		menu:{
+			0:{
+				baseui:"/resource/ui/mainmenu.ui"
+				uilist:[
+					"/resource/ui/mainmenu_new.ui"
+					"/resource/ui/mainmenu_eee.ui"
+				],
+				ja:{ name:"メインメニュー画面", desc:"説明", useidx:-1, },	//	useidx=-1の場合はbaseuiを使う
+				en:...
+			}
+		}
+		_
+	}
+*/
+
+//	
+class ResEditorUI extends EditorViewBase
+{
+	static tabitems = [
+		{ lbl="$T.lbl_screen", id="screen", },
+		{ lbl="$T.lbl_menu", id="menu", },
+		{ lbl="$T.lbl_message", id="message", },
+		{ lbl="$T.lbl_dialog", id="dialog", },
+		{ lbl="$T.lbl_viewinfo", id="info", },
+		{ lbl="$T.lbl_etc", id="etc", },
+	];
+
+	static uitexcache = {};
+
+	res = null;				//	Resource : 
+	data = null;			//	::conf.res.chara_vox等のコピー。
+	
+	resdirpath = null;		//	project/resource/...
+	
+	//	選択
+	seltab = null;			//	"screen","menu",...
+	selid = -1;				//	
+	sellang = null;			//	"ja","en",...
+
+	//	L
+	tabs = null;			//	画面、メニュー、メッセージ、バトル、ダイアログ、情報表示、その他
+	listview = null;		//	GPUIListView : 2列表示。1タブにつき100アイテムまで
+	
+	//	R
+	langmenu = null;
+	nameedit = null;
+	descedit = null;
+	baseuibtn = null;
+	uilockbtn = null;		//	
+	useuilist = null;		//	ListBehavior
+
+
+	function init( path){
+		op = OperationStack();
+		res = ::getResource( path);
+		res.userdata = null;
+		data = deepclone( res.getContent());
+		//
+		tabs = TabsBehavior( findChild( "tabs"), tabitems);
+		tabs.listview.addEventListener( ACTION_EVENT, tabevent);
+		listview = findChild( "itemlist");
+		listview.addEventListener( ACTION_EVENT, itemlistevent);
+		listview.addEventListener( ITEM_EVENT, itemlistevent);
+		langmenu = MenuBehavior( findChild( "langmenu"), ::sakana.languagelist.map( @( v)({ lbl=v.name, icon=v.icon, val=v.code })));
+		langmenu.selectItem( @( v) v.val==::conf.setting.projlang);
+		seltab = tabitems[0].id;
+		sellang = ::conf.setting.projlang;
+		//	
+		nameedit = findChild( "nameedit");
+		descedit = findChild( "descedit");
+		baseuibtn = findChild( "baseuibtn");
+		uilockbtn = findChild( "uilockbtn");
+		useuilist = ListBehavior( findChild( "useuilist"));
+		useuilist.listview.addEventListener( ACTION_EVENT, uilistevent);
+		useuilist.listview.addEventListener( ITEM_EVENT, uilistevent);
+		descedit.addEventListener( TEXT_EVENT, descevent);
+		local self = this;
+		useuilist.setviewfunc = @( la, v, i){
+			v.setValue( "lbl", i["path"]);
+			v.findChild( "usechk").setSelected( i["use"]);
+			v.findChild( "lockg").anime( i["lock"]?10:0);
+			v.pickable = false;
+		}
+		addEventListener( ACTION_EVENT, actionevent);
+		//
+		updateItemList();
+		selectItem( 0);
+		resdirpath = ::resroot.file.path .. "/resource/ui";
+	}
+
+	//	アイテム数は100個固定。
+	function updateItemList(){
+		local defpic = "/skstudio/img/ui/pic_tr.png";
+		listview.setRowCount( 50);
+		local items = data[seltab];
+		for( local l = 0;l < 100;l ++){
+			local r = listview.rows[l/2];
+			local c = r.findChild( "c"..(l&1));
+			local d = items[l];
+			setItemView( l, c, d);
+			c.ref = { id=l };
+			if( !c.dragsource) c.dragsource = ItemDragSource( c);
+		}
+	}
+
+	function setItemView( id, c, d){
+		local defpic = "/skstudio/img/ui/pic_tr.png";
+		c.setValue( "id", "%03d" % id);
+		local pic = c.findChild( "pic");
+		pic.setValue( defpic);
+		pic.updateLayout()
+		if( d){
+			local ld = d[sellang] || #{name="",useidx=-1,};
+			c.setValue( "name", ld.name);
+			local uipath = d.uilist[ld.useidx] || d.baseui;	//	path
+			queueViewCapture( uipath, @( tex){
+				if( tex){
+					local sp = Sprite( tex); sp.blend = SK_PMAMIX;
+					pic.setValue( sp);
+					pic.updateLayout()
+				}
+			});
+		}else{
+			c.setValue( "name", "");
+		}
+	}
+
+	//	
+	static function queueViewCapture( uipath, callback){
+		if( uipath in uitexcache){	//	null mo hairu
+			return callback( uitexcache[uipath]);
+		}
+		local th = #ptr(), queue = #[];
+		queue .. { uipath=uipath, callback=callback};
+		if( !~th){
+			th << newthread( "UI Capture");
+			local ththread(){
+				while( length( queue)){
+					suspend();
+					local q = delete queue[0];
+					if( q.uipath in uitexcache){	//	null mo hairu
+						q.callback( uitexcache[q.uipath]);
+					}else{
+						local r = ::getResource( q.uipath);
+						local ui = r && ::loadSKView( r), tex;
+						if( ui){
+							ui.updateMatrixAll();
+							local sp = ui.capture();
+							tex = sp.tex0;
+						}
+						uitexcache[q.uipath] <- tex;
+						q.callback( tex);
+					}
+				}
+				th << null;	//	threadおわり
+			}
+			(~th).start( ththread, this);
+		}
+	}
+
+	function selectItem( id){
+		if( id != selid){
+			local c0 = listview.rows[selid/2].findChild( "c"..(selid&1));
+			local c1 = listview.rows[id/2].findChild( "c"..(id&1));
+			c0?.setSelected( false);
+			c1?.setSelected( true);
+			selid = id;
+			itemSelected( id);
+		}
+	}
+
+	function getItem( tab, id){
+		local d = data[tab][id];
+		if( !d) d = data[tab][id] <- { baseui:null, uilist:[], };
+		return d;
+	}
+
+	function itemSelected( id){
+		local d = getItem( seltab, id);
+		local ld = d[sellang] || (d[sellang] <- { name="", desc="", useidx=-1, });
+		setValue( "itemlbl", sprintf( "$T.lbl_property : %S - %S", id, ld.name));
+		nameedit.setText( ld.name);
+		descedit.setText( ld.desc);
+		baseuibtn.setValue( "lbl", d.baseui);
+		findChild( "uig").anime( length( d.baseui)?0:-1);
+		if( length( d.baseui)){
+			local a = [
+				{ path=d.baseui, lock=true, use=ld.useidx==-1, idx=-1, },
+				...d.uilist.map( @( v, i) ({ path=v, use=ld.useidx==i, idx=i})),
+			];
+			useuilist.setListItems( a);
+		}else{
+			useuilist.setListItems( []);
+		}
+	}
+
+	function updateItemView( id){
+		local c = listview.rows[id/2].findChild( "c"..(id&1));
+		setItemView( id, c, data[seltab][id]);
+	}
+
+	//	※refreshではアイテムのプレビューは変化させない。100個の表示を再初期化することになるので、、、
+	function refresh(){
+		itemSelected( selid);
+		updateItemView( selid);
+	}
+
+	function filterValidData( d){
+		d = deepclone( d);
+		foreach( tab in tabitems){
+			foreach( i, v in d[tab.id]){
+				//	name, baseuiどっちもない場合は消そう
+				if( length( v.baseui)) continue;
+				if( Table.find( v, @( v) length( v["name"]))) continue;
+				removei;
+			}
+		}
+		return d;
+	}
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			local _data = filterValidData( data);
+			res.save( _data);	//	セーブ時にフィルター
+			return true;
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_copy":
+			copy();
+			return true;
+		case "menu_edit_paste":
+			paste( getClipboard( "resui"));
+			return true;
+		}
+		return false;
+	}
+
+	function copy(){
+		local d = data[seltab][selid] || null;
+		putClipboard( "resui", { id=selid, data=deepclone( d)});
+	}
+
+	function paste( cbdata){
+		if( cbdata){
+			local tab = seltab, id = selid, d = data[tab][id], oldd = deepclone( d), self = this;
+			local newd = deepclone( cbdata.data);
+			local redo = [@(){
+				self.data[tab][id] <- newd;
+				self.updateItemView( id);
+			}];
+			local undo = [@(){
+				self.data[tab][id] <- oldd;
+				self.updateItemView( id);
+			}];
+			submitOp( redo, undo, null);	//	trk無し
+			refresh();
+		}
+	}
+
+	//	選択、dnd、
+	function itemlistevent( e){
+		switch( e.id){
+		case ACTION_PERFORMED:
+			local item = e.src.ref;	//	{id:1, data:{}|null}
+			if( item){
+				selectItem( item.id);
+			}
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showItemContextMenu( e);
+			}
+			break;
+		case ITEM_SORT:
+		{
+			local self = this, tab = seltab;
+			local cmd = e.actioncmd;
+			local id0 = cmd.from.view.ref.id, d0 = data[tab][id0];
+			local id1 = cmd.to.view.ref.id, d1 = data[tab][id1];
+			local redo = [@(){
+				self.data[tab][id0] <- d1;
+				self.data[tab][id1] <- d0;
+				self.updateItemView( id0);
+				self.updateItemView( id1);
+			}];
+			local undo = [@(){
+				self.data[tab][id0] <- d0;
+				self.data[tab][id1] <- d1;
+				self.updateItemView( id0);
+				self.updateItemView( id1);
+			}];
+			submitOp( redo, undo, null);
+			break;
+		}
+		}
+	}
+
+	function uilistevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( cmd["src"]){	//	usechk
+
+			}else{
+				if( e.isMouseDown( BUTTON2_MASK)){
+					setUIContextMenu( e);
+				}
+			}
+			break;
+		}
+	}
+
+	function descevent( e){
+		if( e.id == TEXT_CHANGED && e.src.name == "descedit"){
+			setLangPropOp( seltab, selid, sellang, "desc", e.actioncmd, false);
+		}
+	}
+
+	function tabevent( e){
+		local v = tabs.tabitems[e.actioncmd];
+		if( v){
+			seltab = v.id;
+			updateItemList();
+			refresh();
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "nameedit":
+			setLangPropOp( seltab, selid, sellang, "name", nameedit.getText());
+			break;
+		case "baseuibtn":
+		{	//	ファイルダイアログ？
+			local p = skstudio.showFileOpen( { dirpath="/resource/ui", filter=["*.ui"], pathgroup="ui" });
+			if( p){
+				setBaseUIOp( seltab, selid, sellang, p);
+			}
+			break;
+		}
+		case "uilockbtn":
+			break;
+		case "uimenubtn":
+		{
+			showAddUI( e);
+			break;
+		}
+		case "langmenu":
+			sellang = langmenu.selitem.val;
+			updateItemList();
+			refresh();
+			break;
+		}
+	}
+
+	function showAddUI( e){
+		local menudata = [
+			{ id="add", lbl="$T.lbl_addui", icon="\ue146", },
+		]
+		local ret = MenuPopup.run( menudata);
+		if( ret["id"] == "add"){
+			local p = skstudio.showFileOpen( { dirpath="/resource/ui", filter=["*.ui"], });
+			if( !p) return;
+			//
+			local self = this;
+			local d = getItem( seltab, selid);
+			local redo = [@(){ d.uilist .. p;}];
+			local undo = [@(){ d.uilist.pop(); }];
+			submitOp( redo, undo, null);
+			refresh();
+		}
+	}
+
+	//	name, desc, useidx
+	function setLangPropOp( tab, id, lang, pid, val, dorefresh=true){
+		local self = this;
+		local d = getItem( tab, id);
+		local ld = d[lang] || (d[lang] <- {name="", desc="", useidx=-1});
+		local oldval = ld[pid];
+		local redo = [@(){
+			ld[pid] <- val;
+		}];
+		local undo = [@(){
+			if( oldval==undefined) delete ld[pid]; else ld[pid] = oldval;
+		}];
+		submitOp( redo, undo, null);
+		if( dorefresh) refresh();
+	}
+
+	function setBaseUIOp( tab, id, lang, val){
+		local self = this;
+		local d = getItem( tab, id);
+		local oldval = d.baseui;
+		local redo = [@(){ d.baseui = val; }];
+		local undo = [@(){ d.baseui = oldval; }];
+		submitOp( redo, undo, null);
+		refresh();
+	}
+	
+	function showItemContextMenu( e){
+		local d = getItem( seltab, selid);
+		local ld = d[sellang];
+		local uipath = d.uilist[ld.useidx] || d.baseui;	//	path
+		local cbdata = getClipboard( "resui");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		//
+		local menudata = [
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-",
+			{ id="dir", lbl="$T.lbl_openresdir", icon="\ue89e"},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "copy": return copy();
+		case "paste": return paste( cbdata);
+		case "dir": return skOpenURL( "dir://"..resdirpath);
+		}
+	}
+
+	//	
+	function setUIContextMenu( e){
+		local cmd = e.actioncmd;
+		if( !cmd) return showAddUI( e);
+		local d = getItem( seltab, selid);
+		local ld = d[sellang];
+		local uipath = cmd.path;
+		local self = this;
+		//
+		local menudata = [
+			{ id="use", lbl="$T.lbl_useui", icon="\ue834" },
+			"-"
+			{ id="edit", lbl="$T.lbl_editui", icon="\ue745", },
+			{ id="change", lbl="$T.lbl_changeui", icon="\ue2e7", disable=cmd["lock"]},
+			"-"
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=cmd["lock"]},
+		];
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "use":
+			setLangPropOp( seltab, selid, sellang, "useidx", cmd.idx);
+			break;
+		case "edit":
+			if( cmd["lock"]){	//	baseui
+				if( !Dialogs.confirm( {msg="$T.confirm_editbaseui"})) break;
+			}
+			skstudio.openEditor( uipath);
+			break;
+		case "change":
+			local p = skstudio.showFileOpen( { dirpath="/resource/ui", filter=["*.ui"], });
+			local d = getItem( seltab, selid);
+			local redo = [@(){ d.uilist[cmd.idx] = p;}];
+			local undo = [@(){ d.uilist[cmd.idx] = uipath; }];
+			submitOp( redo, undo, null);
+			refresh();
+			break;
+		case "delete":
+			if( cmd["lock"]) break;	//	naiga
+			local oldd = deepclone( d);
+			local newd = deepclone( d);
+			//	更新後のデータを作っちゃう
+			delete newd.uilist[cmd.idx];
+			local maxi = length( newd.uilist)-1;
+			foreach( lang in ::sakana.languagelist){
+				local ld = newd[lang.code];
+				if( ld) ld.useidx = Math.min( maxi, ld.useidx);
+			}
+			local redo = [@(){ Table.clear( d) ... newd;}];
+			local undo = [@(){ Table.clear( d) ... oldd; }];
+			submitOp( redo, undo, null);
+			refresh();
+			break;
+		}
+	}
+}
+
+
+class ResEditorUI.ItemDragSource
+{
+	view = null;
+	dragsp = null;
+	dndfunc = 3;
+
+	constructor( v){
+		view = v;
+		v.addEventListener( DRAGSOURCE_EVENT, dndevent);
+		v.addEventListener( DROPTARGET_EVENT, dndevent);
+	}
+	
+	//	ドラッグ中描画処理
+	function dndrender( m){
+		skDrawSprite( dragsp, m.mousex, m.mousey);
+	}
+	
+	//	ドラッグ有効チェック
+	//	複数選択のドラッグ表示。。。ウィンドウのバッファをうまく使うとか
+	function acceptDrag( e){
+		if( !(dndfunc&1)) return false;
+		if( e.modifiers & (SHIFT_MASK|ALT_MASK|CTRL_MASK|BUTTON2_MASK|BUTTON3_MASK)) return false;
+		local src = e.src;
+		e.computeLocal( src.getInvMatrix());
+		//
+		dragsp = src.capture();
+		dragsp.color = 0x99999999;
+		local p0 = Vector3D( 0).transform( src.mat).sub( e.x, e.y, 0.0);
+		dragsp.bnd.x = p0.x;
+		dragsp.bnd.y = p0.y;
+		return true;
+	}
+	
+	//	DropTarget ... nasi
+	
+	function acceptDrop( ds, x, y){
+		if( !(dndfunc&2)) return false;
+		if( ds == this) return false;
+		return true;
+	}
+
+	function dndevent( e){
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			view.setSelected( true);
+			e.consume();
+			break;
+		case TARGET_DRAG_EXIT:
+			view.setSelected( false);
+			e.consume();
+			break;
+		case TARGET_DROP:
+			view.setSelected( false);
+			e.consume();
+			local cmd = { from=e.dragsrc, to=this, way=0};
+			view.parent.postIDEvent( ITEM_SORT, cmd, 1, e.modifiers);
+			break;
+		}
+	}
+}

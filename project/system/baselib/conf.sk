@@ -1,0 +1,349 @@
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	設定、辞書、言語に関する基本機能
+//	
+
+local threadlocalmap = {};
+
+function threadlocal(){
+	local k = weakref( currentthread());
+	return threadlocalmap[k] || (threadlocalmap[k] <- {});	//	ゴミが溜まってく恐れ。後でGC。
+}
+
+function loadconf( path, raiseerr=true){
+	local r = (path instanceof Resource) ? path : (threadlocal()["confres"]||::resroot).getResource( path);	//	相対パス可
+	if( !r){
+		if( raiseerr) throw Exception( "loadconf file not found : "..path);
+		return null;	//	null返すで良いか
+	}
+	if( r.name.endsWith( "json")){
+		return decodeJSON( r.loadData());
+	}else{
+		local tl = threadlocal();
+		local oldres = tl["confres"]||null;
+		tl["confres"] <- r;
+		local t = {};
+		~(r.getContent(), t);	//	~func
+		r.flush();
+		tl["confres"] = oldres;
+		return t;
+	}
+}
+
+//	翻訳などを適用するためにテーブルを掘りながら置き換える
+//	dstはinstanceの場合が多々あるが、srcは確実にtable。
+function override( dst, src, makeslot=true){
+	if( dst instanceof lazyload){	//	遅延読み込みだけ
+		dst.flush();
+		dst.override = src;
+	}else{
+		foreach( si, sv in src){
+			if( si[0]>='0' && si[0]<='9') si = int( si);
+			local st = typeof( sv), dt = typeof( dst[si]);
+			if( (st==SS_TABLE) && (dt==SS_TABLE||dt==SS_INSTANCE)){
+				override( dst[si], sv, makeslot);
+			}else{
+				if( si in dst) dst[si] = sv;
+				else if( makeslot) dst[si] <- sv;	//	instanceにnewslotは基本出来ない
+			}
+		}
+	}
+}
+
+class conf
+{
+	_map = null;
+
+	constructor( t){ _map = t; }
+
+	function _get( key){
+		return _map[key];
+	}
+	
+	function _newslot( key, v){
+		return _map[key] <- v;
+	}
+	
+	function clear(){
+		local D = _map["D"];
+		Table.clear( _map);
+		if( D){
+			Table.clear( D);
+			_map["D"] <- D;
+		}
+	}
+
+	function load( path){
+		::override( _map, ::loadconf( path));
+	}
+}
+
+//	初回に一気に読むには大き過ぎるテーブルを遅延ロードしながら読む。
+//	
+class lazyload
+{
+	dir = null;				//	lazyloadは一つのdirの中にtableを持つfileがいくつもある形式
+	key2resname = null;		//	function : keyからdir内のリソース名にする
+	overrides = null;		//	translateなどでoverrideが走った時に遅延で適用できるように保存しておく。。。。
+
+	constructor( path, fn){
+		dir = (path instanceof Resource) ? path : getsk( path, 2);	//	相対パス可
+		key2resname = fn;
+	}
+
+	function _gettable( r){
+		if( !r.userdata){
+			local t = ::loadconf( r);
+			if( overrides) ::override( t, overrides);
+			r.userdata = { tb:t, list:Table.keyvalues() };	//	listはイテレート時に使う
+		}
+		return r.userdata;
+	}
+
+	function _get( key){
+		local n = key2resname( key);
+		local r = dir.getResource( n);
+		if( !r) return undefined;
+		return _gettable( r).tb[key];
+	}
+	
+	function _nexti( itr){
+		local i0 = itr[0], i = i0;
+		foreach( r in dir.getList()){
+			local a = _gettable( r).list;
+			if( i >= length( a)){ i -= length( a); continue; }
+			return itr.set( i0+2, a[i], a[i+1]);
+		}
+		return null;	//	no next
+	}
+
+	//	部分的に読み込まれたconfを全て解放する。override等で再読み込みが必要になった場合、
+	//	もしくはシーン移動時などでメモリを開放したいときに呼ぶ。
+	function flush(){
+		dir.flush();
+	}
+}
+
+class Language
+{
+	tb = null;
+	code = null;
+
+	constructor( t){
+		tb = t;
+		code = t.code;
+	}
+	
+	function _call( caller, s, langcode=null){
+		if( typeof( s) == SS_TABLE){
+			local v = s[langcode||code];
+			if( v) return v;
+			foreach( la in ::sakana["languagelist"]){
+				if( (v=s[la.code])) return v;
+			}
+		}
+		return s;
+	}
+}
+
+//	"de-LU"で探して無かったら"de"で探す。無かったら"en"返す
+//	
+function chooseLanguage( c){
+	local _choose( _c){
+		foreach( la in ::sakana["languagelist"]){ if( _c == la.code) return la; }
+	}
+	if( c.contains( "zh-Hant")) c = "zh-TW";
+	if( c.contains( "zh-Hans")) c = "zh-CN";
+	local _la;
+	if( _la = _choose( c)) return _la;
+	local i = c.indexOf( "-");
+	if( i >= 0 && (_la = _choose( c.substring( 0, i)))){
+		return _la;
+	}
+	return _choose( "en");
+}
+
+
+class dict
+{
+	_map = null;
+
+	constructor( m){
+		_map = m;
+	}
+
+	function _call( self, key, env=null){
+		local s = ::lang( _map[key], ::lang.code);
+		if( typeof( s) == SS_CLOSURE) return s.call( env||self);
+		return s || key;
+	}
+
+	function _get( key){
+		local s = ::lang( _map[key], ::lang.code);
+		return s || key;
+	}
+
+	function _set( key, s){
+		_map[key] = s;
+	}
+
+	function _newslot( key, s){
+		_map[key] <- s;
+	}
+
+	function clear(){
+		Table.clear( _map);
+	}
+
+	function merge( tb){
+		if( typeof( tb) == SS_STRING) tb = ::loadconf( tb);	//	パスもOK
+		foreach( key, s in tb){
+			if( key[0]!='_') _map[key] <- s;	//	_から始まるのは無視
+		}
+	}
+}
+
+//	コンマで区切られたフィールド値を返す
+function getField( o, key){
+	local s = 0, e = key.indexOf( '.');
+	while( e >= 0){
+		local i = key.substring( s, e);
+		if( i[0]>='0'&&i[0]<='9') i = int( i);
+		o = o[i]; s = e+1; e = key.indexOf( '.', s);
+	}
+	local i = key.substring( s);
+	if( i[0]>='0'&&i[0]<='9') i = int( i);
+	return o[i];
+}
+
+//	コンマで区切られたフィールド値を設定する
+//	※フィールドが存在しない場合はundefinedを返す？
+function setField( o, key, val){
+	local s = 0, e = key.indexOf( '.');
+	while( e >= 0){
+		local i = key.substring( s, e);
+		if( i[0]>='0'&&i[0]<='9') i = int( i);
+		o = o[i]; s = e+1; e = key.indexOf( '.', s);
+	}
+	local i = key.substring( s);
+	if( i[0]>='0'&&i[0]<='9') i = int( i);
+	return o[i] = val;
+}
+
+//	コンマで区切られたフィールド値を設定する
+//	※フィールドが存在しない場合はフィールドを追加するが、newslotが失敗する場合はエラーとなる
+function putField( o, key, val){
+	local s = 0, e = key.indexOf( '.');
+	while( e >= 0){
+		local i = key.substring( s, e);
+		if( i[0]>='0'&&i[0]<='9') i = int( i);
+		local _o = o[i];
+		if( typeof( _o)!=SS_TABLE && typeof( _o)!=SS_INSTANCE) _o = o[i]<-{};	//	フィールドをテーブルに変更
+		o = _o;
+		s = e+1; e = key.indexOf( '.', s);
+	}
+	local i = key.substring( s);
+	if( i[0]>='0'&&i[0]<='9') i = int( i);
+	return o[i]<-val;
+}
+
+class Module
+{
+	plugs = null;
+	actionhooks = null;
+
+	constructor(){
+		actionhooks = {};
+	}
+
+	//	sakana.projよりバージョン指定されていたらそちらをロードする。
+	function loadAddon( name){
+		local os = skGetOSName();
+		local vnames = ::sakana["dists"][os];
+		foreach( vname in vnames){
+			if( vname[0] == name){
+				local b = skLoadAddon( vname[1]);	//	拡張子も入ってるけど読める
+				if( b) return b;
+			}
+		}
+		return skLoadAddon( name);
+	}
+	
+	function loadPlugins( plugmap){
+		local plugdir = ::getResource( "/plugin");
+		local plugs = this.plugs = [];
+		foreach( i, v in plugmap){
+			if( !v["enable"]) continue;
+			try{
+				local plug;
+				local r = plugdir.getResource( i);
+				if( !r){
+					printf( "DEBUG: Plugin not found. name=%S\n", i);
+				}else
+				if( r.isdir){
+					local pr = r.getResource( "plugin.sk");	//	この名前は固定
+					local fn = pr.loadData().compile( pr.path);
+					~(fn,plug={ id=i, res=pr });
+				}else{
+					local fn = r.loadData().compile( r.path);
+					~(fn,plug={ id=i, res=r });
+				}
+				//	プラグインチェック
+				//	- pluginfoテーブル。中にname, order
+				//	- loadPlugin関数。
+				if( plug){
+					if( !plug["pluginfo"] || !plug.pluginfo["name"] || !("order" in plug.pluginfo)) throw Exception( "Invalid pluginfo");
+					if( typeof( plug["loadPlugin"]) != SS_CLOSURE) throw Exception( "Invalid loadPlugin");
+					plugs .. plug;
+				}
+			}catch( ex){
+				printf( "WARN: PPlugin loading failure... name=%S\n", i);
+				printexception( ex);
+			}
+		}
+		//	orderでソート
+		plugs.sort( @( v) v.pluginfo.order);
+		//	全て呼び出し。ここで失敗したプラグインは一覧から消去・・・？
+		foreach( plug in plugs){
+			local opts = plugmap[plug.id];
+			try{
+				plug.loadPlugin( ::arguments, opts);
+			}catch( ex){
+				printf( "Plugin loadPlugin() failure... %S\n", plug.id);
+				printexception( ex);
+				removei;
+			}
+		}
+		//	OK
+	}
+
+	//	指定した名前のアクションに関数をフックする
+	function hookAction( name, func, order){
+		local a = actionhooks[name]||(actionhooks[name]<-[]);
+		local h = (func,order);
+		foreach( i, v in a){
+			if( v[1] > h[1]){ a[i]<-h; return; }
+		}
+		a .. h;
+	}
+
+	//	指定した名前のアクションをディスパッチする。フックされた関数が順に呼ばれる。
+	function dispatchAction( name){
+		foreach( v in actionhooks[name]){	//	exceptionハンドリング、moduleから外すとかとか。基本的に1回きり呼ぶだけなので基本外す
+			local fn = v[0]; fn();
+		}
+	}
+}
+
+
+/////////// globals
+
+if( ::sakana["languagelist"]){	//	languagelistが無い場合は::langは初期化されない
+	::lang <- Language( chooseLanguage( skGetLanguage()));	//	後から置き換え可能
+}else{
+	::lang <- Language( { "code":"en", "name":"English", "name_en":"English", "country":"us", "icon":"🇺🇸"});
+}
+::conf <- conf( {});
+::T <- dict( {});
+::module <- Module();

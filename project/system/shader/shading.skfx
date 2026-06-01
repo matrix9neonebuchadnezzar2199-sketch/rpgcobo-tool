@@ -1,0 +1,326 @@
+declare shading;
+
+module mod_math;
+module mod_customlight;
+module mod_transform;
+module mod_material;
+
+param mainpass
+{
+	attribute lowp vec4 in_col <id=COLOR1>;
+	attribute mediump vec4 in_uv <id=UV1>;		//	vec4( uv0, uv1)
+	
+	uniform sampler2D coltex1 <id=COLORTEX1>;
+	uniform sampler2D coltex2 <id=COLORTEX2>;	//	mask | emit | glos => vec4( overlay, glos)  1.0-((1.0-a)*(1.0-b))
+	uniform sampler2D coltex3 <id=COLORTEX3>;	//	normal
+	// uniform sampler2D coltex4 <id=COLORTEX4>;	//	toon
+	uniform mediump vec4 texw <id=TEXWEIGHTS>;
+	
+	uniform highp mat4 uvmat <id=UVMAT>;
+	uniform mediump mat4 colormat <id=COLORMAT>;
+	uniform lowp vec3 upvec <id=UPVEC>;
+	
+	varying lowp vec3 v_n;
+	varying highp vec3 v_wvp;
+	varying mediump vec4 v_uv;
+	varying lowp vec4 v_tan;
+	varying lowp vec4 v_lit;
+	varying lowp vec4 v_col;
+	varying lowp float v_rim;
+	
+	//	fragment param
+	fragout mediump vec4 fragcolor;
+}
+
+vs mainpass
+{
+	void main(){
+		highp mat4 transmat = getTransformedVectors();
+		gl_Position = pmat * transmat[0];
+		mediump vec4 wvn = towvn( v_wvp = transmat[0].xyz);
+		v_n = transmat[1].xyz;
+		$(UV5) v_tan = transmat[2];
+		$(COLORTEX1 || COLORTEX2){
+			$(UVMAT) { v_uv = vec4( (uvmat * vec4( in_uv.xy, 0.0, 1.0)).xy, in_uv.zw); } : { v_uv = in_uv; }
+		}
+		//	lighting
+		v_rim = 1.0 - abs( dot( wvn.xyz, v_n));
+		lowp vec3 diff = (Ka_offs + Ka_scale*dot(upvec,transmat[1].xyz)) * mate[7].x, spec = vec3( 0.0);
+		vslight( mate, wvn, v_n, diff, spec);
+		//	u-m
+		#ifdef NO_DIFFALPHA
+			v_lit = vec4( diff+spec*0.5, 1.0);
+		#else
+			v_lit = vec4( diff+spec*0.5, Kd.w);
+		#endif
+		$(COLOR1) {
+			v_col = in_col;
+			v_lit.w *= in_col.w;
+		}
+		vsfog( wvn, 1.0);
+	}
+}
+
+fs mainpass
+{
+	void main(){
+		//	pix color
+		lowp vec4 pix = vec4( 1, 1, 1, v_lit.w);
+		$(COLORTEX1) pix *= texture2D( coltex1 , TEXUV1( v_uv));
+		$(ALPHATEST) if( pix.w*alpharef < bayer4( gl_FragCoord.xy)) discard;
+		$(COLORTEX2){
+			lowp vec4 pix2 = texture2D( coltex2 , TEXUV2( v_uv));
+			pix = MIXCOLOR( pix, pix2, texw.y);
+		}
+		$(COLOR1) pix = MIXCOLOR( v_col, pix, 1.0);
+		// $(COLORMAT) pix = colormat * pix;
+		//	normal map
+		lowp vec3 n = v_n;
+		$(UV5) {
+			lowp vec3 texn = (texture2D( coltex3 , TEXUV3( v_uv)).xyz*2)-1;
+			mediump vec3 nv = (v_tan.xyz*texn.x - cross( n, v_tan.xyz)*v_tan.w*texn.y) * texw.z;
+			n = (n*(1.0/(1.0+length( nv)))) + nv;
+		}
+		//	lighting
+		lowp vec3 diff = v_lit.xyz, spec = vec3( 0.0);
+		n = normalize( n);
+		fslight( mate, towvn( v_wvp), n, diff, spec);
+		//	glos map
+		$(COLORTEX2) spec *= pix2.w;
+		//	shadow
+		lowp float shadow = fsshadown( v_wvp, n, shadowblack); diff *= shadow; spec *= shadow;
+		//	vertex color
+		// $(COLOR1) {
+		// 	diff *= v_col; spec *= v_col;
+		// }
+		//	composite light, fog
+		pix.xyz = Ke + pix.xyz*(clamp( diff, 0.0, 1.0)) + spec;
+		fsfog( pix);
+		fragcolor = pix;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	error pass
+
+vs err
+{
+	void main(){
+		highp mat4 transmat = getTransformedVectors();
+		gl_Position = pmat * transmat[0];
+	}
+}
+
+fs err
+{
+	#define XC( i) vec3( float(i>>16), float((i>>8)&255), float(i&255)) * (1.0/255.0)
+
+	void main(){
+		const vec3 R = XC( 0xff0000), B = XC( 0x0000ff);
+		mediump vec4 pix = mix( vec4( R, 1.0), vec4( B, 1.0), bayer4( gl_FragCoord.xy/4));
+		FRAGOUT
+	}
+}
+
+param err_pbrforward
+{
+	fragout mediump vec4 fragcolor;
+}
+
+define err_pbrforward
+{
+	#define FRAGOUT fragcolor = pix;
+}
+
+param err_pbrdeferred
+{
+	fragout lowp vec4 frag0;
+	fragout lowp vec4 frag1;
+	fragout lowp vec4 frag2;
+}
+
+define err_pbrdeferred
+{
+	#define FRAGOUT frag0 = pix; frag1 = vec4( 0.0, 0.0, 1.0, 1.0/16.0); frag2 = vec4( 0.0);
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	basic shader
+
+technique basic
+{
+	tag = "3d shading particle";
+	
+	pass {
+		using transform, material, fog, shadow, bayer, texuvutil;
+		using customlighting, lighting;
+		using mixcolor, mixcolor_mult;
+
+		passfilter = 255;
+
+		param = mainpass;
+		vs = mainpass;
+		fs = mainpass;
+	}
+
+	pass {
+		using transform, bayer;
+		using err_pbrforward;
+
+		passfilter = 768;
+
+		param = err_pbrforward;
+		vs = err;
+		fs = err;
+	}
+
+	pass {
+		using transform, bayer;
+		using err_pbrdeferred;
+
+		passfilter = 1024;
+
+		param = err_pbrdeferred;
+		vs = err;
+		fs = err;
+	}
+}
+
+technique overlay
+{
+	tag = "3d shading particle";
+	
+	pass {
+		using transform, material, fog, shadow, bayer, texuvutil;
+		using customlighting, lighting;
+		using mixcolor, mixcolor_overlay;
+
+		passfilter = 255;
+
+		param = mainpass;
+		vs = mainpass;
+		fs = mainpass;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	skin shader + toon + rim?
+
+define skin
+{
+	#define CUSTOMSHADE mediump vec3 rdp = Kd.xyz * (Kd.w * 5.0); diff += atten * ( max( vec3(dif), -rdp) + rdp) / (rdp*1.0+1.0) * LITDIFF( i); spec += atten * smoothstep( -0.1, 0.0, dif) * pow( clamp( dot( reflect( wvn.xyz, pn), lvec), 0.0, 1.0), spow) * LITSPEC( i) * m[1].xyz;
+	#define NO_DIFFALPHA
+}
+
+vsfs skin
+{
+	lowp vec3 boh( in lowp vec3 pix){
+		lowp vec3 ov = clamp( (pix-1.0)*vec3(0.299,0.587,0.114), 0.0, 1.0);
+		pix.yz += ov.x;
+		pix.xz += ov.y;
+		pix.xy += ov.z;
+		return pix;
+	}
+}
+
+technique skin
+{
+	tag = "3d shading particle";
+
+	pass {
+		using transform, material, fog, shadow, bayer, texuvutil;
+		using customlighting, skin, lighting;
+		using mixcolor, mixcolor_mult;
+		
+		passfilter = 255;
+
+		param = mainpass;
+		vs = mainpass;
+		fs = mainpass;
+	}
+}
+
+technique skin_overlay
+{
+	tag = "3d shading particle";
+
+	pass {
+		using transform, material, fog, shadow, bayer, texuvutil;
+		using customlighting, skin, lighting;
+		using mixcolor, mixcolor_overlay;
+		
+		passfilter = 255;
+
+		param = mainpass;
+		vs = mainpass;
+		fs = mainpass;
+	}
+}
+
+
+
+/////// softptc shader
+
+param sofptc_param
+{
+	uniform highp sampler2D wtex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+}
+
+fs softptc
+{
+	void main(){
+		//	pix color
+		lowp vec4 pix = vec4( 1, 1, 1, v_lit.w);
+		$(COLORTEX1) pix *= texture2D( coltex1 , TEXUV1( v_uv));
+		$(ALPHATEST) if( pix.w*alpharef < bayer4( gl_FragCoord.xy)) discard;
+		$(COLORTEX2){
+			lowp vec4 pix2 = texture2D( coltex2 , TEXUV2( v_uv));
+			pix = MIXCOLOR( pix, pix2, texw.y);
+		}
+		$(COLOR1) pix = MIXCOLOR( v_col, pix, 1.0);
+		//	normal map
+		lowp vec3 n = v_n;
+		$(UV5) {
+			lowp vec3 texn = (texture2D( coltex3 , TEXUV3( v_uv)).xyz*2)-1;
+			mediump vec3 nv = (v_tan.xyz*texn.x - cross( n, v_tan.xyz)*v_tan.w*texn.y) * texw.z;
+			n = (n*(1.0/(1.0+length( nv)))) + nv;
+		}
+		//	lighting
+		lowp vec3 diff = v_lit.xyz, spec = vec3( 0.0);
+		n = normalize( n);
+		fslight( mate, towvn( v_wvp), n, diff, spec);
+		//	glos map
+		$(COLORTEX2) spec *= pix2.w;
+		//	shadow
+		lowp float shadow = fsshadown( v_wvp, n, shadowblack); diff *= shadow; spec *= shadow;
+		pix.xyz = Ke + pix.xyz*(clamp( diff, 0.0, 1.0)) + spec;
+		fsfog( pix);
+		//	
+		highp vec4 uv = pmat * vec4( v_wvp, 1.0); uv.xy = (uv.xy/uv.w)*0.5+0.5;
+		highp float dz = texture2D( wtex, uv.xy).x;
+		if( dz >= 0.0) dz = -1000.0;	// no texture...
+		dz -= v_wvp.z;
+		pix.w *= clamp( -dz*2.0, 0.0, 1.0);
+		fragcolor = pix;
+	}
+}
+
+technique softptc
+{
+	tag = "3d shading particle";
+	
+	pass {
+		using sofptc_param;
+		using transform, material, fog, shadow, bayer, texuvutil;
+		using customlighting, lighting;
+		using mixcolor, mixcolor_mult;
+		
+		passfilter = 255;
+
+		param = mainpass;
+		vs = mainpass;
+		fs = softptc;
+	}
+}

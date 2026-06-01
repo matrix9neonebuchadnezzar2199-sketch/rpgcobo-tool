@@ -1,0 +1,241 @@
+
+class TexPackContent
+{
+	x = 0;
+	y = 0;
+	w = 0;
+	h = 0;
+	name = null;
+	ref = null;
+	
+	constructor( _w=16, _h=16, n=null, r=null){
+		w=_w;
+		h=_h;
+		name = n;
+		ref = r;
+	}
+	
+	function intersects( c, mgn){
+		if( x >= c.x+c.w+mgn) return false;
+		if( y >= c.y+c.h+mgn) return false;
+		if( c.x >= x+w+mgn) return false;
+		if( c.y >= y+h+mgn) return false;
+		return true;
+	}
+}
+
+local sortfunc = function( a, b){
+	local xa = ( a[0]*a[0] + a[1]*a[1] );
+	local xb = ( b[0]*b[0] + b[1]*b[1] );
+	return xa==xb?0:xa<xb?-1:1;
+}
+
+class TexPackCanvas
+{
+	dosort = false;
+	toplefts = null;
+	contents = null;
+	ref = null;
+	
+	w = 0;
+	h = 0;
+	mgn = 2;
+	
+	constructor( _w, _h, _mgn=2){
+		w = _w;
+		h = _h;
+		mgn = _mgn;
+		toplefts = [ #[0,0] ];
+		contents = [];
+	}
+	
+	function place( c){
+		sort();
+		foreach( i, v in toplefts){
+			c.x = v[0];
+			c.y = v[1];
+			if( fits( c)){
+				use( c);
+				delete toplefts[i];
+				return true;
+			}
+		}
+		return false;
+	}
+	
+	function fits( c){
+		if( c.x + c.w > w || c.y + c.h > h) return false;
+		foreach( v in contents){
+			if( v.intersects( c, mgn)) return false;
+		}
+		return true;
+	}
+	
+	function use( c){
+		toplefts    .. [c.x+c.w+mgn, c.y];
+		toplefts    .. [c.x, c.y+c.h+mgn];
+		contents    .. c;
+		dosort = true;
+	}
+	
+	function sort(){
+		if( !dosort) return;
+		dosort = false;
+		toplefts.sort( sortfunc);
+	}
+}
+
+local casortfunc = function( a, b){
+	return ( a.w*a.w + a.h*a.h ) >= ( b.w*b.w + b.h*b.h )?-1:1;
+}
+
+local namecmpfunc = @( v) v.clipid;
+
+class SpriteSheetGeneratorData
+{
+	imagedir = null;			//	path
+	maxwidth = 1024;
+	maxheight = 1024;
+	margin = 2;
+	pma = 0;					//	premult alpha
+	cliplist = null;			//	[ImageClip]
+	filetype = 0;				//	
+	resorate = 100;				//	resolution rate
+	
+	//	generated data
+	img = null;					//	RGBAImage
+	
+	function getImageDir( basedir){
+		return FileRef( basedir, imagedir);
+	}
+	
+	function scan( basedir=null){
+		local dir = FileRef( basedir, imagedir);
+		local ca = [];	//	TexPackContent
+		foreach( i, f in dir.getList()){
+			if( !f.name.toLowerCase().endsWith( ".png")) continue;
+			local img = skLoadImage( f.load());
+			local c = TexPackContent( img.width, img.height, f.name, img);
+			ca .. c;
+		}
+		ca.sort( casortfunc);
+//		foreach( ic in ca){
+//			printf("??? %d %d\n",ic.w,ic.h);
+//		}
+		//	256単位
+		local tc = null;
+		for( local w = 64; w <= maxwidth; w *= 2){
+			for( local h = 64; h <= maxheight; h *= 2){
+				printf("try generate %d x %d\n", w, h);
+				tc = TexPackCanvas( w, h, margin);
+				foreach( i,c in ca){
+					if( !tc.place( c)){
+						printf("error. %S(%d x %d) %d / %d\n",c.name,c.w,c.h,i,length(ca));
+						goto FAILURE;
+					}
+				}
+				goto SUCCESS;
+			FAILURE:
+				;
+			}
+		}
+		//	all failuere
+		throw Exception( "Sprites does not fit.....");
+		
+		//	success!!!!
+	SUCCESS:
+		printf("OK!!!\n");
+		//	img作成
+		img = RGBAImage( tc.w, tc.h);
+		img.clear( 0);
+		foreach( c in ca){
+			img.draw( c.ref, 0, 0, c.w, c.h, c.x, c.y);
+		}
+		//	cliplist生成
+		local t = {};
+		foreach( ic in cliplist){ t[ic.clipid] <- ic; }
+		cliplist = [];
+		local defblend = pma?SK_PMAMIX:SK_MIX;
+		foreach( c in ca){
+			local ic;
+			if( t[c.name]){
+				ic = t[c.name];
+				ic.subbnd = [c.x,c.y,c.w,c.h,ic.subbnd[4]?1:0];
+			}else{
+				ic = ImageClip();
+				ic.clipid = c.name;
+				ic.blend = defblend;
+				ic.subbnd = [c.x,c.y,c.w,c.h,0];
+			}
+			ic.resorate = resorate;
+			cliplist .. ic;
+		}
+		cliplist.sort( namecmpfunc);
+	}
+	
+	function getmetadata(){
+		local t = {};
+		local ica = [];
+		foreach( ic in cliplist){
+			ica .. ic.writeJSON();
+		}
+		t.cliplist <- ica;
+		t.pma <- pma;
+		t.filetype <- filetype;
+		local metabb = encodeJSON( t, 0, ByteBuffer());
+		metabb.pos = 0;
+		return metabb;
+	}
+	
+	//	あらかじめscanをしとかないとダメ
+	function generateSpriteSheetPNG(){
+		img.metadata = getmetadata();
+		local bb = img.encodePNG();
+		bb.pos = 0;
+		return bb;
+	}
+	
+	function generateSpriteSheetWebp( q){
+		img.metadata = getmetadata();
+		local bb = img.encodeWebp( q);
+		bb.pos = 0;
+		return bb;
+	}
+	
+	
+	/////////////////////////////////////////////////////////////////
+	//	JSON I/O
+	
+	function writeJSON(){
+		local t = {};
+		t.imagedir <- imagedir;
+		t.maxwidth <- maxwidth;
+		t.maxheight <- maxheight;
+		t.margin <- margin;
+		t.pma <- pma;
+		t.filetype <- filetype;
+		t.resorate <- resorate;
+		local ca = [];
+		t.cliplist <- ca;
+		foreach( ic in cliplist){
+			ca .. ic.writeJSON();
+		}
+		return t;
+	}
+	
+	function readJSON( t){
+		imagedir = t.imagedir;
+		maxwidth = t.maxwidth;
+		maxheight = t.maxheight;
+		margin = t.margin;
+		pma = t["pma"] || SK_MIX;
+		filetype = t["filetype"] || 0;
+		resorate = t["resorate"] || 100;
+		cliplist = [];
+		foreach( ct in t["cliplist"]){
+			local ic = ImageClip();
+			ic.readJSON( ct);
+			cliplist .. ic;
+		}
+	}
+}

@@ -1,0 +1,438 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+//	ui editorから入れられる値
+//	minmax : ivec2
+//	digit : int
+//	range : free, min-max, 0-max, 1-max
+class NumInputBase
+{
+	view = null;
+	tf = null;			//	GPUITextEdit
+	changed = null;		//	SKView | null
+
+	val = 0;
+
+	fix = 1;
+	qua = 10;			//	int 
+	minval = 0;			//	int 
+	maxval = 100;		//	int 
+	format = "%d"		//	"%d", "%f", "%.1f", "%.2f" ...
+	inc = 1;			//	上下キーで加減算される値量
+	
+	mousein = false;
+
+	constructor( v){
+		view = v;
+		tf = v.findChild( "numedit");
+		tf.textfilter = numfilter;
+		tf.addEventListener( FOCUS_EVENT, focusevent);
+		tf.addEventListener( ACTION_EVENT, textevent);
+		tf.addEventListener( TEXT_EVENT, textevent);
+		v.addEventListener( MOUSE_EVENT, mouseevent);
+		changed = v.findChild( "changed");
+	}
+
+	static function numfilter( c){
+		return "0123456789.-".contains( c) ? c : false;
+	}
+	
+	function setRange( mi, ma, q){
+		minval = mi;
+		maxval = ma;
+		qua = q|0;
+		updateRange();
+	}
+
+	function updateRange(){
+		format = qua<=1 ? "%d" : sprintf( "%%.%df", Math.ceil( Math.logn( qua, 10)));
+		//	incはrangeに対して1/100の解像度で変わるように。	※10000だと100単位だが9999だと10単位。
+		local pw = Math.logn( maxval-minval, 10)|0;
+		inc = qua<=1 ? 1 : 1.0/qua;
+	}
+
+	function setRevertText( b){
+		tf.setParam( SKViewPropertyID.TEXTEDIT_REVERTTEXT, b);
+	}
+
+	function btnvisible( b){
+	}
+	
+	function requestFocus(){
+		tf.startTextEdit();
+	}
+
+	function clearValue(){
+		tf.setText( 0);
+		val = 0;
+		changed?.setVisible( false);
+	}
+
+	function setValue( f){
+		if( qua <= 1){
+			f = typeof( f)==SS_INTEGER ? f : Math.round( f)|0;
+		}else{
+			f = (Math.round( f*qua)|0) / float( qua);
+		}
+		if( fix) f = Math.clamp( f, minval, maxval);
+		val = f;
+		tf.setText( sprintf( format, f));
+		changed?.setVisible( false);
+		return val;
+	}
+
+	function getValue(){
+		return val;
+	}
+
+	function mouseevent( e){
+		switch( e.id){
+			case MOUSE_ENTERED:
+			if( view.contains( e.src)){ btnvisible( true); mousein = true; }
+			e.consume();
+			break;
+		case MOUSE_EXITED:
+			if( !view.contains( e.dst)){ btnvisible( false); mousein = false; }
+			e.consume();
+			break;
+		}
+	}
+
+	function focusevent( e){
+		switch( e.id){
+		case FOCUS_GAINED:
+			// if( e.actioncmd == "rotateFocus"){
+				tf.textedit?.selectAll();
+			// }
+			btnvisible( false);
+			break;
+		case FOCUS_LOST:
+			if( val != setValue( float( tf.getText()))){
+				postValueEvent( e.modifiers);
+				postActionEvent( e.modifiers);
+				// oldtext = tf.getText();
+			}
+			if( mousein) btnvisible( true);
+			break;
+		}
+		e.consume();
+	}
+	
+	function textevent( e){
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( val != setValue( float( tf.getText()))){
+				postValueEvent( e.modifiers);
+				postActionEvent( e.modifiers);
+			}
+			break;
+		case TEXT_CHANGED:
+			changed?.setVisible( true);
+			break;
+		}
+	}
+
+	function incval( c){
+		return setValue( val+inc*c);
+	}
+	
+	function postValueEvent( mod){
+		local e = Event();
+		e.id = VALUE_CHANGED;
+		e.src = view;
+		e.actioncmd = val;
+		e.modifiers = mod;
+		::rootview.postEvent(e);
+	}
+
+	function postActionEvent( mod){
+		local e = Event();
+		e.id = ACTION_PERFORMED;
+		e.src = view;
+		e.actioncmd = val;
+		e.modifiers = mod;
+		::rootview.postEvent(e);
+	}
+}
+
+function createNumInputBehavior( v){
+	if( v.findChild( "incbtn")) return NumInputBehavior( v);
+	if( v.findChild( "vbtn")) return NumInputBehaviorV( v);
+	if( v.findChild( "bar")) return NumInputBehaviorH( v);
+	throw Exception( "no matching input type");
+}
+
+class NumInputBehavior extends NumInputBase
+{
+	incbtn = null;
+	decbtn = null;
+
+	constructor( v){
+		super( v);
+		incbtn = v.findChild( "incbtn");
+		decbtn = v.findChild( "decbtn");
+		incbtn.addEventListener( ACTION_EVENT, btnevent);
+		decbtn.addEventListener( ACTION_EVENT, btnevent);
+		incbtn.addEventListener( MOUSE_EVENT, btnmouseevent);
+		decbtn.addEventListener( MOUSE_EVENT, btnmouseevent);
+		btnvisible( false);
+	}
+
+	function btnvisible( b){
+		incbtn.setVisible( b); decbtn.setVisible( b);
+	}
+
+	function btnevent( e){
+		e.consume();
+		local c = 1;
+		switch( e.src["name"]){
+		case "decbtn": c *= -1;
+		case "incbtn":
+			if( val != incval( c)){
+				postValueEvent( e.modifiers);
+			}
+			break;
+		}
+	}
+
+	function btnmouseevent( e){
+		if( e.id == MOUSE_RELEASED){
+			postActionEvent( e.modifiers);
+		}
+	}
+}
+
+class NumInputBehaviorV extends NumInputBase
+{
+	VRANGEUIPATH = "/skstudio/ui/parts/vrangebar.ui";
+	tf = null;			//	GPUITextEdit
+	btn = null;			//	
+
+	constructor( v){
+		super( v);
+		btn = v.findChild( "vbtn");
+		btn.addEventListener( ACTION_EVENT, vbtnevent);
+		btnvisible( false);
+	}
+	
+	function btnvisible( b){
+		btn.setVisible( b);
+	}
+
+	function setEditable( b){
+		tf.enabled = b;
+		btn.setVisible( v);
+	}
+
+	function vbtnevent( e){
+		startVRangeBar( e);
+	}
+	
+	function startVRangeBar( e){
+		local pp = VRangeBarPopup( ::loadSKView( VRANGEUIPATH));
+		pp.ninput = this;
+		pp.val = val;
+		local y = pp.vtoy( val);
+		pp.movecurs( y);
+		pp.show( null, btn);
+	}
+}
+
+class NumInputBehaviorV.VRangeBarPopup extends Popup
+{
+	ninput = null;
+	knob = null;
+	val = 0.0;
+	vchanged = false;
+
+	function init( v){
+		super.init( v);
+		knob = view.findChild( "knob");
+	}
+
+	function adjustBounds( view, posview, root){
+		view.pos.y -= knob.pos.y;
+		local mset = false;
+		if( view.pos.y < 0){
+			view.pos.y = 0;
+			mset = true;
+		}else
+		if( view.pos.y+view.bnd.h >= root.bnd.h){
+			view.pos.y = root.bnd.h-view.bnd.h;
+			mset = true;
+		}
+		if( mset){
+			view.updateMatrix();
+			local my = Vector3D( 0.0, vtoy( val), 0.0).transform( view.mat).y;
+			local mp = skGetMousePos( [0,0]);
+			skSetMousePos( mp[0], my);
+		}
+	}
+	
+	function modalevent( e){
+		e.consume();
+		switch( e.id){
+		case MOUSE_ENTERED:
+			if( e.isMouseDown()) view.requestDrag( e);
+			break;
+		case MOUSE_PRESSED:
+		case MOUSE_DRAGGED:
+			vchanged = true;
+			e.computeLocal( view.getInvMatrix());
+			val = ytov( e.ly);
+			movecurs( e.ly);
+			if( ninput.val != ninput.setValue( val)){
+				ninput.postValueEvent( e.modifiers);
+			}
+			break;
+		case MOUSE_RELEASED:
+			if( vchanged){
+				ninput.setValue( val);
+				ninput.postActionEvent( e.modifiers);
+			}
+		case MODAL_MOUSE_PRESSED:
+		case MOUSE_CANCELLED:
+			close();
+			break;
+		}
+	}
+
+	function vtoy( v){
+		local w = Math.saturate( (v-ninput.minval) * 1.0 / (ninput.maxval-ninput.minval));
+		return (1.0-w)*(view.bnd.h-6) + 3;
+	}
+
+	function ytov( y){
+		local w = 1.0-Math.saturate( (y-3)/(view.bnd.h-6));
+		return w * (ninput.maxval-ninput.minval) + ninput.minval;
+	}
+
+	function movecurs( y){
+		knob.pos.y = Math.clamp( y, 0, view.bnd.h);
+		knob.matdirty = true;
+	}
+}
+
+class NumInputBehaviorH extends NumInputBase
+{
+	bar = null;
+	mgn = 6.0;
+	
+	val0 = -1;
+
+	barrange = null;
+
+	constructor( v){
+		super( v);
+		bar = v.findChild( "bar");
+		bar.addEventListener( MOUSE_EVENT, mouseevent);
+	}
+	
+	function setBarRange( mi, ma, r=1.0){
+		barrange = {mi=mi, ma=ma, r=r, w=ma-mi};
+	}
+
+	function setValue( v){
+		local ret = super.setValue( v);
+		local a = barrange? Math.saturate((val-barrange.mi)*1.0/barrange.w) : (val-minval)*1.0/(maxval-minval);
+		bar.anime( a*10.0);
+		return ret;
+	}
+
+	function clearValue(){
+		super.clearValue();
+		local v = barrange? Math.saturate((val-barrange.mi)*1.0/barrange.w) : (val-minval)*1.0/(maxval-minval);
+		bar.anime( v*10.0);
+	}
+
+	function mouseevent( e){
+		if( e.src != bar) return;
+		e.computeLocal( bar.getInvMatrix());
+		local w = bar.bnd.w, h = bar.bnd.h;
+		switch( e.id){
+		case MOUSE_PRESSED:
+			val0 = val;
+		case MOUSE_DRAGGED:
+			if( e.lx >= -mgn && e.lx < w+mgn*2.0 && e.ly >= -mgn && e.ly < h+mgn*2.0){
+				local t = Math.saturate( e.lx / w);	//	0-1
+				local v = t * (maxval-minval) + minval;
+				if( barrange){
+					v = Math.round( (t*(barrange.w) + minval) / barrange.r) * barrange.r;
+				}
+				if( val != setValue( v)) postValueEvent( e.modifiers);
+			}
+			e.consume();
+			break;
+		case MOUSE_RELEASED:
+			if( val0 != val) postActionEvent( e.modifiers);
+			e.consume();
+			break;
+		}
+	}
+}
+
+
+
+class SliderBehavior
+{
+	view = null;
+	mgn = 2;
+	minval = 0.0;
+	maxval = 1.0;
+	val = 0.0;
+	val0 = 0.0;
+
+	constructor( v){
+		view = v;
+		v.addEventListener( MOUSE_EVENT, mouseevent);
+	}
+
+	function setValue( v){
+		val = Math.clamp( v, minval, maxval);
+		view.anime( (val-minval)/(maxval-minval)*10.0);
+		return val;
+	}
+
+	function getValue(){
+		return val;
+	}
+
+	function mouseevent( e){
+		if( e.src != view) return;
+		e.computeLocal( view.getInvMatrix());
+		local w = view.bnd.w, h = view.bnd.h;
+		switch( e.id){
+		case MOUSE_PRESSED:
+			val0 = val;
+		case MOUSE_DRAGGED:
+			// if( e.lx >= 0 && e.lx < w && e.ly >= 0 && e.ly < h){
+				local t = Math.saturate( (e.lx-mgn) / (w-mgn*2.0));	//	0-1
+				local v = t * (maxval-minval) + minval;
+				if( val != setValue( v)) postValueEvent( e.modifiers);
+			// }
+			break;
+		case MOUSE_RELEASED:
+			if( val0 != val) postActionEvent( e.modifiers);
+			break;
+		}
+	}
+
+	function postValueEvent( mod){
+		local e = Event();
+		e.id = VALUE_CHANGED;
+		e.src = view;
+		e.actioncmd = val;
+		e.modifiers = mod;
+		::rootview.postEvent(e);
+	}
+
+	function postActionEvent( mod){
+		local e = Event();
+		e.id = ACTION_PERFORMED;
+		e.src = view;
+		e.actioncmd = val;
+		e.modifiers = mod;
+		::rootview.postEvent(e);
+	}
+}
+

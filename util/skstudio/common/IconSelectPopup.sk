@@ -1,0 +1,167 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+/////////////////////////////////////////////////////////////////////////////////
+//	
+//	IconSelectPopup : アイコン選択ポップアップ
+//	
+//	
+//	
+//	
+
+class IconSelectPopup extends Popup
+{
+	static POPUPUIPATH = "/skstudio/ui/dialog/iconpopup.ui";
+	static GROUPUIPATH = "/skstudio/ui/dialog/icongroup.ui";
+
+	static icongrouplist = [ 
+		{ lbl="$T.icon_general", range=(0xf240,0xf260),  },
+		{ lbl="$T.icon_tribe", range=(0xf260,0xf280),  },
+		{ lbl="$T.icon_elem", range=(0xf280,0xf2a0),  },
+		{ lbl="$T.icon_cond", range=(0xf2a0,0xf2d0),  },
+		{ lbl="$T.icon_equip", range=(0xf2d0,0xf300),  },
+		
+		{ lbl="$T.icon_job", range=(0xf300,0xf320),  },
+		{ lbl="$T.icon_skill", range=(0xf320,0xf3a0),  },
+		{ lbl="$T.icon_item", range=(0xf3a0,0xf4a0),  },
+		{ lbl="$T.icon_weapon", range=(0xf4a0,0xf580),  },
+		{ lbl="$T.icon_armor", range=(0xf580,0xf6a0),  },
+
+		// { lbl="$T.icon_map", range=(0xf2e0,0xf300),  },
+		{ lbl="$T.icon_deco", range=(0xf7c0,0xf800),  },
+		{ lbl="$T.icon_etc", range=(0xf800,0xf840),  },
+	];
+
+	static buttongrouplist = [
+		{ lbl="キーボード", range=(0xec00,0xecff), },
+		{ lbl="キーボード ダーク", range=(0xed00,0xedff),  },
+		{ lbl="Xbox", range=(0xee00,0xee2f),  },
+		{ lbl="Xbox ダーク", range=(0xee30,0xee5f),  },
+		{ lbl="PS4", range=(0xee60,0xee8f),  },
+		{ lbl="PS4 ダーク", range=(0xee90,0xeebf),  },
+		{ lbl="Switch", range=(0xeec0,0xeeef),  },
+		{ lbl="Switch ダーク", range=(0xeef0,0xef1f),  },
+	];
+
+	listview = null;			//	GPUIListView
+	g0 = null;
+	g1 = null;
+	g2 = null;
+
+	//	指定したプロパティ設定でデータ選択ポップアップを開始する。
+	//	
+	static function run( e, initype){
+		skCollectGarbage();
+		local p = IconSelectPopup( ::loadSKView( POPUPUIPATH), initype);
+		p.show( null, e.src);
+		return p.ret;
+	}
+
+	constructor( v, initype){
+		super( v);
+		g0 = v.findChild( "g0");
+		g1 = v.findChild( "g1");
+		g2 = v.findChild( "g2");
+		listview = v.findChild( "iconlist");
+		if( length( icongrouplist)){
+			g0.setSelected( true);
+			setupCustomIconList( icongrouplist);
+		}else{
+			g0.setVisible( false);
+			g1.setSelected( true);
+			setupEmojiIconList();
+		}
+	}
+
+	function setupCustomIconList( list){
+		listview.clearRows();
+		foreach( gv in list){
+			local icong = ::loadSKView( GROUPUIPATH);
+			icong.setValue( "gname", gv.lbl);
+			local ca = getIcons( gv.range[0], gv.range[1]);
+			local num = (length( ca)+15)/16*16;
+			local glist = icong.findChild( "LIST");
+			glist.setRowCount( num/16);
+			for( local j = 0; j < num; j ++){
+				local v = glist.rows[j>>4].findChild( "c"..(j&15));
+				if( !ca[j]){
+					v.setVisible( false);
+				}else{
+					v.setValue( "icon", ca[j]);
+					v.ref = ca[j];
+				}
+			}
+			if( num){
+				local d = icong.computeSizeDelta();
+				if( d.x != 0.0 || d.y != 0.0){
+					icong.stretchSize( icong.bnd.w+d.x, icong.bnd.h+d.y);
+				}
+			}
+			listview.addRow( icong);
+		}
+		listview.updateLayout();
+	}
+
+	function setupEmojiIconList(){
+		listview.clearRows();
+		{
+			local estrlist = Emoji.getLayerEmojiList( 0);
+			local icong = ::loadSKView( GROUPUIPATH);
+			icong.setValue( "gname", "emoji");
+			local num = (length( estrlist)+15)/16*16;
+			local glist = icong.findChild( "LIST");
+			glist.setRowCount( num/16);
+			for( local j = 0; j < num; j ++){
+				local v = glist.rows[j>>4].findChild( "c"..(j&15));
+				v.setValue( "icon", estrlist[j]);
+				v.ref = estrlist[j];
+			}
+			if( num){
+				local d = icong.computeSizeDelta();
+				if( d.x != 0.0 || d.y != 0.0){
+					icong.stretchSize( icong.bnd.w+d.x, icong.bnd.h+d.y);
+				}
+			}
+			listview.addRow( icong);
+		}
+		listview.updateLayout();
+	}
+
+	//	指定したコードポイント範囲で
+	static function getIcons( st, en){
+		local a = [];
+		for( local c = st; c < en; c ++){
+			local ec = Emoji.getEmojiCode( c);
+			// if( ec) a .. "\\u%04x" % c;	//	追加するのは変換元のコードポイント
+			if( ec) a .. char( c);	//	追加するのは変換元のコードポイント
+		}
+		return a;
+	}
+
+	function actionevent( e){
+		if( e.src["ref"]){
+			ret = e.src.ref;
+			return close();
+		}
+		switch( e.src["name"]){
+		case "g0":
+		case "g1":
+		case "g2":
+			g0.setSelected( e.src==g0);
+			g1.setSelected( e.src==g1);
+			g2.setSelected( e.src==g2);
+			e.consume();
+			if( e.src==g0){
+				setupCustomIconList( icongrouplist);
+			}else
+			if( e.src==g1){
+				setupEmojiIconList();
+			}else{
+				setupCustomIconList( buttongrouplist);
+			}
+			break;
+		default:
+			return super.actionevent( e);
+		}
+	}
+}

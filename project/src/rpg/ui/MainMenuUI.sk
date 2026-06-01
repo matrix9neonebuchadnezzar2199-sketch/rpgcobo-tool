@@ -1,0 +1,851 @@
+import VirtualKeyCode;
+import GamepadButtonCode;
+import CommandTargetType;
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////////
+//	MainMenu.sk メインメニュー。
+//	また、メインメニューから遷移する基本的なサブメニューもここで定義する。
+//	装備、アイテム、スキル、ステータス、クエストはここで定義。
+//	ロード、セーブ、コンフィグはTitleMenu.sk
+//	また、ここで定義するキャラ選択UIは、～～～～～～
+
+
+//	メンバーリストに表示させるバインド情報を構築。メインメニュー、キャラ選択などに使う
+function bindMemberList( v){
+	if( typeof( v) == SS_STRING) v = ::rpgstat.playermap[v];
+	return !v ? {
+		grayout = ptr( {hide=true}),
+	} : {
+		_name = v.dataid,			//	_nameはSKView.nameに設定される
+		player = v,
+		mdl = v,					//	RPGPlayerを直接渡せる
+		name = v.name,
+		job = @() (v.jobs[0]?.iconname()) || "",
+		lv = @() v.LV,
+		hp = @() v.HP,
+		maxhp = @() v.MAXHP,
+		mp = @() v.MP,
+		maxmp = @() v.MAXMP,
+		conds = @() ::RPGSystem.getConditionString( v.conds),
+		sel = @() v.selected ? "on" : "off",
+		formation = @() v["formation"] ? "back" : "front",
+	}
+}
+
+function bindMainMenuInfo(){
+	local sec = (::rpgvar.PTIME / 1000);
+	local mstr = commanum( rpgstat.money);
+	local tstr = sprintf( "%02d:%02d:%02d", sec/3600, (sec/60)%60, sec%60);
+	local sstr = commanum( rpgvar.STEPS);
+	return sprintf( "\uf25f %11s\n\uf25e %11s\n\uf25d %11s", mstr, tstr, sstr);
+}
+
+local oplist = [
+	{ lbl="$T.uiop_show", val=null }	//	showの場合はop=nullが入る
+	{ lbl="$T.uiop_hide", val="hide" }	
+	{ lbl="$T.uiop_darken", val="darken" }
+	{ lbl="$T.uiop_lighten", val="lighten" }
+];
+
+local showMainMenuUI( prms){
+	if( prms["op"]){
+		//	サブメニューが表示されているときはサブメニューに対して行う。hideの時は処理を中断する必要あり
+		local view = rootview.findChild( "menu_sub");	//	先にサブメニュー検索
+		if( !view) view = rootview.findChild( "menu_main");
+		if( !view) return null;
+		if( prms["op"] == "hide"){
+			view.actionAndDie( prms["op"])?.waitAction();	//	hideの時は消さないと、、
+			view.postIDEvent( ACTION_CANCELED, null);	//	メニューのキャンセルをイベント通知
+		}else{
+			view.action( prms["op"])?.waitAction();
+		}
+		return null;
+	}
+	::rpgstage.screenfx.screenEffectOn( { sfxid="raster0", pow=6, color=0xaaaaaaff, time=200});
+	local menuptr = ptr( "menu0"), grayptr = ptr();
+	local view = RPGMain.showView({
+		uipath = "menu_main.ui"
+		name = "menu_main"
+		layer = "menu"
+		binds = {
+			//	メニューリスト。システム状態で非表示にしたりグレーアウトしたりも。
+			menulist = RPGSystem.ui._list.filter( @(v) v.type=="submenu").map( @(v, i){	//	"submenu"タイプのUIのみ
+				local stat = ::rpgstat.settingmap[v.key] ?? RPGSystem.settingprops.find( @( p) p.pid==v.key)["defval"];
+				if( !stat) return undefined;
+				//	menu_save時にステージ設定でセーブ不可だったらグレーアウトに。。。
+				local _name="menu"..i;
+				return {
+					_name=_name, lbl=v.lbl, key=v.key, stat=stat, ui=v,
+					grayout=@() (~grayptr && ~menuptr!=_name) ? "on" : "off"
+				}
+			}),
+			//	メンバーリスト。メニュー項目にはまずキャラ選択をするメニューがあり、それの対応で選択可能なリストになる
+			memberlist = ::rpgstat.members.map( ::bindMemberList),
+			//	他の細々した表示物
+			maininfo = ::bindMainMenuInfo
+		},
+		focus = ~menuptr
+		action = "show"
+	});
+	//
+BACK_TO_MENUSEL:
+	grayptr << false;
+	//	メニュー選択
+	local menuitem = RPGMain.uiLoop( {
+		"action" : @( e){
+			::playSound( "SE001");
+			return e.item;
+		}
+		"select" : @( e){ if( e.item["ui"]) menuptr << e.item._name; }
+		"back" : @( e){ ::playSound( "SE004"); return "back"; }
+		"option" : @( e){ ::playSound( "SE004"); return "back"; }
+	});
+	if( menuitem == "back"){
+		view.actionAndDie( "hide");
+		::rpgstage.screenfx.screenEffectOff( { sfxbits=2, time=400});
+		// view.waitAction();
+		return true;
+	}
+	local focuschara = ::rpgstat.members[0].dataid;	//	先頭キャラをとりあえずフォーカス
+
+BACK_TO_CHARASEL:
+	grayptr << true;
+	//	使用者選択（メニューによって）
+	if( menuitem.ui["charasel"]){
+		view.action( "charasel").waitAction();
+		view.focusTo( focuschara);
+		focuschara = RPGMain.uiLoop( {
+			"action" : @( e){
+				if( e.item["_name"]){ ::playSound( "SE001"); return e.item._name; }
+				::playSound( "SE002");
+			}
+			"back" : @( e){
+				::playSound( "SE004");
+				return "back";
+			}
+		});
+		if( focuschara == "back"){
+			view.action( "menusel").waitAction();
+			view.focusTo( ~menuptr);
+			goto BACK_TO_MENUSEL;
+		}
+	}
+	//	各サブメニューに移動。この際メインメニューは一度非表示にする。
+	if( !menuitem["ui"]["nochange_menuui"]){
+		view.action( "hide");	//.waitAction();
+		local ret = RPGMain.showUI({
+			key = menuitem.key,			//	key指定をするとRPGSystem.uiに登録されたUIが表示される
+			playerid = focuschara,		//	
+		});
+		if( !ret){	//	サブメニューのshowUIでfalseが返ったらメインメニューも同時に抜ける
+			view.removeFromParent();
+			::rpgstage.screenfx.screenEffectOff( { sfxbits=2, time=400});
+			return true;
+		}
+		//	サブメニュー終了。再びメインメニューを表示して最後に選択してたメニューをフォーカス。※キャラ選択に行った方がいいかも
+		view.action( "show");
+		view.waitAction();
+		view.focusTo( ~menuptr);
+		goto BACK_TO_MENUSEL;
+	}else{	//	特殊メニュー。隊列のように選択したキャラで直接ダイアログ出したり、それすらしない場合。メインメニューは消えない
+		local ret = RPGMain.showUI({
+			key = menuitem.key,			//	key指定をするとRPGSystem.uiに登録されたUIが表示される
+			playerid = focuschara,		//	
+		});
+		if( !ret){
+			view.actionAndDie( "hide");
+			::rpgstage.screenfx.screenEffectOff( { sfxbits=2, time=400});
+			return true;
+		}
+		goto BACK_TO_CHARASEL;
+	}
+}
+
+RPGSystem.ui ..
+{
+	key = "menu_main"
+	lbl = "$T.mainmenu"
+	type = "mainmenu"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	topinfo = "$T.mainmenu";
+	btnhelp = "menu";
+	icon = "\ueae7"
+	
+	props = [					//	メインメニューにプロパティは無い
+		{ pid="op", lbl="$T.lbl_operation", type=LIST, list=oplist, refresh=true }
+	],
+
+	uifunc = showMainMenuUI,		//	
+};
+
+
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+//	
+//	装備、アイテム、スキル、ステータス、クエスト、セーブ、*ロード、隊列、コンフィグ、タイトルに戻る
+//	ダイアログメニューの場合はメインメニューは消さずにdarkenするのみ。
+//	ロードはシステム設定で非表示になってる。
+//	
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+//	アイテム、スキルの使用画面の共通UI操作
+//	tablist : string[] ... タブのリスト
+//	makelist : function ... タブに対してアイテム一覧を生成する
+//	usetitle : string|function ... 使用時のキャラ選択ダイアログに表示されるタイトルラベル。
+//	src : RPGPlayer ... 使用者。アイテムの場合はnull入る？
+
+local itemuifunc( prms){
+	local tabptr = ptr( 0);		//	アイテム、武器、防具、キーアイテム。
+	//	アイテムリストを作成
+	//	空の場合は空白を3つ。その他は3の倍数に。アイテムリストはnullが入ってる
+	local tablist = prms.tablist, ntab = length( tablist);
+	local makelist = prms.makelist;
+	local usetitle = prms.usetitle;
+	local src = prms["src"];
+	//
+	local view = RPGMain.showView({
+		uipath = "menu_item.ui"
+		name = "menu_sub"
+		layer = "menu"
+		binds = {
+			//	タブ一覧
+			tablist = tablist.map( @( v, i)({
+				_name = "tab"..i,
+				lbl = v,
+				tgl = @() (i==~tabptr)?10:0,
+			})),
+			//	アイテム一覧
+			itemlist = makelist( ~tabptr);
+		},
+		action = "show"
+		focus = "i0"
+	});
+	local remakelist(){
+		view.setValue( "itemlist", makelist( ~tabptr));
+	}
+BACK_TO_ITEMSEL:
+	//	使用可能なアイテムを選択
+	local showdesc( i){
+		view.setValue( "desclbl", i? RPGSystem.getDescription( (i instanceof RPGItem) ? i : i.data) : "");
+	}
+	local inctab( d){
+		::playSound( "SE000");
+		tabptr << ((~tabptr+d+ntab) % ntab); remakelist();
+		view.focusTo( "i0");
+	}
+	
+	local selitem = RPGMain.uiLoop( {
+		"action" : @( e){	//	スロット、最強装備、すべて外すが来る
+			switch( e.name){
+			case "tabinc": inctab( 1); break;
+			case "tabdec": inctab( -1); break;
+			case "tab0": case "tab1": case "tab2": case "tab3": case "tab4":  case "tab5": 
+				tabptr << (e.name[3]-'0');
+				remakelist();
+				break;
+			default:
+				local i = e.item["item"];	//	RPGItem
+				if( i){	//	使用可能かチェック。アイテム、キーアイテムのみ使用可。
+					if( (i.data["occasion"]||0)>=2 && !e.item["disable"]){
+						return e;
+					}else{
+						::playSound( "SE002");
+					}
+				}
+				break;
+			}
+		}
+		"page" : @( e){
+			inctab( e.count);
+		}
+		"select" : @( e){	//	選択時に説明表示
+			if( "item" in e.item){
+				showdesc( e.item.item);
+			}
+		}
+		"back" : @( e){
+			::playSound( "SE004");
+			return "back";
+		}
+		"cancel" : @( e){
+			return "cancel";
+		}
+	});
+	if( selitem == "cancel"){
+		return false;
+	}
+	if( selitem == "back"){
+		view.actionAndDie( "hide");
+		// view.waitAction();
+		return true;
+	}
+	//	stオブジェクトに、menufunc、forecast関数があり
+	local item = selitem.item.item, st = RPGSystem.skilltype[item.data["skilltype"]];
+	//	ターゲットが無い場合はそのまま実行。脱出アイテムなど、マクロ実行をするもののみ。「脱出しますか？」みたいな確認ポップアップを表示。マクロ内でいいか
+	if( !item.data["cmdtgt"]){
+		local used = st.menufunc( item.data, null, null);
+		if( !view.isShown()){	//	メニュー実行時にメニューを閉じてたらそのままメインメニューも閉じる。ワープ魔法、テントなど
+			return false;
+		}
+		goto BACK_TO_ITEMSEL;
+	}
+	::playSound( "SE001");
+	local selall = [TGT_PARTY_COLUMN,TGT_PARTY_ALL,TGT_PARTY_ALL_NOTME,TGT_ANY_ALL].contains( item.data["cmdtgt"]);
+	//	アイテムを使用する対象を選択。※キャラ選択で全選択も出来るように。
+	view.action( "darken");
+	RPGMain.showUI( {
+		key = "dialog_selchara"
+		members = ::rpgstat.members,	//	リスト指定可能
+		titlelbl = @() usetitle( item),
+		selall = selall,
+		//	対象を選択したら呼ばれる関数。ここでtrueを返すと画面は閉じない。falseだと決定して閉じる
+		uioverride = {
+			action = @( e){
+				if( !e.item["player"]){ ::playSound( "SE002"); return; }
+				local used = false;
+				//	効果があるなら、アイテムを使用して、最後に消費
+				local src = src || e.item.player, dsts = selall ? ::rpgstat.members : [e.item.player];	//	個人か全員
+				if( src.canConsumeForSkill( item.data)){
+					used = st.menufunc( item.data, src, dsts);	//	メニュー用の実行。回復系を行って、UIに回復アクションを実行。
+				}
+				if( used){
+					src.consumeForSkill( item.data);
+				}else{ // 使われなかった。
+					::playSound( "SE002");
+				}
+			}
+		}
+	});
+	view.action( "lighten");
+	remakelist();
+	goto BACK_TO_ITEMSEL;
+}
+
+RPGSystem.ui ..
+{
+	key = "menu_item"
+	lbl = "$T.item"
+	type = "submenu"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	topinfo = "$T.item";
+	icon = "\ueae7"
+
+	props = [					//	アイテムメニューにプロパティは無い
+	],
+	
+	//	アイテム画面の実装。画面uiと、一つの関数のみで出来る設計に。
+	//	キャラの選択は不要
+	function uifunc( prms){
+		return itemuifunc( {
+			...prms,
+			//	itemuifuncに渡すパラメータ
+			tablist = ["$T.item","$T.weapon","$T.armor","$T.keyitem"],
+			makelist = @( tab){
+				local tabkey = #["items","weapons","armors","keyitems"];
+				local a = ::rpgstat[tabkey[tab]];
+				return a.map( @( v, i) v ? {
+					lbl=(v.data.icon..v.data.name), _name="i"..i, item=v, rlbl=v.num>1 ? v.num : "",
+				} : { lbl="", _name="i"..i, rlbl="", item=null});
+			},
+			usetitle = @( item) ::rtf( sprintf( "$T.useitem :  %S [M] × %d", item.iconname(), item.num)),
+		});
+	}
+};
+
+RPGSystem.ui ..
+{
+	key = "menu_skill"
+	lbl = "$T.skill"
+	type = "submenu"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	charasel = true					//	キャラ選択が必要
+	topinfo = "$T.skill";
+	icon = "\ueae7"
+
+	props = [					//	アイテムメニューにプロパティは無い
+	],
+	
+	//	アイテム画面の実装。画面uiと、一つの関数のみで出来る設計に。
+	//	キャラの選択は不要
+	function uifunc( prms){
+		local src = ::rpgstat.playermap[prms["playerid"]];	//	使用者
+		local toitem( v, i){
+			local disable = src.isSkillSealed( i);
+			return {
+				lbl=(v.icon..v.name), rlbl=rtf( RPGSystem.getSkillListInfo( src, v)), id=i,
+				item={ icon=v.icon, name=v.name, data=v}, disable=disable, grayout=disable?"on":"off",
+			};
+		}
+		return itemuifunc( {
+			...prms,
+			//	itemuifuncに渡すパラメータ
+			tablist = ["$T.skills_usable","$T.skills_all"],
+			makelist = @( type){
+				local skillitems;
+				if( type==0){	//	メニュー時に使用可能なスキル。バトルコマンドに設定されてるもののみの方が良いかも
+					skillitems = Table.map( ::conf.skill, @( v, i){
+						if( !v["addlist"]) return undefined;
+						if( !(v["occasion"] & 2)) return undefined;
+						if( !src.hasSkill( i)) return undefined;
+						return toitem( v, i);
+					});
+				}else{	//	所持スキル全て。バトルコマンドに設定されていないものも表示する
+					skillitems = Table.map( ::conf.skill, @( v, i){
+						if( !v["addlist"]) return undefined;
+						if( !src.hasSkill( i)) return undefined;
+						return toitem( v, i);
+					});
+				}
+				skillitems.sort( @( v) v.id);
+				//
+				foreach( i,v in skillitems) v._name <- "i"..i;
+				while( !length( skillitems) || (length( skillitems) % 3)) skillitems .. { lbl="", _name="i"..length( skillitems), rlbl="", item=null};	//	
+				return skillitems;
+			},
+			usetitle = @( item) ::rtf( sprintf( "$T.useskill :  %S%S [M]  MP:%S", item.icon, item.name, "10")),
+			src = src,
+		});
+	}
+};
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	装備メニュー
+
+::equipmenu_showpids <- ["PATK","MATK","PDEF","MDEF","AGI"];
+
+//	状態キャッシュ付きでEDR, CDRを表す文字列を返す
+local _edrcdr( edr, cdr){
+	local cmp = #(0,0), cache = #ptr( "");
+	if( cmp[0]<>edr || cmp[1]<>cdr){
+		cmp.set( edr, cdr);
+		cache << RichText( sprintf( "%S\n%S", ::RPGSystem.getElemRateString( edr), ::RPGSystem.getCondRateString( cdr)));
+	}
+	return ~cache;
+}
+
+local scorecmplist( props, p0, p1){
+	return props.map( @( prop, i){
+		if( prop.proptype != "score") return undefined;
+		//	※装備で変化する主なスコアのみ表示する。
+		local pid = prop.pid;
+		return {
+			slotname = prop.lbl,
+			val0 = @() p0[pid],
+			val1 = @() p1[pid],
+			valg = @() (p1[pid]==p0[pid])?"eq":(p1[pid]>p0[pid])?"gt":"lt";	//	上昇時、下降時に色変化
+		}
+	});
+}
+
+local getBestEquip( items){
+	items.sort( @( eq){	//	RPGItem オプション効果とかは加味しない
+		local best=0, sum=0, d = eq.data;
+		foreach( pid in equipmenu_showpids){
+			local v = int( d[pid]);
+			best = Math.max( best, v);
+			sum += v;
+		}
+		return -(best * 100 + sum);
+	});
+	return items[0] || null;
+}
+
+//	システムに登録。
+//
+RPGSystem.ui ..
+{
+	key = "menu_equip"
+	lbl = "$T.equip"
+	type = "submenu"				//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	charasel = true					//	キャラ選択が必要
+	topinfo = "$T.equip";
+	icon = "\ueae7"
+	
+	props = [						//	メインメニューにプロパティは無い
+	],
+	
+	//	装備画面の実装。画面uiと、一つの関数のみで出来る設計に。
+	//	
+	function uifunc( prms){
+		local p1 = ::rpgstat.playermap[prms.playerid], p0 = p1.cloneForCompare();	//	能力プレビュー用
+		//	表示するプロパティ。MAXHP,MAXMPはいらんかも。
+		local scoreprops = ::equipmenu_showpids.map( @( pid) ::RPGSystem.playerprops.find( @( v) v.pid==pid));
+
+		local view = RPGMain.showView({
+			uipath = "menu_equip.ui"
+			name = "menu_sub"
+			layer = "menu"
+			binds = {
+				//	キャラ
+				mdl = p1,		//	装備で見た目変化させるなら変更
+				name = p1.name,
+				lv = p1.LV,
+				//	スコア表示。MAXHP,MAXMPはいらんかも。
+				scorelist = scorecmplist( scoreprops, p0, p1)
+				//	属性、耐性リスト。表示のみ。前後表示は無しでp1のを表示
+				edrcdr = @() _edrcdr( p1.EDR, p1.CDR)
+				//	装備一覧
+				slotlist = ::conf.type.eqslot.map( @( eqslot, i) ({
+					_name = "slot"..i,
+					slotidx = i,
+					slot = eqslot.name,
+					lbl  = @() rtf( sprintf( "%S%S", p0.equips[i]!=p1.equips[i]?"[#fc0]":"", p1.equips[i]?.iconname() || "\uf803$T.none")),
+					rlbl = @() rtf( sprintf( "%S%S", p0.equips[i]!=p1.equips[i]?"[#fc0]":"", p1.equips[i]? p1.equips[i].getPower() : "")),
+					lock = ptr({ hide=true})
+					desc = ""
+				}) ),
+			},
+			action = "show"
+			focus = "slot0"
+		});
+
+		local undress( p){
+			p.equips.fill( null);
+			p.updateOptions();
+			p.updateScoreMap();
+		}
+
+		local besteq( p){
+			local list = [...rpgstat.weapons, ...rpgstat.armors, ...p.equips];
+			foreach( slotidx, _ in p.equips){
+				local a = p.getEquipableItems( slotidx, list);
+				local eq = getBestEquip( a);
+				p.equips[slotidx] = eq;
+				if( eq) list.removeValue( eq);
+			}
+			p.updateOptions();
+			p.updateScoreMap();
+		}
+
+		local reseteq( p, orgeqs){
+			if( p.equips <> orgeqs){
+				p.equips.clear() ... orgeqs;
+				p.updateOptions();
+				p.updateScoreMap();
+			}
+		}
+
+		local swapequip( oldeq, neweq){
+			local list = rpgstat.itemlistOf( oldeq["dataid"]||neweq["dataid"]);
+			if( oldeq != neweq){	//	oldeqはインベントリに、インベントリからneweqは消える。oldeqはインベントリには無い。
+				local i1 = list.indexOf( neweq);	//	i1<0の場合はneweqは装備スロット内から選ばれた
+				if( i1 >= 0) list[i1] = oldeq;
+			}
+		}
+		
+		local swapequips( oldeqs, neweqs){
+			foreach( i, oldeeq in oldeqs) swapequip( oldeeq, neweqs[i]);
+		}
+
+	BACK_TO_SLOTSEL:
+		//	スロット選択
+		local orgeqs = clone p1.equips;
+		local selslot = RPGMain.uiLoop( {
+			"action" : @( e){	//	スロット、最強装備、すべて外すが来る
+				if( e["name"] == "undress"){
+					undress( p0); undress( p1); swapequips( orgeqs, p0.equips); orgeqs.clear()...p0.equips;
+					::playSound( "SE003");
+				}else
+				if( e["name"] == "besteq"){
+					besteq( p0); besteq( p1); swapequips( orgeqs, p0.equips); orgeqs.clear()...p0.equips;
+					::playSound( "SE003");
+				}else{
+					::playSound( "SE001");
+				}
+				return e.item;
+			}
+			"select" : @( e){	//	選択時に説明表示
+				reseteq( p1, orgeqs);
+				if( e["item"]){
+					local item = p1.equips[ e.item.slotidx];
+					view.setValue( "desc", item ? RPGSystem.getDescription( item) : "");
+				}else
+				if( e["name"] == "undress"){
+					undress( p1);
+				}else
+				if( e["name"] == "besteq"){
+					besteq( p1);
+				}
+			}
+			"back" : @( e){
+				reseteq( p1, orgeqs);
+				::playSound( "SE004");
+				return "back";
+			}
+		});
+		if( selslot == "back"){
+			view.actionAndDie( "hide");
+			// view.waitAction();
+			return true;
+		}
+		
+	BACK_TO_ITEMSEL:
+		local slotidx = selslot.slotidx;
+		local curitem = p1.equips[slotidx];	//	現在の装備
+		local eqlist;
+		if( curitem){
+			eqlist =[
+				{ _name = "cureq", lbl = " ⇒ " .. curitem.iconname(), rlbl = curitem.getPower().."  ", order = -100000, item = curitem, },
+				{ lbl=" 　 \uf803$T.equip_none", rlbl="", item=null, order=100000, }
+			];
+		}else{
+			eqlist = [
+				{ _name="cureq", lbl=" ⇒ \uf803$T.equip_none", rlbl="", item=null, order=-100000, }
+			];
+		}
+		//	selslotで指定されたスロットの装備変更
+		//	装備可能なアイテムを列挙してリストに追加。この時、現在装備を最初に、外すを最後に追加する。
+		//	右に表示される数値は、scoreprops内の値で一番大きなもの
+		view.setValue( "equiplist", eqlist ... p1.getEquipableItems( slotidx).map( @( eq){
+			return {
+				_name = "eq" .. eq.dataid,
+				lbl = " 　 " .. eq.iconname(),
+				rlbl = eq.getPower().."  ",
+				order = -eq.getPower(),
+				item = eq,
+			}
+		}).sort( @( v) v.order) );
+
+		view.action( "equipsel").waitAction();
+		view.focusTo( "cureq");
+		//
+		local ret = RPGMain.uiLoop( {
+			"action" : @( e){	//	装備するアイテム
+				::playSound( e.src.name=="cureq" ? "SE001" : "SE003");
+				return e.item;
+			}
+			"select" : @( e){	//	選択時に説明表示＋ステータスに差分表示
+				if( "item" in e.item){
+					local item = e.item["item"];
+					p1.setEquip( slotidx, item);	//	装備変更
+					view.setValue( "desc", item ? RPGSystem.getDescription( item) : "");
+				}
+			}
+			"back" : @( e){
+				::playSound( "SE004");
+				return "back";
+			}
+		});
+		//	
+		if( ret == "back"){
+			//	キャンセルされたら装備を元に戻す
+			p1.setEquip( slotidx, curitem);	
+		}else{
+			//	装備決定
+			local selitem = ret.item;
+			if( selitem != curitem){
+				swapequip( curitem, selitem);
+				p0.setEquip( slotidx, selitem);
+			}
+		}
+		view.action( "slotsel").waitAction();
+		view.setValue( "equiplist", []);
+		view.focusTo( "slot"..slotidx);
+		goto BACK_TO_SLOTSEL;
+	}
+};
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	ジョブメニュー
+
+::jobmenu_showpids <- ["MAXHP","MAXMP","PATK","MATK","PDEF","MDEF","AGI"];
+
+local lvoptionlist( job){//	RPGJob
+	local jlv = job.JOBLV;
+	local nextjlv = job.data.lvoption.filter( @( v) v.LV>jlv).sort( @( v) v.LV)[0]["LV"]||jlv;
+	return RichText( job.data.lvoption.map( @( v){
+		local tag = v.LV<=jlv? "" : "[G]";
+		local lbl = v.LV<=nextjlv ? RPGSystem.getOptionDescription( [v]) : "？？？？？？？？";
+		return sprintf( "%S[b][f3]Lv.%2d  [f1][n]%S", tag, v.LV, lbl);
+	}).join( "\n"));
+}
+
+//	システムに登録。
+//
+RPGSystem.ui ..
+{
+	key = "menu_job"
+	lbl = "$T.job"
+	type = "submenu"				//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	charasel = true					//	キャラ選択が必要
+	topinfo = "$T.job";
+	icon = "\ueae7"
+	
+	props = [						//	プロパティは無い
+	],
+	
+	//	装備画面の実装。画面uiと、一つの関数のみで出来る設計に。
+	//	
+	function uifunc( prms){
+		local p1 = ::rpgstat.playermap[prms.playerid], p0 = p1.cloneForCompare();	//	能力プレビュー用
+		//	表示するプロパティ。MAXHP,MAXMPはいらんかも。
+		local scoreprops = ::jobmenu_showpids.map( @( pid) ::RPGSystem.playerprops.find( @( v) v.pid==pid));
+		local itemptr = ptr();
+
+		local view = RPGMain.showView({
+			uipath = "menu_job.ui"
+			name = "menu_sub"
+			layer = "menu"
+			binds = {
+				//	キャラ
+				mdl = p1,		//	装備で見た目変化させるなら変更
+				name = p1.name,
+				lv = p1.LV,
+				//	スコア表示。MAXHP,MAXMPはいらんかも。
+				scorelist = scorecmplist( scoreprops, p0, p1)
+				//	属性、耐性リスト。表示のみ。前後表示は無しでp1のを表示
+				edrcdr = @() _edrcdr( p1.EDR, p1.CDR)
+				//	装備一覧
+				slotlist = ::conf.type.jobslot.map( @( jobslot, i) ({
+					_name = "slot"..i,
+					slotidx = i,
+					slot = jobslot.name,
+					lbl = @() p1.jobs[i]?.iconname() || "\uf803$T.none",
+					desc = ""
+				}) ),
+				lvoption = "",
+				"slotselect.desc" = "",
+				lvoption = "",
+			},
+			action = "show"
+			focus = "slot0"
+		});
+
+		local selslot;
+
+	BACK_TO_SLOTSEL:
+		//	スロット選択
+		selslot = RPGMain.uiLoop( {
+			"action" : @( e){	//	スロット、最強装備、すべて外すが来る
+				::playSound( "SE001");
+				return e.item;
+			}
+			"select" : @( e){	//	選択時に説明表示
+				if( e.item){
+					local job = p1.jobs[e.item.slotidx];
+					view.setValue( "slotselect.desc", job ? RPGSystem.getDescription( job) : "");
+					view.setValue( "lvoption", job ? lvoptionlist( job) : "");
+				}
+			}
+			"back" : @( e){
+				::playSound( "SE004");
+				return "back";
+			}
+		});
+		if( selslot == "back"){
+			view.actionAndDie( "hide");
+			// view.waitAction();
+			return true;
+		}
+		
+	BACK_TO_JOBSEL:
+		local slotidx = selslot.slotidx;
+		local curjob = p1.jobs[slotidx];	//	現在の装備
+		local joblist;
+		if( curjob){
+			joblist =[
+				{ _name = "curjob", lbl = " ⇒ " .. curjob.iconname(), rlbl="", order = -100000, job = curjob, },
+				{ lbl=" 　 \uf803$T.equip_none", rlbl="", job=null, order=100000, }
+			];
+		}else{
+			joblist = [
+				{ _name="curjob", lbl=" ⇒ \uf803$T.equip_none", rlbl="", job=null, order=-100000, }
+			];
+		}
+		//	selslotで指定されたスロットの装備変更
+		//	装備可能なアイテムを列挙してリストに追加。この時、現在装備を最初に、外すを最後に追加する。
+		//	右に表示される数値は、scoreprops内の値で一番大きなもの
+		view.setValue( "joblist", joblist ... p1.getSelectableJobs( slotidx).map( @( j){
+			return {
+				_name = "eq" .. j.dataid,
+				lbl = " 　 " .. j.iconname(),
+				rlbl = "",
+				order = -int( j.dataid.substring( 2)),
+				job = j,
+			}
+		}).sort( @( v) v.order) );
+		view.setValue( "jobselect.title", tmpl( T.job_change, {v=selslot.slot}));
+
+		view.action( "equipsel").waitAction();
+		view.focusTo( "curjob");
+		//
+		local ret = RPGMain.uiLoop( {
+			"action" : @( e){	//	装備するアイテム
+				::playSound( e.src.name=="cureq" ? "SE001" : "SE003");
+				return e.item;
+			}
+			"select" : @( e){	//	選択時に説明表示＋ステータスに差分表示
+				if( "job" in e.item){
+					local job = e.item["job"];
+					p1.setJob( slotidx, job);
+					view.setValue( "jobselect.desc", job ? RPGSystem.getDescription( job) : "");
+					view.setValue( "lvoption", job ? lvoptionlist( job) : "");
+				}
+			}
+			"back" : @( e){
+				::playSound( "SE004");
+				return "back";
+			}
+		});
+		//	
+		if( ret == "back"){
+			//	キャンセルされたら装備を元に戻す
+			p1.setJob( slotidx, curjob);	
+		}else{
+			local seljob = ret.job;
+			//	ジョブ決定
+			if( seljob != curjob){
+				p0.setJob( slotidx, seljob);
+			}
+		}
+		view.action( "slotsel").waitAction();
+		view.setValue( "joblist", []);
+		view.focusTo( "slot"..slotidx);
+		goto BACK_TO_SLOTSEL;
+	}
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	ジョブメニュー
+
+::jobmenu_showpids <- ["MAXHP","MAXMP","PATK","MATK","PDEF","MDEF","AGI"];
+
+local lvoptionlist( job){//	RPGJob
+	local jlv = job.JOBLV;
+	local nextjlv = job.data.lvoption.filter( @( v) v.LV>jlv).sort( @( v) v.LV)[0]["LV"]||jlv;
+	return RichText( job.data.lvoption.map( @( v){
+		local tag = v.LV<=jlv? "" : "[G]";
+		local lbl = v.LV<=nextjlv ? RPGSystem.getOptionDescription( [v]) : "？？？？？？？？";
+		return sprintf( "%S[b][f3]Lv.%2d  [f1][n]%S", tag, v.LV, lbl);
+	}).join( "\n"));
+}
+
+//	システムに登録。
+//
+RPGSystem.ui ..
+{
+	key = "menu_formation"
+	lbl = "$T.formation"
+	type = "submenu"				//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	nochange_menuui = true;			//	サブメニューに切り替わらないで実行
+	charasel = true					//	キャラ選択が必要
+	hide_presetui = true;			//	プリセットUIのリスト表示から外す
+	icon = "\ueae7"
+	
+	props = [						//	プロパティは無い
+	],
+	
+	//	
+	function uifunc( prms){
+		local p = ::rpgstat.playermap[prms.playerid];
+		p.formation = p.formation ? 0 : 1;
+		return true;
+	}
+}

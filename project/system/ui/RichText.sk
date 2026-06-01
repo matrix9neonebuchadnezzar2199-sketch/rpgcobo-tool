@@ -1,0 +1,258 @@
+
+import VirtualKeyCode;
+import ModifiersMask;
+import GamepadButtonCode;
+
+//////////////////////////////////
+//	
+//	[cmd]で指定されるタグを解釈してSKLabelViewの文字装飾や、文字送り、ページ送りの機能を付与。
+//	極々簡単な機能だけ備えれば良し。
+//	※テンプレート、エンコードは全て展開済み
+//	
+//	RichText用タグ
+//	[b] ボールド, [i] イタリック, [n] リセット, [+0][-0]-[+9][-9] サイズ変更,
+//	[s0]-[s9] : スタイル, [#000]-[#fff] カラー直指定 15*17=255
+//	TalkText用タグ
+//	[p] ページ送り, [.] クリック待ち, [<][=][>] 文字送り速度, 
+
+//	stringをRichTextに変換。キャッシュされる。$付きのstrは中身が変わる場合があるが、その場合はcache=falseを指定する。
+function rtf( str, cache=true){
+	return RichText( str);
+}
+
+//	タグを解釈してラベルに装飾を施す
+class RichText
+{
+	static richtextconf = {
+		fonts = [null, "ui", "mono", "script", "icon"],
+		stylemap = {
+			['O'] = { },
+			['M'] = { font="script", },
+			['E'] = { font="icon", },
+			['B'] = { flags=2, },
+			['I'] = { flags=4, },
+			['C'] = { linespace=-4, },
+			//
+			['P'] = { color=0xbfffffff, flags=2 },
+			['G'] = { color=0x808080ff, },
+			//
+			['D'] = { color=0xFF7A4Dff, },
+			['U'] = { color=0xbfffffff, },
+			['N'] = { color=0xaaaaaaff, },
+			//
+			['S'] = { flags=2, color=0xA3D900ff, },
+			['W'] = { color=0xffcc00ff, },
+		},
+		colormap = {
+			[1] = 0xbfffffff,
+			[2] = 0xFF7A4Dff,
+			[3] = 0x808080ff,
+			[4] = 0x99FFE5ff,
+		}
+	};
+
+	intext = null;		//	入力のテキスト
+	estr = null;		//	装飾無しのテキスト。絵文字コード済み
+	code = null;		//	[(ci,cmd), ...] : 文字位置をキーに、コマンドを実行する
+	
+	//	※constructorではなるべく処理を無しに。bindValueで
+	constructor( s){
+		intext = s;
+	}
+
+	function _cmp( b){
+		return intext <> b["intext"];
+	}
+
+	function applyToLabel( lbl){
+		lbl.resetattr = lbl._defer = false;
+		//	ここでTagProcessorを通してestr,codeを生成する。
+		//	※intext => {estr,code}のキャッシュをしたほうが良い！ただ、1回しか使われないものをキャッシュするのも無駄なので、
+		//	定期的に解放して無駄を無くす。
+		local s = decodeESC( intext);
+		if( lbl.usetemplate && s.contains( "$")){
+			local fn = ::compiletemplate_c( s);
+			try{
+				s = fn();
+			}catch( ex){
+				printexception( ex);
+				tb.setText( estr, attr0);
+				return;
+			}
+		}
+		s = Emoji.encodeEmojiString( s);
+		local v = TagProsessor( s).compile();	//	ここでもエラー起きるかも？
+		estr = v[0];
+		code = v[1];
+		//
+		local attr0 = lbl.fontattr, attr = attr0, tb = lbl.textbox, linebreak = 0;
+		local conf = richtextconf;
+		tb.setText( estr, attr0);
+		foreach( i,v in code){
+			local pos = v[0], tag = v[1];
+			switch( tag[0]){
+			case 'b': 
+			case 'i': (attr = clone attr).flags |= 2<<(tag[0]=='i'); tb.setAttribute( attr, pos); break;
+			case 'n': (attr = clone attr).flags &= ~6; tb.setAttribute( attr, pos); break;
+			case 'c': 
+			{
+				local c = conf.colormap[tag[1]-'0'] || attr0.color;
+				(attr = clone attr).color = c;
+				tb.setAttribute( attr, pos); break;
+			}
+			case '#': 
+			{
+				local c = 0xff0000ff;
+				if( length( tag) >= 7){
+					c = (int( tag.substring( 1), 16)<<8) | 0xff;
+				}else{
+					local x = int( tag.substring( 1), 16);
+					c = (((x>>>8)*17)<<24) | ((((x>>>4)&15)*17)<<16) | (((x&15)*17)<<8) | 0xff;
+				}
+				(attr = clone attr).color = c;
+				tb.setAttribute( attr, pos); break;
+			}
+			case '+': case '-':
+			{
+				local v = (tag[1]?tag[1]-'0':3) * (tag[0]=='-'?-1:1);
+				(attr = clone attr).size = attr0.size+v; tb.setAttribute( attr, pos); break;
+			}
+			case 'f':
+			{
+				local f, n = conf.fonts[ tag[1]-'0'];
+				if( n){
+					f = ::Fonts.get( n);
+				}else{
+					f = ::Fonts.get( tag.substring( 1));
+				}
+				if( f){
+					(attr = clone attr).font = f; tb.setAttribute( attr, pos);
+				}
+				break;
+			}
+			case 'p':	//	これは文字送りの機能の一部
+				(attr = clone attr).linebreak = ++linebreak; tb.setAttribute( attr, pos);
+			break;	
+			default:
+				if( tag[0] in conf.stylemap){
+					local st = conf.stylemap[tag[0]];
+					attr = clone attr;
+					attr.font = ::Fonts.get( st["font"]) || attr0.font;
+					attr.color = st["color"] || attr0.color;
+					attr.strokecolor = "stroke" in st ? st.stroke : attr0.strokecolor;
+					attr.flags = "flags" in st ? st.flags : attr0.flags;
+					attr.linespace = "linespace" in st ? st.linespace : attr0.linespace;
+					tb.setAttribute( attr, pos);
+				}
+				break;
+			}
+		}
+	}
+}
+
+
+local chrset = function( s){ local t = {}; foreach( c in s) t[c] <- true; return t; }
+local istag = chrset( "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-#*/.<>=");
+
+//	※emojiエンコードをした状態で行う。ここで得た文字列はutf8などにエンコードしようとするとエラーが起きる。
+class TagProsessor
+{
+	estr = null;							//	wstring : 絵文字エンコードされたstring
+	ci = 0;									//	
+	
+	//	lex result
+	ch = ' ';								//	
+	token = null;							//	
+	svalue = null;							//	string : 最後にlexされた文字列。stringなのに注意！
+	sbuf = null;							//	temp StringBuffer
+	outbuf = null;							//	int[] : utf32eの配列。最後にwstringに変換。
+	
+	//	result
+	outstr = null;							//	wstring : タグを取り除かれたテキスト。emojiエンコード済み。
+	code = null;							//	[(ci,cmd), ...] : 文字位置をキーに、コマンドを実行する
+	
+	constructor( s){	//	string|wstring
+		estr = s;
+		sbuf = StringBuffer();
+		outbuf = [];
+		code = [];
+	}
+	
+	function next(){
+		if( ch=estr[ci++]){
+			// if( ch == '\n'){ ++cline; }
+		}else{
+			if( !( --ci in estr)) throw Exception( "End Of Text "..ci);
+		}
+	}
+	
+	function compile(){
+		next();
+		parse();
+		outstr = wstring( outbuf);
+		return (outstr,code);
+	}
+	
+	function lexmsg(){
+		for(;;){
+			switch( ch){
+			case '[':
+				next(); return token='[';
+			case '\0':						//	EOF...
+				return token='\0';
+			case '\r': case '\t': 			//	musi...
+				next(); continue;
+			case '\n':
+			default:						//	moji
+				outbuf .. ch; next(); continue;
+			}
+		}
+	}
+	
+	function lexID(){
+		sbuf.clear();
+		for( ;;){
+			sbuf .. char( ch);
+			next();
+			if( !istag[ch] && !(ch>=256)) break;
+		}
+		svalue = string( sbuf);
+		return token=128;
+	}
+	
+	function lextag(){
+		for(;;){
+			switch( ch){
+			case ']' : next(); return token=']';
+			case '\n': next(); continue;
+			case ' ': case '\t': case '\r': next(); continue; //	skip space
+			default:
+				if( istag[ch] || ch>=256){
+					return lexID();
+				}else{
+					throw Exception( sprintf( "Syntax Error : %d[%c]",ch,ch));
+				}
+				break;
+			}
+		}
+	}
+	
+	function parse(){
+		for(;;){
+			lexmsg();
+			//	メッセージの後にある命令を処理
+			switch( token){
+			case '[': local c0 = length( outbuf); lextag(); parseTag( c0); break;
+			case '\0': return;
+			}
+		}
+	}
+	
+	function parseTag( c0){
+		//	1.command
+		if( token != 128) throw Exception( "Tag syntax error. Expect:IDENTIFIER Found:" .. token);
+		code .. (c0, svalue);
+		lextag();
+		if( token != ']') throw Exception( "Tag syntax error. Expect:] Found:" .. token);
+	}
+}

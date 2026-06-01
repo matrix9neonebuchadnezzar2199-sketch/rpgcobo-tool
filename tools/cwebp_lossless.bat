@@ -1,0 +1,19 @@
+@ECHO OFF
+cd %~dp0
+
+SET PARAMS=
+
+:_PARAMS_LOOP
+
+SET PARAMS=%PARAMS%%1
+SET F=%1
+SET WP=%F:~0,-3%
+ECHO %F:~0,-3%
+@ECHO ON
+.\cwebp.exe %F% -lossless -o %WP%webp
+@ECHO OFF
+SHIFT
+
+IF NOT "%1"=="" GOTO _PARAMS_LOOP
+
+PAUSE

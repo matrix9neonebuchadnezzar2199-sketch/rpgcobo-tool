@@ -1,0 +1,360 @@
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	Requirements.sk
+//	スキル使用条件、敵AI条件、イベント判断条件の定義
+//	
+
+import PropertyType;
+import RPGPropertyType;
+import VarType;
+
+//////////////// reqchk定義
+
+local reqchk = ::RPGSystem.reqchk;
+
+reqchk .. {
+	key = "varcmp",
+	lbl = "$T.lbl_varcmp"
+	defval = { key="varcmp", lvar="G000", op="==", rvar=true}
+	lvar = {
+		constbits = 0, varbits = 1|2|4|8|16
+	}
+	rvar = {
+		constbits = 1|2|4|8, varbits = 1|2|4|8|16|32
+	}
+
+	func = ::varcmp
+}
+
+reqchk .. {
+	key = "ownitem",
+	lbl = "$T.lbl_ownitem"
+	defval = { key="ownitem", rvar=".I000"}
+	rvar = {
+		constbits = 0, varbits = 0	//	rvarはデータIDのみ指定可
+		datatype = ["item","weapon","armor"]
+	}
+
+	func = @( req, self) ::rpgstat.getItemNum( ::getvar( req.rvar, self))>0
+}
+
+reqchk .. {
+	key = "inparty",
+	lbl = "$T.lbl_inparty"
+	defval = { key="inparty", rvar=".P000"}
+	rvar = {
+		constbits = 0, varbits = 0	//	rvarはデータIDのみ指定可
+		datatype = ["player"]
+	}
+	
+	func = @( req, self){
+		local pid = ::getvar( req.rvar, self);
+		return !!::rpgstat.members.find( ( v) v.dataid == pid);
+	}
+}
+
+local makeCharaRequires( key, lbl, getchara){
+	local submenu = [
+		{
+			lbl = tmpl( T.tmpl_v_of_k, {k=lbl, v="ID"}),
+			defval = { key=key, sub=0, rvar=".P000" },
+			rvar = { datatype = ["player","enemy"]}
+			
+			func = @( req, self) getchara()["dataid"] == ::getvar( req.rvar, self)
+		},
+		{
+			lbl = tmpl( T.tmpl_v_of_k, {k=lbl, v="LV"}),
+			defval = { key=key, sub=1, op=">=", rvar=10 },
+			rvar = { constbits = 2|8, varbits = 1|2 }
+			
+			func = @( req, self) ::valcmp( getchara()["LV"]||0, req.op, ::getvar( req.rvar, self))
+		},
+		{
+			lbl = tmpl( T.tmpl_v_of_k, {k=lbl, v="HP(％)"}),
+			defval = { key=key, sub=2, op=">=", rvar=10 },
+			rvar = { constbits = 2|8, varbits = 1|2 }
+			
+			func = @( req, self) ::valcmp( (getchara()?.hprate())||0, req.op, ::getvar( req.rvar, self))
+		},
+		{
+			lbl = tmpl( T.tmpl_v_of_k, {k=lbl, v="\n$T.side_dbview_cond"}),
+			defval = { key=key, sub=3, rvar=".K000" },
+			rvar = { datatype=["cond"] }
+			
+			func = @( req, self) !!(getchara()?.hasCondition( ::getvar( req.rvar, self)))
+		},
+	];
+	return {
+		key = key,
+		lbl = lbl,
+		submenu = submenu,
+		func = @( req, self) submenu[req.sub].func( req, self),
+	}
+}
+
+reqchk .. makeCharaRequires( "selchr", "$T.req_selchara", @() ::rpgstat.selchara);
+reqchk .. makeCharaRequires( "atkchr", "$T.req_atkchara", @() ::rpgstage.battle["atkchr"]);
+reqchk .. makeCharaRequires( "defchr", "$T.req_defchara", @() ::rpgstage.battle["defchr"]);
+
+reqchk .. {
+	key = "visitmap",
+	lbl = "$T.lbl_visitmap"
+	defval = { key="visitmap", rvar=".M000"}
+	rvar = {
+		constbits = 0, varbits = 0	//	rvarはデータIDのみ指定可
+		datatype = ["map"]
+	}
+	
+	func = @( req, self){
+		local pid = ::getvar( req.rvar, self);
+		return !!::rpgstat.mapstat[mapid];
+	}
+}
+
+reqchk .. {
+	key = "script",
+	lbl = "$T.lbl_script"
+	defval = { key="script", rvar="\tW"}
+	rvar = {
+		constbits = 8, varbits = 0
+	}
+	
+	func = @( req, self){
+		local f = ::compilestring_c( req.rvar);
+		return ~(f, self);
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////////
+//	敵AIページ選択条件
+//	true|falseを返す。
+
+local aipagereq = RPGSystem.aipagereq;
+
+//	none : 条件なし。
+//	
+aipagereq .. {
+	key = "none"
+	name = "$T.lbl_noreq"
+	icon = "\ue0b7"
+	calc = @( key, src) true
+}
+
+//	hp100 : HP100%
+//	
+aipagereq .. {
+	key = "hp100"
+	name = "HP＝100%"
+	icon = "\ue0b7"
+	calc = @( key, src) src.hprate()>=100
+}
+
+//	hp50 : HP半分以下
+//	
+aipagereq .. {
+	key = "hp50"
+	name = "HP≦50%"
+	icon = "\ue0b7"
+	calc = @( key, src) src.hprate()<=50
+}
+
+//	hp25 : HP25%以下
+//	
+aipagereq .. {
+	key = "hp25"
+	name = "HP≦25%"
+	icon = "\ue0b7"
+	calc = @( key, src) src.hprate()<=25
+}
+
+//	hp10 : HP10%以下
+//	
+aipagereq .. {
+	key = "hp10"
+	name = "HP≦10%"
+	icon = "\ue0b7"
+	calc = @( key, src) src.hprate()<=10
+}
+
+//	team70 : 味方のHPが減少 (70%以下)
+//	
+aipagereq .. {
+	key = "team70"
+	name = "$T.aipagereq_team70"
+	icon = "\ue0b7"
+	calc = @( key, src) !!rpgstage.battle.getTeam( src).find( @( v) v!=src && v.hprate()<=70)
+}
+
+//	teamdead : 味方に死亡者がいる
+//	
+aipagereq .. {
+	key = "teamdead"
+	name = "$T.aipagereq_teamdead"
+	icon = "\ue0b7"
+	calc = @( key, src) !!rpgstage.battle.getTeam( src).find( @( v) v!=src && v.isDead())
+}
+
+//	turn3 : 1ターン目
+//	
+aipagereq .. {
+	key = "turn1"
+	name = "$T.aipagereq_turn＝1"
+	icon = "\ue0b7"
+	calc = @( key, src) src.turn==1
+}
+
+//	turn3 : 3ターン経過
+//	
+aipagereq .. {
+	key = "turn3"
+	name = "$T.aipagereq_turn≧3"
+	icon = "\ue0b7"
+	calc = @( key, src) src.turn>=3
+}
+
+//	turn5 : 5ターン経過
+//	
+aipagereq .. {
+	key = "turn5"
+	name = "$T.aipagereq_turn≧5"
+	icon = "\ue0b7"
+	calc = @( key, src) src.turn>=5
+}
+
+//	cond : コンディションがかかっているか
+//	
+aipagereq .. {
+	key = "cond"
+	name = "$T.side_dbview_cond"
+	icon = "\ue0b7"
+	calc = @( key, src){	//	cond.K000みたいなのが入ってくる
+		local condid = key.substring( key.indexOf( '.')+1);
+		return src.getConditionLV( condid);
+	}
+	//	SettingMapは多階層のキーに対応してる
+	submenu = @(){
+		local a = datalist( "cond").map( @( v) +{...v, val="cond."..v.id});
+		return a;
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////////
+//	敵AIターゲット選択条件
+//	0~100+のレート。0以下の場合は選択されない。
+//	隊列影響は別プロパティで指定
+
+local aitarget = RPGSystem.aitarget;
+
+//	均等にランダム選択
+aitarget .. {
+	key = "random"
+	name = "$T.lbl_random"
+	icon = "\ue0b7"
+	calc = @( skill, src, dst) ::rnd( 100.0)
+}
+
+//	効果の高い相手を選択
+aitarget .. {
+	key = "effective"
+	name = {"ja":"効果の高い相手", "en":"Effective Target"}
+	icon = "\ue0b7"
+	calc = @( skill, src, dst) 50*skill.forecast( skill, src, dst)
+}
+
+//	HPの低い相手を選択
+aitarget .. {
+	key = "lowerhp"
+	name = {"ja":"HPの低い相手", "en":"Lower HP Target"}
+	icon = "\ue0b7"
+	calc = @( skill, src, dst) 100-Math.sqrt( dst.HP)
+}
+
+//	HPの減った相手を選択
+aitarget .. {
+	key = "damaged"
+	name = {"ja":"HPの減った相手", "en":"Damaged Target"}
+	icon = "\ue0b7"
+	calc = @( skill, src, dst) Math.sqrt( Math.max( 0, dst.MAXHP-dst.HP))
+}
+
+//	集中選択 ... どう集中相手を決めるか？
+aitarget .. {
+	key = "intensive"
+	name = {"ja":"集中選択", "en":"Intensive"}
+	icon = "\ue0b7"
+	calc = @( skill, src, dst) 100
+}
+
+
+
+///////////////////////////////////////////////////////////////////////////////////
+//	キャラ情報取得
+//	追加パラメータもあり
+//	
+
+local charainfodef = RPGSystem.charainfodef;
+
+charainfodef .. {
+	key = "dead"
+	lbl = "$T.lbl_isdead"
+	calc = @( pc, data) !!pc.isDead()
+}
+
+charainfodef .. {
+	key = "commandable"
+	lbl = "$T.lbl_iscommandable"
+	calc = @( pc, data) !!pc.isCommandable()
+}
+
+charainfodef .. { key = "HP", lbl = "$T.HP", calc = @( pc, data) int( pc["HP"]) }
+charainfodef .. { key = "MP", lbl = "$T.MP", calc = @( pc, data) int( pc["MP"]) }
+charainfodef .. { key = "HP(％)", lbl = "$T.HP", calc = @( pc, data) int( pc.hprate()) }
+charainfodef .. { key = "MP(％)", lbl = "$T.MP", calc = @( pc, data) int( pc.mprate()) }
+
+//	スコアパラメータの一覧取得
+local statlistfunc(){
+	local a = [];
+	foreach( p in ::RPGSystem.playerprops){
+		if( p.proptype=="score" && typeof( p.defval)<=SS_FLOAT) a .. { lbl:`$p.pid: ${p.lbl}`, val:p.pid };
+	}
+	return a;
+}
+
+charainfodef .. {
+	key = "param"
+	lbl = "$T.lbl_property"
+	props = [
+		{
+			pid = "propid",				//	RPGChara[propid]を変化
+			lbl = "$T.lbl_property",	//	
+			type = LIST,
+			list = statlistfunc,
+			defval = "MAXHP",
+		},
+	],
+	info = @( v) ::RPGSystem.playerprops.find( @( x) x.pid==v.propid)["lbl"]
+	calc = @( pc, data) int( pc[data["propid"]])
+}
+
+//	いずれかのコンディションに掛かっているか
+charainfodef .. {
+	key = "cond"
+	lbl = "$T.side_dbview_cond"
+	props = [
+		{
+			pid = "condbits"
+			lbl = "$T.side_dbview_cond"
+			type = CHECKBITS,
+			list = @( pl) datalist( "cond")
+			defval = 0,
+		},
+	],
+	info = @( v) condbitsstr( v.condbits);
+	calc = @( pc, data){
+		local b = data.condbits;
+		foreach( cond in pc["conds"]){
+			if( ::bitget( b, cond.getIndex())) return true;
+		}
+		return false;
+	}
+}

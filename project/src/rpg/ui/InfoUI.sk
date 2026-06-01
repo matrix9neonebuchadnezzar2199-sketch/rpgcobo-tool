@@ -1,0 +1,191 @@
+import VirtualKeyCode;
+import GamepadButtonCode;
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////////
+//	InfoUI.sk 情報表示系UI
+//	タイマー、所持金、マップ名表示 
+//	
+
+local oplist = [
+	{ lbl="$T.lbl_show", val=null }	//	showの場合はop=nullが入る
+	{ lbl="$T.lbl_hide", val="hide" }	
+];
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	上部汎用情報表示
+//	表示時間を指定可能
+
+local showTopInfoUI( uidef, prms){
+	local view = rootview.findChild( "info_top");
+	if( prms["op"]=="hide"){
+		view.name = null;	//	以後名前で拾えないように
+		return view?.actionAndDie( "hide");
+	}
+	if( view){
+		// view.actionAndDie( "hide");	//	今あるやつは消す！
+		view.bindValue( "lbl", RichText( prms.text));
+	}else{
+		local vprms = { ...uidef.defval,
+			uipath = "info_top.ui"
+			layer = "info"
+			name = "info_top"
+			binds = {
+				lbl = RichText( prms.text);
+			},
+			action = "show"
+		};
+		view = RPGMain.showView( vprms);
+	}
+	view.ref = prms;
+	//	自動で消去指定。
+	local time = int( ::getvar( prms["time"], this));
+	if( time > 0){
+		setTimeout( @(){	//	これだと表示が連続したときにふいに消える！！！！！！！
+			view.actionAndDie( "hide");
+		}, time);
+	}
+}
+
+//	システムに登録。
+RPGSystem.ui ..
+{
+	key = "info_top"
+	lbl = "$T.ui_info_top"
+	type = "info"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	icon = "\ue892"
+	
+	props = [				//	
+		{ pid="op", lbl="$T.lbl_operation", type=LIST, list=oplist, refresh=true }
+		{ pid="text", lbl="$T.lbl_text", type=STRING, variable=true, hide=@( pl) !!pl.getParam( "op") }
+		{ pid="time", lbl="$T.ui_info_top_time", type=VARIABLE, constbits=2|8, varbits=1|2|4, hide=@( pl) !!pl.getParam( "op") }
+	],
+
+	defval = {
+		uipath = "info_top.ui",
+		pos = { top=32 }
+		op = null
+		text = "INFO..."
+		time = 0
+	}
+
+	uifunc = @( t) showTopInfoUI( this, t)
+};
+
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	タイマー表示。操作無し。左上の情報欄を使う
+//	システム変数のTIMER0,TIMER1を指定する。
+
+local showTimerUI( prms){
+	local view = rootview.findChild( uidef["name"]||uidef["key"]);
+	if( prms["op"]=="hide"){
+		return view?.actionAndDie( prms["op"]);
+	}
+	//
+	local varid = prms.varid;
+	local view = RPGMain.showView({
+		uipath = "info_val.ui"
+		layer = "info"
+		name = "info_topl"
+		dup = "reuse"
+		binds = {
+			lbl = @(){
+				local sec = ::rpgvar[varid]/1000;
+				return sprintf( "\uf240 %02d %02d", sec/60, sec%60);
+			}
+		},
+		action = "show"
+	});
+}
+
+//	システムに登録。
+RPGSystem.ui ..
+{
+	key = "info_timer"
+	lbl = "$T.ui_info_timer"
+	type = "info"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	icon = "\ue892"
+	
+	props = [				//	
+		{ pid="op", lbl="$T.lbl_op", type=LIST, list=oplist }
+	],
+
+	defval = {
+		pos = { left=100, top=100 }
+		op = null
+		varid = "TIMER0"
+	}
+
+	func = showTimerUI,		//	
+};
+
+////////////////////////////////////////////////////////////////////////////////////
+//	所持金表示。操作無し。右上の情報欄を使う
+
+//	システムに登録。
+RPGSystem.ui ..
+{
+	key = "info_money"
+	lbl = "$T.ui_info_money"
+	type = "info"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	icon = "\ue892"
+	
+	props = [				//	
+		{ pid="op", lbl="$T.lbl_operation", type=LIST, list=oplist },
+		{ pid="uiclose", lbl="$T.uiclose", type=LIST, list=RPGProperties.uicloselist, hide=@( pl) !!pl.getParam( "op") },
+	],
+
+	defval = { pos = { right=100, top=100 }, op = null, uiclose = 1, }
+
+	uifunc = @( prms){
+		local view = rootview.findChild( "info_topr");
+		if( prms["op"]=="hide"){
+			return view?.actionAndDie( "hide");
+		}
+		if( view){
+			view.bindValue( "lbl", @() rtf( "[M]\uf25f %S" % commanum( ::rpgstat.money)));
+		}else{
+			view = RPGMain.showView({
+				uipath = "info_toplr.ui"
+				layer = "info"
+				name = "info_topr"
+				binds = {
+					lbl = @() rtf( "[M]\uf25f %S" % commanum( ::rpgstat.money));
+				},
+				pos = { top=32, right=80 }
+				action = "show"
+			});
+		}
+		return view;
+	}
+};
+
+
+////////////////////////////////////////////////////////////////////////////////////
+//	ダメージポップアップ
+//	5桁までの英数字を表示
+
+RPGSystem.ui ..
+{
+	key = "pop_damage"
+	lbl = "$T.ui_pop_damage"
+	icon = "\ue892"
+	type = "info"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	
+	props = [				//	
+		{ pid="op", lbl="$T.lbl_operation", type=LIST, list=oplist },
+		{ pid="lbl", lbl="$T.lbl_text", type=STRING, },
+		{ pid="col", lbl="$T.lbl_color", type=RGBA },
+	],
+	
+	defval = { op = null, lbl = "9999", col = -1, who = 1 }
+
+	uifunc = @( prms){
+		local rp3d = ::rpgstage.player3d;
+		rp3d.popupDamage( prms.lbl, prms.col);
+	}
+};

@@ -1,0 +1,1485 @@
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	基本のステータスオプション定義。
+//	
+//	オプションのカテゴリは
+//	0: 能力強化／弱化
+//	1: 相手への効果
+//	2: 自分への効果
+//	3: その他
+//	
+
+import PropertyType;
+import RPGPropertyType;
+import SkillFlag;
+
+local valtypes = (
+	{ val:"base", lbl:"$T.val_base" },
+	{ val:"baserate", lbl:"$T.val_baserate" },
+	{ val:"supply", lbl:"$T.val_supply" },
+	{ val:"totalrate", lbl:"$T.val_totalrate" },
+);
+
+//	値変更の変更させるタイプ
+local valtypeprop = {
+	pid = "valtype",
+	lbl = "$T.lbl_type",
+	type = LIST,
+	list = valtypes,
+	defval = "supply",
+};
+
+//	値変更の値
+local valprop = {
+	pid = "val",
+	lbl = "$T.lbl_amount",
+	type = SCALAR,
+	range = (-9999,9999),
+	defval = 5,
+};
+
+local formbitsprop = {
+	pid = "formbits",
+	lbl = "$T.type_dmgform"
+	type = CHECKBITS,
+	list = @() typelist( "dmgform"),
+	defval = @() (1<<length( ::conf.type.dmgform))-1
+};
+
+local elembitsprop = {
+	pid = "elembits",
+	lbl = "$T.type_elem"
+	type = CHECKBITS,
+	list = @() typelist( "elem"),
+	defval = 0
+};
+
+local efxprop = {
+	pid = "efx",
+	lbl = "$T.lbl_effect"
+	type = RESID,
+	restype = ["efx"],
+	nullable = true,
+	defval = null,
+};
+
+local sndprop = { pid="snd", lbl="$T.lbl_sound", type=RESID, restype=["snd"], defval=null, nullable=true, };
+
+local userateprop = {
+	pid = "rate",
+	lbl = "$T.lbl_userate"
+	type = VARIABLE,
+	constbits=2|8, varbits=0,
+	defval = 1.0
+};
+
+local successrateprop = {
+	pid = "successrate",
+	lbl = "$T.lbl_successrate"		//	ステータスを比較して成功率を変化させるためにスクリプトも有効
+	type = VARIABLE,
+	constbits=2|8, varbits=0,
+	defval = 1.0
+};
+
+local dmgrateprop = {
+	pid = "dmgrate",
+	lbl = "$T.lbl_dmgrate"
+	type = VARIABLE,
+	constbits=2|8, varbits=0,
+	defval = 1.0
+};
+
+local dmgvalprop = {
+	pid = "dmgval",
+	lbl = "$T.lbl_dmgval"
+	type = VARIABLE,
+	constbits=2|8, varbits=0,
+	defval = 1
+};
+
+local orderprop = {
+	pid = "order",
+	lbl = "$T.lbl_order"
+	type = SCALAR,
+	range = (-100, 100)
+	defval = 0
+};
+
+local relativeprop = {
+	pid = "relative"
+	lbl = "$T.lbl_reldmg"
+	type = BOOL,
+	defval = true,
+};
+
+local dmgtypeprop = {
+	pid = "dmgtype"
+	lbl = "$T.lbl_param"
+	type = LIST
+	list = [
+		{lbl="$T.dmgtype1",val=1},{lbl="$T.dmgtype2",val=2},{lbl="$T.dmgtype3",val=3},
+		{lbl="$T.dmgtype4",val=4},{lbl="$T.dmgtype5",val=5},{lbl="$T.dmgtype6",val=6},
+	]
+	defval = 1
+};
+
+local totalrateprop = {
+	pid = "totalrate",
+	lbl = "$T.lbl_dmggainrate"
+	type = VARIABLE,
+	constbits=2|8, varbits=0,
+	defval = 10
+};
+
+local hitactprop = {
+	pid = "hitact",
+	lbl = "$T.lbl_hitact",
+	type = PROPERTYLIST,
+	
+	propdef={
+		name="$T.lbl_hitact", 
+		props = [
+			{ pid="hitani", lbl="$T.lbl_anime", type=ANIME_POPUP, nullable=true, },
+			{ pid="hitefx", lbl="$T.lbl_effect", type=RESID, restype="efx", nullable=true, },
+			{ pid="hitsnd", lbl="$T.lbl_sound", type=RESID, restype=["snd"], nullable=true, },
+		],
+		tostring = @( v) ((v["hitani"]||v["hitefx"]||v["hitsnd"]) ? sprintf( "%S %S %S", v["hitani"]["id"]||"", v["hitefx"]||"", v["hitsnd"]||"") : "$T.lbl_notset"),
+	}
+
+	defval = { hitani=null, hitefx=null, hitsnd=null, }
+};
+
+//	スコアパラメータの一覧取得
+local statlistfunc(){
+	local a = [];
+	foreach( p in ::RPGSystem.playerprops){
+		if( p.proptype=="score" && typeof( p.defval)<=SS_FLOAT) a .. { lbl:`$p.pid: ${p.lbl}`, val:p.pid };
+	}
+	return a;
+}
+
+local condlistfunc(){
+	return dataList( ::conf.cond);	//	{ lbl=name, icon=icon, val=dataid }
+}
+
+local icon_param = "\uf02e"
+local icon_guard = "\uef56"
+local icon_attack = "\uef55"
+local icon_skill = "\uea0b"
+local icon_learn = "\ue80c"
+local icon_seal = "\ue14b"
+local icon_flag = "\ue7af"
+local icon_walk = "\ue91d"
+local icon_timer = "\ue425"
+local icon_etc = "\ueb8e"
+
+
+local iconlblstr( v){
+	return v ? `${v["icon"]||""}${v["lbl"]||v["name"]}` : "$T.none";
+}
+
+local spdmgstr( v, lbl=null){
+	return (lbl||"$T.spatk") .. (typeof( v)<=1 ? ("%+d"%v) : varstr( v));
+}
+
+local absorrelstr( v, rel){
+	local s = varstr( v);
+	return rel ? ("%+d％"%v) : ("%+d"%v);
+}
+
+//	
+local overridectx( dmg, tb){
+	foreach( i, v in tb) if( v!=null && v!=undefined) dmg.ovctx[i] <- v;
+}
+
+local elemsstr( elembits){
+	local sb = StringBuffer();
+	foreach( i,e in ::conf.type.elem){
+		if( elembits & (1<<i)){ sb .. e.icon; }
+	}
+	return string( sb);
+}
+
+
+//	発動回数でコンディション解除。※BattleCommand無いとイベント追加できないな～
+local countrem( self, cmd, v){
+	if( !v) return;
+	local cond = self.hasCondition( v.condid);
+	if( cond){
+		local c = ++cond.count;
+		if( c >= v.val){
+			cmd.addEvent( { chr=self, id="remcond", condid=v.condid});
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	装備オプション定義
+//	
+
+RPGSystem.option .. {
+	category = -1,
+	key = "opt_equip",
+	name = "so-bi",
+	icon = icon_param,
+	info = null,
+	modifyscore = @( opd, pid, cval){
+		if( opd[pid]){ cval.supply += opd[pid]; }
+	},
+};
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	能力付与系オプション定義
+//	
+
+::valtypeinfomap <- {
+	"base" : "%S (%+d)",
+	"baserate" : "%S (%+d％)",
+	"supply" : "%S %+d",
+	"totalrate" : "%S %+d％",
+}
+
+local valtypescale = { base=1, supply=1, baserate=0.01, totalrate=0.01, }
+
+//	スコアパラメータの値を上げ下げする。〇
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_status",
+	name = "$T.opt_status",
+	icon = icon_param,
+	ownable = true,
+	info = @(){
+		local prop = ::RPGSystem.playerprops.find( @( v) v.pid==propid);
+		return valtypeinfomap[valtype] % (prop["lbl"],val);
+	},
+	props = [
+		{
+			pid = "propid",				//	RPGChara[propid]を変化
+			lbl = "$T.lbl_property",	//	
+			type = LIST,
+			list = statlistfunc,		//	functionを入れてもよし
+			defval = "PATK",			//	物理攻撃
+		},
+		valtypeprop,
+		valprop,
+	],
+	modifyscore = @( opd, pid, cval){
+		if( pid==opd.propid){ cval[opd.valtype] += opd.val * valtypescale[opd.valtype]; }
+	},
+};
+
+//	種族を設定する。〇
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_tribe",
+	name = "$T.opt_tribe",
+	icon = icon_param,
+	ownable = true,
+	info = @(){	//	this==opd
+		local sb = StringBuffer();
+		foreach( i,e in ::conf.type.tribe){
+			if( this["tribe"] & (1<<i)) sb .. e.icon;
+		}
+		return string( sb);
+	},
+	props = [
+		{
+			pid = "tribe",
+			lbl = "$T.lbl_tribe"
+			type = CHECKBITS,
+			list = @() typelist( "tribe"),
+			defval = 0,
+		},
+	],
+	modifyscore = @( opd, pid, cval){
+		local val = opd[pid];
+		if( val){ cval.base |= val; }
+	},
+};
+
+//	特定の状態耐性を上下する。〇
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_conddef",
+	name = "$T.opt_conddef",
+	icon = icon_guard,
+	ownable = true,
+	info = @(){	//	this==opd
+		local sb = StringBuffer();
+		foreach( i,e in ::conf.type.resistg){
+			local v = this["CDR."..i];
+			if( v) sb .. sprintf("%S%+d ", e.icon, v);
+		}
+		return string( sb);
+	},
+	props = @(){
+		return ::conf.type.resistg.map( 
+		@( e, i){
+			return {
+				pid = "CDR."..i,
+				lbl = e.icon..e.name,
+				type = SCALAR
+				range = (-100,100),
+				defval = 0,
+				ui="bar"
+			}
+		}
+	)},
+	modifyscore = @( opd, pid, cval){
+		local val = opd[pid];
+		if( val){ cval.supply += val; }
+	},
+};
+
+//	属性耐性を上下する。〇
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_elemdef",
+	name = "$T.opt_elemdef",
+	icon = icon_guard,
+	ownable = true,
+	info = @(){	//	this==opd
+		local sb = StringBuffer();
+		foreach( i,e in ::conf.type.elem){
+			local v = this["EDR."..i];
+			if( v) sb .. sprintf("%S%+d ", e.icon, v);
+		}
+		return string( sb);
+	},
+	props = @(){
+		return ::conf.type.elem.map( 
+		@( e, i){
+			return {
+				pid = "EDR."..i,
+				lbl = e.icon..e.name,
+				type = SCALAR
+				range = (-100,100),
+				defval = 0,
+				ui="bar"
+			}
+		}
+	)},
+	modifyscore = @( opd, pid, cval){
+		local val = opd[pid];
+		if( val){ cval.supply += val; }
+	},
+};
+
+//	スキル習得。〇
+//	※このオプションはフック関数は無い。RPGPlayer.updateScoreMapで集計される
+//	※※※permanentはなんかちょっと考え方が変。整理が必要
+//	permanentにしたい場合	キャラレベル、スキルショップ、
+//	したくない場合			装備、コンディション、
+//	どちらの場合もある		ジョブレベル、アイテム使用、
+//	↑キャラレベルの場合はpermanentとはいえownoptionsに入れなくていい。
+//	アイテム使用の場合は、ownoptionsに入れる場合はマクロで、その他はコンディション付与で良い。
+//	となると、ジョブの編集時に、キャラのownoptionsに入れるかジョブ装着時のみの効果かを入れればよい。
+//	
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_getskill",
+	name = "$T.opt_getskill",
+	icon = icon_learn,
+	ownable = true,
+	info = @(){	//	this==opd
+		local data = rpgdata[skillid];
+		return data["name"] || "???";
+	}
+	props = [
+		{
+			pid = "skillid"
+			lbl = "$T.lbl_skill"
+			type = DATAID
+			datatype=["skill"]
+			defval = "S000"
+		}
+	],
+	//	no hooks
+};
+
+//	ジョブ習得。〇
+//	※このオプションはフック関数は無い。RPGPlayer.updateScoreMapで集計される
+//	これで習得したジョブは、ジョブ画面や転職UI?などで装着可能になる。
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_getjob",
+	name = "$T.opt_getjob",
+	icon = icon_learn,
+	ownable = true,
+	info = @(){	//	this==opd
+		local data = rpgdata[jobid];
+		return data["name"] || "???";
+	},
+	props = [
+		{
+			pid = "jobid"
+			lbl = "$T.side_dbview_job"
+			type = DATAID
+			datatype=["job"]
+			defval = "J000"
+		}
+	],
+	//	no hooks
+};
+
+//	バトルコマンド設定。〇
+//	※このオプションはフック関数は無い。RPGPlayer.updateScoreMapで集計される
+//	指定したバトルコマンドを、指定したスロットに設定する。
+//	スロットは、0-7を直値か、空いてるところ、置き換える、
+//	処理順のコントロールが必要。先に空いてるスロット、次にスロット置き換え、最後にコマンド置き換え。
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_battlecmd",
+	name = "$T.opt_battlecmd",
+	icon = icon_learn,
+	ownable = true,
+	info = @(){	//	this==opd
+		local k = battlecmd;
+		local ma = RPGProperties.battlecmdlist();
+		local bc = MenuBehavior._finditem( ma, @( v) k==v["val"]);
+		if( slot == 100){
+			local k = replace;
+			local pc = MenuBehavior._finditem( ma, @( v) k==v["val"]);
+			return  iconlblstr( pc) .. " ⇒ " .. iconlblstr( bc);
+		}else{
+			return iconlblstr( bc);
+		}
+	}
+	order = @( opd) 10	//	置き換え順番指定出来たほうが良いかも？
+	props = [
+		{
+			pid = "battlecmd"
+			lbl = "$T.type_battlecmd"
+			type = LIST,
+			list = RPGProperties.battlecmdlist,
+			defval = "attack"
+		},
+		{
+			pid = "slot"
+			lbl = "$T.lbl_slot"
+			type = LIST,
+			list = [
+				{ lbl="$T.type_emptyslot", val=-1, },
+				{ lbl="${T.lbl_slot}0", val=0, },
+				{ lbl="${T.lbl_slot}1", val=1, },
+				{ lbl="${T.lbl_slot}2", val=2, },
+				{ lbl="${T.lbl_slot}3", val=3, },
+				{ lbl="${T.lbl_slot}4", val=4, },
+				{ lbl="${T.lbl_slot}5", val=5, },
+				{ lbl="${T.lbl_slot}6", val=6, },
+				{ lbl="${T.lbl_slot}7", val=7, },
+				{ lbl="$T.lbl_replacecmd", val=100, },
+			]
+			defval = 0
+		},
+		{
+			pid = "replace"
+			lbl = "$T.lbl_cmdtoreplace"
+			type = LIST,
+			list = RPGProperties.battlecmdlist,
+			defval = "attack"
+			hide=@( pl) pl.getParam( "slot")!=100
+		},
+	],
+	//	no hooks
+};
+
+//	属性特効〇
+//	
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_elemsp",
+	name = "$T.opt_elemsp",
+	icon = icon_attack,
+	ownable = true,
+	info = @(){	//	this==opd
+		local sb = StringBuffer();
+		sb .. spdmgstr( totalrate) .. ":";
+		foreach( i,e in ::conf.type.elem){
+			if( elembits & (1<<i)){
+				sb .. sprintf("%S", e.icon);
+			}
+		}
+		return string( sb);
+	}
+	props = [
+		formbitsprop,
+		elembitsprop,
+		totalrateprop,
+	],
+	action = @( opd, id, dmg, self){
+		if( id=="attack" && dmg.src == self){
+			local elembits = dmg.skill["elembits"] || 0;
+			local formbits = 1 << (dmg.skill["dmgform"] ?? 32);
+			if( (elembits & opd.elembits) && (formbits & opd.formbits)){
+				dmg.cval.totalrate += ::getvar( opd.totalrate, opd) * 0.01;
+			}
+		}
+	},
+}
+
+//	種族特攻〇
+//	
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_tribesp",
+	name = "$T.opt_tribesp",
+	icon = icon_attack,
+	ownable = true,
+	info = @(){	//	this==opd
+		local sb = StringBuffer();
+		sb .. spdmgstr( totalrate) .. ":";
+		foreach( i,t in ::conf.type.tribe){
+			if( (1<<i)&tribebits) sb .. t["icon"];
+		}
+		return string( sb);
+	},
+	props = [
+		{
+			pid = "tribebits",
+			lbl = "$T.lbl_tribe"
+			type = CHECKBITS,
+			list = @() typelist( "tribe"),
+			defval = 1,
+		},
+		formbitsprop,
+		elembitsprop,
+		totalrateprop,
+	],
+	action = @( opd, id, dmg, self){
+		if( id=="attack" && dmg.src == self){
+			local tribebits = dmg.dst["tribebits"] || 0;
+			local elembits = dmg.skill["elembits"] || 0;
+			local formbits = 1 << (dmg.skill["dmgform"] ?? 32);
+			if( (tribebits & opd.tribebits) && (elembits & opd.elembits) && (formbits & opd.formbits)){
+				dmg.cval.totalrate += ::getvar( opd.totalrate, opd) * 0.01;
+			}
+		}
+	},
+}
+
+//	武器特効〇
+//	
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_weaponsp",
+	name = "$T.opt_weaponsp",
+	icon = icon_attack,
+	ownable = true,
+	info = @(){	//	this==opd
+		local sb = StringBuffer();
+		sb .. spdmgstr( totalrate) .. ":";
+		foreach( i,e in ::conf.type.eqtype){
+			if( isWeapon( i)){
+				sb .. sprintf("%S", e.icon);
+			}
+		}
+		return string( sb);
+	},
+	props = [
+		{
+			pid = "spbits",
+			lbl = "$T.lbl_weapon"
+			type = CHECKBITS,
+			list = @() ::conf.type.eqtype.filter( @( v, i) isWeapon( i))
+			defval = 1
+		},
+		formbitsprop,
+		elembitsprop,
+		totalrateprop,
+	],
+	action = @( opd, id, dmg, self){
+		if( id=="attack" && dmg.src == self){
+			local w = dmg.src.getWeapon()["data"];
+			local bits = 1 << (w["eqtype"] || 0);	//	1<<装備中の武器タイプ。何も装備していない場合は1となる
+			local elembits = dmg.skill["elembits"] || 0;
+			local formbits = 1 << (dmg.skill["dmgform"] ?? 32);
+			if( (bits & opd.spbits) && (elembits & opd.elembits) && (formbits & opd.formbits)){
+				dmg.cval.totalrate += ::getvar( opd.totalrate, opd) * 0.01;
+			}
+		}
+	},
+}
+
+//	被ダメージ率〇
+//	
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_defrate",
+	name = "$T.opt_defrate",
+	icon = icon_attack,
+	ownable = true,
+	info = @(){	//	this==opd
+		return spdmgstr( totalrate, "$T.spdef");
+	}
+	props = [
+		formbitsprop,
+		elembitsprop,
+		totalrateprop,
+	],
+	action = @( opd, id, dmg, self){
+		if( id=="defend" && dmg.dst == self){
+			local elembits = dmg.skill["elembits"] || 0;
+			local formbits = 1 << (dmg.skill["dmgform"] ?? 32);
+			if( (!opd.elembits || (elembits & opd.elembits)) && (formbits & opd.formbits)){
+				dmg.cval.totalrate += getvar( opd.totalrate, opd)*0.01;
+			}
+		}
+	},
+}
+
+//	装備可能フラグ〇
+//	※このオプションはフック関数は無い。RPGPlayer.getEquipFlagBits()で毎回オプションから計算する。
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_eqflag",
+	name = "$T.opt_eqflag",
+	icon = icon_flag,
+	ownable = true,
+	info = @(){	//	this==opd
+		return iconlblstr( ::conf.type.eqflag[eqflag]);
+	},
+	props = [
+		{ pid="eqflag", lbl="$T.type_eqflag", type=LIST, list=@() typelist( "eqflag"), defval=0, }
+	],
+	//	no hooks
+}
+
+//	専用ジョブフラグ〇
+//	※このオプションはフック関数は無い。RPGPlayer.getJobFlagBits()で毎回オプションから計算する。
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_jobflag",
+	name = "$T.opt_jobflag",
+	icon = icon_flag,
+	ownable = true,
+	info = @(){	//	this==opd
+		return iconlblstr( ::conf.type.jobflag[jobflag]);
+	},
+	props = [
+		{ pid="jobflag", lbl="$T.type_jobflag", type=LIST, list=@() typelist( "jobflag"), defval=0, }
+	],
+	//	no hooks
+}
+
+//	ボスフラグ〇
+//	※このオプションはフック関数は無い。RPGPlayer.updateScoreMapで集計される
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_bossflag",
+	name = "$T.opt_bossflag",
+	icon = icon_flag,
+	ownable = true,
+	desc = @(){	//	this==opd
+	},
+	props = [
+	],
+}
+
+//	スキル封印
+//	
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_skillseal",
+	name = "$T.opt_skillseal",
+	icon = icon_seal,
+	desc = @(){	//	this==opd
+	},
+	props = [
+		{
+			pid = "skillbits",
+			lbl = "$T.lbl_skill",
+			type = CHECKBITS,
+			list = @() datalist( "skill"),
+			defval = 0,
+			cnt = "cnt5.ui",
+		},
+	],
+}
+
+local sealflaglist = [
+	{ lbl="$T.skillflag2", icon="\uf814", idx=2 },
+	{ lbl="$T.skillflag3", icon="\uf810" idx=3 },
+	{ lbl="$T.skillflag4", icon="\uf811", idx=4 },
+	{ lbl="$T.skillflag5", icon="\uf812", idx=5 },
+	{ lbl="$T.skillflag6", icon="\uf813", idx=6 },
+	{ lbl="$T.skillflag7", icon="\uf822", idx=7 },
+];
+
+//	スキル能力封印
+//	
+RPGSystem.option .. {
+	category = 0,
+	key = "opt_skillflagseal",
+	name = "$T.opt_skillflagseal",
+	icon = icon_seal,
+	info = @(){	//	this==opd
+		local sb = StringBuffer();
+		foreach( i,e in sealflaglist){
+			if( this["flagbits"] & (1<<e.idx)) sb .. e.icon;
+		}
+		return string( sb);
+	},
+	props = [
+		{
+			pid = "flagbits",
+			lbl = "$T.lbl_flags",
+			type = CHECKBITS,
+			list = sealflaglist,
+			defval = 0,
+		},
+	],
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	相手への効果オプション定義
+//	
+
+//	指定したコンディションを付与する。 △ボスフラグチェックはプロパティに入れる？
+//	when : 攻撃が当たった時、ダメージを受けたとき
+//	whom : 自分、相手
+//	
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_putcond",
+	name = "$T.opt_putcond",
+	icon = icon_skill,
+	info = @(){	//	this==opd
+		local cond = ::conf.cond[condid];
+		// local sb = StringBuffer();
+		// sb .. sprintf( "%S\uf7c0", cond["icon"]);
+		// return string( sb);
+		return cond["icon"]||"";
+	},
+	action = @( opd, id, dmg, self){
+		if( id=="condchk" && dmg.isSuccess() && !self.isDead()){
+			local when = opd.when ? dmg.dst : dmg.src;	//	src==自分なら攻撃を当てたとき、dst==自分なら攻撃を受けたとき
+			if( when == self){
+				local whom = opd.whom ? self : (dmg.src==self?dmg.dst:dmg.src);
+				//	確率とかいろいろチェック。既に掛かってる＋重ね掛け不能な場合は無効
+				if( !whom.canPutCondition( opd.condid)) return;
+				local r = ::getvar( opd.rate, opd);
+				// local cdr = ::debuffRate( whom, opd.condid, r);	//	これプロパティで使うか指定出来て良いかも。ボスフラグも
+				// if( ::rnd( 1.0) > r*cdr) return;
+				dmg.addEvent( { chr=whom, id="putcond", condid=opd.condid});
+				return true;
+			}
+		}
+	},
+	props = [
+		{
+			pid = "condid",
+			lbl = "$T.side_dbview_cond"
+			type = DATAID
+			datatype=["cond"]
+			defval = "K000",
+		},
+		{
+			pid = "when",
+			lbl = "$T.when"
+			type = LIST,
+			list = ["$T.when_attackhit","$T.when_damagehit"],
+			defval = 0,
+		},
+		{
+			pid = "whom",
+			lbl = "$T.whom"
+			type = LIST,
+			list = ["$T.whom_oppo","$T.whom_me"],
+			defval = 0,
+		},
+		{ ...userateprop, lbl="$T.lbl_hitrate" },
+		{
+			pid = "showmiss",
+			lbl = "ミスの表示"
+			type = BOOL,
+			defval = false;
+		},
+		{
+			pid = "efx_start",
+			lbl = "$T.lbl_efx_start"
+			type = RESID,
+			restype = ["efx"],
+			defval = null,
+		},
+	],
+};
+
+//	指定したコンディションを解除する。複数設定可能。〇
+//	確率は耐性による調整なし。
+//	
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_remcond",
+	name = "$T.opt_remcond",
+	icon = icon_skill,
+	info = @(){	//	this==opd
+		local sb = StringBuffer();
+		foreach( v in bitlist( condbits)){
+			local cond = ::conf.cond["K%03d" % v];
+			sb .. ("%S\b\uf7c9" % cond["icon"]);
+		}
+		return string( sb);
+	},
+	action = @( opd, id, dmg, self){
+		if( id=="condchk" && dmg.val && !self.isDead()){
+			local when = opd.when ? dmg.dst : dmg.src;	//	src==自分なら攻撃を当てたとき、dst==自分なら攻撃を受けたとき
+			if( when == self){
+				local whom = opd.whom ? self : (dmg.src==self?dmg.dst:dmg.src);
+				//	確率とかいろいろチェック。既に掛かってる＋重ね掛け不能な場合は無効
+				if( !whom.canRemoveAnyCondition( opd.condbits)) return;
+				local r = ::getvar( opd.rate, opd);
+				if( ::rnd( 1.0) > r) return;
+				foreach( cond in whom.conds){
+					local i = cond.getIndex();
+					if( ::bitget( opd.condbits, i) && whom.canRemoveCondition( cond.dataid)){
+						dmg.addEvent( { chr=whom, id="remcond", condid=cond.dataid});
+					}
+				}
+				// return true;	//	打ち止めしない
+			}
+		}
+	},
+	props = [
+		{
+			pid = "condbits",
+			lbl = "$T.side_dbview_cond"
+			type = CHECKBITS,
+			list = @() datalist( "cond"),
+			defval = null,
+		},
+		{
+			pid = "when",
+			lbl = "$T.when"
+			type = LIST,
+			list = ["$T.when_attackhit","$T.when_damagehit"],//,"倒した時","倒された時"],		//	倒し倒されはいらんでしょ
+			defval = 0,
+		},
+		{
+			pid = "whom",
+			lbl = "$T.whom"
+			type = LIST,
+			list = ["$T.whom_oppo","$T.whom_me"],
+			defval = 0,
+		},
+		formbitsprop,
+		elembitsprop,
+		userateprop,
+	],
+}
+
+//	追撃スキル △どのタイミング？
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_exskill",
+	name = "$T.opt_exskill",
+	icon = icon_skill,
+	condrem = true,
+	info = @(){	//	this==opd
+		local s = ::rpgdata[skillid];
+		return `${s["icon"]||""}$s.name`;
+	},
+	action = @( opd, id, dmg, self){
+		if( id=="postskill" && dmg.src==self && dmg.val){
+			local r = ::getvar( opd.rate, opd);
+			if( ::rnd( 1.0) > r) return;
+			local skill = ::rpgdata[opd.skillid];
+			local cmd = SkillCommand( self, skill, [dmg.dst]);	//	TODO : dstじゃなくてcmdtgtで取得する。cmdのorderは0のままで良いか？
+			dmg.addEvent( { chr=self, id="cmd", cmd=cmd});
+			countrem( self, cmd, opd["countrem"]);
+		}
+	},
+	props = [
+		{ pid="skillid", lbl="$T.lbl_skill", type=DATAID, datatype=["skill"], defval="S000", nullable=false, },
+		userateprop,
+	],
+};
+
+//	反動ダメージ／回復スキル△エフェクト
+//	スキル最終段で与えたダメージ分自分のHP,MP,TPなどを回復する。⇒最大で敵HPにするほうがいい
+//	dmgrateが-なら回復、+ならダメージ
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_recoil",
+	name = "$T.opt_recoil",
+	icon = icon_skill,
+	condrem = true,
+	info = @(){	//	this==opd
+		if( typeof( dmgval) <= SS_FLOAT){
+			local heal = dmgval<0;
+			return (heal?"$T.drain:":"$T.recoil:") .. dmgval;//absorrelstr( -dmgval, relative);	//	反動、吸取、recoil、absorb, 跳ね返り, 
+		}else{
+			return "$T.recoil";	//	式。。。
+		}
+	},
+	action = @( opd, id, dmg, self){
+		if( id=="recoil" && dmg.src==self){
+			if( dmg.skip || dmg.miss || dmg.heal || dmg.shield) return;
+			local v = ::getvar( opd.dmgval, opd), v0 = v;
+			if( opd.relative) v = dmg.cval.fix() * v * 0.01;
+			v = -int( v);
+			if( v){
+				dmg.addEvent( { chr=self, id="pid", pid=dmg.pid, val=v, efx=opd.efx});
+				countrem( self, dmg.cmd, opd["countrem"]);
+			}
+		}
+	},
+	props = [
+		relativeprop,
+		dmgvalprop,
+		efxprop,
+	],
+};
+
+//	カウンタースキル〇
+//	※連続攻撃に対して毎回カウンターしちゃってるんでなんか対策有ったほうが良い
+//	
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_counter",
+	name = "$T.opt_counter",
+	icon = icon_skill,
+	condrem = true,
+	order = -10,		//	カウンター判定は早い
+	
+	action = @( opd, id, dmg, self){
+		if( id=="defend" && dmg.dst==self && dmg.src!=self){
+			if( !(dmg.skill.flags & (1<<FLAG_COUNTERABLE))) return;	//	カウンター可能じゃないのを除外
+			if( self.isSkillFlagSealed( 1<<FLAG_COUNTERABLE)) return;	//	カウンターが封じられていたら除外
+			if( !((1<<(dmg.skill["dmgform"]??32)) & opd["formbits"] )) return;	//	ダメージ式で除外
+			if( opd["elembits"] && !(dmg.skill["elembits"] & opd.elembits)) return;	//	属性で除外
+			//
+			local r = ::getvar( opd.rate, opd);
+			if( ::rnd( 1.0) > r) return;
+			local skill = ::rpgdata[opd.skillid] || self.getAttackSkill();
+			local cmd = SkillCommand( self, skill, [dmg.src]);	//	TODO : dstじゃなくてcmdtgtで取得する。cmdのorderは0のままで良いか？
+			cmd.resetskill = self.skill;		//	カウンタースキル後は元のスキルに戻す必要あり
+			dmg.addEvent( { chr=self, id="cmd", cmd=cmd});
+			switch( opd.hittype){
+			case 1: dmg.miss = true; break;
+			case 2: dmg.skip = true; break;
+			}
+			overridectx( dmg, opd["hitact"]);	//	ヒットアクションの置き換え
+			countrem( self, cmd, opd["countrem"]);
+			return true;	//	オプション打ち止め
+		}
+	},
+	props = [
+		{ pid="skillid", lbl="$T.lbl_skill", type=DATAID, datatype=["skill"], defval=null, nullable=true, },
+		formbitsprop,
+		elembitsprop,
+		userateprop,
+		{
+			pid = "hittype",
+			lbl = "$T.lbl_atkresult"
+			type = LIST,
+			list = ["$T.anim_damage","$T.anim_avoid","$T.lbl_skip"],
+			defval = 0,
+		},
+		hitactprop,
+	],
+};
+
+//	シールド。〇
+//	盾持ってないと発動しない？
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_shield",
+	name = "$T.opt_shield",
+	icon = icon_guard,
+	condrem = true,
+	order = 50,		//	シールド判定は後の方
+	info = @(){	//	this==opd
+		if( typeof( successrate) <= SS_FLOAT){
+			return sprintf( "$T.shield %d％", (successrate*100)|0);
+		}else{
+			return "$T.shield";
+		}
+	},
+	action = @( opd, id, dmg, self){
+		if( id=="defend" && dmg.dst==self && dmg.src!=self){
+			if( !(dmg.skill.flags & (1<<FLAG_SHIELDABLE))) return;	//	シールド可能じゃないのを除外
+			if( self.isSkillFlagSealed( 1<<FLAG_SHIELDABLE)) return;	//	シールドが封じられていたら除外
+			if( !((1<<(dmg.skill["dmgform"]??32)) & opd["formbits"] )) return;	//	ダメージ式で除外
+			if( opd.elembits && !(dmg.skill["elembits"] & opd.elembits)) return;	//	属性で除外
+			if( opd["needshield"] && !self.getShield()) return;
+			local r = ::getvar( opd.successrate, opd), v = ::rnd( 1.0);
+			if( v > r) return;
+			dmg.shield = true;
+			dmg.cval.totalrate = ::getvar( opd.dmgrate, opd);
+			overridectx( dmg, opd["hitact"]);	//	ヒットアクションの置き換え
+			countrem( self, dmg.cmd, opd["countrem"]);
+			return true;
+		}
+	},
+	props = [
+		formbitsprop,
+		elembitsprop,
+		dmgrateprop,
+		successrateprop,
+		{ pid="needshield", lbl="$T.lbl_needshield", type=BOOL, defval=true, }
+		hitactprop,
+	],
+};
+
+//	回避。△エフェクト。あとアニメーション、サウンドも？
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_parry",
+	name = "$T.opt_parry",
+	icon = icon_guard,
+	condrem = true,
+	order = 10,		//	反射、カウンター、の後ぐらい
+	info = @(){	//	this==opd
+		local vstr = "", estr = "";
+		if( typeof( successrate) <= SS_FLOAT){
+			vstr = sprintf( " %d％", successrate*100);
+		}
+		if( elembits){
+			estr = ": "..elemsstr( elembits);
+		}
+		return sprintf( "回避%S%S", vstr, estr);
+	},
+	action = @( opd, id, dmg, self){
+		if( id=="defend" && dmg.dst==self && dmg.src!=self){
+			if( !(dmg.skill.flags & (1<<FLAG_AVOIDABLE))) return;	//	回避可能じゃないのを除外
+			if( self.isSkillFlagSealed( 1<<FLAG_AVOIDABLE)) return;	//	回避が封じられていたら除外
+			if( !((1<<(dmg.skill["dmgform"]??32)) & opd["formbits"] )) return;	//	ダメージ式で除外
+			if( opd.elembits && !(dmg.skill["elembits"] & opd.elembits)) return;	//	属性で除外
+			local r = ::getvar( opd.successrate, opd);
+			if( ::rnd( 1.0) > r) return;
+			dmg.miss = true;
+			overridectx( dmg, opd["hitact"]);	//	ヒットアクションの置き換え
+			countrem( self, dmg.cmd, opd["countrem"]);
+			return true;
+		}
+	},
+	props = [
+		formbitsprop,
+		elembitsprop,
+		successrateprop,
+		hitactprop,
+	],
+};
+
+//	反射。△エフェクト
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_reflect",
+	name = "$T.opt_reflect",
+	order = -15,			//	カウンターより前かなーー
+	icon = icon_guard,
+	condrem = true,
+	desc = @(){	//	this==opd
+		
+	},
+	action = @( opd, id, dmg, self){
+		if( id=="defend" && dmg.dst==self && dmg.src!=self){
+			if( !(dmg.skill.flags & (1<<FLAG_REFLECTABLE))) return;	//	反射可能じゃないのを除外
+			if( self.isSkillFlagSealed( 1<<FLAG_REFLECTABLE)) return;	//	反射が封じられていたら除外
+			if( !((1<<(dmg.skill["dmgform"]??32)) & opd["formbits"] )) return;	//	ダメージ式で除外
+			if( opd.elembits && !(dmg.skill["elembits"] & opd.elembits)) return;	//	属性で除外
+			local r = ::getvar( opd.successrate, opd);
+			if( ::rnd( 1.0) > r) return;
+			dmg.addEvent( { chr=dmg.src, id="reflect", dmgrate=opd.dmgrate});
+			dmg.skip = true;
+			overridectx( dmg, opd["hitact"]);	//	ヒットアクションの置き換え
+			countrem( self, dmg.cmd, opd["countrem"]);
+			return true;
+		}
+	},
+	props = [
+		formbitsprop,
+		elembitsprop,
+		dmgrateprop,
+		successrateprop,
+		hitactprop,
+	],
+};
+
+//	吸収。△エフェクト
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_absorb",
+	name = "$T.opt_absorb",
+	order = -30,			//	多分最初
+	icon = icon_guard,
+	condrem = true,
+	desc = @(){	//	this==opd
+		
+	},
+	action = @( opd, id, dmg, self){
+		if( id=="defend" && dmg.dst==self){	//	吸収の場合はdmg.src!=self判定無し
+			if( !(dmg.skill.flags & (1<<FLAG_DRAINABLE))) return;	//	吸収可能じゃないのを除外
+			if( self.isSkillFlagSealed( 1<<FLAG_DRAINABLE)) return;	//	吸収が封じられていたら除外
+			if( !((1<<(dmg.skill["dmgform"]??32)) & opd["formbits"] )) return;	//	ダメージ式で除外
+			if( opd.elembits && !(dmg.skill["elembits"] & opd.elembits)) return;	//	属性で除外
+			local r = ::getvar( opd.successrate, opd);
+			if( ::rnd( 1.0) > r) return;
+			dmg.heal = true;
+			dmg.cval.totalrate = ::getvar( opd.dmgrate, opd);
+			overridectx( dmg, opd["hitact"]);	//	ヒットアクションの置き換え
+			countrem( self, dmg.cmd, opd["countrem"]);
+			return true;
+		}
+	},
+	props = [
+		formbitsprop,
+		elembitsprop,
+		dmgrateprop,
+		successrateprop,
+		hitactprop,
+	],
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	特殊条件
+//	
+
+//	アクション時にスキルとターゲットを置換する。〇
+//	コンディションの行動制約時にこれで実行するスキルとターゲットを指定する。死亡時にも置換で何もしないを選択。
+//	
+RPGSystem.option .. {
+	category = 2,
+	key = "opt_skillreplace",
+	name = "$T.opt_skillreplace",
+	icon = icon_skill,
+	condrem = true,
+	order = @( opd) opd["order"]
+	info = @(){	//	this==opd
+		local tgtprops = ::RPGSystem.skilltype.noop.props[1];
+		local p = tgtprops.list.find( @( v) v.val==cmdtgt);
+		local s = ::conf.skill[skillid];
+		local ss = s ? `${s["icon"]||""}${s.name}` : "$T.attack";
+		return ss .. " ⇒ " .. (p["lbl"]||cmdtgt);
+	},
+	action = @( opd, id, cmd, self){		//	skillchangeの場合は引数3がcmd
+		if( id=="skillchange" && cmd.src==self){
+			if( self.isSkillFlagSealed( opd.sealbits)) return;	//	封じられていたら除外
+			local r = ::getvar( opd.rate, opd);
+			if( ::rnd( 1.0) > r) return;
+			//	ターゲットを指定。元の選択も加味。
+			local skill = ::rpgdata[opd.skillid] || self.getAttackSkill();
+			local cmdtgt = opd.cmdtgt || skill.cmdtgt;
+			local src = cmd.src, dst = cmd.dsts[0], dst0 = dst;
+			local battle = ::rpgstage.battle;
+			if( !dst || !isCommandTarget( src, dst, cmdtgt)){	//	元々のターゲットが変化後スキルのターゲットじゃなかった場合、ランダムに選ぶ
+				local a = battle.charas.filter( @( v) isCommandTarget( src, battle.charas, cmdtgt));
+				dst = ::rnd.choosea( a);
+			}
+			cmd.dsts = battle.getCommandTargets( src, dst, cmdtgt);
+			cmd.skill = skill;
+			cmd.src.setSkill( skill);	//	この呼び方で良いかな？
+			countrem( self, cmd, opd["countrem"]);
+			return true;	//	打ち止め
+		}
+	},
+	props = @() [
+		{ pid="skillid", lbl="$T.lbl_skill", type=DATAID, datatype=["skill"], defval=null, nullable=true, },
+		::RPGSystem.skilltype.noop.props[1],	//	コマンドターゲット
+		userateprop,
+		orderprop,
+		{ pid="skillset", lbl="$T.lbl_setchangeskills", type=BOOL, defval=false}
+		{
+			pid = "skillbits"
+			lbl = ""
+			type = CHECKBITS,
+			list = @() datalist( "skill"),
+			cnt = "cnt5.ui"
+			defval = 1,
+			hide = @( pl) !pl.getParam( "skillset")
+		},
+		{ pid = "sealbits", lbl = "$T.lbl_sealbits", type = CHECKBITS, list = sealflaglist, defval = 0, },
+	],
+};
+
+//	死亡時スキル。自分を回復すれば自動復活。攻撃技なら死に際の一撃。
+//	
+RPGSystem.option .. {
+	category = 2,
+	key = "opt_dyingskill",
+	name = "$T.opt_dyingskill",
+	icon = icon_skill,
+	condrem = true,
+	order = @( opd) opd["order"]
+	info = @(){	//	this==opd
+		local tgtprops = ::RPGSystem.skilltype.noop.props[1];
+		local p = tgtprops.list.find( @( v) v.val==cmdtgt);
+		local s = ::conf.skill[skillid];
+		local ss = s ? `${s["icon"]||""}${s.name}` : "$T.attack";
+		return ss .. " ⇒ " .. (p["lbl"]||cmdtgt);
+	},
+	action = @( opd, id, arg, self){
+		if( id=="dying" && arg.self==self){	//	dyingはtrueを返すことで死亡を一時的にキャンセル可能。
+			//	dyingフラグチェック。一度このオプションを通過すると、死ぬかスキルが発動するまでフラグが立ったままになる。
+			if( self.battleflags & 1) return true;
+			if( self.battleflags & 256) return;
+			self.battleflags |= 1;
+			if( opd["onetime"]) self.battleflags |= 256;	//	1回きりビット。戦闘中有効
+			//	
+			if( self.isSkillFlagSealed( opd.sealbits)) return;	//	封じられていたら除外
+			local r = ::getvar( opd.rate, opd);
+			if( ::rnd( 1.0) > r) return;
+			//	ターゲットを指定。元の選択も加味。
+			local skill = ::rpgdata[opd.skillid] || self.getAttackSkill();
+			local cmdtgt = opd.cmdtgt || skill.cmdtgt;
+			local dst = arg.src;	//	デフォルトのターゲットは攻撃者
+			local battle = ::rpgstage.battle;
+			if( !dst || !isCommandTarget( self, dst, cmdtgt)){	//	元々のターゲットが変化後スキルのターゲットじゃなかった場合、ランダムに選ぶ
+				local a = battle.charas.filter( @( v) isCommandTarget( self, v, cmdtgt));
+				dst = ::rnd.choosea( a);
+				if( !dst) return;	//	dstいないと発動できない
+			}
+			local dsts = battle.getCommandTargets( self, dst, cmdtgt);
+			local cmd = SkillCommand( self, skill, [dst]);
+			cmd.order = -10000;	//	すぐに発動
+			battle.insertCommand( cmd);		//	addEventは出来ないので直接ここに追加しちゃう
+			countrem( self, cmd, opd["countrem"]);
+			return true;	//	打ち止め
+		}else
+		if( id=="precommand" && arg.src==self){	//	死亡時スキルチェック済み状態を解除
+			self.battleflags &= ~1;
+		}
+	},
+	props = @() [
+		{ pid="skillid", lbl="$T.lbl_skill", type=DATAID, datatype=["skill"], defval=null, nullable=true, },
+		::RPGSystem.skilltype.noop.props[1],	//	コマンドターゲット
+		userateprop,
+		{ pid="sealbits", lbl="$T.lbl_sealbits", type = CHECKBITS, list = sealflaglist, defval = 0, },
+		{ pid="onetime", lbl="$T.lbl_onetime", type=BOOL, defval=true, }
+	],
+};
+
+//	とりあえず瀕死の仲間をかばう △かばう時に対称の前にキャラ位置を移動！
+//	
+RPGSystem.option .. {
+	category = 2,
+	key = "opt_backup",
+	name = "$T.opt_backup",
+	icon = icon_skill,
+	condrem = true,
+	order = 99,		//	targetchangeの中では最後尾
+	desc = @(){	//	this==opd
+	},
+	action = @( opd, id, dmg, self){
+		if( id=="targetchange"){
+			if( !(dmg.skill.flags & (1<<FLAG_BACKUPABLE))) return;	//	かばう可能じゃないのを除外
+			if( self.isSkillFlagSealed( 1<<FLAG_BACKUPABLE)) return;	//	かばうが封じられていたら除外
+			if( getRelation( self, dmg.dst) != 1) return;	//	味方に対して飛んできた攻撃か
+			if( getRelation( self, dmg.src) != 2) return;	//	敵が仕掛けてきた攻撃か。パーティアタックは除外？
+			// if( dmg.dst.hprate() > 25) return;		//	ピンチ判定
+			local r = ::getvar( opd.rate, opd);
+			if( ::rnd( 1.0) > r) return;
+			local dst = dmg.dst;
+			dmg.dst = self;	//	単にdstを変更するだけで良し。
+			//	TODO : actで庇うキャラの前に立つ。
+			local rp3d = ::rpgstage.battle?.getChara3D( self), dst3d = ::rpgstage.battle?.getChara3D( dst);
+			rp3d.manuaction.act( @(){
+				anime( {id="aim"});
+				move( {target = Vector3D( dst3d.pos).add(-0.6,0,0), aim=false, spd=30.0, movetype="jump", });
+			});
+			countrem( self, dmg.cmd, opd["countrem"]);
+			return true;	//	targetchangeはここで打ち止め
+		}
+	},
+	props = [
+		{ pid="tgttype", lbl="$T.lbl_target", type=LIST, list=[{lbl="$T.lbl_pinchfriends", val=0}, {lbl="$T.lbl_cmdtgt", val=1}, ], defval=0}
+		dmgrateprop,
+		userateprop,
+	],
+};
+
+//	定期ダメージ／回復
+//	ターン終了時か自分の行動終了時にダメージか回復。
+//	
+RPGSystem.option .. {
+	category = 2,
+	key = "opt_turndmg",
+	name = "$T.opt_turndmg",
+	icon = icon_timer,
+	// condrem = true,
+	info = @(){
+		local vstr;
+		if( typeof( dmgval) <= SS_FLOAT){
+			vstr = sprintf( "%S%d%S", (dmgtype&1)?"-":"+", dmgval, relative?"％":"");
+		}else{
+			vstr = dmgtype;
+		}
+		return sprintf( "%S %S %S", T[when], DamageTypePID[dmgtype], vstr);
+	}
+	action = @( opd, id, arg, self){
+		//	postcommandの場合は自分の行動かチェック
+		if( opd.when!=id || opd.when=="postcommand" && arg["src"!=self] && self.isDead()) return;	//	死者には効かないでOK?
+		//	エフェクト、ダメージポップ、HP変化。死亡チェックはやらない
+		local v = ::getvar( opd.dmgval, opd);
+		if( opd.relative) v *= self.MAXHP * 0.01;
+		v = int( v);
+		if( v){
+			local rp3d = ::rpgstage.battle.getChara3D( self);
+			local as = rp3d.manuaction.act( @(){
+				wait( EFX);
+				if( opd["efx"]){ efx( opd.efx); wait( EFX); }
+				popdamage( v);
+				self.addPoint( DamageTypePID[opd.dmgtype], v*(opd.dmgtype&2?1:-1));	//	dieCheckを後でしないといけない
+			});
+			// countrem( self, cmd, opd["countrem"]);	//	cmdないな
+		}
+	},
+	props = [
+		{
+			pid = "when",
+			lbl = "$T.when"
+			type = LIST,
+			list = [{lbl="$T.postturn",val="postturn"},{lbl="$T.postcommand",val="postcommand"}],
+			defval = "postturn",
+		},
+		dmgtypeprop,
+		relativeprop,
+		dmgvalprop,
+		efxprop,
+	],
+};
+
+//	歩行ダメージ／回復
+//	ステージ中で歩くごとにダメージ、回復。1歩は1m程度で、歩数指定可能。
+//	変化量も割合か絶対値。
+//	
+RPGSystem.option .. {
+	category = 2,
+	key = "opt_walkdmg",
+	name = "$T.opt_walkdmg",
+	icon = icon_walk,
+	condrem = true,
+	info = @(){
+		local vstr;
+		if( typeof( dmgval) <= SS_FLOAT){
+			vstr = sprintf( "%S%d%S", (dmgtype&1)?"-":"+", dmgval, relative?"％":"");
+		}else{
+			vstr = dmgtype;
+		}
+		return sprintf( "%S %S / %Sm", DamageTypePID[dmgtype], vstr, cnt);
+	}
+	action = @( opd, id, cnt, self){
+		if( id!="walk" || (cnt%opd.cnt)) return;
+		local v = ::getvar( opd.dmgval, opd);
+		if( opd.relative) v *= self.MAXHP * 0.01;
+		self.addPoint( "HP", -v);
+		self.updateDead();
+		if( opd["efx"]){
+			::rpgstage.player3d.effect( opd.efx);
+		}
+		if( opd["snd"]){
+			::rpgstage.player3d.playSound( opd.snd);
+		}
+		
+		//	ゲームオーバーチェック	間隔
+	},
+	props = [
+		{ pid="cnt", lbl="$T.stepcnt", type=SCALAR, range=(1,8), defval=4 }
+		dmgtypeprop,
+		relativeprop,
+		dmgvalprop,
+		efxprop,
+		sndprop,
+	],
+};
+
+
+//	このオプションが付いているときは条件が満たされた時に常時コンディションがかかった状態となる
+//	・ブロックするコンディションが付いている場合は掛からない
+//	・解除は可能だがすぐに掛かりなおす
+//	・ターンで解除があるコンディションもターンでは解けない
+//	・バフのレベルは1まで。じゃないと色んなフックで際限なく上がっていく
+RPGSystem.option .. {
+	category = 2,
+	key = "opt_autocond",
+	name = "$T.opt_autocond",
+	icon = icon_skill,
+	order = 0,
+	info = @(){
+		local cond = ::conf.cond[condid];
+		return sprintf( ::T[req?"auto_case":"auto_always"], cond.icon .. cond.name);
+	},
+	action = @( opd, id, arg, self){
+		switch( id){
+		case "walk":	//	通常時にもかかる状態異常はwalkアクションでかけなおす。
+			if( ::conf.cond[opd.condid]["rem_battle"]) break;
+		case "prebattle":
+		case "preturn":
+		case "postcommand":	//	バトル時は色々なタイミングをかけなおす。prebattleの場合は発動エフェクトなし
+			local req = RPGSystem.aipagereq[opd.req]["calc"];
+			if( (!req || req( opd.req, self))){
+				local cond = self.hasCondition( opd.condid);
+				if( cond){
+					cond.turn = cond.steps = cond.count = 0;	//	ターンと歩数等をリセットして常時掛かってるように
+				}else
+				if( self.canPutCondition( opd.condid)){
+					self.putCondition( opd.condid);
+				}
+			}
+			break;
+		}
+	},
+	props = [
+		{
+			pid = "condid",
+			lbl = "$T.side_dbview_cond"
+			type = DATAID
+			datatype=["cond"]
+			defval = "K000"
+		},
+		{
+			pid = "req",
+			lbl = "$T.lbl_require"
+			type = LIST
+			list = @() RPGSystem.aipagereq._list.map( @( v)({ lbl=v.name, val=v.key, submenu=v["submenu"]}))
+			defval = null
+		}
+	],
+};
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	その他
+//	
+
+//	任意のスクリプトを実行する。〇
+RPGSystem.option .. {
+	category = 3,
+	key = "opt_script",
+	name = "$T.opt_script",
+	icon = icon_etc,
+	condrem = true,
+	action = @( opd, id, dmg, self){
+		if( id == opd["when"]){
+			local func = compilestring_c( opd.scp);
+			func();
+			if( dmg["cmd"]) countrem( self, dmg.cmd, opd["countrem"]);	//	condremはprecommand, postcommandの時のみ有効？
+		}
+	},
+	props = [
+		{
+			pid = "when",
+			lbl = "$T.when"
+			type = LIST,
+			list = [
+				{lbl="$T.preturn",val="preturn",},
+				{lbl="$T.postturn",val="postturn",},
+				{lbl="$T.precommand",val="precommand",},
+				{lbl="$T.postcommand",val="postcommand",},
+				{lbl="$T.atwalking",val="walk",},
+			],
+			defval = 0,
+		},
+		{ pid="scp", lbl="$T.lbl_script", type=SCRIPT, multiline=8, cnt="cnt6.ui" },
+	],
+};

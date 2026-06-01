@@ -1,0 +1,1005 @@
+
+::DEFAULT_VISIBLEMASK <- (SK_VISIBLE_OPAQUE|SK_VISIBLE_SELECTOR|SK_VISIBLE_DEPTH);
+
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	ぽりごん
+//
+
+class MotionData
+{
+	res = null;				//	Resource object
+	parts = null;			//	list of motion parts ( sorted )
+	partsmap = null;
+	zinvert = false;
+	customs = null;			//	{name:[float,...]} 名前とカスタム値配列のマップ
+
+	start = 1;				//	start frame time
+	
+	function loadMotionData( bb){
+		if( bb.get4Code() != "SMOT") throw Exception( "invalid file header");
+		partsmap = {};
+		//	read parts list
+		local ver = bb.getb();
+		local num = bb.getb()&0xff;
+		parts = array( num);
+		for( local l = 0;l < num;l ++){
+			local p = parts[l] = BoneParts();
+			p.loadBoneParts( bb);
+			partsmap[p.name] <- p;
+		}
+		if( num) start = parts[0].transline.start;
+		//	read custom values
+		local cnum = bb.getb()&0xff;
+		if( cnum){
+			customs = {};
+			for( local l = 0;l < cnum;l ++){
+				local i = bb.getUTF(), ef = bb.gets(), v = array( ef);
+				for( local j = 0; j < ef; j ++) v[j] = bb.getf();
+				customs[i] <- v;
+			}
+		}
+		bb.getb();	//	reserved
+		if( num) zinvert = (parts[0].bindpose.abs() < 0.0);
+	}
+	
+	//	指定した名前と時間のカスタム値を取得するフレーム間は線形保管される
+	function getCustomValue( name, time, defval=0.0){
+		local a = customs[name];
+		if( !a) return defval;
+		local i = (time|0) - start;
+		if( i <= 0) return a[0];
+		local len = length( a);
+		if( i >= len-1) return a[len-1];
+		return Math.lerp( a[i], a[i+1], time-i);
+	}
+}
+
+with BoneParts
+{
+	function loadBoneParts( bb){
+		name = bb.getUTF();
+		id = bb.getb()&255;
+		parentid = (bb.getb()&255) - 1;
+		if( bb.getb()){
+			local v = pivot = Vector3D();
+			v.set( bb.getf(), bb.getf(), bb.getf());
+		}else{
+		}
+		local m = bindpose = Matrix();
+		for( local l = 0;l < 16;l ++) m[l] = bb.getf();
+		invbindpose = bindpose.invert34();
+		this.length = bb.getf();
+		transline = TransformTimeline();
+		transline.loadData( bb);
+		bb.geti();
+	}
+}
+
+with ShapeKeyList
+{
+	function _get( i){
+		return keymap[ i];
+	}
+}
+
+
+with ShapeState
+{
+	function assign( t){
+		local keymap = shapekeys.keymap;
+		foreach( i, w in t){
+			local idx = keymap[i];
+			if( idx != undefined){
+				this[idx] = w;
+			}
+		}
+		rehash();
+	}
+}
+
+
+with Bone
+{
+	function _cloned( org){
+		mat = clone mat;
+		trans = clone trans;
+		adjust = clone adjust;
+	}
+}
+
+function Material::isPBR(){
+	return tec.tag?.contains( "pbr");
+}
+
+function PolygonFace::constructor( ...){
+	if( vargc >= 3){
+		mode = vargv[0];
+		m = vargv[1];
+		idx = vargv[2];
+	}
+}
+
+function PolygonFace::loadPolygonFace( bb){
+	mode = bb.getb();
+	bb.getb();
+	idx = IndexBuffer();
+	idx.loadData( bb);
+	bb.geti();	//	reserved
+	
+	len = idx.length;
+	
+	//idx.describe();
+}
+
+function PolygonFace::_nexti( itr){
+	if( itr[0]) return null;
+	ite.set( 1, 0, this);
+	return itr;
+}
+
+class PolygonMesh
+{
+	res = null;				//	Resource object
+	
+	vtx = null;				//	VertexBuffer(配列の場合もある)
+	face = null;			//	PolygonFace[]
+	motion = null;			//	MotionData
+	bnd = null;				//	Rect3D : バウンディングボックス
+	pivot = null;			//	Transform : ピボット
+	wmapname = null;		//	list of weight map name
+	bones = null;			//	list of Bone ( external set )
+	
+	//	Shape Animation
+	shapesource = null;		//	ShapeState
+	shapetarget = null;		//	ShapeState
+	shapekeys = null;		//	ShapeKeyList
+	baseshapevtx = null;	//	VertexBuffer ... 頂点位置情報のみが入る
+	targetshapevtx = null;	//	VertexBuffer ... シェイプアニメ変形後のVertexBuffer
+	shapeline = null;		//	ShapeStateTimeline
+	shapesets = null;		//	{}
+	
+	//	Physics
+	rbdataset = null;		//	table<partsname=RigidBodyData>
+	
+	//	Custom data
+	customdata = null;
+
+	//	instance state
+	cloned = false;
+	
+	constructor( v=null, f=null){
+		res = ::resroot;
+		vtx = v;
+		face = f;
+	}
+	
+	function _cloned( org){
+		//	copy face material.....
+		if( typeof( face) == SS_ARRAY){
+			local a = array( length( face));
+			foreach( i, f in face){
+				f = a[i] = clone f;
+				f.m = clone f.m;
+			}
+			face = a;
+		}else{
+			face = clone face;
+			face.m = clone face.m;
+		}
+		if( typeof( vtx) == SS_ARRAY) vtx = clone vtx;
+		shapetarget = clone shapetarget;	//	shapesourceは共有するのでcloneしてはダメ
+		cloned = true;
+	}
+
+	function purge(){
+		if( !cloned){
+			if( typeof( vtx) == SS_ARRAY){
+				foreach( v in vtx){ v?.unload(); }
+			}else{
+				vtx?.unload();
+			}
+			foreach( f in face){ f.idx.unload(); f.idx = null; f.m = null; }
+			baseshapevtx?.unload();
+			targetshapevtx?.unload();
+		}
+		res = vtx = face = bones = motion = shapeline = null;
+	}
+
+	function resetMaterials(){
+		local t = getMaterialMap();		//	res.userdataに元のがあるからそこからコピー
+		foreach( f in face){
+			local m = f.m, orgm = t[m.name];
+			if( orgm) m << orgm;
+		}
+	}
+
+	function render( visiblemask=-1){
+		if( shapetarget && shapetarget.hash != shapesource.hash){
+			targetshapevtx.morph( baseshapevtx, shapetarget);
+			shapesource << shapetarget;
+		}
+		skDrawPolygonMesh( vtx, bones, face, visiblemask);	//	PolygonMesh描画を1命令に
+	}
+	
+	/**
+	 *	ByteBufferからモデルのデータを読み込む。マテリアルデータは外部セットとなる。
+	 */
+	function loadModelData( bb){
+		//	header
+		if( bb.get4Code() != "SMDL") throw Exception( "invalid file header");
+		local version = bb.getb();
+		local vbnum = bb.getb();		//	== 1
+		//	VertexBuffer
+		vtx = VertexBuffer();
+		vtx.loadData( bb);
+		
+//		for( local l = 0;l < 8;l ++){
+//			local cc = vtx[l];
+//			if( vtx[l] && (vtx[l].attr == 6)) vtx[l].describe();
+//			if( vtx[l]) vtx[l].describe();
+//		}
+		bb.geti();						//	reserved
+		//	PolygonFace
+		local facenum = bb.getb()&0xff;
+		face = array( facenum);
+		for( local l = 0;l < facenum;l ++){
+			local f = PolygonFace();
+			f.loadPolygonFace( bb);
+			face[l] = f;
+//			f.idx.describe();
+		}
+		bb.geti();						//	reserved
+		//	WeightMap
+		local wmapnum = bb.getb()&0xff;
+		if( wmapnum){
+			wmapname = array( wmapnum);
+			for( local l = 0;l < wmapnum;l ++){
+				wmapname[l] = bb.getUTF();
+//				printf("wmapname[%d] %S\n",l,wmapname[l]);
+			}
+		}
+		bb.geti();						//	reserved
+		//	ShapeKey
+		local hasshape = bb.getb();
+		if( hasshape){
+			shapekeys = ShapeKeyList();
+			shapekeys.loadData( bb);
+			if( shapekeys.keylen() == 0){
+				shapekeys = null;
+			}else{
+				local a = [];
+				for( local l = 0;l < shapekeys.attrlen();l ++){
+					a .. {
+						attr = shapekeys.attrAt( l)
+						elems = shapekeys.elemsAt( l)
+						type = SK_FLOAT
+						normalize = 0
+					}
+				}
+				//	
+				baseshapevtx = VertexBuffer();
+				baseshapevtx.extractFrom( vtx, a);
+				targetshapevtx = VertexBuffer();
+				targetshapevtx.copyFrom( baseshapevtx);
+				vtx = [vtx, targetshapevtx];		//	SS_POSITIONがtargetshapevtxに上書きされる
+				
+				shapesource = ShapeState();
+				shapesource.shapekeys = shapekeys;
+				
+				shapetarget = clone shapesource;
+				//shapetarget[8] = 1.0;
+				//shapetarget.rehash();
+			}
+		}
+		//	ShapeStateTimeline
+		if( bb.getb()){
+			shapeline = ShapeStateTimeline( shapekeys);
+			shapeline.loadData( bb);
+		}
+		bb.getb();
+		bb.gets();						//	reserved
+		//	done!!!!!
+	}
+
+	//	このPolygonMeshがボーンやシェイプによって変形したVertexBufferを計算して設定する。
+	//	dstvbにはPOSIION,NORMAL,TANGENTを入れることができる。
+	//	dstvbに十分な大きさがない場合はExceptionをスローする。
+	function getDeformedVertices( dstvb){
+		return dstvb.setDeformedVertices( vtx, bones);
+	}
+}
+
+
+class PolygonMeshLoader
+{
+	res = null;				//	Resource base
+	mesh = null;			//
+	motion = null;			//
+	material = null;		//	array<table>
+	
+	data = null;			//	table
+
+	constructor( r){
+		res = r;
+	}
+	
+	function load( t = null){
+		if( !t){
+			local func = res.loadData().compile();
+			t = data = func();	//	テーブルにデータが入る
+		}
+		//	modeldata cloneして中身をいじくれるように
+		if( !t["modeldata"]){
+		//	throw Exception( sprintf("no 'modeldata' in %S",res.path));
+			mesh = PolygonMesh();
+			mesh.face = [];
+		}else{
+			mesh = clone ::getModelData( res.getResource( t.modeldata));
+		}
+		if( t["bnd"]){
+			local b = t.bnd;
+			mesh.bnd = Rect3D( b[0], b[1], b[2], b[3], b[4], b[5]);
+		}
+		//	motion
+		if( t["motiondata"]){
+			//printf("motiondata %S %S\n", t.motiondata, res.getResource( t.motiondata));
+			motion = ::getMotionData( res.getResource( t.motiondata));
+			// if( !motion.haspartsbnd) motion.buildPartsLoadlBounds( mesh.vtx);
+			mesh.motion = motion;
+		}
+		//	partsmixmap
+		if( t["partsmixmap"]) {
+			local n = 0;
+			foreach( k,mixw in t.partsmixmap){ n = mixw.len(); break;	}
+			local tmp = #[];
+			tmp.resize( n); tmp.fill( 0); tmp[0] = 1.0;
+			foreach( key,bp in motion.partsmap){
+				local mixw = t.partsmixmap[key];
+				if( !mixw) { bp.setMixWeights( tmp); continue; }
+				bp.setMixWeights( mixw);
+			}
+		}
+		
+		//	material
+		if( mesh && t["material"]){
+			foreach( i, m in t.material){
+				if( mesh.face[i]){
+					mesh.face[i].m = createMaterial( m, res, i);
+				}
+			}
+		}
+		//	shapesets
+		if( t["shapesets"]){
+			mesh.shapesets = t["shapesets"];
+		}
+		//	rbdataset
+		if( t["rbdataset"]){
+			local rbdataset = {};
+			foreach( v in t.rbdataset){
+				local r = ::createRigidBodyData( v);	//	RigidBodyData.sk
+				rbdataset[r.partsname] <- r;
+			}
+			mesh.rbdataset = rbdataset;
+		}
+		//	customdata
+		mesh.customdata = t["customdata"] || null;
+		mesh.res = res;
+	}
+	
+	static texture_idmap = { texture0="tex0", texture1="tex1", texture2="tex2", texture3="tex3"};
+	
+	function createMaterial( t, r, i){
+		local m = Material();
+		m.name = t["name"] || null;
+		m.tec = skFXFindTechnique("decal.def");
+		m.visiblemask = ("visiblemask" in t)?t.visiblemask : DEFAULT_VISIBLEMASK;
+		
+		//	一般パラメータ代入
+		foreach( id, _ in Material){
+			if( id in t) m[id] = t[id];
+		}
+		//	シェーダ設定 SKFXTechnique
+		if( t["tec"]){
+			try{
+				m.tec = skFXFindTechnique( t.tec);
+			}catch( e){
+				printf( "technique '%S' not found. pm=%S face=%d\n",t.tec,r.path,i);
+			}
+		}
+		//	テクスチャロード
+		foreach( id, mid in texture_idmap){
+			if( t[id]){ m[mid] = loadTexture( t[id]); }
+		}
+		return m;
+	}
+	
+	function loadTexture( tex){
+		local src, sam = null;
+		if( typeof( tex) == SS_ARRAY){
+			src = tex[0];
+			sam = SamplerState( tex[1], tex[1], tex[2], tex[2]);
+		}else{
+			src = tex;
+		}
+		local ret = ::getTexture( res.getResource( src));
+		if( ret && sam){
+			ret.setSamplerState( sam);
+		}
+		return ret;
+	}
+	
+	function clear(){
+		res = null;
+		mesh = null;
+		if( material){
+			material.clear();
+			material = null;
+		}
+	}
+}
+
+function getModelData( res){
+	local mesh = res.userdata;
+	if( !mesh){
+		mesh = PolygonMesh();
+		mesh.loadModelData( res.loadData());
+		res.flush();
+		res.userdata = mesh;
+	}
+	return mesh;
+}
+
+function getMotionData( res){
+	if( !res) return null;
+	local mod = res.userdata;
+	if( !mod){
+		mod = MotionData();
+		mod.loadMotionData( res.loadData());
+		res.flush();
+		res.userdata = mod;
+	}
+	return mod;
+}
+
+function getPolygonMesh( res, doclone=true){
+	if( typeof( res) == SS_STRING){
+		local s = res;
+		res = getResource( s);
+		if( !res) throw Exception( "getPolygonMesh res not found:%S", s);
+	}
+	
+	local mesh = res.userdata;
+	if( !mesh){
+		local loader = PolygonMeshLoader( res);
+		loader.load();
+		mesh = loader.mesh;
+		loader.clear();
+		res.flush();
+		res.userdata = mesh;
+	}
+	local pm = doclone?(clone mesh):mesh;
+	return pm;
+}
+
+with PolygonMeshBuilder
+{
+	function appendPolygonMesh( mesh){
+		setVertexBuffer( mesh.vtx);
+		foreach( f in mesh.face){
+			setMaterial(f.m);
+			appendIndexBuffer( f.idx, f.mode);
+		}
+		setVertexBuffer(null);
+	}
+	
+	function toPolygonMesh(){
+		if( isEmpty()) return null;
+		
+		local mesh = PolygonMesh();
+		mesh.vtx = getVertexBuffer();
+		mesh.bnd = getBounds();
+		
+		local fa = getPolygonFaces();
+		local num = length( fa) / 3;
+		mesh.face = array( num);
+		for( local l = 0;l < num;l ++){
+			local f = PolygonFace();
+			f.mode	= fa[l * 3];
+			f.m		= fa[l * 3 + 1];
+			f.idx	= fa[l * 3 + 2];
+			f.len   = f.idx.length;
+			mesh.face[l] = f;
+		}
+		
+		return mesh;
+	}
+}
+
+
+PrimitiveMeshes <- class
+{
+	meshbuilder = null
+	mbmate = null
+	
+	function setMaterial( m){
+		mbmate = m;
+	}
+	
+	function getMeshBuilder(){
+		if( !mbmate){
+			mbmate = Material();
+			mbmate.tec = skFXFindTechnique("decal.def");
+			mbmate.visiblemask = DEFAULT_VISIBLEMASK;
+			//mbmate.cullface = SK_OFF;
+		}
+		if( !meshbuilder){
+			meshbuilder = PolygonMeshBuilder();
+		}
+		if( !meshbuilder.getMaterial()){
+			meshbuilder.setMaterial( clone mbmate);
+		}
+		//meshbuilder.clear();	//	念のため
+		return meshbuilder;
+	}
+	
+	function _v( mb, x, y, z, u, v){
+		mb.texcoord( u, v); mb.vertex( x, y, z);
+	}
+	
+	function _createPlane( w, h, xz=true){
+		local mb = getMeshBuilder();
+		mb.begin( SK_TRIANGLESTRIP);
+		local d;
+		//	xz==trueの場合はxz平面
+		if( xz){	mb.normal( 0, 1,  0); d = h; h = 0.0;}
+		else{		mb.normal( 0, 0, -1); d = 0.0; }
+		//	左下、左上、右下、右上？
+		_v( mb, -w, -h, -d, 0.0, 0.0);
+		_v( mb, -w,  h,  d, 0.0, 1.0);
+		_v( mb,  w, -h, -d, 1.0, 0.0);
+		_v( mb,  w,  h,  d, 1.0, 1.0);
+		mb.end();
+	}
+	
+	function _createWirePlane( w, h, xz=true){
+		local mb = getMeshBuilder();
+		mb.begin( SK_LINES);
+		local d;
+		//	xz==trueの場合はxz平面
+		if( xz){	mb.normal( 0, 1,  0); d = h; h = 0.0;}
+		else{		mb.normal( 0, 0, -1); d = 0.0; }
+
+		_v( mb, -w, -h, -d, 0.0, 0.0); _v( mb, -w,  h,  d, 0.0, 0.0);
+		_v( mb, -w,  h,  d, 0.0, 0.0); _v( mb,  w,  h,  d, 0.0, 0.0);
+		_v( mb,  w,  h,  d, 0.0, 0.0); _v( mb,  w, -h, -d, 0.0, 0.0);
+		_v( mb,  w, -h, -d, 0.0, 0.0); _v( mb, -w, -h, -d, 0.0, 0.0);
+		mb.end();
+	}
+
+	function _createLine( x1,y1,z1,x2,y2,z2){
+		local mb = getMeshBuilder();
+		mb.begin( SK_LINES);
+		_v( mb, x1, y1, z1, 0.0, 0.0); _v( mb, x2, y2, z2, 0.0, 0.0);
+		mb.end();
+	}
+
+	function _createGrid( w, h, udiv, vdiv, xz=true){
+		local mb = getMeshBuilder();
+		mb.begin( SK_TRIANGLES);
+		local su = w/udiv, sv = h/vdiv, dw = -w/2, dh = -h/2;
+		local stu = 1.0/udiv, stv = 1.0/vdiv;
+		for( local v = 0;v < vdiv;v ++){
+			local v0 = dh + v*sv, v1 = v0+sv;
+			local tv0 = v*stv, tv1 = tv0+stv;
+			for( local u = 0;u < udiv; u ++){
+				local u0 = dw + u*su, u1 = u0+su;
+				local tu0 = u*stu, tu1 = tu0+stu;
+				_v( mb, u0, 0.0, v0, tu0, tv0);
+				_v( mb, u0, 0.0, v1, tu0, tv1);
+				_v( mb, u1, 0.0, v1, tu1, tv1);
+				//
+				_v( mb, u0, 0.0, v0, tu0, tv0);
+				_v( mb, u1, 0.0, v1, tu1, tv1);
+				_v( mb, u1, 0.0, v0, tu1, tv0);
+			}
+		}
+		mb.end();
+	}
+	
+	function _createBox( w, h, d, mask=-1, bgn=true){
+		local mb = getMeshBuilder();
+		if( bgn) mb.begin( SK_TRIANGLES);
+		//	L, R, D, U, F, B
+		//	L
+		if( mask&2){
+			mb.normal( -1.0, 0.0, 0.0);
+			_v( mb, -w, -h, -d, 0.0, 0.0);
+			_v( mb, -w, -h,  d, 1.0, 0.0);
+			_v( mb, -w,  h,  d, 1.0, 1.0);
+			_v( mb, -w, -h, -d, 0.0, 0.0);	// 0
+			_v( mb, -w,  h,  d, 1.0, 1.0);	// 2
+			_v( mb, -w,  h, -d, 0.0, 1.0);
+		}
+		//	R
+		if( mask&8){
+			mb.normal( 1.0, 0.0, 0.0);
+			_v( mb, w, -h, -d, 0.0, 0.0);
+			_v( mb, w,  h,  d, 1.0, 1.0);
+			_v( mb, w, -h,  d, 1.0, 0.0);
+			_v( mb, w, -h, -d, 0.0, 0.0);	// 0
+			_v( mb, w,  h, -d, 0.0, 1.0);
+			_v( mb, w,  h,  d, 1.0, 1.0);	// 2
+		}
+		//	D
+		if( mask&32){
+			mb.normal( 0.0, -1.0, 0.0);
+			_v( mb,-w, -h, -d, 0.0, 0.0);
+			_v( mb, w, -h,  d, 1.0, 1.0);
+			_v( mb,-w, -h,  d, 0.0, 1.0);
+			_v( mb,-w, -h, -d, 0.0, 0.0);	// 0
+			_v( mb, w, -h, -d, 1.0, 0.0);
+			_v( mb, w, -h,  d, 1.0, 1.0);	// 2
+		}
+		//	U
+		if( mask&1){
+			mb.normal( 0.0, 1.0, 0.0);
+			_v( mb, -w, h, -d, 0.0, 0.0);
+			_v( mb, -w, h,  d, 0.0, 1.0);
+			_v( mb,  w, h,  d, 1.0, 1.0);
+			_v( mb, -w, h, -d, 0.0, 0.0);	// 0
+			_v( mb,  w, h,  d, 1.0, 1.0);	// 2
+			_v( mb,  w, h, -d, 1.0, 0.0);
+		}
+		//	F
+		if( mask&4){
+			mb.normal( 0.0, 0.0, -1.0);
+			_v( mb, -w,-h, -d, 0.0, 0.0);
+			_v( mb, -w, h, -d, 0.0, 1.0);
+			_v( mb,  w, h, -d, 1.0, 1.0);
+			_v( mb, -w,-h, -d, 0.0, 0.0);	// 0
+			_v( mb,  w, h, -d, 1.0, 1.0);	// 2
+			_v( mb,  w,-h, -d, 1.0, 0.0);
+		}
+		//	N
+		if( mask&16){
+			mb.normal( 0.0, 0.0, 1.0);
+			_v( mb,-w, -h,  d, 0.0, 0.0);
+			_v( mb, w,  h,  d, 1.0, 1.0);
+			_v( mb,-w,  h,  d, 0.0, 1.0);
+			_v( mb,-w, -h,  d, 0.0, 0.0);	// 0
+			_v( mb, w, -h,  d, 1.0, 0.0);
+			_v( mb, w,  h,  d, 1.0, 1.0);	// 2
+		}
+		if( bgn) mb.end();
+	}
+	
+	function _createCylinder( topr, btmr, h, div, cap=7, mind=0.0, maxd=Math.PI2){
+		local mb = getMeshBuilder();
+		mb.begin( SK_TRIANGLES);
+		local oldd=mind, oldx=Math.cos(mind), oldz=Math.sin(mind), d, x, z;
+		for( local l = 1;l <= div;l ++){
+			d = mind + ( (l+0.0) / div ) * (maxd-mind);
+			x = Math.cos( d);
+			z = Math.sin( d);
+			if( cap&1){	//	ue
+				mb.normal( -1.0, 0.0, 0.0);
+				_v( mb, 0.0, h, 0.0, 0.0, 0.0);
+				_v( mb,   x*topr,h,   z*topr,    d, 0.0);
+				_v( mb,oldx*topr,h,oldz*topr, oldd, 0.0);
+			}
+			if( cap&2){	//	sita
+				mb.normal( 1.0, 0.0, 0.0);
+				_v( mb, 0.0, -h, 0.0, 0.0, 1.0);
+				_v( mb,oldx*btmr, -h,oldz*btmr,oldd, 1.0);
+				_v( mb,   x*btmr, -h,   z*btmr,   d, 1.0);
+			}
+			if( cap&4){	//	naka
+				mb.normal( oldx, 0.0, oldz);
+				_v( mb,oldx*btmr,-h,oldz*btmr,oldd, 1.0);
+				_v( mb,oldx*topr, h,oldz*topr,oldd, 0.0);
+				mb.normal(    x, 0.0,    z);
+				_v( mb,   x*topr,   h,  z*topr, d, 0.0);
+				_v( mb,   x*topr,   h,  z*topr, d, 0.0);
+				_v( mb,   x*btmr,  -h,  z*btmr,d, 1.0);
+				mb.normal( oldx, 0.0, oldz);
+				_v( mb,oldx*btmr,-h,oldz*btmr,oldd, 1.0);
+			}
+			oldx = x; oldz = z; oldd = d;
+		}
+		if( cap&8){	//	kiwa
+			x = Math.cos( mind) * r;
+			z = Math.sin( mind) * r;
+			mb.normal( z, 0.0, -x);
+			_v( mb, 0.0, 0.0, -h, 0.0, 0.0);
+			_v( mb, 0.0, 0.0,  h, 0.0, 0.0);
+			_v( mb, x*topr, z*topr,  h, 0.0, 0.0);
+			_v( mb, 0.0, 0.0, -h, 0.0, 0.0);
+			_v( mb, x*topr, z*topr,  h, 0.0, 0.0);
+			_v( mb, x*btmr, z*btmr, -h, 0.0, 0.0);
+			x = Math.cos( maxd) * r;
+			z = Math.sin( maxd) * r;
+			mb.normal( z, 0.0, -x);
+			_v( mb, 0.0, 0.0, -h, 0.0, 0.0);
+			_v( mb, 0.0, 0.0,  h, 0.0, 0.0);
+			_v( mb, x*topr, z*topr,  h, 0.0, 0.0);
+			_v( mb, 0.0, 0.0, -h, 0.0, 0.0);
+			_v( mb, x*topr, z*topr,  h, 0.0, 0.0);
+			_v( mb, x*btmr, z*btmr, -h, 0.0, 0.0);
+		}
+		mb.end();
+	}
+	
+	function _createSphere( r, udiv=16, vdiv=8, vr0=0.0, vr1=1.0, cap=false){
+		local p1 = Vector3D();
+		local p2 = null;
+		local mb = getMeshBuilder();
+		mb.begin( SK_TRIANGLESTRIP);
+		local su = 1.0/udiv, sv = 1.0/vdiv * (vr1-vr0);
+		for( local v = 0;v < vdiv;v ++){
+			for( local u = 0;u <= udiv; u ++){
+				local _u = u*su, _v = vr0 + v*sv;
+				_uvvec( _u, _v, p1);
+				mb.normal( p1);
+				mb.texcoord( _u, _v);
+				if( u==0) mb.vertex( p1*r);
+				mb.vertex( p1*r);
+				_uvvec( _u += su, _v += sv, p1);
+				mb.normal( p1);
+				mb.texcoord( _u, _v);
+				mb.vertex( p2 = p1*r);
+			}
+			if( v < vdiv-1){
+				mb.vertex( p2);	//	fin
+			}
+		}
+		if( cap){
+			mb.vertex( p2);	//	fin
+			for( local u = 0, v=vdiv;u <= udiv; u ++){
+				local _u = u*su, _v = vr0 + v*sv;
+				_uvvec( _u, _v, p1);
+				mb.normal( p1);
+				mb.texcoord( _u, _v);
+				if( u==0) mb.vertex( p1*r);
+				mb.vertex( p1*r);
+				_uvvec( _u += su, _v = 1.0, p1);
+				mb.normal( p1);
+				mb.texcoord( _u, _v);
+				mb.vertex( p2 = p1*0.001);
+			}
+		}
+		mb.end();
+	}
+	
+	function _createCapsule( r, h, udiv=16, vdiv=9){
+		local p1 = Vector3D();
+		local p2 = null;
+		local h1 = Vector3D( 0, -h*0.5, 0), h2 = Vector3D( 0,  h*0.5, 0);
+		local mb = getMeshBuilder();
+		mb.begin( SK_TRIANGLESTRIP);
+		local su = 1.0/udiv, sv = 1.0/vdiv;
+		for( local v = 0;v < vdiv;v ++){
+			for( local u = 0;u <= udiv; u ++){
+				local hv = (v<vdiv/2?h1:h2);
+				local _u = u*su, _v = v*sv;
+				_uvvec( _u, _v, p1);
+				mb.normal( p1);
+				mb.texcoord( _u, _v);
+				if( u==0) mb.vertex( p1*r+hv);
+				mb.vertex( p1*r+hv);
+				_uvvec( _u += su, _v += sv, p1);
+				mb.normal( p1);
+				mb.texcoord( _u, _v);
+				mb.vertex( p2 = p1*r+hv);
+			}
+			mb.vertex( p2);	//	fin
+		}
+		local v = vdiv/2;
+		for( local u = 0;u <= udiv; u ++){
+			local _u = u*su, _v = v*sv;
+			_uvvec( _u, _v, p1);
+			mb.normal( p1);
+			mb.texcoord( _u, _v);
+			if( u==0) mb.vertex( p1*r+h1);
+			mb.vertex( p1*r+h1);
+			_uvvec( _u += su, _v, p1);
+			mb.normal( p1);
+			mb.texcoord( _u, _v);
+			mb.vertex( p2 = p1*r+h2);
+		}
+		mb.end();
+	}
+	
+	function _uvvec( u, v, out){
+		v = (v-0.5) * Math.PI;
+		u = u * Math.PI2;
+		return out( (Math.sin(u) * Math.cos(v)), Math.sin(v), (Math.cos(v) * Math.cos(u)));
+	}
+	
+	
+	
+	function createPlane( w, h, xz = true){
+		_createPlane( w, h, xz);
+		local pm = meshbuilder.toPolygonMesh();
+		meshbuilder.clear();
+		return pm;
+	}
+	
+	function createBox( w, h, d){
+		_createBox( w, h, d);
+		local pm = meshbuilder.toPolygonMesh();
+		meshbuilder.clear();
+		return pm;
+	}
+	
+	//	単純にbox x 6
+	function _createWireBox( w, h, d, f=0, vs=63){
+		if( !f){ f = (w<h?w:h<d?h:d) * 0.1; }
+		local mb = getMeshBuilder();
+		local mat = mb.getMatrix();
+		mb.begin( SK_TRIANGLES);
+		//	x線
+		if( vs&(32| 2)) _wire( mb, mat,  0,-h+f,-d+f,  w, f, f);	//	+y, -z
+		if( vs&( 1| 2)) _wire( mb, mat,  0, h-f,-d+f,  w, f, f);	//	-y, -z
+		if( vs&(32| 8)) _wire( mb, mat,  0,-h+f, d-f,  w, f, f);	//	+y, +z
+		if( vs&( 1| 8)) _wire( mb, mat,  0, h-f, d-f,  w, f, f);	//	-y, +z
+		//	y線
+		if( vs&( 4| 2)) _wire( mb, mat, -w+f, 0,-d+f,  f, h, f);	//	-x, -z
+		if( vs&(16| 2)) _wire( mb, mat,  w-f, 0,-d+f,  f, h, f);	//	+x, -z
+		if( vs&( 4| 8)) _wire( mb, mat, -w+f, 0, d-f,  f, h, f);	//	-x, +z
+		if( vs&(16| 8)) _wire( mb, mat,  w-f, 0, d-f,  f, h, f);	//	+x, +z
+		//	z線
+		if( vs&( 4|32)) _wire( mb, mat, -w+f,-h+f, 0,  f, f, d);	//	-x, +y
+		if( vs&(16|32)) _wire( mb, mat,  w-f,-h+f, 0,  f, f, d);	//	+x, +y
+		if( vs&( 4| 1)) _wire( mb, mat, -w+f, h-f, 0,  f, f, d);	//	-x, -y
+		if( vs&(16| 1)) _wire( mb, mat,  w-f, h-f, 0,  f, f, d);	//	+x, -y
+		//	
+		mb.end();
+		mb.setMatrix( mat);
+	}
+
+	function _createWirePlane( w, d, f=0){
+		if( !f){ f = (w<h?w:h<d?h:d) * 0.1; }
+		local mb = getMeshBuilder();
+		local mat = mb.getMatrix();
+		mb.begin( SK_TRIANGLES);
+		//	x線
+		_wire( mb, mat,  0, 0,-d+f,  w, f, f);
+		_wire( mb, mat,  0, 0, d+f,  w, f, f);
+		//	z線
+		_wire( mb, mat, -w+f, 0, 0,  f, f, d);
+		_wire( mb, mat,  w-f, 0, 0,  f, f, d);
+		//	
+		mb.end();
+		mb.setMatrix( mat);
+	}
+	
+	function _wire( mb, mat, x, y, z, w, h, d){
+		local _m = #Matrix(); (_m << mat).translate( x, y, z);
+		mb.setMatrix( _m); _createBox( w, h, d, -1, false);	//	begin/endをしない
+	}
+	
+	function createWireBox( w, h, d, f=0){
+		_createWireBox( w, h, d, f);
+		local pm = meshbuilder.toPolygonMesh();
+		meshbuilder.clear();
+		return pm;
+	}
+	
+	function _createLineBox( w, h, d){
+		local mb = getMeshBuilder();
+		mb.begin( SK_LINES);
+		//	F
+		_v( mb, -w, -h, -d, 0.0, 0.0); _v( mb,  w, -h, -d, 0.0, 0.0);
+		_v( mb, -w, -h, -d, 0.0, 0.0); _v( mb, -w,  h, -d, 0.0, 0.0);
+		_v( mb,  w,  h, -d, 0.0, 0.0); _v( mb,  w, -h, -d, 0.0, 0.0);
+		_v( mb,  w,  h, -d, 0.0, 0.0); _v( mb, -w,  h, -d, 0.0, 0.0);
+		//	B
+		_v( mb, -w, -h,  d, 0.0, 0.0); _v( mb,  w, -h,  d, 0.0, 0.0);
+		_v( mb, -w, -h,  d, 0.0, 0.0); _v( mb, -w,  h,  d, 0.0, 0.0);
+		_v( mb,  w,  h,  d, 0.0, 0.0); _v( mb,  w, -h,  d, 0.0, 0.0);
+		_v( mb,  w,  h,  d, 0.0, 0.0); _v( mb, -w,  h,  d, 0.0, 0.0);
+		//	U(2)
+		_v( mb, -w,  h, -d, 0.0, 0.0); _v( mb, -w,  h,  d, 0.0, 0.0);
+		_v( mb,  w,  h, -d, 0.0, 0.0); _v( mb,  w,  h,  d, 0.0, 0.0);
+		//	D(2)
+		_v( mb, -w, -h, -d, 0.0, 0.0); _v( mb, -w, -h,  d, 0.0, 0.0);
+		_v( mb,  w, -h, -d, 0.0, 0.0); _v( mb,  w, -h,  d, 0.0, 0.0);
+		mb.end();
+	}
+	
+	function createLineBox( w, h, d){
+		_createLineBox( w, h, d);
+		local pm = meshbuilder.toPolygonMesh();
+		meshbuilder.clear();
+		return pm;
+	}
+	
+	function createCylinder( topr, btmr, h, div, cap=7, mind=0.0, maxd=Math.PI2){
+		_createCylinder( topr, btmr, h, div, cap, mind, maxd);
+		local pm = meshbuilder.toPolygonMesh();
+		meshbuilder.clear();
+		return pm;
+	}
+	
+	function createCapsule( r, h, udiv=16, vdiv=8){
+		_createCapsule( r, h, udiv, vdiv);
+		local pm = meshbuilder.toPolygonMesh();
+		meshbuilder.clear();
+		return pm;
+	}
+	
+	function createSphere( r, udiv=16, vdiv=8, vr0=0.0, vr1=1.0){
+		_createSphere( r, udiv, vdiv, vr0, vr1);
+		local pm = meshbuilder.toPolygonMesh();
+		meshbuilder.clear();
+		return pm;
+	}
+	
+	function createGrid( w, h, udiv=16, vdiv=16, xz=true){
+		_createGrid( w, h, udiv, vdiv, xz);
+		local pm = meshbuilder.toPolygonMesh();
+		meshbuilder.clear();
+		return pm;
+	}
+}();
+
+with b3Shape
+{
+	function createPolygonMesh(){
+		local prim = ::PrimitiveMeshes;
+		local mb = prim.getMeshBuilder();
+		_createPolygonMesh();
+		local pm = mb.toPolygonMesh();
+		mb.clear();
+		
+		local m = Material();
+		m.tec = prim.mbmate.tec;
+		m.fillmode = 1;
+		m.Kd = 0x0066ff77;
+		// m.blend = SK_MIX;
+		m.blend = SK_OFF;
+		m.depthtest = SK_ALWAYS;
+		m.depthmask = 0;
+		m.cullface = 0;
+		m.visiblemask = DEFAULT_VISIBLEMASK;
+		
+		foreach( f in pm.face){
+			f.m = m;
+		}
+		
+		return pm;
+	}
+	
+	function _createPolygonMesh(){
+		local prim = ::PrimitiveMeshes;
+		local mb = prim.getMeshBuilder();
+		local size = getSize();
+		switch( type){
+		case SK_SHAPE_BOX:
+			prim._createBox( size.x*0.5, size.y*0.5, size.z*0.5);
+			break;
+		case SK_SHAPE_CYLINDER:
+			prim._createCylinder( size.x, size.x, size.y, 12);
+			break;
+		case SK_SHAPE_SPHERE:
+			prim._createSphere( size.x, 8, 8, 0.0, 1.0);
+			break;
+		case SK_SHAPE_CAPSULE:
+			prim._createCapsule( size.x, size.y*2.0, 8, 8);
+			break;
+		case SK_SHAPE_COMPOUND:
+			local mat = mb.getMatrix();
+			for( local l = 0;l < length( this);l ++){
+				local a = this[l];
+				mb.setMatrix( a[1]);
+				a[0]._createPolygonMesh();
+			}
+			mb.setMatrix( mat);
+			break;
+		}
+	}
+	
+	
+	
+}

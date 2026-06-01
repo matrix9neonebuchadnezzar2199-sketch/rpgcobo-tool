@@ -1,0 +1,279 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+/////////////////////////////////////////////////////////////////////////////////
+//	
+//	DataSelectPopup : データ選択ポップアップ
+//	DBSideViewに機能的には似ているかも
+//	プロパティ設定のフィルタ
+//	※イベントのプロパティでは変数を指定できる。ワーク・イベント・グローバル変数のみ。
+//	※※変数には好きな値が入れられるので入っている値が有効かのチェックは使う側が確実にチェックする必要がある。
+//	
+
+local srcdir = dirname( callee().getSourceName());
+
+class DataSelectPopup extends Popup
+{
+	static POPUPUIPATH = srcdir .. "/ui/dataselectpopup.ui";
+
+	static dbtypelist = [ 
+		"player", "job", "skill", "enemy", "cond", "item", "weapon", "armor", "point", "store", "quest", "map", "macro", 
+	];
+	typelist = null;			//	ListBehavior
+	datalist = null;			//	ListBehavior
+	pager = null;				//	PagerBehavior
+	searchedit = null;			//	GPUITextEdit
+	//	項目
+	prop = null;				//	プロパティ設定。タイプとデータのフィルタがある
+	inisel = null;
+	allitems = null;			//	全項目。100項目ごとにページに分かれる
+	page = 0;					//	
+	pagenum = 1;				//	
+	curtype = null;				//	"player", "item", ...
+	searchitems = null;			//	searcheditの検索結果
+	
+	dataid = null;				//	外すときは"rem"
+	num = 1;
+
+	//	指定したプロパティ設定でデータ選択ポップアップを開始する。
+	//	
+	static function run( e, prop, inisel=null){
+		local p = DataSelectPopup( ::loadSKView( POPUPUIPATH), prop, inisel);
+		local posview = e["src"];
+		if( !posview){
+			posview = ::getMousePos( 0);
+			posview.add( 4, 4, 0);
+		}
+		p.show( null, posview);
+		if( p.ret){
+			return p.dataid;
+		}
+	}
+
+	static function settypeview( la, v, i){
+		local lbl = v.findChild( "lbl"), icon = v.findChild( "icon"), sep = v.findChild( "sep");
+		v.setValue( "lbl", i.lbl);
+		v.setValue( "icon", i["icon"]);
+		local dis = v.findChild( "disable");
+		dis.anime( 1); dis.anime( i["disable"] ? 10 : 0);
+		v.pickable = false;
+	}
+
+	static function setdataview( la, v, i){
+		local lbl = v.findChild( "lbl"), icon = v.findChild( "icon"), sep = v.findChild( "sep");
+		v.setValue( "dataid", i.dataid);
+		v.setValue( "lbl", i.lbl);
+		v.pickable = false;
+	}
+
+	constructor( v, p, i){
+		super( v);
+		prop = p;
+		inisel = i;
+		typelist = ListBehavior( v.findChild( "typelist"), []);
+		typelist.setviewfunc = settypeview;
+		typelist.listview.addEventListener( ITEM_EVENT, typeevent);
+		datalist = ListBehavior( v.findChild( "datalist"), []);
+		datalist.setviewfunc = setdataview;
+		datalist.listview.addEventListener( ACTION_EVENT, dataevent);
+		pager = PagerBehavior( v.findChild( "pager"));
+		if( !p["nullable"]){
+			view.findChild( "btn_rem").setVisible( false);
+		}
+		searchedit = view.findChild( "searchedit");
+		searchedit.addEventListener( TEXT_EVENT, searchevent);
+		//
+		updateTypeList();
+		local pageset = false;
+		if( inisel){
+			local i = inisel.indexOf( ",");
+			if( i >= 0){
+				num = int( inisel.substring( i+1));
+				inisel = inisel.substring( 0, i);
+			}
+			local initype = RPGData.getDataType( inisel);
+			local seltype = typelist.items.find( @( v) v.type==initype);
+			if( seltype){
+				typelist.setSelectedItem( seltype);
+				setType( seltype.type);
+				setPage( 0);
+				pageset = true;
+			}
+		}
+		if( !pageset){
+			local seltype = typelist.items.find( @( v) !v.disable);
+			if( seltype){
+				typelist.setSelectedItem( seltype);
+				setType( seltype.type);
+				setPage( 0);
+			}
+		}
+	}
+
+	function updateTypeList(){
+		local a = [];
+		// local sel = null;
+		foreach( type in dbtypelist){
+			local c = !(prop.datatype=="all" || prop.datatype.contains( type)) ? 0 : countType( type);
+			local disable = (c==0);	//	選択不能
+			local v = {
+				lbl = "$T.side_dbview_"..type..(disable?"":`(${c})`),
+				icon = ConfigResource.dbiconmap[type],
+				type = type,
+				disable = disable,
+			};
+			a .. v;
+			// if( c && !sel) sel = v;
+		}
+		typelist.setListItems( a);
+		// if( sel){
+		// 	typelist.setSelectedItem( sel);
+		// 	setType( sel.type);
+		// }
+	}
+
+	function countType( t){
+		local tb = ::conf[t];
+		local filter = prop["filter"];
+		if( !filter) return length( tb)-1;	//	_metaぬかし
+		local c = 0;
+		foreach( i, v in tb){
+			if( i.startsWith( "_")) continue;
+			if( filter( v, i)) ++c;
+		}
+		return c;
+	}
+
+	function setType( t){
+		curtype = t;
+		if( t == "search"){
+			allitems = searchitems;
+		}else{
+			allitems = [];
+			local tb = ::conf[t], caps = tb["_meta"]["caps"];
+			local filter = prop["filter"];
+			foreach( i, v in tb){
+				if( i.startsWith( "_")) continue;
+				if( filter && !filter( v, i)) continue;
+				allitems .. {
+					dataid = i
+					lbl = sprintf( "%S%S", v["icon"]||"", v["name"])
+					data = v
+				};
+			}
+		}
+		allitems.sort( @( v) v.dataid);
+		pagenum = (length( allitems)+99) / 100;
+		pager.setPageNum( pagenum);
+		pager.setPage( 0);
+	}
+	
+	function setPage( p){
+		if( !allitems) return;
+		page = p;
+		local items = allitems.slice( p*100, Math.min( p*100+100, length( allitems)));
+		datalist.setListItems( items);
+	}
+
+	function searchevent( e){
+		e.consume();
+		local la = typelist.items;
+		local txt = searchedit.getText().toLowerCase();
+		local li = (la[0].type == "search") && la[0];
+		searchitems = [];
+		if( length( txt)){
+			foreach( t in dbtypelist){
+				if( prop.datatype!="all" && !prop.datatype.contains( t)) continue;
+				local tb = ::conf[t], caps = tb["_meta"]["caps"];
+				local filter = prop["filter"];
+				foreach( i, v in tb){
+					if( i.startsWith( "_")) continue;
+					if( filter && !filter( v, i)) continue;
+					if( !v.name.toLowerCase().contains( txt) && !i.toLowerCase().contains( txt)) continue;
+					searchitems .. {
+						dataid = i
+						lbl = sprintf( "%S%S", v["icon"]||"", v["name"])
+						data = v
+					};
+				}
+			}
+		}
+		if( !li){
+			li = { lbl="", icon="", disable=false, type="search"}
+			la[0] <- li;
+		}
+		li.lbl = "検索結果(%S)" % length( searchitems);
+		typelist.refreshItems();
+		typelist.setSelectedIndex( 0);
+		setType( "search");
+		pager.setPage( 0);
+		setPage( 0);
+	}
+
+	function typeevent( e){
+		e.consume();
+		switch( e.id){
+		case ITEM_SELECTED:
+			local v = e.actioncmd;
+			if( v["type"] != "*"){
+				setType( v.type);
+				setPage( 0);
+			}
+			break;
+		}
+	}
+
+	function dataevent( e){
+		e.consume();
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( e.isMouseDown( BUTTON1_MASK)){
+				dataid = datalist.getSelectedItems()[0].dataid;
+				if( inputNum()){
+					ret = 1;
+					close();
+				}
+			}
+			break;
+		}
+	}
+	
+	function inputNum(){
+		local d = ::RPGData.getData( dataid);
+		if( prop["inputnum"] && (d["stacknum"]||0) > 1){
+			local a = Popups.showNumInput({ val=num, range=(1,d.stacknum), q=1});
+			if( a == null) return false;
+			dataid = "%S,%d" % (dataid, a);		//	dataidのフォーマットがここで崩れる！すぐにcloseすること！
+			// printf( "DATAIDDDDDDDDDDDDDDDDDDDDDD %S\n", dataid);
+		}
+		return true;
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_rem":
+			dataid = "rem";
+			ret = 1;
+			close();
+			break;
+		case "pager":
+			setPage( pager.page);
+			e.consume();
+			break;
+		case "btn_ok":
+			e.consume();
+			if( !checkCancel( VK_ENTER) && inputNum()){
+				ret = 1;
+				close();
+			}
+			break;
+		default:
+			return super.actionevent( e);
+		}
+	}
+
+	function enterClose(){
+		dataid = datalist.getSelectedItems()[0].dataid;
+		if( inputNum()) super.enterClose();
+	}
+}

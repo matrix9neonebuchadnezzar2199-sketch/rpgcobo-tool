@@ -1,0 +1,133 @@
+
+Font.lbl <- null;
+
+class Fonts
+{
+	static inifonts = [
+		{ name="ui", path="/system/asset/mplus-1c-medium.ttf", lbl="UI Gothic" },
+		{ name="mono", path="/system/asset/MartianMono-Light.ttf", lbl="Mono Round" },
+		{ name="icon", path="/system/asset/MaterialIcons-Regular.ttf", lbl="\ue23f\uea15\ue836\uf003"},
+		{ name="script", path="/system/asset/CommitMono-400-Regular.otf", lbl="Mono Script", scale=1.04 },	//	微妙にサイズ拡大
+	];
+	scanfonts = ["/font","/resource/font"];
+	
+	fonts = null;
+	scanned = false;
+	
+	constructor(){
+		fonts = {};
+	}
+	
+	function get( name){
+		if( !scanned) scanFonts();
+		local f = fonts[name];
+		return f;
+	}
+	
+	function registerFont( f){
+		local r = getResource( f.path);
+		local font = getFont( r, f["scale"]??1.0, f["facemap"][::lang.code]??0);
+		fonts[f.name] <- font;
+		font.name = f.name;
+		font.lbl = f.lbl;
+		printf( "Font registered : %S\n", f.name);
+	}
+	
+	function getFonts(){
+		if( !scanned){
+			scanFonts();
+		}
+		local a = [];
+		foreach( f in fonts) a .. f;
+		a.sort();
+		return a;
+	}
+
+	function scanFonts(){
+		scanned = true;
+		foreach( p in scanfonts){
+			registerFonts( p, false);
+		}
+		foreach( f in inifonts){
+			if( !fonts[f.name]) registerFont( f);
+		}
+	}
+	
+	function addDirectory( dir){
+		scanfonts[0] <- dir;
+		if( scanned){
+			registerFonts( dir, true);
+		}
+	}
+
+	//	絵文字の登録。レイヤーを指定して自由に置換可能。
+	function registerEmoji( r, lyr=0){
+		try{
+			local emjidx  = decodeJSON( r.loadData());
+			local emjdata = r.getResource( r.name.substring( 0, r.name.lastIndexOf( "."))..".bin").loadData();
+			Emoji.registerEmoji( emjidx, emjdata, lyr);
+			printf( "registerEmoji done. %S\n", r.path);
+		}catch( ex){
+			printexception( ex);
+			printf( "registerEmoji failure....\n");
+		}
+	}
+	
+	/**
+	 *	リソースパスを指定してフォントを登録する。
+	 */
+	function registerFonts( path, replace=false){
+		local res = ::getResource( path);
+		if( !res) return;
+		local er = res.getResource( "emoji.json");
+		if( er) registerEmoji( er);
+		local lr = res.getResource( "fonts.json");
+		if( lr){
+			local t = decodeJSON( lr.loadData());
+			foreach( f in t){
+				local name = f.name;
+				if( !replace && fonts[name]) continue;
+				registerFont( f);
+				printf( "Font registered : %S\n", name);
+			}
+		}else{
+			foreach( r in res.getList()){
+				local i = r.name.lastIndexOf( ".");
+				local ext = r.name.substring( i+1).toLowerCase();
+				switch( ext){
+				case "ttc" :
+				case "ttf" :
+				case "otf" :
+				{
+					local name = r.name.substring( 0, i);
+					if( !replace && fonts[name]) continue;
+					local font = getFont( r);
+					font.name = name;
+					fonts[name] <- font;
+					printf( "Font registered : %S\n", name);
+					break;
+				}
+				}
+			}
+		}
+	}
+
+	static function getFont( res, scale=1.0, faceidx=0){
+		if( typeof( res) == SS_STRING){
+			res = ::getResource( res);
+		}
+		if( !res.userdata){
+			try{
+				local font = Font( res.loadData(), scale, faceidx);
+				res.flush();
+				res.userdata = font;
+			}catch( ex){
+				res.flush();
+				return null;
+			}
+		}
+		return res.userdata;
+	}
+}
+
+::Fonts <- Fonts();		//	しんぐるとん

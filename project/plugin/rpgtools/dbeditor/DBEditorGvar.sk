@@ -1,0 +1,199 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+import VarType;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	DBEditorGvar : グローバル変数編集。
+//	
+//	
+//	
+
+local srcdir = dirname( callee().getSourceName());
+
+
+class DBEditorGvar extends EditorViewBase
+{
+	static gvartypes = [
+		{ lbl="$T.vartype0", val=0, }
+		"*"
+		{ lbl="$T.vartype1", val=1, }
+		{ lbl="$T.vartype2", val=2, }
+		{ lbl="$T.vartype3", val=3, }
+		{ lbl="$T.vartype4", val=4, }
+		{ lbl="$T.vartype5", val=5, }
+		{ lbl="$T.vartype6", val=6, }
+	];
+
+	res = null;				//	Resource : 
+	data = null;			//	gvar.confのデータのコピー。
+	
+	//	
+	gvarlist = null;		//	GPUIListView : 
+	pager = null;
+	capsmenu = null;				//	GPUIButton
+	curpage = 0;
+
+	function init( path){
+		op = OperationStack();
+		gvarlist = findChild( "gvarlist");
+		gvarlist.addEventListener( ACTION_EVENT, listevent);
+		pager = PagerBehavior( findChild( "pager"));
+
+		res = ::getResource( path);
+		data = deepclone( res.getContent());
+		
+		capsmenu = findChild( "capsmenu");
+		
+		updateCapsView( data._meta.caps);
+		pager.setPage( 0);
+		setPage( 0);
+
+		addEventListener( ACTION_EVENT, actionevent)
+	}
+
+	function updateCapsView( caps){
+		pager.setPageNum( caps / 100);
+		capsmenu.setValue( "lbl", "×"..(caps));
+	}
+
+	function changeCaps( caps){
+		data._meta.caps = caps;
+		updateCapsView( caps);
+	}
+	
+	function setPage( p){
+		curpage = p;
+		gvarlist.setRowCount( 100);
+		for( local l = 0;l < 100;l ++){
+			local r = gvarlist.rows[l];
+			local typemenu = r.findChild( "typemenu");
+			if( !typemenu.ref){
+				typemenu.ref = MenuBehavior( typemenu, gvartypes);
+			}
+			local id = "G%03d" % (p*100+l);
+			setVarItem( r, id, data[id]);
+		}
+	}
+
+	function setVarItem( r, id, v){
+		r.ref = id;
+		r.setValue( "nameedit", v["name"]||"");
+		local type = v["type"]||0;
+		local typemenu = r.findChild( "typemenu").ref;
+		typemenu.selectItem( @( m) m["val"]==type);
+		local valedit = r.findChild( "valedit");
+		if( !type){
+			valedit.setText( ""); valedit.setVisible( false);
+		}else{
+			r.setValue( "valedit", string( v["defval"])); valedit.setVisible( true);
+		}
+		r.setValue( "idlbl", ( id, type?0xffffffcc:0xffffff44));
+	}
+
+	function refresh(){
+		setPage( curpage);
+	}
+	
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_file_save":
+			op.markSaved();
+			res.save( data);
+			::skstudio.updateChangeFile( this);
+			::skstudio.fileview.refreshDir( res.path);
+			return true;
+		}
+		return false;
+	}
+
+	function _realval( val, type){
+		switch( type){
+		case VAR_NONE:
+			return undefined;
+		case VAR_BOOL:
+			return !!val;
+		case VAR_INT:
+			return int( val);
+		case VAR_FLOAT:
+			return float( val);
+		case VAR_STRING:
+			return string( val);
+		case VAR_ANY:
+			return val;
+		}
+	}
+
+	function listevent( e){
+		local pv = e.src["parent"], gvarid = pv["ref"];
+		if( gvarid){
+			local self = this;
+			local vold = data[gvarid];
+			local vnew = vold? clone vold : { name="", type=0, defval=0, };
+			vnew.name = pv.findChild( "nameedit").getText();
+			local typemenu = pv.findChild( "typemenu").ref;
+			local valedit = pv.findChild( "valedit");
+			vnew.type = typemenu.selitem.val;
+			vnew.defval <- _realval( valedit.getText(), vnew.type);
+			setVarItem( pv, gvarid, vnew);
+			//
+			local redo = [@(){
+				self.data[gvarid] <- vnew;
+			}];
+			local undo = [@(){
+				if( vold){ self.data[gvarid] <- vold; }else{ delete self.data[gvarid]; }
+			}];
+			submitOp( redo, undo, null);
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "capsmenu":
+			showChangeCaps( e);
+			break;
+		case "pager":
+			setPage( pager.page);
+			break;
+		}
+	}
+	
+	function showChangeCaps( e){
+		local menulist = [], pagenum = pager.pagenum;
+		for( local l = 1;l < 10;l ++){
+			menulist .. { lbl:"$T.lbl_caps: "..(l*100), val:l, icon:(pagenum==l)?"\ue5ca":null};
+		}
+		local ret = MenuPopup.run( menulist);
+		if( ret && ret.val != pagenum){
+			local self = this;
+			local caps = ret.val*100, oldcaps = data._meta.caps;
+			//
+			local redo = [@(){
+				self.changeCaps( caps);
+				if( self.pager.page >= self.pager.pagenum){
+					self.pager.setPage( self.pager.pagenum-1);
+					self.setPage( self.pager.page);
+				}
+			}];
+			local undo = [@(){
+				self.changeCaps( oldcaps);
+			}];
+			submitOp( redo, undo, null);
+		}
+	}
+}

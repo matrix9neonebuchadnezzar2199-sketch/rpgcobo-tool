@@ -1,0 +1,142 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import GamepadButtonCode;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	Benchmark
+//	
+//	CPU, GPU, IOのベンチマークを取る。
+//	基準のPC : ASUS Vivobook S 14 M5406NA  - AMD Ryzen 5 7535HS + Radeon 660M
+//	これでスコア1000ぐらいになるように。倍の時間がかかったら/2。500ぐらいまでなら普通に動く(FPS30)想定で。。。
+//	
+//	CPU : tree.voxのボクセルをVoxelMeshBuilder.createVoxelMeshDatasで10回作った時の時間。早かった5回の合計。
+//	GPU : 2048 half4のバッファに対してtree.voxのモデルを2000回描画する(1億tris)。半分はディザでdiscard。これを5回行い、早かった3回の合計。
+//	I/O : いらんかな？
+//	
+
+class Benchmark
+{
+	//	指定した回数ベンチを実行して早かった半分の平均時間を返す。
+	function performBench( func, num){
+		local res = [];
+		for( local l = 0;l < num;l ++){
+			local t0 = skGetTime();
+			func();
+			local dt = skGetTime( t0);
+			res .. dt;
+			suspend();
+		}
+		res = res.sort().slice( 0, (num+1)/2);
+		return res.reduce( @( v, x) v+x, 0) / length( res);
+	}
+
+	//////////////////////////////////////////////////////////////////////
+	//	CPU Bench
+
+	vc = null;			//	VoxelContainer
+
+	function setupCPUBench(){
+		vc = ::getResourceContent( "/bench/tree.vox");
+	}
+
+	//	CPUベンチを1回通す
+	//	1回あたり100msが目安。
+	function stepCPUBench(){
+		local pa = vc.getPartsList();
+		local a = [];
+		for( local l = 0;l < 20;l ++) a .. pa[l%length( pa)];
+		local vmdmap = VoxelMeshBuilder.createVoxelMeshDatas( a.map( @( p, i){ return { id = i; vd = p.vd8; vs = 63; }; }));
+		foreach( i, vmd in vmdmap){
+			vmd.dispose();
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////
+	//	GPU Bench ... 先にCPU Benchしとかないと実行不能
+
+	scn = null;			//	SK3DScene : pmが2000個配置されている
+	renderer = null;	//	SK3DRenderer : 
+
+	//	
+	function setupGPUBench(){
+		scn = SK3DScene();
+		local cam = scn.maincamera, fovtan = Math.tan( cam.fovy*0.5*Math.DTOR);
+		renderer = SK3DRenderer( scn);
+		renderer.mainpass = BenchmarkRenderPass();
+		local pma = [], tec = skFXFindTechnique( "bench.vox");	//	ベンチマーク用描画。
+		local vmdmap = VoxelMeshBuilder.createVoxelMeshDatas( vc.getPartsList().map( @( p, i){ return { id = i; vd = p.vd8; vs = 63; }; }));
+		foreach( vmd in vmdmap){
+			local pm = vmd.createPolygonMesh( vc.pal);
+			foreach( f in pm.mesh.face){
+				local m = f.m;
+				m.tec = tec;
+			}
+			pma .. pm;
+		}
+		local rnd = Random( 1000, 10);	//	シードは固定
+		for( local l = 0;l < 2000;l ++){
+			local pm = clone pma[l%length( pma)];
+			local sk = SK3DObject( pm);
+			sk.setPivot( Vector3D( -pm.bnd.x, -pm.bnd.y, -pm.bnd.z));
+			sk.rot.setHPB( rnd( 0.0, 6.28), rnd( 0.0, 6.28), rnd( 0.0, 6.28));
+			local z = rnd( 2.0, 100.0);	//	2~100m カメラは100mまで
+			local x = rnd( -1.0, 1.0) * z * fovtan * cam.aspect;
+			local y = rnd( -1.0, 1.0) * z * fovtan;
+			sk.pos( x, y, z);
+			//	描画用ソートをあえて効かなくする
+			sk.sortoffset = rnd.nextf();
+			sk.sortscale = 0.0;
+		}
+		scn.updateScene( 1);
+	}
+
+	//	GPUベンチを1回通す
+	//	1回あたり100msが目安。
+	function stepGPUBench(){
+		renderer.render( #[0,0,128,128]);
+		local f = skFence();
+		skFlush( true);	//	GPU flush
+		for( ;;){	//	suspendしない
+			local ret = skWaitFence( f, 100);	//	100ms
+			if( ret){
+				if( ret < 0) throw Exception( "WaitFence error"); else break;
+			}
+		}
+	}
+}
+
+local reg = SK3DRenderer.PassRegistory;
+
+class BenchmarkRenderPass extends SK3DRenderPass
+{
+	colortex = null;		//	2048 half4
+	ztex = null;			//	2048 d32
+	scenefb = null;			//	colortex, ztex
+	
+	decalpass = null;		//	
+	drawpass = null;		//	DrawImagePass : colortexをアンチエイジングとかしつつ描画。
+
+	//	setPassSettingを呼んだ後はsetupPassが必ず必要
+	//	p : env.data
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		decalpass = reg.SceneRenderPass( {visiblemask:SK_VISIBLE_DECAL, target:"scenefb", clearparam=[0,0,0,0,1]});
+	}
+	
+	function setupPass( r){
+		needsetup = false;
+		colortex = r.createRenderTarget( #{w:2048,h:2048,fmt:SK_RGBA8});
+		ztex = r.createRenderTarget( #{w:2048,h:2048,fmt:SK_DEPTH24});
+		scenefb = r.createRenderTarget( #{color0="hdcolortex", depth="ztex"});
+		foreachSubpass( @( p){ p.setupPass( r); });
+	}
+	
+	function targetsResized( r){}
+
+	//	DisplayListのカリング、RenderStateの退避などを予め行い呼び出される。
+	function performPass( r){
+		r.env.passfilter = 255;
+		decalpass.performPass( r);
+	}
+}

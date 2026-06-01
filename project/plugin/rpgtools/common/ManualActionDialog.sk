@@ -1,0 +1,881 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+import BlockFlagID;
+import CollisionGroupID;
+
+local srcdir = dirname( callee().getSourceName());
+
+/////////////////////////////////////////////////////////////////////////////////
+//	
+//	ManualActionDialog : マニュアルアクションの編集
+//	イベントコマンド、イベントのMoveAction指定で編集可能
+//	※マクロでは編集不能。やろうと思えば出来ないこともないけどあまり便利にもならないし。
+//	
+/*
+	data = {
+		event = {
+			basepos = 0
+			loop = false
+			wait = false
+			actions = []
+		}
+		player = {
+			basepos = 0
+			loop = false
+			wait = false
+			actions = []
+		}
+		1234123 = {
+		}
+	}
+
+	envdef = {
+		bw = BlockWorld		//	
+		event = null		//	編集イベントのデータ。
+		eventmap = null;	//	whoに指定可能なイベントのマップ
+		single = true;		//	一つのイベントのみ編集
+	}
+*/
+
+local dirlbls = [ "↑","↗","→","↘","↓","↙","←","↖", ];
+
+class ManualActionDialog extends UndoableDialog
+{
+	///////////////////////////////////////////////////////////////////////////////////
+	//	アクション定義の一覧。
+	static actiondefs = [
+		{	//	ウェイトコマンド
+			act="wait", name="$T.lbl_wait", icon="\ue034", 
+			props = [
+				{ pid="time", lbl="$T.lbl_time", type=VARIABLE, constbits=2|8, varbits=1|2|4 },
+				{ pid="stand", lbl="静止アニメ", type=BOOL }
+			],
+			defval={ time=100, stand=true },
+			info = @( v) v.time,
+		},
+		{	//	条件を待つコマンド
+			act = "waitreq", name="$T.lbl_waitreqs", icon="\ue620", 
+			props = [
+				{ pid="reqs", lbl="$T.lbl_reqs", type=REQUIREMENTS, cnt="cnt6.ui", varbits=15 }
+				{ pid="stand", lbl="静止アニメ", type=BOOL }
+			]
+			defval={ reqs=null, stand=true }
+		},
+		{	//	向く
+			act = "turn", name="$T.lbl_turn", icon="\ue577", 
+			props = [
+				{ pid="dir", lbl="$T.lbl_dir", type=SCALAR, range=(0,7), ui="bar", }
+			]
+			defval={ dir=4, }
+			info = @( v) dirlbls[v.dir],
+		}
+		{	//	アニメコマンド
+			act = "ani", name="$T.lbl_anime", icon="\ueae9", 
+			props = [
+				{ pid="ani", lbl="$T.lbl_anime", type=ANIME_INLINE, cnt="cnt6.ui", 
+					mdlid = @( pl){
+						local dlg = pl.ref, who = dlg.data["who"];
+						if( who == "player"){
+							return "CV000";
+						}
+						local ev = dlg.envdef["eventmap"][who] || dlg.envdef.event;
+						return ev.mdlid;
+					}
+				},
+				{ pid="wait", lbl="$T.lbl_waitaction", type=BOOL, }
+			]
+			defval={ ani={ id="stand", spd=1.0, part=0}, wait=true, }
+			info = @( v) "$T.anim_"..v.ani.id,
+		},
+		{	//	エフェクトコマンド
+			act = "efx", name="$T.lbl_effect", icon="\uef55", 
+			props = [
+				{ pid="pos", lbl="$T.lbl_position", type=VEC3, range=(-1000,1000), q=100, }
+				{ pid="id", lbl="$T.lbl_effect", type=RESID_PREVIEW, restype="efx", cnt="cnt6.ui" }
+				{ pid="wait", lbl="$T.lbl_waitaction", type=BOOL }
+			]
+			defval={ pos=[0,0,0], id="FX000", wait=true, }
+		},
+		{	//	サウンドコマンド
+			act = "snd", name="$T.lbl_sound", icon="\ue7f4", 
+			props = [
+				{ pid="id", lbl="$T.lbl_sound", type=RESID, restype = ["snd"] },
+				{ pid="vol", lbl="$T.lbl_volume", type=SCALAR, range=(0,200), ui="bar" }
+				{ pid="wait", lbl="$T.lbl_waitaction", type=BOOL }
+			]
+			defval={ pos=[0,0,0], id="SE000", wait=true, }
+		},
+		{	//	スクリプト
+			act = "scp", name="$T.lbl_script", icon="\ueb8e", 
+			props = [
+				{ pid="code", lbl="$T.lbl_script", type=SCRIPT, multiline=8, cnt="cnt6v.ui" }
+			]
+			defval={ code="", }
+		},
+		///////////////////////////////////////////
+		{	//	移動コマンド。これはキャンバス上からのみ追加可能。
+			act = "move", name="$T.lbl_move", icon="\ue021",
+			props = [
+				{ pid="pos", lbl="$T.lbl_position", type=VEC3, range=(-128,128), q=1, }	//	posは基準位置からの相対位置。
+				{ pid="movetype", lbl="$T.movetype", type=LIST, list=[
+					{ lbl="$T.movetype_walk", val="walk", }
+					{ lbl="$T.movetype_dash", val="dash", }
+					{ lbl="$T.movetype_jump", val="jump", }
+					{ lbl="$T.movetype_linear", val="linear", }
+					{ lbl="$T.movetype_warp", val="warp", }
+				], }	//	walk, dash, jump, warp
+				{ pid="movespd", lbl="$T.lbl_movespd", type=SCALAR, range = (0,7), ui="bar", },
+				{ pid="playani", lbl="$T.lbl_playani", type=BOOL, }
+			]
+			defval={ pos=[0,0,0], movetype="walk", movespd=4, playani=true, }
+		},
+	];
+
+	//	data全体のプロパティ。イベントコマンドと移動アクションで変わる
+	static dataprops = [
+		{ pid="loop", lbl="$T.lbl_loop", type=BOOL, bits=3, },	
+		{ pid="wait", lbl="$T.lbl_waitaction", type=BOOL, bits=1, hide=@( pl) pl.getParam( "loop") },
+		{ pid="stack", lbl="$T.onstack", type=LIST, bits=3, list=[
+				{ lbl="$T.onstack0", val=0, },
+				{ lbl="$T.onstack1", val=1, },
+				{ lbl="$T.onstack2", val=2, },
+				{ lbl="$T.onstack3", val=3, },
+			]
+		},
+		{ pid="basepos", lbl="$T.basepos", type=LIST, bits=3,
+			list = @( pl){
+				local dlg = pl.ref, bp = dlg.data[dlg.seltab]["basepos"];
+				local a = [ {lbl="$T.basepos0", val=0}, {lbl="$T.basepos1", val=1}];
+				if( dlg.seltab == "player") a .. { lbl="$T.basepos2", val=2};
+				if( typeof( bp) == SS_ARRAY) a .. "-" .. {lbl="$T.basepos3", val=bp };
+				return a;
+			}
+		},
+	];
+	
+	static DIALOGUIPATH = srcdir.."/ui/manuactiondialog.ui"
+
+	envdef = null;				//	編集用に色々と定義情報。マップとか、イベントの初期値とか、
+	
+	//	
+	canvas = null;			//	CanvasBehavior
+	bw = null;				//	BlockWorld: nullの場合はマッププレビューなしでグリッド表示
+	bw3d = null;			//	SK3DBlockWorld
+	bwcol = null;			//	b3Body<BlockColiderInterface> : ブロック選択用。
+	ev3d = null;			//	RPG3DObject : who="event",evidで切り替わる。
+
+	//	pen
+	pen3d = null;			//	SK3DObject : 
+	mousegz = null;			//	
+	gzlist = null;			//	
+	ev3dlist = null;		//	
+	
+	tabs = null;			//	TabsBehavior
+	proplist = null;		//	PropertyListBehavior
+	actionlist = null;		//	ListBehavior
+	spdval = null;			//	NumInputBehavior
+
+	data = null;			//	table : この中に各キャラのアクションデータが入る
+	seltab = null;			//	"event"|"player"|evid : data[seltab]で目的のキャラのアクションデータ
+	
+	static function run( envdef, data){
+		::skstudio.freezeEditorView( true);
+		local p = ManualActionDialog( DIALOGUIPATH, envdef, data);
+		p.show( null);
+		::skstudio.freezeEditorView( false);
+		if( p.data<>data){
+			return p.data;
+		}
+	}
+	
+	constructor( v, e, d){
+		super( v);
+		envdef = e;
+		data = deepclone( d);
+
+		canvas = CanvasBehavior( view.findChild( "canvas"), null);
+		canvas.view.renderer.setEnvironment( ::RenderSettings.getEnvironment( "pbr_fw"));
+		canvas.view.addUpdateFunc( @(){
+			if( bw3d){
+				bw3d.checkUpdateInCameraMesh( canvas.camwork.cam);
+				return true;
+			}
+		}.bindenv( this));
+
+		tabs = TabsBehavior( view.findChild( "tabs"), [{ lbl="$T.who_event", val="event"}]);
+
+		proplist = PropertyListBehavior( view.findChild( "proplist"), null);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		proplist.bindProperties( dataprops);
+		proplist.setParameters( data);
+
+		actionlist = ListBehavior( view.findChild( "actionlist"), []);
+		actionlist.listview.addEventListener( ACTION_EVENT, listevent);
+		actionlist.listview.addEventListener( ITEM_EVENT, listevent);
+		actionlist.dndfunc = 3;
+		actionlist.multisel = true;
+
+		local self = this, _actiondefs = actiondefs;
+		actionlist.setviewfunc = @( la, v, i){
+			local def = _actiondefs.find( @( v) v.act==i.act);
+			if( i.act=="move"){
+				local idx = self.routeIndexOf( i);
+				v.setValue( "icon", [char( 0xf123+idx+1), 0xA3D900ff]);
+			}else{
+				v.setValue( "icon", [def.icon,0xffffffff]);
+			}
+			local s = def.name;
+			if( def["info"]) s = s..": "..def.info( i);
+			v.setValue( "lbl", s);
+			v.findChild( "disablechk").setSelected( i["disable"]);
+			v.pickable = false;
+		}
+
+		spdval = createNumInputBehavior( view.findChild( "spdval"));
+		spdval.setRange( 0.1, 2.0, 100);
+		spdval.setValue( 1.0);
+		spdval.view.addEventListener( ACTION_EVENT, spdevent);
+		spdval.view.addEventListener( ITEM_EVENT, spdevent);
+
+		gzlist = [];
+		ev3dlist = [];
+		setBlockWorld( e.bw);
+		updateTabs();
+		//	初期選択タブ
+		seltab = length( d["event"]["actions"]) ? "event" : length( d["player"]["actions"]) ? "player" : null;
+		if( !seltab && envdef["eventmap"]){
+			seltab = Table.findi( envdef.eventmap, @( v) length( v["actions"]));
+		}
+		if( !seltab) seltab = "event";
+		local _seltab = seltab;
+		tabs.selectTab( @( v) v.val == _seltab );
+		//	
+		placeEvents();
+		canvas.camwork.moveFocus( getEvent3D( seltab)["pos"]);
+		refresh();
+	}
+
+	function getEvent3D( tab){
+		return canvas.scn.findByName( tab);
+	}
+	
+	//	
+	function updateTabs(){
+		if( envdef["single"]) return;
+		local a = [{ lbl="$T.who_event", val="event"}, { lbl="$T.who_player", val="player"}];
+		local b = Table.map( data, @( v, i){
+			local d = envdef.eventmap[i];
+			if( !d) return undefined;
+			local def = ::RPGSystem.eventrole[d.role];
+			return { lbl=d.name, val=i, icon=def.icon, }
+		});
+		a ... b;
+		tabs.setTabs( a);
+	}
+	
+	function refresh(){
+		local td = data[seltab];
+		proplist.setParameters( td);
+		actionlist.setListItems( td.actions);
+		updateRoute();
+	}
+
+	function setBlockWorld( bw){
+		bw3d = SK3DBlockWorld( bw);
+		bw3d.setVoxelTec( skFXFindTechnique( "vox.grid"));
+		local bci = BlockColiderInterface( bw);
+		bci.setFlagMask( BLK_SOLID|BLK_BARRIOR|BLK_SOLIDFB);
+		local bcshp = b3Shape.createCustomConcave( bci);
+		bwcol = b3Body( 0, bcshp, bw3d.mat, G_STAGE, G_VIEW|G_CHARA|G_OBJECT);
+		bwcol.ref = bci;
+		canvas.scn.addObject( bw3d);
+		canvas.b3world.addBody( bwcol);
+		canvas.camwork.setRotation( Vector3D( 0, 52*Math.DTOR, 0));
+		canvas.view.addEventListener( MOUSE_EVENT, canvasevent);
+	}
+
+	//	
+	function placeEvents(){
+		foreach( v in ev3dlist) v.kill();
+		ev3dlist.clear();
+		foreach( i, v in data){
+			local ev3d;
+			if( i == "player"){
+				ev3d = RPG3DObject.create3DObject( {mdlid="CV000"});
+			}else
+			if( i == "event"){
+				ev3d = RPG3DObject.create3DObject( envdef.event);
+			}else{
+				local ev = envdef["eventmap"][i];
+				if( !ev) continue;
+				ev3d = RPG3DObject.create3DObject( ev);
+			}
+			local ep = getBasePos( i);
+			ev3d.setPosition( (ep[0]*0.5, ep[1]*0.5, ep[2]*0.5, ep[3]*Math.HPI));
+			ev3d.name = i;
+			canvas.scn.addObject( ev3d);
+			//
+			foreach( m in ev3d.getMaterials()){
+				m.alphatest = 1; m.alpharef = i==seltab ? 1.0 : 0.5;
+			}
+			ev3dlist .. ev3d;
+		}
+	}
+
+	//	
+	function changeTab( t){
+		tabs.selectTab( @( v) v.val==t);
+		local new3d = getEvent3D( t);
+		seltab = t;
+		foreach( i, v in data){
+			local ev3d = getEvent3D( i);
+			foreach( m in ev3d?.getMaterials()){
+				m.alphatest = 1; m.alpharef = i==t ? 1.0 : 0.5;
+			}
+		}
+		refresh();
+		canvas.camwork.moveFocus( new3d.pos);
+	}
+
+	static frontpos = [[0,2],[2,0],[0,-2],[-2,0]];
+
+	//	ベース位置取得。固定位置はarray
+	function getBasePos( tab){
+		local td = data[tab];
+		local bp = td["basepos"] || 0;
+		if( typeof( bp) == SS_ARRAY) return bp;
+		local p = (envdef["eventmap"][tab] || envdef.event).pos;
+		if( bp == 2){
+			local dp = frontpos[p[3]];
+			p = [p[0]+dp[0],p[1],p[2]+dp[1], p[3]+2];
+		}
+		return p;
+	}
+
+	//	ルートをcanvas上に追加
+	//	SK3DRouteGizmo
+	function updateRoute(){
+		foreach( gz in gzlist) gz.kill();
+		gzlist.clear();
+		local td = data[seltab];
+		local ep = getBasePos( seltab);
+		//	初期位置
+		local gz = SK3DRouteGizmo({ icon = "\ue838", pos = ep, idx = -1, });
+		canvas.scn.addObject( gz);
+		gzlist .. gz;
+		//	ルート
+		local i = 0, gz0 = gz;
+		foreach( v in td.actions){
+			if( v.act == "move"){
+				local mk = {
+					icon = char( 0xf123+i+1),
+					pos = [v.pos[0]+ep[0], v.pos[1]+ep[1], v.pos[2]+ep[2]],
+					idx = i,
+				};
+				local gz = SK3DRouteGizmo( mk);
+				canvas.scn.addObject( gz);
+				gz.setLine( gz0.data.pos);
+				++i;
+				gzlist .. gz;
+				gz0 = gz;
+			}
+		}
+	}
+
+	function updateBasePos( tab){
+		local ev3d = getEvent3D( tab);
+		local ep = getBasePos( tab);
+		ev3d.setPosition( (ep[0]*0.5, ep[1]*0.5, ep[2]*0.5, ep[3]*Math.HPI));
+		ev3d.matdirty = true;
+		if( tab == seltab) updateRoute();
+		canvas.view.repaint();
+	}
+
+	//	
+	function routeIndexOf( act){
+		local i = 0;
+		foreach( v in data[seltab].actions){
+			if( v.act == "move"){ if( v == act) return i; ++i; }
+		}
+		return 0;
+	}
+
+	//	
+	function isChanged(){
+		return false;
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "playbtn":
+			startPreview( 0);
+			break;
+		case "stopbtn":
+			stopPreview();
+			break;
+		case "tabmenu":
+			showTabAddMenu( e);
+			break;
+		case "LIST":	//	tabsのこと。。。
+			local tab = tabs.tabitems[e.actioncmd].val;
+			if( e.isMouseDown( BUTTON2_MASK)){
+				showTabMenu( e, tab)
+			}else{
+				changeTab( tab);
+			}
+			break;
+		}
+		super.actionevent( e);
+	}
+	
+	function showTabAddMenu( e){
+		local evid = envdef.evid;
+		local evmenu = Table.map( envdef.eventmap, @( v, i){
+			local def = ::RPGSystem.eventrole[v.role];
+			if( !def["editmanuaction"]) return undefined;
+			return { lbl=v.name, val=i, icon=[def.icon,evcolorlist[v.col].icon[1]], disable=!!data[i]||i==evid, }
+		}).sort( @( v) v.val);
+		//
+		local menudata = evmenu;
+		local ret = MenuPopup.run( menudata);
+		if( ret){
+			local self = this;
+			local tab0 = seltab, tab = ret.val;
+			local newtd = { actions=[],loop=true};
+			local redo = [@(){
+				self.data[tab] <- newtd;
+				self.placeEvents();
+				self.updateTabs();
+				self.changeTab( tab);
+			}];
+			local undo = [@(){
+				delete self.data[tab];
+				self.placeEvents();
+				self.updateTabs();
+				if( self.seltab == tab) self.changeTab( tab0);
+			}];
+			submitOp( redo, undo);
+			refresh();
+		}
+	}
+
+	function showTabMenu( e, tab){
+		local menudata = [
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872"},
+		];
+
+	}
+
+	function spdevent( e){
+		if( e.id == ACTION_PERFORMED || e.id == VALUE_CHANGED){
+			canvas.scn.timescale = spdval.getValue();
+		}
+	}
+	
+	function listevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ITEM_SORT:
+		{
+			local tab = seltab, td = data[tab];
+			local oldli = td.actions, newli = ::applyItemSort( clone td.actions, e);
+			local redo = [@(){ td.actions = newli; }];
+			local undo = [@(){ td.actions = oldli; }];
+			submitOp( redo, undo);
+			refresh();
+			break;
+		}
+		case ACTION_PERFORMED:
+			if( cmd["src"]){	//	disableボタン
+			}else{
+				if( e.isMouseDown( BUTTON1_MASK)){
+					editItem( cmd);
+				}else
+				if( e.isMouseDown( BUTTON2_MASK)){
+					if( !actionlist.selects[ cmd]) actionlist.setSelectedItem( cmd);
+					showItemContextMenu( e);
+				}
+			}
+			break;
+		}
+	}
+
+	function editItem( item){
+		local def = actiondefs.find( @( v) v.act==item.act);
+		local tab = seltab, td = data[tab];
+		local idx = td.actions.indexOf( item);
+		local v = PropertyEditPopup.run( actionlist.listview.rows[idx], def, item);
+		if( v && v <> item){
+			local self = this;
+			local redo = [@(){ td.actions[idx] = v; }];
+			local undo = [@(){ td.actions[idx] = item; }];
+			submitOp( redo, undo);
+			refresh();
+		}
+	}
+
+	function showItemContextMenu( e){
+		local hasel = length( actionlist.selects), hascur = actionlist.curidx>=0;
+		local cbdata = getClipboard( "maction");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="edit", lbl="$T.lbl_edit", icon="\ue745", disable=!hascur },
+			{ id="add", lbl="$T.lbl_addaction", submenu = actiondefs.map( @( v) v.act=="move"?undefined : {...v, lbl=v.name, id="cmd"}), },
+			"-"
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d", disable=!hasel },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-"
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", disable=!hasel},
+		];
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "copy":
+		{
+			local v = deepclone( actionlist.getSelectedItems( true));
+			printf( "COPY ACTIONS %S\n", encodeJSON( v, 5));
+			putClipboard( "maction", v);
+			break;
+		}
+		case "paste":
+		{
+			local self = this;
+			local tab = seltab, td = data[seltab];
+			local oldlist = clone td.actions;
+			local idx = actionlist.curidx<0 ? length( oldlist) : actionlist.curidx;
+			local newlist = clone oldlist;
+			foreach( i, v in cbdata) newlist[idx+i] <- v;
+			local redo = [@(){ td.actions = newlist; }];
+			local undo = [@(){ td.actions = oldlist; }];
+			submitOp( redo, undo, null);
+			refresh();
+			break;
+		}
+		case "delete":
+		{
+			local self = this;
+			local tab = seltab, td = data[seltab];
+			local oldlist = clone td.actions;
+			local newlist = td.actions.filter( @( v) !actionlist.selects[v]);
+			local redo = [@(){ td.actions = newlist; }];
+			local undo = [@(){ td.actions = oldlist; }];
+			submitOp( redo, undo, null);
+			refresh();
+			break;
+		}
+		case "cmd":
+			local v0 = { act=ret.act, ...deepclone( fget( ret, "defval", this))};
+			local v = PropertyEditPopup.run( null, ret, v0);
+			if( v){
+				addActionOp( v, hascur?actionlist.curidx : length( actionlist.items));
+			}
+			break;
+		}
+	}
+	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local tab = seltab, td = data[seltab];
+			local val = cmd.val;
+			local trk = null;
+			local oldval = ::getProperty( prop, td);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, td, val); }];
+			local undo = [@(){ ::setProperty( prop, td, oldval); }];
+			if( prop.pid == "basepos"){
+				local fn(){ self.updateBasePos( tab); }
+				redo .. fn;
+				undo .. fn;
+			}
+			submitOp( redo, undo, trk);
+		}
+	}
+
+	//	
+	function rayTest( e){
+		local qw = canvas.getRay( e.lx, e.ly), q = qw[0], w = qw[1]-qw[0];
+		local b3res = canvas.b3world.rayTest( 1, q, q+w, -1, G_STAGE);	//	closest
+		foreach( br in b3res){
+			if( br.bodyb == bwcol){
+				local hb = br.bodyb.ref.getHitBlock( br, HitBlock());	//	毎回インスタンス作る。。。
+				return hb;
+			}
+		}
+		return null;
+	}
+
+	function placePen( hb){
+		if( !pen3d){
+			local pens = MapTool.getPenmap()["p02"], pen = pens[0];
+			local mode = PenMode.PEN_SELECT
+			local pm = RPGToolMesh.createPenMesh( pen, mode);
+			// local bm = RPGToolMesh.createBlockMesh( 1, mode);
+			local sk3d = SK3DObject( pm);
+			// local b3d = SK3DObject( bm);
+			// b3d.pos( sk3d.pivot).scale( -1);
+			// sk3d.addChild( b3d);
+			canvas.scn.addObject( sk3d);
+			pen3d = sk3d;
+		}
+		if( hb){
+			pen3d.visible = true;
+			pen3d.pos( hb.bx, hb.by, hb.bz).scale( 0.5).add( 0.25);
+			pen3d.matdirty = 1;
+		}else{
+			pen3d.visible = false;
+		}
+	}
+
+	function rayTestGZ( e){
+		local q = canvas.getRay( e.lx, e.ly);
+		local b3res = canvas.scn.b3world.rayTest( 0, q[0], q[1], -1, G_EVENT);	//	all
+		foreach( br in b3res){
+			local ref = br.bodyb["ref"];
+			if( ref instanceof SK3DRouteGizmo && ref.data.idx>=0){
+				return { gz:ref, part:br.partidb, pos:clone br.pointb};
+			}
+		}
+	}
+
+	function setMouseGizmo( gz){
+		if( mousegz != gz){
+			mousegz?.setState( 0);
+			gz?.setState( 1);
+			mousegz = gz;
+			canvas.view.repaint();
+		}
+	}
+	
+	//	
+	function canvasevent( e){
+		local gzt = rayTestGZ( e);
+		if( gzt){
+			setMouseGizmo( gzt.gz);
+			placePen( null);
+			switch( e.id){
+			case MOUSE_PRESSED:
+				if( e.isMouseDown( BUTTON1_MASK)){
+					canvas.toolfunc = dragRoute( e, gzt);
+				}
+				break;
+			case MOUSE_RELEASED:
+				if( e.isClicked() && e.isMouseDown( BUTTON2_MASK)){
+					showGZContextMenu( e, gzt);
+				}
+				break;
+			}
+			return;
+		}
+		setMouseGizmo( null);
+		local hb = rayTest( e);
+		if( hb["f"] != 0) hb = null;
+		placePen( hb);
+		switch( e.id){
+		case MOUSE_MOVED:
+			break;
+		case MOUSE_PRESSED:
+			break;
+		case MOUSE_DRAGGED:
+			break;
+		case MOUSE_RELEASED:
+			if( e.isClicked() && e.isMouseDown( BUTTON2_MASK)){
+				showCanvasContextMenu( e, hb);
+			}
+			break;
+		}
+	}
+
+	function dragRoute( e0, gzt){
+		local self = this, canvas = canvas;
+		gzt.gz.setState( 2);
+		local gz = gzt.gz, gzi = gzlist.indexOf( gz);
+		local gz0 = gzlist[gzi-1], gz1 = gzlist[gzi+1];
+		local gzpos = clone gz.data.pos;
+		local updateline(){
+			if( gz0) gz.setLine( gz0.data.pos);
+			if( gz1) gz1.setLine( gzpos);
+		};
+		return @( e){
+			e.consume();
+			local hb = self.rayTest( e);
+			switch( e.id){
+			case MOUSE_DRAGGED:
+				if( hb){
+					gz.setBlockPosition( gzpos.set( hb.bx,hb.by+1,hb.bz));
+					updateline();
+					canvas.view.repaint();
+				}
+				break;
+			case MOUSE_RELEASED:
+				if( gzpos <> gz.data.pos){
+					local td = self.data[self.seltab], i = gz.data.idx;
+					local p0 = td.actions[i].pos, p1 = [p0[0]+gzpos[0]-gz.data.pos[0], p0[1]+gzpos[1]-gz.data.pos[1], p0[2]+gzpos[2]-gz.data.pos[2]];
+					local redo = [@(){ td.actions[i].pos = p1; }];
+					local undo = [@(){ td.actions[i].pos = p0; }];
+					self.submitOp( redo, undo, null);
+				}
+			case MOUSE_CANCELLED:
+				gz.setState( 1);
+				canvas.view.repaint();
+				return null;
+			}
+			return callee();
+		}
+	}
+
+	//	
+	function showCanvasContextMenu( e, hb){
+		local ctxmenu = [
+			{ ...actiondefs.find( @( v) v.act=="move"), id="moveto", lbl="$T.lbl_movehere", icon="\uef3a", },
+			"-",
+			...actiondefs.map( @( v) v.act=="move"?undefined : {...v, lbl=v.name, id="cmd"}),
+			"-",
+			{ id="basepos", lbl="$T.lbl_setbasepos", icon="\ue88a", },
+		];
+		local m = MenuPopup.run( ctxmenu);
+		switch( m["id"]){
+		case "basepos":
+		{
+			local tab = seltab, td = data[tab];
+			local ep = getBasePos( tab);
+			local self = this;
+			local oldval = td.basepos, newval = [hb.bx, hb.by+1, hb.bz, ep[3]];
+			local redo = [@(){ td.basepos = newval; self.updateBasePos( tab); }];
+			local undo = [@(){ td.basepos = oldval; self.updateBasePos( tab); }];
+			submitOp( redo, undo, null);
+			refresh();
+			break;
+		}
+		case "moveto":
+		case "cmd":
+			local v0 = { act=m.act, ...deepclone( fget( m, "defval", this))};
+			if( m.id == "moveto"){
+				local ep = getBasePos( seltab);
+				v0.pos = [hb.bx-ep[0], hb.by-ep[1]+1, hb.bz-ep[2]];
+			}
+			local v = PropertyEditPopup.run( null, m, v0);
+			if( v){
+				addActionOp( v, length( actionlist.items));	//	ここからは最後尾にadd
+			}
+			break;
+		}
+	}
+
+	function showGZContextMenu( e, ezt){
+		local ctxmenu = [
+			{ id="edit", lbl="$T.lbl_edit", icon="\ue745", },
+			"-",
+			{ id="delete", lbl="$T.lbl_delete", icon="\ue872", },
+		];
+		local m = MenuPopup.run( ctxmenu);
+	}
+
+	function addActionOp( v, i){
+		local tab = seltab, td = data[tab];
+		local trk = null;
+		local self = this;
+		local redo = [@(){ td.actions[i] <- v; }];
+		local undo = [@(){ delete td.actions[i]; }];
+		submitOp( redo, undo, trk);
+		refresh();
+	}
+
+
+	///////////////////////////////////////////////////////////////////////////////////////
+	//	プレビュー関連
+
+	//	プレビュー再生で位置が変化したイベント位置を元に戻す。
+	function resetPreview(){
+		placeEvents();
+		updateRoute();
+	}
+	
+	//	指定した位置からプレビューを再生。
+	function startPreview( st){
+		local me = getEvent3D( "event");
+		foreach( ev3d in ev3dlist){
+			local td = data[ev3d.name];
+			if( !td["actions"]) continue;
+			ev3d.event = RPGStageEventRunner( 100000, envdef.event, null, null);	//	ダミーなRPGStageEventRunnerを生成。
+			ev3d.manuaction = ManualMoveAction( ev3d);
+			ev3d.manuaction.act( @() playData( td, st, me));
+		}
+	}
+	
+	//	
+	function stopPreview(){
+		resetPreview();
+	}
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////
+//
+//	ルート用ギズモのSK3DObject。キャンバスに配置される
+//	
+
+class SK3DRouteGizmo extends SK3DObject
+{
+	data = null;		//	
+	stat = 0;
+
+	line3d = null;		//	前のルートからのライン
+
+	constructor( mk){
+		this.data = mk;
+		setup();
+	}
+
+	function setup(){
+		local pm = RPGToolMesh.createIconMesh( data.icon, 0xffffffff, 0.5, "mkicon.ui", true);
+		setPolygonMesh( pm);
+		pos( data.pos).scale( 0.5).add( 0, 0.0625, 0);
+		updateMatrix();
+		local shp = b3Shape.createCylinder( 0.6, 0.15, 0.6);
+		b3body = b3Body( 0.0, shp, mat, G_EVENT, G_CHARA|G_OBJECT);
+		b3body.ref = this;
+		local m = mesh.face[0].m;
+		m.depthtest = 0;
+		setState( 0);
+	}
+
+	function setBlockPosition( p){
+		pos( p).scale( 0.5).add( 0, 0.0625, 0);
+		matdirty = true;
+	}
+
+	function setState( s){
+		stat = s;
+		local m = mesh.face[0].m;
+		switch( s){
+		case 0: m.Kmul = 0xffffff4f; break;
+		case 1: m.Kmul = 0xffffff8f; break;
+		case 2: m.Kmul = 0xffffffcf; break;
+		case 3: m.Kmul = 0xffffffff; break;
+		}
+	}
+
+	//	前のルートと線をつなぐ
+	function setLine( p1){
+		if( line3d) line3d.kill();
+		local pos1 = Vector3D( p1).scale( 0.5).add( 0, 0.0625, 0);
+		local pm = clone PrimitiveMeshes.createPlane( 0.0625, pos.hypot( pos1) * 0.5, true);
+		local m = pm.face[0].m;
+		m.blend = SK_MIX;
+		m.Kd = 0x00000030;
+		m.visiblemask = SK_VISIBLE_DECAL;
+		m.depthtest = 0;
+		m.cullface = 0;
+		m.polygonoffset1 = -50.0;
+		line3d = SK3DObject( pm);
+		line3d.pos( pos1).sub( pos).scale( 0.5).add( 0, 0.0625, 0);
+		local rot = Quaternion.from2Axis( #Vector3D(0,0,1), Vector3D( pos1).sub( pos).normalize());
+		line3d.rot << rot;
+		addChild( line3d);
+	}
+}

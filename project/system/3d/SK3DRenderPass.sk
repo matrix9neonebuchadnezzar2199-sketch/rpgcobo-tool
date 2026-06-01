@@ -1,0 +1,1947 @@
+/**
+ *	SK3DScene新仕様
+ *	いくつかのレンダリングパスを独立させてメインの描画パスの複雑化や拡張性を改善する。
+ */
+
+import ViewportSize;
+
+local v_1 = Vector3D(), v_2 = Vector3D();
+local objbuf = [];
+local reg = SK3DRenderer.PassRegistory;
+
+local clearparam0 = ClearParam( 0.0,0.0,0.0,0.0, 1.0);
+
+
+//	uv,vzからwvpをreconstructするためのパラメータをMatrixの指定個所に埋め込む
+//	pers,ortho両対応
+local reconstructParam( cam, mat, i){
+	mat[i  ] = 1.0 / cam.prjmat[0];
+	mat[i+1] = 1.0 / cam.prjmat[5];
+	mat[i+2] = (cam.zfar-cam.znear) / 65535.0;	//	R16UI用に 0-65535 => 0~1 にスケール
+	mat[i+3] = cam.znear;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	SceneRenderPass classes
+//
+//////////////////////////////////////////////////////////////////////////////////////
+
+//	シーン描画のベースクラス
+class reg.SceneRenderPassBase extends SK3DRenderPass
+{
+	clearparam = null;				//	ClearParam ...
+	visiblemask = -1;				//	描画対象マスク
+	
+	function setPassSetting( t){
+		super.setPassSetting( t);
+		clearparam = t["clearparam"]?ClearParam( t.clearparam):null;
+		if( t["visiblemask"]) visiblemask = t.visiblemask;
+	}
+
+	function setupPass( r){
+		needsetup = false;
+		if( ps["target"]) target = r.findRenderTarget( ps.target);
+	}
+
+	function collectObjects( r){
+		r.displist.collect( visiblemask, objbuf);
+		return objbuf;
+	}
+	
+	function performPass( r){
+		r.setRenderTarget( target, viewport);	//	SK3DRenderTargetを指定する
+		if( clearparam) skClearScreen( clearparam);
+		//	
+		local scn = r.scn, cam = r.camera;
+		local objs = collectObjects( r);
+		skSetCamera( cam);
+		skPushRenderStates();
+		beginPass( r);
+		r.env.visiblemask = visiblemask;
+		renderNodes( r, objs, cam, visiblemask);
+		r.env.visiblemask = -1;
+		objs.clear();
+		endPass( r);
+		skPopRenderStates();
+	}
+	
+	function beginPass( r){
+	}
+	
+	function endPass( r){
+	}
+	
+	function renderNodes( r, objs, cam, visiblemask){
+		foreach( n in objs){
+			n.render( cam, visiblemask);
+		}
+	}
+}
+
+//	ライト＋シャドウの計算付き。
+//	ライトはdepth,shadowなど他のシーンパスでは使わない。
+class reg.SceneRenderPass extends reg.SceneRenderPassBase
+{
+	visiblemask = SK_VISIBLE_MAIN;
+	
+	function setPassSetting( t){
+		super.setPassSetting( t);
+	}
+	
+	function beginPass( r){
+	}
+	
+	function endPass( r){
+		skFlush();
+	}
+	
+	function renderNodes( r, objs, cam, visiblemask){
+		foreach( n in objs){
+			n.render( cam, visiblemask);
+		}
+	}
+}
+
+class reg.LegacySceneRenderPass extends reg.SceneRenderPassBase
+{
+	visiblemask = SK_VISIBLE_MAIN;
+	
+	function setPassSetting( t){
+		super.setPassSetting( t);
+	}
+	
+	function beginPass( r){
+	}
+	
+	function endPass( r){
+		skFlush();
+		skSortLights( null, null, false);	//	clear active lights
+	}
+	
+	function renderNodes( r, objs, cam, visiblemask){
+		foreach( n in objs){
+			skSortLights( n.gbnd, null, false);
+			n.render( cam, visiblemask);
+		}
+	}
+}
+
+class reg.DepthRenderPass extends reg.SceneRenderPassBase
+{
+	visiblemask = SK_VISIBLE_DEPTH;
+	
+	function beginPass( r){
+		r.env.passmode = 1;
+	}
+	
+	function endPass( r){
+		r.env.passmode = 0;
+	}
+}
+
+//	shadow map
+
+ShadowMap.shadowfb <- null;
+ShadowMap.blurpass <- null;
+ShadowMap.texsizea <- 512;
+ShadowMap.casnuma <- 1;
+
+function ShadowMap::createShadowTextures(){
+	local w = texsizea, h = w * casnuma;
+	shadowfb = FrameBuffer();
+	local ztex = shadowfb[8] = Texture(); ztex.create( w, h, SK_DEPTH16, 0);
+	//	デプスのみでシャドウマップをレンダリングする。そのためブラーパスは必須になった
+	blurpass = createBlurImagePass( ztex, w, h);
+	shadowtex = blurpass.target;
+}
+
+function ShadowMap::createBlurImagePass( ztex, w, h){
+	local p = reg.DrawImagePass( null);
+	p.target = Texture();
+	p.target.create( w, h, SK_R16UI, 1, 0);	//	R16UIフォーマット
+	p.m = Material();
+	p.m.tex0 = ztex;
+	p.m.tec = skFXFindTechnique( "defaults.zblur");
+	p.m.miscmat0 = Matrix();
+	p.m.miscmat1 = Matrix();
+	return p;
+}
+
+function ShadowMap::setCascadeCamera( cas, cam){
+	local m = blurpass["m"]["miscmat0"];
+	if( m){
+		local invpmat = #Matrix();
+		cam.prjmat.invert44( invpmat);
+		m[cas*4  ] = invpmat[10];
+		m[cas*4+1] = invpmat[14];
+		m[cas*4+2] = invpmat[11];
+		m[cas*4+3] = invpmat[15];
+	}
+	local m = blurpass["m"]["miscmat1"];
+	if( m){		//	-(znear~zfar) => 0.0~1.0
+		m[cas*4  ] = -1.0 / (cam.zfar-cam.znear);
+		m[cas*4+1] = -cam.znear;
+	}
+}
+
+//	小さなキャンバスに大きなシャドウマップは無駄なので適正化する
+function ShadowMap::adjustTexSize( h){
+	texsizea = texsize;
+	casnuma = casnum;
+	if( h < 256){
+		if( texsizea > 512) texsizea = 512;
+		if( casnuma > 1) casnuma = 1;
+	}else
+	if( h < 512){
+		if( texsizea > 1024) texsizea = 1024;
+		if( casnuma > 2) casnuma = 2;
+	}else
+	if( h < 800){
+		if( casnum > 2) casnuma = 2;
+	}
+}
+
+//	ShadowMapは独自のカリングや描画ターゲットがあるため、SceneRenderPassとは違う
+//	使用するテクスチャ、ディスプレイリスト等も全てLight.ShadowMap内に持たせる。
+//	このパスで全てのShadowMapをレンダリングする。
+class reg.ShadowMapRenderPass extends SK3DRenderPass
+{
+	visiblemask = SK_VISIBLE_SHADOW_CASTER;
+	clearparam = #ClearParam( 0.0,0.0,0.0,0.0, 1.0){ clearmask=SK_CLEAR_DEPTH };
+	viewport = null;
+	shadowlist = null;		//	SK3DShadowList
+
+	function setupPass( r){
+		shadowlist = SK3DShadowList();
+		viewport = (0,0,4,4);
+	}
+	
+	function performPass( r){
+		local scn = r.scn, env = r.env;
+		local li = skGetShadowLights();	//	※複数シャドウに対応するにはここでarrayを。。。
+		if( li){
+			env.passmode = 2;
+			local s = li.shadow;
+			if( !s.shadowfb){
+				s.adjustTexSize( r.rth);
+				s.createShadowTextures();
+			}
+			local casnum = s.casnuma, w = s.texsizea, h = w * casnum;
+			local objs = objbuf;
+			shadowlist.clear();
+			shadowlist.setup( r.displist, env, w, h, casnum, 0.5);
+			shadowlist.cullNodes( scn.objs, SK_VISIBLE_SHADOW_CASTER);
+			shadowlist.finish();
+			shadowlist.sort();
+			r.setRenderTarget( s.shadowfb, null);
+			skClearScreen( clearparam);
+			viewport[2] = viewport[3] = w;
+			// skPushRenderStates();
+			// skSetRenderState( SK_COLORMASK, 0);
+			for( local l = 0;l < casnum;l ++){
+				shadowlist.collectCascade( l, objs);
+				local shadowcam = shadowlist.getShadowCamera( l, #Camera());
+				skSetCamera( shadowcam);
+				s.setCascadeCamera( l, shadowcam);
+				viewport[1] = w*l;
+				skSetViewport( viewport);
+				renderNodes( r, objs, shadowcam, visiblemask);
+			}
+			objs.clear();
+			env.passmode = 0;
+			// skPopRenderStates();
+			s.blurpass?.performPass( r);
+		}
+	}
+	
+	function renderNodes( r, objs, cam, visiblemask){
+		foreach( n in objs){
+			n.render( cam, visiblemask);
+		}
+	}
+
+	//	後回し、、、
+	function targetsResized( r){
+		// local isdraft = r.rtw<=256 || r.rth<=256 || r.camera.zfar<=24.0;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	ImagePass classes
+//
+//////////////////////////////////////////////////////////////////////////////////////
+
+class reg.ImagePassBase extends SK3DRenderPass
+{
+	vtx = null;						//	VertexBuffer ... 共通
+	fidx = null;					//	IndexBuffer ... 共通
+	ridx = null;					//	IndexBuffer ... 共通
+
+	static function _getImageMeshZ( z){
+		local mb = PolygonMeshBuilder();
+		mb.setMaterial( Material());
+		mb.begin( SK_TRIANGLESTRIP);
+		mb.color( -1);
+		mb.texcoord( 0, 1); mb.vertex( -1, -1, z);
+		mb.texcoord( 0, 0); mb.vertex( -1,  1, z);
+		mb.texcoord( 1, 1); mb.vertex(  1, -1, z);
+		mb.texcoord( 1, 0); mb.vertex(  1,  1, z);
+		mb.end();
+		//
+		local m2 = Material(); m2.Ke = 0xff00ff00;
+		mb.setMaterial( m2);
+		mb.begin( SK_TRIANGLESTRIP);
+		mb.color( -1);
+		mb.texcoord( 0, 1); mb.vertex( -1,  1, z);
+		mb.texcoord( 0, 0); mb.vertex( -1, -1, z);
+		mb.texcoord( 1, 1); mb.vertex(  1,  1, z);
+		mb.texcoord( 1, 0); mb.vertex(  1, -1, z);
+		mb.end();
+		return mb.toPolygonMesh();
+	}
+
+	static function _getImageMesh(){
+		return #_getImageMeshZ( 0.0);
+	}
+
+	constructor( t){
+		super( t);
+		local _pm = _getImageMesh();
+		vtx = _pm.vtx;
+		fidx = _pm.face[0].idx;
+		ridx = _pm.face[1].idx;
+	}
+	
+	function setSources( m, r, t){
+		if( typeof( t) == SS_ARRAY){
+			foreach( i, v in t){
+				m["tex"..i] = r.findRenderTarget( v);
+			}
+		}else{
+			m.tex0 = r.findRenderTarget( t);
+		}
+	}
+
+	function clearDepth( r){
+		r.setRenderTarget( target, viewport);
+		if( viewport){
+			local m = #Material(){ cullface=SK_OFF; depthmask=1; depthtest=SK_ALWAYS; };
+			local idx = r.currenttarget?ridx:fidx;
+			skSetRenderState( SK_COLORMASK, 0);
+			skBindVertexBuffer( vtx);
+			skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+			skSetRenderState( SK_COLORMASK, 1);
+		}else{
+			skClearScreen( SK_CLEAR_DEPTH);
+		}
+	}
+}
+
+//	単に描画するパス。colormat等で画像の調整は可能。
+
+class reg.DrawImagePass extends reg.ImagePassBase
+{
+	m = null;
+	cls = false;
+
+	function setupPass( r){
+		m = createMaterial( ps["tec"] || "sprite.def");
+		target = r.findRenderTarget( ps["target"]);
+		setSources( m, r, ps["src"]);
+		cls = ps["cls"];
+	}
+	
+	function setColorMatrix( mat){
+		m.colormat = mat;
+	}
+	
+	function performPass( r){
+		r.setRenderTarget( target, viewport, cls);
+		skBindVertexBuffer( vtx);
+		local idx = r.currenttarget?ridx:fidx;
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+//	
+//	レンダラーに一つ設定されている。デフォルトでは透明色、ただしownbufferの場合にはそれでも塗りつぶされる。
+//	opaqueパス、baseパスの直前に実行する。
+//	
+class reg.ColorBackgroundPass extends reg.ImagePassBase
+{
+	m = null;
+
+	constructor( c = 0x333333ff){
+		super( null);
+		local _pm = #_getImageMeshZ( 1.0);
+		vtx = _pm.vtx;
+		fidx = _pm.face[0].idx;
+		ridx = _pm.face[1].idx;
+		//	
+		m = createMaterial( "background.decal");
+		m.cullface = SK_OFF;
+		m.depthmask = 0;
+		m.depthtest = SK_LEQUAL;
+		m.misccol0 = c;
+	}
+
+	function performPass( r){
+		if( !(m.misccol0&0xff) && !r.currenttarget) return;
+		r.setRenderTarget( target, viewport);
+		local idx = r.currenttarget?ridx:fidx;
+		skBindVertexBuffer( vtx);
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+
+	function getColor(){
+		return m.misccol0;
+	}
+
+	function setColor( c){
+		m.misccol0 = c;
+	}
+}
+
+//	
+//	IBLのキューブマップをそのままバックグラウンドに描画する。
+//	
+class reg.SkyboxBackgroundPass extends reg.ImagePassBase
+{
+	m = null;
+
+	constructor(){
+		super( null);
+		local _pm = #_getImageMeshZ( 1.0);
+		vtx = _pm.vtx;
+		fidx = _pm.face[0].idx;
+		ridx = _pm.face[1].idx;
+		//	
+		m = createMaterial( "background.skybox");
+		m.cullface = SK_OFF;
+		m.depthmask = 0;
+		m.depthtest = SK_LEQUAL;
+	}
+	
+	function performPass( r){
+		if( !(m.misccol0&0xff) && !r.currenttarget) return;
+		r.setRenderTarget( target, viewport);
+		local idx = r.currenttarget?ridx:fidx;
+		skBindVertexBuffer( vtx);
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+
+//	ガウスフィルターパス。
+
+local mat0 = Matrix(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
+
+class reg.BlurImagePass extends reg.ImagePassBase
+{
+	kern = null;	//	(2.3, 6)
+	blur = 0.01;	//
+	m = null;
+	targets = null;
+
+	static function gaussfilter( sigma, hnum){
+		local num = hnum*2+1;
+		local s = 2.0*sigma*sigma;
+		local h = (num-1) / 2.0;
+		local a = array( num, 0.0);
+		for( local l = 0;l < num;l ++){
+			local dx = l-h; a[l] = (Math.exp(-(dx*dx)/s))/(Math.PI * s);
+		}
+		a = a.slice( hnum+1);
+		local sum = 0.0;
+		foreach( v in a) sum += v;
+		sum *= 2.0;
+		foreach( i, v in a) a[i] /= sum;
+		return a;
+	}
+
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		local k = ps["kern"] || (2.3, 6);
+		kern = gaussfilter( k[0], k[1]);
+		blur = ps["blur"] || 1.0;
+	}
+
+	function setupPass( r){
+		m = [];
+		targets = [];
+		local src = r.findRenderTarget( ps.src), tgt = r.findRenderTarget( ps["target"]);
+		local fmt = src.format;	//	ソースのテクスチャがHDならテンポラリターゲットもHDに。
+		local tsize = tgt.params.w;
+		//	ブラーの前段階としてボックスフィルタで1/2サイズにする。
+		if( ps["preblur"]){
+			local m0 = createMaterial( "spritefx.boxblur");
+			//	※最終targetが同サイズならtargetを最初のテンポラリターゲットにする。
+			local t0 = tgt || r.findTempTarget( 200+fmt, { w=tsize, h=tsize, fmt=fmt }); // (tgt&&tgt.params.w==tsize)? tgt:r.findTempTarget( 200+fmt, { w=VP_HALF, h=VP_HALF, fmt=fmt });
+			m .. m0;
+			targets .. t0;
+			m0.tex0 = src;
+			src = t0;
+		}
+		//	ブラー本処理のためのマテリアルセットアップ
+		local tecname = kern[1]<=6 ? "spritefx.blur" : kern[1]<=12 ? "spritefx.blurx2" : "spritefx.blurx4";
+		local m1 = createMaterial( tecname); m1.miscmat0 = Matrix(); m1.miscmat1 = Matrix();
+		local m2 = createMaterial( tecname); m2.miscmat0 = Matrix(); m2.miscmat1 = Matrix();
+		local t1 = r.findTempTarget( 100+fmt+tsize, { w=tsize, h=tsize, fmt=fmt });
+		local t2 = target = tgt;
+		m .. m1 .. m2;
+		targets .. t1 .. t2;
+		m1.tex0 = src;
+		m2.tex0 = t1;
+		updateBlurParameters();
+	}
+
+	function setBlur( sigma, num, blr){
+		kern = gaussfilter( sigma, num);
+		blur = blr;
+		if( m) updateBlurParameters();
+	}
+	
+	function updateBlurParameters(){
+		local m1, m2;
+		if( m[2]){ m1 = m[1]; m2 = m[2]; } else { m1 = m[0]; m2 = m[1];}
+		local mx = m1.miscmat0, my = m2.miscmat0, mz = m1.miscmat1, mw = m2.miscmat1;
+		local asp = (1.0 * m1.tex0.width) / m1.tex0.height;
+		local bx = blur / asp, by = blur;
+		mx.set( mat0); my.set( mat0); mz.set( mat0); mw.set( mat0);
+		mx[0] = bx*0.5 / m1.tex0.height;
+		my[1] = by*0.5 / m1.tex0.height;
+		foreach( i, v in kern){
+			if( i < 12){ mx[4+i] = my[4+i] = v; } else { mz[i-12] = mw[i-12] = v; }
+		}
+	}
+
+	function resizeTargets( r){
+		super.resizeTargets( r);
+		updateBlurParameters();
+		if( m[2]){
+			local mx = m1.miscmat0, my = m2.miscmat0, src = m[0].tex0;
+			mx[0] = blur*0.5 / src.width;
+			my[1] = blur*0.5 / src.height;
+		}
+	}
+
+	function performPass( r){
+		skBindVertexBuffer( vtx);
+		foreach( i,v in m){
+			r.setRenderTarget( targets[i], null);
+			local idx = r.currenttarget?ridx:fidx;
+			skDrawIndexBuffer( v, SK_TRIANGLESTRIP, idx);
+		}
+	}
+}
+
+//	ブラーしたあと画像を描画するパス。縮小バッファでブラーしてそれを引き延ばしてターゲットに描画する場合に使う
+class reg.BlurImageDrawPass extends reg.DrawImagePass
+{
+	blurpass = null;
+	blurtarget = null;		//	Texture
+
+	function setPassSetting( p){
+		local p1 = clone p;
+		p1.src <- "blurtarget";
+		super.setPassSetting( p1);
+		local p2 = clone p;
+		p2.target <- "blurtarget";
+		blurpass = reg.BlurImagePass( p2);
+	}
+	
+	function setupPass( r){
+		if( !blurtarget) blurtarget = r.createRenderTarget( #{w:VP_HALF,h:VP_HALF,fmt:SK_RGBA8});
+		super.setupPass( r);
+		blurpass.setupPass( r);
+	}
+
+	function setBlur( sigma, num, blr){
+		blurpass.setBlur( sigma, num, blr);
+	}
+
+	function performPass( r){
+		blurpass.performPass( r);
+		r.setRenderTarget( target, viewport);
+		skBindVertexBuffer( vtx);
+		local idx = r.currenttarget?ridx:fidx;
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+//	build Hierarchical Z pass
+//	level0-6のミップマップまで生成する。つまり、128nのサイズにリサイズされる。
+//	デプスの最大解像度は原寸に近い。レイテストはかなり効率的なので
+//	※テクスチャフォーマットは32bit int。iOSでレンダリングターゲットに使える。+-16777216を-1.0~1.0にマッピング。
+//	
+class reg.BuildHiZPass extends reg.ImagePassBase
+{
+	m0 = null;
+	m1 = null;
+	ztex = null;
+	hiztex = null;
+
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		m0 = createMaterial( "pbrsprite.firsthiz");
+		m1 = createMaterial( "pbrsprite.buildhiz");
+	}
+	
+	function setupPass( r){
+		super.setupPass( r);
+		hiztex = r.findRenderTarget( "hiztex");	//	生成はperformPass内でやる
+		m0.tex0 = r.findRenderTarget( "ztex");
+		m1.tex0 = hiztex;
+		m1.miscmat0 = Matrix();
+		// m0.colormask = m1.colormask = 0;
+		m0.depthmask = m1.depthmask = -1;
+		m0.depthtest = m1.depthtest = SK_ALWAYS;
+	}
+
+	function performPass( r){
+		//	ビューポートのサイズが変化していたらパス実行時にテクスチャをセットアップ。
+		local sw = Math.max( r.rtw>>7, 1)<<7, sh = Math.max( r.rth>>7, 1)<<7;
+		if( sw != hiztex.width || sh != hiztex.height){
+			hiztex.unload();	//	immutableで作るのでまずunloadしないといけない。。。
+			hiztex.create( sw, sh, SK_DEPTH24, 8, 7);	//	8=SK_TEXTURE_IMMUTABLE
+		}
+		skBindVertexBuffer( vtx);
+		local idx = r.currenttarget?ridx:fidx;
+		//	まずはlv0のオリジナル解像度のzを生成
+		skPushRenderStates();
+		skSetRenderState( SK_COLORMASK, 0);	//	colormaskはMaterialにはない。。。
+		hiztex.selectRenderFace( 0, 0);
+		r.setRenderTarget( hiztex, null);	//	selectRenderFaceをしたらsetRenderTargetをし直さないといけない
+		skDrawIndexBuffer( m0, SK_TRIANGLESTRIP, idx);
+		//	lv1~6生成
+		for( local l = 1;l < 7;l ++){
+			m1.miscmat0[0] = l-1;
+			hiztex.selectRenderFace( 0, l);
+			r.setRenderTarget( hiztex, null);
+			skDrawIndexBuffer( m1, SK_TRIANGLESTRIP, idx);
+		}
+		skPopRenderStates();
+	}
+}
+
+//	ztexをコピーするパス。コピー時に線形座標に変換する。
+class reg.CopyZPass extends reg.ImagePassBase
+{
+	m0 = null;
+
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		m0 = createMaterial( "pbrsprite.firsthiz");
+		m0.miscmat0 = Matrix();
+	}
+	
+	function setupPass( r){
+		super.setupPass( r);
+		m0.tex0 = r.findRenderTarget( "ztex");		//	ztex => uztexにコピー
+	}
+	
+	function performPass( r){
+		target = r.findRenderTarget( "uztex");		//	R16UI スワップされる場合あるので毎回取得
+		local m = m0.miscmat0;
+		local invpmat = r.env.envmat1, cam = r.camera;
+		m[0] = invpmat[10];
+		m[1] = invpmat[14];
+		m[2] = invpmat[11];
+		m[3] = invpmat[15];
+		m[4] = -65535.0 / (cam.zfar-cam.znear);
+		m[5] = cam.znear;
+		skBindVertexBuffer( vtx);
+		local idx = r.currenttarget?ridx:fidx;
+		r.setRenderTarget( target, null, true);		//	cls=true
+		skDrawIndexBuffer( m0, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+//	Temporal Reprojection pass
+//	
+class reg.ReprojectionPass extends reg.ImagePassBase
+{
+	m0 = null;
+	oldvmat = null;
+	ztex = null;
+	
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		m0 = createMaterial( "pbrsprite.reproject");
+		m0.miscmat0 = Matrix();
+		m0.miscmat1 = Matrix();
+		m0.miscmat2 = Matrix();
+		oldvmat = Matrix();
+	}
+
+	function setupPass( r){
+		setSources( m0, r, ps["src"]);
+		local t = ps["target"];
+		if( typeof( t)==SS_STRING){
+			target = r.findRenderTarget( t);
+		}else{
+			target = FrameBuffer();
+			for( local l = 0;l < 3;l ++){
+				target[l] = r.findRenderTarget( t[l]);
+			}
+		}
+	}
+	
+	function performPass( r){
+		m0.tex3 = r.findRenderTarget( "olduztex");	//	olduztexは毎回参照が変わるので毎回取得。。。
+		m0.miscmat0.set( r.camera.prjmat);
+		local m = m0.miscmat0;
+		m[4] = m[0]; 	//	前回フレームのreconstructParam
+		m[5] = m[1];
+		m[6] = m[2];
+		m[7] = m[3];
+		reconstructParam( r.camera, m, 0);
+		r.camera.prjmat.invert44( m0.miscmat1);
+		//	reprojectmat
+		r.camera.viewmat.invert44( m0.miscmat2);
+		oldvmat.mult34( m0.miscmat2, m0.miscmat2);
+		//	
+		skBindVertexBuffer( vtx);
+		local idx = r.currenttarget?ridx:fidx;
+		r.setRenderTarget( target, null);
+		skDrawIndexBuffer( m0, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+local temprot  = (60.0, 300.0, 180.0, 240.0, 120.0, 0.0);
+local tempoffs = (0.0, 0.5, 0.25, 0.75);
+
+//	aotemptex, g1tex, ztex => aotex
+//	aotexはライティングパスで乗算される
+//	
+class reg.SSAOPass extends reg.ImagePassBase
+{
+
+	m0 = null;	//	compute
+	m1 = null;	//	blur x/y
+	midtex = null;			//	途中テクスチャ
+	
+	//	Intensity = 1.0f			Range( 0, 1 )			-> aopow 
+	//	Radius = 2.0f										-> aoradius 
+	//	PowerExponent = 1.8f		Range( 0, 16 )			-> aoexp 
+	//	Bias = 0.05f				Range( 0, 0.99f )
+	//	Thickness = 1.0f			Range( 0, 1.0f )		-> aotick
+	//	FadeStart = 100.0f									-> aofade(100,50)
+	//	FadeLength = 50.0f;
+	aoreso = VP_HALF;
+	aotec = "pbrsprite.ssao_normal";
+	//	
+	aopow = 1.0;			//	prop 0.0~1.0
+	aoradius = 3.0;			//	prop 0.1~10.0
+	aoexp = 1.4;			//	
+	aobias = 0.3;			//	prop? 0.01~1.0?
+	aotick = 1.0;			//	prop??
+	aofade = null;
+
+	framecnt = 0;
+
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		aofade = (100.0, 50.0);
+		if( aoreso == VP_HALF){	//	half + Cross-Bilateral Upsampling
+			aotec = "pbrsprite.ssao_quality";
+			m1 = createMaterial( "pbrsprite.ssaoupsample");
+		}else{	//	full + Bilateral blur
+			aotec = "pbrsprite.ssao_normal";
+			m1 = createMaterial( "pbrsprite.ssaoblur");
+		}
+		m1.miscmat0 = Matrix();
+		m0 = createMaterial( aotec);
+		m0.miscmat0 = Matrix();
+		aopow = p.aopow;
+		aoradius = p.aoradius;
+		aobias = p.aobias;
+		aoexp = p.aoexp;
+	}
+	
+	function setupPass( r){
+		setSources( m0, r, ps["src"]);
+		local p = {w:aoreso,h:aoreso,fmt:SK_R8};
+		midtex = r.findTempTarget( 100+p.fmt+p.w, p);
+		target = r.findRenderTarget( "aotex");
+	}
+
+	//	misc0mat = {
+	//		aopow,		aoradius,		decay( aotick),	aoexp,
+	//		aofade[0],	1/aofade[1],	aobias^2,		0,
+	//		projasp,	1.0,			projscale,		0,
+	//		tempoffs[f/6],	temprot[f],	0,				0
+	//	}
+	//	decay(x) <= ( 1 - (1-x) * (1-x)) * 0.98f
+	//	projscale = 1.0 / cam.prjmat[5]
+	//	
+	function performPass( r){
+		//	SSAO compute pass
+		local projscale = 1.0 / r.camera.prjmat[5];
+		local projasp = midtex.width * 1.0 / midtex.height;
+		framecnt = 0;	//	テンポラル補間は行わない！
+		local toffs = tempoffs[(framecnt/6)%4], trot = temprot[(framecnt)%6] / 360.0;
+		// if( 1) toffs = trot = 0.0;
+		m0.miscmat0.set(
+			aopow, 		aoradius,		decay( aotick),		aoexp,
+			aofade[0],	1.0/aofade[1],	-aobias*aobias,		0,
+			1.0/projasp,	1.0,			projscale,			0,
+			0,		0,			0,					0
+		);
+		reconstructParam( r.camera, m0.miscmat0, 12);
+		//	
+		skBindVertexBuffer( vtx);
+		framecnt = (framecnt+1)&0x7fffffff;
+		local idx = r.currenttarget?ridx:fidx;
+		local m = m1["miscmat0"];
+		reconstructParam( r.camera, m, 4);
+		//	Cross-Bilateral Upsampling pass
+		if( aoreso == VP_HALF){
+			r.setRenderTarget( midtex, null);
+			skDrawIndexBuffer( m0, SK_TRIANGLESTRIP, idx);
+			m1.tex0 = midtex;
+			m[0] = 1.0/midtex.width;
+			m[1] = 1.0/midtex.height;
+			r.setRenderTarget( target, null);
+			skDrawIndexBuffer( m1, SK_TRIANGLESTRIP, idx);
+		}else{	// Bilateral blur passes
+			r.setRenderTarget( target, null);
+			skDrawIndexBuffer( m0, SK_TRIANGLESTRIP, idx);
+			m1.tex0 = target;
+			m[0] = 1.0/target.width;
+			m[1] = 0.0;
+			r.setRenderTarget( midtex, null);
+			skDrawIndexBuffer( m1, SK_TRIANGLESTRIP, idx);
+			m1.tex0 = midtex;
+			m[0] = 0.0;
+			m[1] = 1.0/target.height;
+			r.setRenderTarget( target, null);
+			skDrawIndexBuffer( m1, SK_TRIANGLESTRIP, idx);
+		}
+		r.env.aotex = target;
+	}
+
+	static function decay( x){
+		return (1.0 - (1.0-x)*(1.0-x)) * 0.98;
+	}
+}
+
+
+//	gitemp
+//	
+class reg.SSGIPass extends reg.ImagePassBase
+{
+	static temprot  = (60.0, 300.0, 180.0, 240.0, 120.0, 0.0);
+	static tempoffs = (0.0, 0.5, 0.25, 0.75);
+	
+	m0 = null;	//	prepare
+	m1 = null;	//	ssgi
+	m2 = null;	//	upsample
+	m3 = null;	//	mix
+
+	oldvmat = null;			//	reproject
+	
+	gisrc0tex = null;
+	gisrc1tex = null;
+	gisrcfb = null;			//	FrameBuffer
+	gitemptex = null;		//	1/2 half4
+	gitex = null;
+	giswaptex = null;
+	
+	gitec = "ssgi.ssgi_normal";
+
+	gipow = 1.0;			//	prop 0.0~8.0
+	aopow = 1.0;			//	prop 0.0~8.0
+	aoradius = 6.0;			//	prop 0.1~10.0
+	aoexp = 1.0;			//	
+	aobias = 0.2;			//	prop? 0.01~1.0?
+	aotick = 0.2;			//	prop??
+	aofade = null;
+
+	framecnt = 0;
+
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		aofade = (100.0, 50.0);
+		m0 = createMaterial( "ssgi.ssgi_pre");
+		m1 = createMaterial( gitec);
+		m2 = createMaterial( "ssgi.ssgi_upsample");
+		m3 = createMaterial( "sprite.hp");
+		m0.miscmat0 = Matrix();
+		m0.miscmat1 = Matrix();
+		m1.miscmat2 = Matrix();
+		m2.miscmat3 = Matrix();
+		oldvmat = Matrix();
+		gipow = p.gipow;
+		aopow = p.aopow;
+		aoradius = p.aoradius;
+		aobias = p.aobias;
+		aoexp = p.aoexp;
+	}
+	
+	function setupPass( r){
+		gitex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA16F});
+		giswaptex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA16F});
+		gisrc0tex = r.findTempTarget( 3130, #{w:VP_FULL,h:VP_FULL,fmt:SK_RG32UI});
+		gisrc1tex = r.findTempTarget( 3131, #{w:VP_FULL,h:VP_FULL,fmt:SK_R32UI});
+		gitemptex = r.findTempTarget( 1223, #{w=VP_HALF,h=VP_HALF, fmt=SK_RGBA16F});
+		gisrcfb = r.createRenderTarget( {color0=gisrc0tex, color1=gisrc1tex});
+		target = r.findRenderTarget( "hdcolortex");
+		m0.tex0 = target;
+		m1.tex0 = gisrc0tex;
+		m1.tex1 = gisrc1tex;
+		m2.tex0 = gitemptex;
+		m3.blend = SK_PMAMIX;
+	}
+	
+	function performPass( r){
+		local idx = ridx;
+		//	SSGI prepare pass
+		m0.tex1 = giswaptex;
+		m0.tex2 = r.findRenderTarget( "oldztex");	//	oldztexは毎回参照が変わるので毎回取得。。。
+		local m = m0.miscmat0;
+		m[4] = m[0]; 	//	前回フレームのreconstructParam
+		m[5] = m[1];
+		m[6] = m[2];
+		m[7] = m[3];
+		reconstructParam( r.camera, m, 0);
+		m0.miscmat1.set( r.camera.prjmat);
+		//	reproject
+		r.camera.viewmat.invert44( m0.miscmat2);	//	
+		oldvmat.mult34( m0.miscmat2, m0.miscmat2);	//	
+		r.setRenderTarget( gisrcfb, null);
+		skDrawIndexBuffer( m0, SK_TRIANGLESTRIP, idx);
+		//	SSGI pass
+		local projscale = 1.0 / r.camera.prjmat[5];
+		local projasp = gitemptex.width * 1.0 / gitemptex.height;
+		local toffs = tempoffs[(framecnt/6)%4], trot = temprot[(framecnt)%6] / 360.0;
+		m1.miscmat0.set(
+			aopow, 		aoradius,		aotick,				aoexp,
+			aofade[0],	1.0/aofade[1],	aobias,				gipow,
+			1.0/projasp,	1.0,			projscale,			0,
+			toffs,		trot,			0,					0
+		);
+		reconstructParam( r.camera, m1.miscmat0, 12);
+		r.setRenderTarget( gitemptex, null);
+		skDrawIndexBuffer( m1, SK_TRIANGLESTRIP, idx);
+		//	SSGI upsampling pass
+		local invpmat = r.env.envmat1;
+		m2.miscmat0.set(
+			1.0/gitemptex.width, 1.0/gitemptex.height,	0,	0,
+			invpmat[10],invpmat[14],invpmat[11],invpmat[15],
+			0,			0			0,			0,
+			0,			0			0,			0
+		);
+		reconstructParam( r.camera, m2.miscmat0, 4);
+		m2.tex1 = giswaptex;
+		m2.tex2 = gisrc1tex;
+		r.setRenderTarget( gitex, null);
+		skDrawIndexBuffer( m2, SK_TRIANGLESTRIP, idx);
+		//	SSGI mix pass
+		m3.tex0 = gitex;
+		r.setRenderTarget( target, null);
+		skDrawIndexBuffer( m3, SK_TRIANGLESTRIP, idx);
+		//	finish
+		oldvmat.set( r.camera.viewmat);
+		framecnt++;
+		local t = gitex; gitex = giswaptex; giswaptex = t;
+	}
+}
+
+
+
+///////////////////////////////// AA, UpScaling /////////////////////////////////
+
+//	edge, weights, blendの3パスでAAを行う。weightsは専用のテクスチャも使用
+class reg.SMAAPass extends reg.ImagePassBase
+{
+	m0 = null;	//	edge 
+	m1 = null;	//	weights
+	m2 = null;	//	blend
+
+	edgetex = null;
+	weightstex = null;
+
+	function setupPass( r){
+		m0 = createMaterial( "smaa.edge");
+		m1 = createMaterial( "smaa.weights");
+		m2 = createMaterial( "smaa.blend");
+		edgetex = r.findTempTarget( 100+SK_RGBA8, #{ w=VP_FULL, h=VP_FULL, fmt=SK_RGBA8 });		//	出力と被る場合もあるが問題なし
+		weightstex = r.findTempTarget( 200+SK_RGBA8, #{ w=VP_FULL, h=VP_FULL, fmt=SK_RGBA8 });
+		m1.tex0 = edgetex;
+		m1.tex1 = ::getTexture( "/system/asset/smaa_area.ktx"); // areatex
+		m1.tex2 = ::getTexture( "/system/asset/smaa_search.ktx"); // searchtex
+		m2.tex0 = weightstex;
+	}
+	
+	function performPass( r){
+		skBindVertexBuffer( vtx);
+		local idx = r.currenttarget?ridx:fidx;
+		r.setRenderTarget( edgetex, null);
+		skDrawIndexBuffer( m0, SK_TRIANGLESTRIP, idx);
+		r.setRenderTarget( weightstex, null);
+		skDrawIndexBuffer( m1, SK_TRIANGLESTRIP, idx);
+		r.setRenderTarget( target, null);
+		skDrawIndexBuffer( m2, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+//	Snapdragon Game Super Resolution 1
+//	
+class reg.SGSRPass extends reg.DrawImagePass
+{
+	function setupPass( r){
+		m = createMaterial( "aa.sgsr");
+		m.miscmat0 = Matrix();
+	}
+
+	function performPass( r){
+		local mm = m.miscmat0;
+		mm[0] = 1.0/r.finalvp[2];
+		mm[1] = 1.0/r.finalvp[3];
+		mm[2] = r.finalvp[2];
+		mm[3] = r.finalvp[3];
+		super.performPass( r);
+	}
+}
+
+//	AA, UpScalingのそれぞれを組み合わせて最終の描画を行う。入力はsdtex、出力はビューポート。
+//	AAはオフにするとsdtexはそのままupscalepassに渡される。
+//	また、アップスケーリングが不要の場合(r.upscale <= 1.0)はupscalepassではなくdrawpassで描画する。
+//	さらに、bilinearアップスケーリングの場合はupscalepass==drawpassとなる。
+//	これらの描画設定は、passsettingのjsonではなく、レンダリングポリシーによって切り替わる。
+//	
+class reg.DrawToViewportPass extends reg.ImagePassBase
+{
+	aapass = null;					//	null | DrawPass(fxaa) | SMAAPass
+	drawpass = null;				//	DrawPass
+	upscalepass = null;				//	DrawPass | SGSRPass(Snapdragon Game Super Resolution 1)
+
+	cmat = null;
+	
+	function setPassSetting( p){
+		super.setPassSetting( p);
+	}
+
+	function setupPass( r){
+		local sdtex = r.findRenderTarget( "sdcolortex");
+		if( !sdtex){
+			aapass = upscalepass = drawpass = null;
+			enabled = false;
+			return;
+		}
+		local aatype = 0;
+		local upscaletype = 1;
+		aapass = null;
+		upscalepass = drawpass = reg.DrawImagePass( {}); drawpass.setupPass( r);
+		switch( aatype){
+		case 1: aapass = reg.DrawImagePass( { tec="aa.fxaa"}); aapass.setupPass( r); break;
+		case 2: aapass = reg.SMAAPass( null); aapass.setupPass( r); break;
+		}
+		switch( upscaletype){
+		case 1: upscalepass = reg.SGSRPass( r); upscalepass.setupPass( r); break;
+		}
+		if( aapass){
+			aapass.m.tex0 = sdtex;
+			aapass.target = r.findTempTarget( 100+SK_RGBA8, #{ w=VP_FULL, h=VP_FULL, fmt=SK_RGBA8 });
+			upscalepass.m.tex0 = drawpass.m.tex0 = aapass.target;
+		}else{
+			upscalepass.m.tex0 = drawpass.m.tex0 = sdtex;
+		}
+	}
+
+	function performPass( r){
+		if( r.upscale < 1.05){	//	アップスケール不要の場合はAAのみ行うか、AAもない場合はdrawpassにそのまま渡す
+			if( aapass){
+				aapass.target = null;
+				aapass.m.colormat = cmat;
+				aapass.performPass( r);
+			}else{
+				drawpass.m.colormat = cmat;
+				drawpass.performPass( r);
+			}
+		}else{
+			if( aapass){
+				aapass.target = upscalepass.m.tex0;	//	前にnull入れちゃってる場合あり、、、
+				aapass.performPass( r);
+			}
+			upscalepass.m.colormat = cmat;
+			upscalepass.performPass( r);
+		}
+	}
+
+	function setColorMatrix( m){
+		cmat = m;
+	}
+}
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////
+//
+//	PBR classes
+//
+//////////////////////////////////////////////////////////////////////////////////////
+
+//	ライトプリペアパス
+//	・punctualライトをカリングしてテクスチャを更新
+//	・directionalライト、IBL、SphericalHarmonicsの設定
+//	
+//	※iblはフェードさせることができるようにする。
+//	
+class reg.LightPreparePass extends SK3DRenderPass
+{
+	//	exposure
+	exp = null;					//	露光パラメータ。メインパスから渡される
+	expscale = 1.0;				//	エフェクトなどで変化
+	//	punctual lights
+	litprmtex = null;			//	ライトパラメータテクスチャ。w=4, h=litnum, fmt=half4
+	litidxtex = null;			//	ライトインデックステクスチャ。w=liw, h=lih, fmt=ushort4
+	liw = 32;					//	インデックステクスチャの解像度
+	lih = 16;					//	
+	lid = 32;					//	
+	litnum = 512;				//	1画面で有効なライト数。
+	//	global light (dir*1, ibl, sh, etc)
+	glitmat = null;				//	Matrix : (R,G,B,_),(vx,vy,vz,_),(exposure,iblpow,shpow,_),(_,_,_,_)
+	invvmat = null;				//	Matrix : 
+	invpmat = null;				//	Matrix : 
+	iblmat = null;				//	Matrix : vinvmat * ibldir
+	dfgtex = null;				//	DFGテクスチャ。読み込むだけ。
+	ibltex = null;				//	IBLのCubeテクスチャ。
+	sh = null;					//	SphericalHarmonics : iblからGPU計算で生成する。PBOでCPUにダウンロード。1回きりなのであまり気にせず
+	iblspec = 1.0;				//	IBLの強さを調整する。
+	ibldiff = 1.0;				//	sh.powerもあるけどこっちも使える
+	ibldir = 0;
+	iblcolor = -1;
+	
+	constructor( p, ex){
+		super( p);
+		exp = ex;
+	}
+
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		sh = SphericalHarmonics();
+		glitmat = Matrix();
+		invvmat = Matrix();
+		invpmat = Matrix();
+		iblmat = Matrix();
+		if( p["ibl"]){
+			iblspec = p.ibl.iblspec;
+			ibldiff = p.ibl.ibldiff;
+			ibldir = p.ibl.ibldir;
+			iblcolor = p.ibl.iblcolor;
+			local iblt = p["ibl"];
+			local iblr = ::getResource( iblt["ibltex"]) || ::getResource( "/system/asset/defibl.ktx");
+			setIBLTexture( iblr);
+		}
+		dfgtex = ::getTexture( "/system/asset/dfg.ktx");
+	}
+	
+	//	※setupPassはSKView.renderのnative closureから呼ばれる。
+	//	テクスチャのロードはWebGLではエラーになってしまうのでsetPassSettingに移動。
+	function setupPass( r){
+		(litprmtex = Texture()).create( 4, litnum, SK_RGBA16F, 0);
+		remakeLightTextures( r);
+	}
+
+	function targetsResized( r){
+		remakeLightTextures( r);
+	}
+	
+	//	レンダリング解像度によってliw,lih,lidを調整する。
+	//	基準はrtw,rth及びカメラのzfar。最大で32x16x32。これ以上は負荷的にきつい。
+	//	小さなビューポートでは最低で4x4x1になる。
+	function remakeLightTextures( r){
+		local isdraft = r.rtw<=256 || r.rth<=256 || r.camera.zfar<=24.0;
+		if( isdraft){
+			liw = lih = 4; lid = 1; litnum = 4;
+		}else{
+			liw = Math.clamp( Math.pot( r.rtw/64.0), 4, 32);
+			lih = Math.clamp( Math.pot( r.rth/64.0), 4, 16);
+			lid = Math.clamp( Math.pot( r.camera.zfar/4.0), 4, 32);
+		}
+		(litidxtex = Texture()).create3D( liw, lih, lid, SK_RG32UI, 0);
+	}
+	
+	//	shは、iblと同じファイル名の.sh9ファイルで存在するものとする。無いならsh生成シェーダを使って動的に生成する。
+	//	生成はGPUで行われ、フレームを遅延すれば非同期にできる。でもふつうはsh9もあるはずなので無理に最適化しないで良し。
+	function setIBLTexture( r){
+		local data = r.loadData();
+		local img = skLoadImage( data, null);
+		local tex = null, shdata = null;
+		// printf( "setIBLTexture METADATA!!!!!?????????????????????? %S %S\n", img.metadata, r.path);
+		if( img.metadata){
+			// printf( "setIBLTexture METADATA!!!!!!!!!!!!!!!!!! %S\n", img.metadata.asText());
+			try{
+				shdata = decodeJSON( img.metadata)["sh"];
+				// printf( "shdatashdatashdatashdatashdata!!!!!!!!!!!!!!!!!! %S\n", encodeJSON( shdata, 1));
+			}catch( ex){
+				printexception( ex);
+			}
+		}
+		tex = Texture();
+		tex.load( img);
+		tex.ref = weakref( r);
+		ibltex = tex;
+		if( shdata) sh.setFloats( shdata);
+	}
+	
+	//
+	function performPass( r){
+		// skBindEnvironment( env); 予めやってないとskCullLightsが失敗する
+		local env = r.env, cam = r.camera;
+		//	exposure
+		updateExposure();	//	オート露光調整。2フレームの遅延で露光調整が入る
+		local ex = exp.getExposure();	//	float : 明るいほど小さい
+		ex *= expscale;
+		//	punctual lights
+		local znf = #(0,0);
+		skCullLights( (r.scn.lights, r.env.envlights), cam, litprmtex, litidxtex, ex, znf);	//	テクスチャへの転送はCPUから
+		env.litprmtex = litprmtex;
+		env.litidxtex = litidxtex;
+		local zsc = -1.0 / (znf[1]-znf[0]);
+		//	directional light | ibl
+		//	※iblspec, ibldiffは撮影したカメラの露光パラメータが乗算されてる必要がある
+		local dirlit = env.envlights[0];	//	1個目のライトは必ずDIRLightに。。。。
+		local wlit = r.weatherLit();		//	天気によるライティング調整。
+		local dc = dirlit.color, dpow = dirlit.power * ex * wlit.x;
+		local dv = v_1( dirlit.vx, dirlit.vy, dirlit.vz);
+		dv.transform0( cam.viewmat).normalize();
+		glitmat.set(
+			(dc>>>24)*dpow, ((dc>>>16)&255)*dpow, ((dc>>>8)&255)*dpow, 1.0,
+			dv.x, dv.y, dv.z, 1.0,
+			ex, iblspec * ex * wlit.z, ibldiff * ex * wlit.y, zsc, 
+			(iblcolor>>>24)/255.0, ((iblcolor>>>16)&255)/255.0, ((iblcolor>>>8)&255)/255.0, zsc*znf[0]
+		);
+		//	ビューの逆行列はここで設定する。id=INVVMATから取得するとスプライト描画の逆行列になっちゃうから！
+		cam.viewmat.invert44( invvmat);
+		cam.prjmat.invert44( invpmat);
+		iblmat.identity().rotate( v_1( -ibldir*Math.DTOR, 0, 0)).mult34( invvmat, iblmat);
+		env.dfgtex = dfgtex;
+		env.envmat0 = glitmat;
+		env.envmat1 = invpmat;
+		env.envmat2 = invvmat;
+		env.envmat3 = iblmat;
+		env.envtex = ibltex;
+		env.dirshadow = dirlit.shadow;
+		env.sh = sh;
+		env.znear = cam.znear;
+		env.zfar = cam.zfar;
+		if( r.env.fog["computeParams"]) r.env.fog.computeParams( cam, ex);
+	}
+
+	function updateExposure(){
+	}
+	
+	//	アルベドを元にpbrでのカラーを計算する。ラフネス100%。
+	//	dirlitを80%、shを全方向成分を足して、exposureを掛ける
+	function calcHDRColor( col){
+		local v = v_1( col>>>24, (col>>16)&255, (col>>8)&255).scale( 1.0/255.0);	//	アルベド
+		local dlitpow = v_2( glitmat[0], glitmat[1], glitmat[2]).scale( glitmat[10] / 3.141592);
+		local shpow = v_3( sh[0], sh[1], sh[2]).scale( glitmat[10]);
+		return v.scale( dlitpow.add( shpow));
+	}
+}
+
+//	Deferred Normal smoothing pass
+//	
+class reg.GBlurPass extends reg.ImagePassBase
+{
+	m = null;
+
+	function setupPass( r){
+		m = createMaterial( "pbr.gblur");
+		m.miscmat0 = Matrix();
+		m.tex0 = r.findRenderTarget( "g1tex");
+		target = r.findRenderTarget( "g1tex2");
+	}
+	
+	function performPass( r){
+		// local ma = m.miscmat0;
+		// local invpmat = r.env.envmat1;
+		// ma[0] = invpmat[10];
+		// ma[1] = invpmat[14];
+		// ma[2] = invpmat[11];
+		// ma[3] = invpmat[15];
+		reconstructParam( r.camera, m.miscmat0, 0);
+		r.setRenderTarget( target, viewport);
+		skBindVertexBuffer( vtx);
+		local idx = r.currenttarget?ridx:fidx;
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+//	Deferred PBRパスのライティングパス。
+//	必要な設定は予め全部やってるから単なるイメージパス？
+//	
+class reg.PBRLightingPass extends reg.ImagePassBase
+{
+	m = null;
+
+	function setupPass( r){
+		m = createMaterial( ps["tec"]||"pbr.deferlighting");
+		m.miscmat0 = Matrix();
+		target = r.findRenderTarget( ps["target"]);
+	}
+	
+	function performPass( r){
+		reconstructParam( r.camera, m.miscmat0, 0);
+		r.setRenderTarget( target, viewport);
+		skBindVertexBuffer( vtx);
+		local idx = r.currenttarget?ridx:fidx;
+		skDrawIndexBuffer( m, SK_TRIANGLESTRIP, idx);
+	}
+}
+
+//	オート露光パス、というか画面のLuminanceを取得するパス。
+//	18%グレーに平均輝度を合わせるために調整していく。
+class reg.AutoExposurePass extends SK3DRenderPass
+{
+	exp = null;		//	Exposure : ターゲット。メインパスから渡される
+	histtex = null;	//	Texture : 128~512
+	m = null;		//	Material : ヒストグラム生成
+	fidx = null;	//	damiiiiiiiiiiiiiiiiiiii
+	
+	//	計算状態
+	histpb = null;	//	PixelBuffer : 前フレームのexptexをReadPixelsしている
+	lastexposure = 1.0;		//	ヒストグラムを生成したときの画像のexposure
+
+	framecnt = 0;
+	fence = 0;
+	t0 = 0;
+
+	constructor( ex){
+		super( null);
+		exp = ex;
+		enabled = false;
+		local _pm = reg.ImagePassBase._getImageMesh();
+		fidx = _pm.face[0].idx;
+	}
+	
+	function setupPass( r){
+		// enableAutoExposure( true, r);
+		enableAutoExposure( ps["autoexposure"], r);
+	}
+
+	function enableAutoExposure( b, r){
+		if( enabled != !!b){
+			enabled = !!b;
+			if( b && !histtex){	//	1回作ったら消さない
+				//	Textures
+				(histtex = Texture()).create( 256, 1, SK_R32UI, 1, 0, null);
+				histpb = PixelBuffer();
+				//	Materials
+				m = createMaterial( "pbrsprite.img2hist");
+				m.blend = SK_ADD;
+				m.tex0 = r.findRenderTarget( "hdcolortex");		//	テクスチャ名直打ちだけど入れ替えれても良し
+			}
+		}
+	}
+	
+	//	※毎フレームやる必要もない。lastlavgの更新頻度が減るだけで補間がガクつくわけでもなし。
+	function performPass( r){
+		if( !enabled) return;
+		//
+		local t = skGetTime();
+		if( t0){
+			local dt = (t-t0)*0.001, tau = 1.0;
+			local w = 1.0f - Math.exp( -dt / tau);
+			exp.curev = Math.lerp( exp.curev, exp.tgtev, w);
+		}
+		t0 = t;
+		//
+		framecnt = (framecnt+1) & 7;
+		if( framecnt) return;
+		//	入力画像に対して8x8のブロックで9回サンプリングしてヒストグラムを作成。
+		local n = m.tex0.width * m.tex0.height / (8*8);	//	インスタンス数。8x8pix毎に行うためにw*h/(8*8)
+		r.setRenderTarget( histtex, null);
+		skClearScreen( clearparam0);
+		skDrawIndexBuffer( m, SK_POINTS, fidx, 0, 1, n);	//	idxはなんでも良い
+		lastexposure = exp.getExposure();
+		local fn = @(){
+			suspend();
+			local w = histtex.width;
+			if( !histpb.readPixels( histtex, 0, 0, w, 1)){	//	2フレーム程かけてピクセル転送
+				return;	//	readPixels処理中の場合falseで失敗する。この時は単にスキップ
+			}
+			suspend();
+			local exps = 12.0 / histtex.width;
+			while( !histpb.isDone()) suspend();
+			if( histpb.result == 2){
+				//	ヒストグラムから平均輝度を計算。中央の40~60%部分のみ取得
+				local bb = histpb.getData();
+				local total = 0.0;
+				for( local l = 0;l < w;l ++){
+					total += bb.geti() / 65536.0;
+				}
+				bb.pos = 0;
+				local cnt = 0.001, sum = 0.002, curs = 0.0, l = 0;
+				//	~40% skip
+				for( ;l < w;l ++){
+					local c = bb.geti() / 65536.0;
+					curs += c;
+					if( curs >= total*0.4) break;
+				}
+				//	~60% accum
+				for( ;l < w;l ++){
+					local c = bb.geti() / 65536.0;
+					cnt += c;
+					sum += c*Math.exp2( (l*exps) - 6.0);
+					curs += c;
+					if( curs >= total*0.6) break;
+				}
+				local cavg = sum/cnt;	//	log2から戻す。
+				local lavg = cavg / lastexposure;	//	抽出時の露光を逆掛け
+				local scnev = ExposureState.toEV100( lavg);
+				local evv = exp.curev + ExposureState.toEV100( lavg) - ExposureState.toEV100( 0.18/lastexposure);
+				exp.tgtev = evv;
+			}
+		}
+		newthread().start( fn, this);
+	}
+}
+
+class reg.DofBlurPass extends reg.ImagePassBase
+{
+	m0 = null;			//	coc
+	m1 = null;			//	blur x/y
+	blurtex = null;
+	coctex = null;		//	
+
+	function setupPass( r){
+		m0 = createMaterial( "pbrsprite.coc");
+		m0.miscmat0 = Matrix();
+		m1 = createMaterial( "pbrsprite.dofblur");
+		m1.miscmat0 = Matrix();
+		setSources( m1, r, ps["src"]);
+		target = r.findRenderTarget( ps["target"]);
+		if( target){
+			blurtex = r.findTempTarget( 900+SK_R11G11B10F, target.params);
+			coctex = r.findTempTarget( 330132, #{ w=VP_FULL, h=VP_FULL, fmt=SK_R8 });
+			m1.tex1 = coctex;
+		}
+	}
+	
+	function performPass( r){
+		if( !enabled || !blurtex){
+			return;
+		}
+		skBindVertexBuffer( vtx);
+		local idx = r.currenttarget?ridx:fidx;
+		///////////////////////////////////////////////////////
+		//	coc
+		local dofz = r.camera.focus;
+		reconstructParam( r.camera, m0.miscmat0, 0);
+		m0.miscmat0[4] = dofz;
+		m0.miscmat0[5] = 1.0 / (0.1+ps.dofrange);
+		r.setRenderTarget( coctex, null);
+		skDrawIndexBuffer( m0, SK_TRIANGLESTRIP, idx);
+		///////////////////////////////////////////////////////
+		//	blur
+		local m = m1.miscmat0;
+		local asp = target.width*1.0/target.height;
+		m[0] = 1.0/asp/target.height;
+		m[1] = 0.0;
+		m[2] = ps.blur / asp * 4.0;
+		r.setRenderTarget( blurtex, null);
+		skDrawIndexBuffer( m1, SK_TRIANGLESTRIP, idx);
+		local tex0_ = m1.tex0;
+		m1.tex0 = blurtex;
+		m[0] = 0.0;
+		m[1] = 1.0/target.height;
+		m[2] = ps.blur * 4.0;
+		r.setRenderTarget( target, null);
+		skDrawIndexBuffer( m1, SK_TRIANGLESTRIP, idx);
+		m1.tex0 = tex0_;
+	}
+}
+
+
+
+//	PBRレンダリングの最終調整パス。
+//	画面効果、トーンマッピングをしてsRGBテクスチャに書き出す。
+//	src : ソースのテクスチャ名
+//	target : ターゲットのテクスチャ名
+//	
+//	ps { src, target, postfx: { bloomthrs, bloompow, bloomblur, dofblur }}
+//	
+class reg.PBRPostPass extends SK3DRenderPass
+{
+	preblurpass = null;		//	DrawImagePass(spritefx.boxblur)
+	bloomextpass = null;	//	DrawImagePass(pbrsprite.extractbloom)
+	bloomblurpass = null;	//	BlurImagePass
+	dofblurpass = null;		//	BlurImagePass
+	mixpass = null;			//	DrawImagePass(pbrsprite.pbrmix)
+	
+	dirty = false;			//	
+	
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		preblurpass = reg.BlurImagePass( { src:p.src, target:null, kern:(2.1,12), blur:1.9});
+		local fx = p["postfx"];
+		//////////////////////////////////
+		//	bloom pass
+		bloomextpass = reg.DrawImagePass( { tec:"pbrsprite.extractbloom", src:null, target:null, thrs:fx["bloomthrs"]||0.9, pow:fx["bloompow"]||0.12});
+		bloomblurpass = reg.BlurImagePass( {src:null, target:null, kern:(3.1,24), blur:fx["bloomblur"]||3.3});
+		bloomextpass.enabled = true;
+		//////////////////////////////////
+		//	dof pass
+		dofblurpass = reg.DofBlurPass( {src:p.src, target:null, dofrange:fx["dofrange"]||50, blur:fx["dofblur"]||2.0});
+		dofblurpass.enabled = !!fx["dofblur"];
+		//////////////////////////////////
+		//	mix pass
+		mixpass = reg.DrawImagePass( { tec:"pbrsprite.pbrmix", src:p.src, target:p.target});
+	}
+
+	function setupPass( r){
+		dirty = false;
+		local src = r.findRenderTarget( ps.src), tgt = r.findRenderTarget( ps.target);
+		if( !src || !tgt){	//	設定上は有効だけどソースかターゲットのテクスチャが無いと動かん
+			enabled = false;
+			return;
+		}
+		enabled = true;
+		local pretarget = null;
+		if( bloomextpass.enabled){
+			pretarget = r.findTempTarget( 500+SK_R11G11B10F, #{ w=VP_HALF, h=VP_HALF, fmt=SK_R11G11B10F });
+			preblurpass.ps.target = pretarget;
+			preblurpass.setupPass( r);
+		}
+		if( bloomextpass.enabled){
+			local exttarget = r.findTempTarget( 300+SK_R11G11B10F, #{ w=VP_HALF, h=VP_HALF, fmt=SK_R11G11B10F });
+			local bloomtarget = r.findTempTarget( 400+SK_R11G11B10F, #{ w=VP_QUAT, h=VP_QUAT, fmt=SK_R11G11B10F });
+			bloomextpass.ps.src = pretarget;
+			bloomextpass.ps.target = exttarget;
+			bloomblurpass.ps.src = exttarget;
+			bloomblurpass.ps.target = bloomtarget;
+			bloomextpass.setupPass( r);
+			bloomblurpass.setupPass( r);
+			local m = bloomextpass.m.miscmat0 = Matrix();
+			m[0] = -bloomextpass.ps.thrs; m[1] = bloomextpass.ps.pow;
+		}
+		if( dofblurpass.enabled){
+			local doftarget = r.findTempTarget( 600+SK_R11G11B10F, #{ w=VP_HALF, h=VP_HALF, fmt=SK_R11G11B10F });
+			dofblurpass.ps.target = doftarget;
+			dofblurpass.setupPass( r);
+		}
+		mixpass.setupPass( r);
+		mixpass.m.tex1 = bloomextpass.enabled ? bloomblurpass.target : null;
+		mixpass.m.tex2 = dofblurpass.enabled ? dofblurpass.target : null;
+		mixpass.m.tex3 = dofblurpass.enabled ? dofblurpass.coctex : null;
+		local m = mixpass.m.miscmat0 = Matrix();
+	}
+
+	//	thrs : 1.0ぐらい。0.0以下でオフ
+	//	pow : 1.0が基準。
+	//	blur : 1.3ぐらい。これが0.0以下でもオフ
+	function setBloom( thrs, pow, blur){
+		local b = bloomextpass.enabled;
+		if( thrs <= 0.0 || pow <= 0.0 || blur <= 0.0){
+			bloomextpass.enabled = false;
+		}else{
+			bloomextpass.enabled = true;
+			bloomextpass.ps.thrs = thrs;
+			bloomextpass.ps.pow = pow;
+			local m = bloomextpass.m["miscmat0"];
+			if( m){ m[0] = -thrs; m[1] = pow; }
+			bloomblurpass.setBlur( 4.5, 24, blur);
+		}
+		if( b != bloomextpass.enabled) dirty = true;
+	}
+	
+	function setDOF( pow, blur){
+		local b = dofblurpass.enabled;
+		if( blur <= 0.001 || r <= 0.001){
+			dofblurpass.enabled = false;
+		}else{
+			dofblurpass.enabled = true;
+			//dofblurpass.setBlur( 2.2, 24, blur);
+			dofblurpass.ps.blur = blur;
+		}
+		if( b != dofblurpass.enabled) dirty = true;
+		// printf( "SETDOF??????????????????? %S  %S\n", dofblurpass.enabled, blur);
+	}
+
+	function performPass( r){
+		if( dirty) setupPass( r);
+		if( !enabled) return;
+		if( bloomblurpass.enabled){
+			preblurpass.performPass( r);
+		}
+		if( bloomblurpass.enabled){
+			bloomextpass.performPass( r);
+			bloomblurpass.performPass( r);
+		}
+		if( dofblurpass.enabled){
+			dofblurpass.performPass( r);
+		}
+		mixpass.performPass( r);
+	}
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	以下メインレンダーパス
+//	
+//	主にLegacy,PBRの二つに分かれる。shading tecはPBRパスでは描画されず、pbr tecはLegacyでは描画されない。(エラー描画はされる)
+//	decal tecはどちらでも描画されるが、PBRパスではforwardパスでしか描画されない。
+//	
+
+//	GLES2に対応した従来のレンダーパス。
+//	
+class reg.LegacyRenderPass extends SK3DRenderPass
+{
+	colortex = null;		//	1/1 half4
+	ztex = null;			//	1/1 d32
+	scenefb = null;			//	colortex, ztex
+
+	shadowpass = null;		//	ShadowMapRenderPass : シャドウ描画。シーンに一つ。。。
+	opaquepass = null;		//	
+	transpass = null;		//	
+	drawpass = null;		//	DrawImagePass : colortexをアンチエイジングとかしつつ描画。
+
+	//	setPassSettingを呼んだ後はsetupPassが必ず必要
+	//	p : env.data
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		shadowpass = reg.ShadowMapRenderPass( null);	//	シャドウはライトにつくのでパスにパラメータはない
+		opaquepass = reg.LegacySceneRenderPass( {visiblemask:SK_VISIBLE_OPAQUE, target:"scenefb"});
+		transpass = reg.LegacySceneRenderPass( {visiblemask:SK_VISIBLE_TRANSPARENT|SK_VISIBLE_DECAL, target:"scenefb"});
+		drawpass = reg.DrawImagePass( {src:"colortex", target:null});
+	}
+	
+	function setupPass( r){
+		needsetup = false;
+		//	バックバッファ設定
+		if( !!ps["ownbuffer"] != !!colortex){
+			if( ps["ownbuffer"]){
+				colortex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA8});
+				ztex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_DEPTH24});
+				scenefb = r.createRenderTarget( #{color0="hdcolortex", depth="ztex"});
+			}else{
+				colortex = ztex = scenefb = null;
+			}
+		}
+		//	サブパスはそれぞれのクラスで設定
+		foreachSubpass( @( p){ p.setupPass( r); });
+		r.bgpass.target = opaquepass.target;
+	}
+	
+	function targetsResized( r){
+		foreachTarget( @( t){ t.resized( r); });
+		foreachSubpass( @( p){ p.targetsResized( r); });
+	}
+
+	//	DisplayListのカリング、RenderStateの退避などを予め行い呼び出される。
+	function performPass( r){
+		skSetLights( r.camera, r.scn.lights, r.env.envlights);	//	skSetLightsはレガシー用API
+		if( r.bgpass.enabled) r.bgpass.clearDepth( r);
+		shadowpass.performPass( r);
+		r.env.passfilter = 255;
+		if( r.env.fog["computeParams"]) r.env.fog.computeParams( r.camera, 1.0);
+		opaquepass.performPass( r);
+		if( r.bgpass.enabled) r.bgpass.performPass( r);
+		transpass.performPass( r);
+		if( colortex) drawpass.performPass( r);
+	}
+}
+
+//	Forwardレンダリングで非常に軽くしたレンダラー。
+//	SSGI,SSRなどのスクリーンスペース表現はできない。
+//	hdcolortex,scenefb等はnullにできる。その場合はターゲットのSDテクスチャに直接描画するDirect描画になる。
+//	プレビューリストなどではこれにする。
+//	
+class reg.PBRForwardRendererPass extends SK3DRenderPass
+{
+	hdcolortex = null;		//	1/1 half4
+	sdcolortex = null;		//	1/1 ubyte4
+	ztex = null;			//	1/1 d32
+	uztex = null;			//	1/1 d32
+	scenefb = null;			//	hdcolortex, ztex
+	decalfb = null;			//	sdcolortex, ztex
+	
+	exp = null;				//	Exposure : 
+	
+	shadowpass = null;		//	ShadowMapRenderPass : シャドウ描画。シーンに一つ。。。
+	litprepass = null;		//	LightPreparePass : ライト、IBL
+	depthprepass = null;	//	DepthPrePass : デプスプレパス。不透明オブジェクトのみ。やらんでも良し。
+	opaquepass = null;		//	SceneRenderPass : メインの3D描画。
+	transpass = null;		//	SceneRenderPass : メインの3D描画。
+	decalpass = null;		//	SceneRenderPass : デカールの3D描画。SD
+	copyzpass = null;
+	autoexppass = null;		//	AutoExposurePass : 最終のhdcolortexからLavgを取得。1フレーム遅延で露光パラメータを調整。自動露光オフでも一応作られる。
+	pbrpostpass = null;		//	PBRPostPass : ブルーム、DOF、ToneMapping。結果はsdcolortexに。
+	drawpass = null;		//	DrawToViewportPass : sdcolortexをアンチエイジングとかしつつ描画。
+	//	※sdtexを更にエフェクトかけて描画とか考えて、あえてpbrpostpassとdrawpassを分割する。
+
+	
+	//	setPassSettingを呼んだ後はsetupPassが必ず必要
+	//	p : env.data
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		exp = ExposureState();
+		exp.setPassSetting( p["exposure"]);
+		shadowpass = reg.ShadowMapRenderPass( null); //	
+		litprepass = reg.LightPreparePass( p, exp);	//	exp共有。IBLとかライト設定をまとめて渡す
+		opaquepass = reg.SceneRenderPass( {visiblemask:SK_VISIBLE_OPAQUE, target:"scenefb", clearparam=p["ownbuffer"] && [0,0,0,0,1]});
+		transpass = reg.SceneRenderPass( {visiblemask:SK_VISIBLE_TRANSPARENT, target:"scenefb"});
+		decalpass = reg.SceneRenderPass( {visiblemask:SK_VISIBLE_DECAL|SK_VISIBLE_OVERLAY, target:"decalfb"});
+		autoexppass = reg.AutoExposurePass( exp);	//	exp共有。
+		pbrpostpass = reg.PBRPostPass( { postfx:p["postfx"], src:"hdcolortex", target:"sdcolortex" });
+		drawpass = reg.DrawToViewportPass( null);
+		copyzpass = reg.CopyZPass( {});
+	}
+
+	//	※パラメータは予めコンストラクタかsetPassSettingで設定済み。サブパスも生成済み。
+	//	全てのテクスチャなどはここで生成される。
+	function setupPass( r){
+		needsetup = false;
+		//	バックバッファ設定
+		if( !!ps["ownbuffer"] != !!hdcolortex){
+			if( ps["ownbuffer"]){
+				hdcolortex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA16F});
+				sdcolortex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA8});
+				ztex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_DEPTH32});
+				uztex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R16UI});
+				scenefb = r.createRenderTarget( {color0=hdcolortex, depth=ztex});
+				decalfb = r.createRenderTarget( {color0=sdcolortex, depth=ztex});
+			}else{
+				hdcolortex = sdcolortex = ztex = scenefb = decalfb = null;
+			}
+		}
+		//	サブパスはそれぞれのクラスで設定
+		foreachSubpass( @( p){ p.setupPass( r); });
+		r.bgpass.target = opaquepass.target;
+	}
+	
+	function targetsResized( r){
+		foreachTarget( @( t){ t.resized( r); });
+		foreachSubpass( @( p){ p.targetsResized( r); });
+	}
+	
+	//	DisplayListのカリング、RenderStateの退避などを予め行い呼び出される。
+	function performPass( r){ 
+		skSetLights( r.camera, r.scn.lights, r.env.envlights);	//	skSetLightsはレガシー用API。skCullLightsで機能置き換え予定
+		if( r.bgpass.enabled) r.bgpass.clearDepth( r);
+		//	shadow pass -> shadow
+		shadowpass.performPass( r);
+		//	light prepare pass -> lightidx, lightprm, dfg, ibl, sh, ...
+		litprepass.performPass( r);
+		r.env.passfilter = hdcolortex ? 512 : 256;	//	256の場合はtonemapも描画時にやっちゃう
+		opaquepass.performPass( r);
+		r.bgpass.target = opaquepass.target;
+		if( r.bgpass.enabled) r.bgpass.performPass( r);
+		if( uztex){
+			copyzpass.performPass( r);
+			r.env.depthtex = uztex;
+		}
+		transpass.performPass( r);
+		r.env.passfilter = 128;
+		if( hdcolortex){
+		//	auto exposure pass
+			autoexppass.performPass( r);
+		//	bloom+dof+tonemapping pass
+			pbrpostpass.performPass( r);
+			decalpass.performPass( r);		//	最後にやる
+			drawpass.performPass( r);
+		}else{
+			decalpass.performPass( r);
+		}
+		r.env.passfilter = 255;
+	}
+}
+
+//	※シーンのIBR,fog,などのセッティングはrenderer.envに予め設定されている
+//	litidxtex, litprmtex, ztex, shadowtexなどはレンダリング中に一時的にenvに設定される。
+//	
+class reg.PBRDeferredRendererPass extends SK3DRenderPass
+{
+	//	render target/source
+	//	※shadowpass, litprepass, exposurepassなどでの内部ターゲットは書かない。
+	// litidxtex = null;		//	litcullパス内にあればいいか
+	// litprmtex = null;
+	g0tex = null;			//	1/1 rgba8
+	g1tex = null;			//	1/1 rgba8
+	g2tex = null;			//	1/1 rgba8
+	g1tex2 = null;			//	1/1 rgba8 : normal blur
+	ztex = null;			//	1/1 d24|d32
+	uztex = null;			//	1/1 r16ui
+	hdcolortex = null;		//	1/1 rgba16f
+	sdcolortex = null;		//	1/1 rgba8
+	//	screen space
+	aotex = null;			//	1/2 rgba8
+	olduztex = null;		//	1/1 r16ui : swap
+	
+	basefb = null;			//	g0tex, g1tex, g2tex, ztex
+	lightingfb = null;		//	hdcolortex | hdcolortex,sdcolortex
+	transfb = null;			//	hdcolortex, ztex
+	decalfb = null;			//	sdcolortex, ztex
+	exp = null;				//	Exposure : 
+	
+	//	pass
+	shadowpass = null;
+	litprepass = null;
+	basepass = null;
+	transpass = null;
+	decalpass = null;
+	copyzpass = null;
+	gblurpass = null;
+	lightingpass = null;
+	//	screen space pass
+	ssaopass = null;		//	SSAOはライトパス
+	ssrpass = null;
+	ssgipass = null;
+	//	post process
+	autoexppass = null;		//	AutoExposurePass : 最終のhdcolortexからLavgを取得。1フレーム遅延で露光パラメータを調整。自動露光オフでも一応作られる。
+	pbrpostpass = null;		//	PBRPostPass : ブルーム、DOF、ToneMapping。結果はsdcolortexに。
+	drawpass = null;		//	DrawImagePass : sdcolortexをアップスケールとかしつつ描画。
+
+	//	setPassSettingを呼んだ後はsetupPassが必ず必要
+	//	p : env.data
+	function setPassSetting( p){
+		super.setPassSetting( p);
+		exp = ExposureState();
+		exp.setPassSetting( p["exposure"]);
+		shadowpass = reg.ShadowMapRenderPass( null); //	
+		litprepass = reg.LightPreparePass( p, exp);	//	exp共有。IBLとかライト設定をまとめて渡す
+		basepass = reg.SceneRenderPass( {visiblemask:SK_VISIBLE_OPAQUE, target:"basefb", clearparam=[0,0,0,0,1]});
+		transpass = reg.SceneRenderPass( {visiblemask:SK_VISIBLE_TRANSPARENT, target:"transfb"});
+		decalpass = reg.SceneRenderPass( {visiblemask:SK_VISIBLE_DECAL|SK_VISIBLE_OVERLAY, target:"decalfb"});
+		autoexppass = reg.AutoExposurePass( exp);	//	exp共有。
+		pbrpostpass = reg.PBRPostPass( { postfx:p["postfx"], src:"hdcolortex", target:"sdcolortex" });
+		drawpass = reg.DrawToViewportPass( null);
+		copyzpass = reg.CopyZPass( {});
+		gblurpass = reg.GBlurPass( null);	//	renderhint.blur_quaによって変わる
+		//	SSAO | SSGI
+		if( p["ss"]["gitype"] == 1){
+			lightingpass = reg.PBRLightingPass( {target:"lightingfb", tec:"pbr.deferlighting_gi"});	//	giはaにdiffuse情報
+			ssgipass = reg.SSGIPass( { ztex:"ztex", ...p["ss"], });
+		}else{
+			lightingpass = reg.PBRLightingPass( {target:"lightingfb"});
+			if( p["ss"]["aopow"]){
+				ssaopass = reg.SSAOPass( { ztex:"ztex", target:"aotex", ...p["ss"], });
+			}
+		}
+	}
+	
+	//	※パラメータは予めコンストラクタかsetPassSettingで設定済み。サブパスも生成済み。
+	//	全てのテクスチャなどはここで生成される。
+	function setupPass( r){
+		needsetup = false;
+		//	バックバッファ設定
+		g0tex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA8});
+		g1tex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R32UI});
+		g2tex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R32UI});
+		hdcolortex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA16F});
+		sdcolortex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA8});
+		ztex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_DEPTH32});
+		uztex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R16UI});
+		basefb = r.createRenderTarget( {color0=g0tex, color1=g1tex, color2=g2tex, depth=ztex});
+		transfb = r.createRenderTarget( {color0=hdcolortex, depth=ztex});
+		decalfb = r.createRenderTarget( {color0=sdcolortex, depth=ztex});
+		//	screen space
+		if( gblurpass){
+			g1tex2 = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R32UI});
+		}else{
+			g1tex2 = null;
+		}
+		if( ssaopass){
+			aotex = r.createRenderTarget( {w:VP_FULL,h:VP_FULL,fmt:SK_R8});
+		}
+		if( ssgipass){
+			lightingfb = r.createRenderTarget( {color0=hdcolortex});
+		}else{
+			lightingfb = r.createRenderTarget( {color0=hdcolortex});
+		}
+		//	ssgi, taaみたくreprojectをするパスがある場合はoldztex
+		if( ssgipass){
+			olduztex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R16UI});
+		}
+		//	サブパスはそれぞれのクラスで設定
+		foreachSubpass( @( p){ p.setupPass( r); });
+		r.bgpass.target = basepass.target;
+	}
+
+	//	renderhintが更新されたのでそれを反映する。
+	//	初期化しなおしちゃうと画面効果なんかもリセットされてしまうので、個別に頑張る
+	function updateRenderHint( r){
+		printf( "WARN: updateRenderHint() is not implemented yet.\n");
+	}
+
+	function targetsResized( r){
+		foreachTarget( @( t){ t.resized( r); });
+		foreachSubpass( @( p){ p.targetsResized( r); });
+	}
+
+	//	reproject用にuztexをフレーム毎に入れ替える。
+	function swapUZTex(){
+		local uzt = olduztex; olduztex = uztex; uztex = uzt;
+	}
+	
+	//	DisplayListのカリング、RenderStateの退避などを予め行い呼び出される。
+	function performPass( r){
+		skSetLights( r.camera, r.scn.lights, r.env.envlights);	//	skSetLightsはレガシー用API。skCullLightsで機能置き換え予定
+		// if( r.bgpass.enabled) r.bgpass.clearDepth( r);	//	deferred passは毎回全てのバッファをクリア。そうする方が速い
+		//	shadow pass -> shadow
+		shadowpass.performPass( r);
+		//	light prepare pass -> lightidx, lightprm, dfg, ibl, sh, ...
+		litprepass.performPass( r);
+		//	deferred base pass (3D) -> gbuffers
+		r.env.passfilter = 1024;
+		r.bgpass.target = basepass.target;
+		basepass.performPass( r);
+		if( r.bgpass.enabled) r.bgpass.performPass( r);
+		copyzpass.performPass( r);
+		r.env.depthtex = uztex;	//	koko uztex!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+		if( gblurpass.enabled) gblurpass.performPass( r);
+		r.env.gtex0 = g0tex;		//	gtex0-2, ztexをここで設定。。。。。。
+		r.env.gtex1 = g1tex2 || g1tex;
+		r.env.gtex2 = g2tex;
+		
+		//	SSAOはlightingpassの前に行う。
+		ssaopass?.performPass( r);
+		
+		//	lighting pass (gbuffers, shadow) -> hdcolortex
+		lightingpass.performPass( r);
+		r.env.aotex = null;		//	aotexはssaopassで設定される。transpass以降で使われてほしくないのでここでnull代入。
+		r.weatherPassA();
+
+		//	※※※※ SSGIは反射光は考慮できない。ので、SSRより前に持ってくる
+		//	lightingpassでは64bitのhdcolortexの他に、SSGI用の32bit diffusetexが一時的にsdcolortexに出力される。
+		//	ssgiはフォグ前のカラーが使われる。フォグで見た目が変にならないように、ssgiのフォールオフをフォグに合わせて設定する必要がある。
+		ssgipass?.performPass( r);
+		//	※※※※ SSRをやる場合はlightingpassでのIBR計算は行わない。ssrgenpassでやる。
+		//	※ここでindirect lightingも全て行う。lightingpassではindirect lightingは切られる。
+		//	※さらにフォグもここで行うようにする。
+		ssrpass?.performPass( r);
+		//	transparent pass (3D forward) -> hdcolortex
+		r.env.passfilter = 512;
+		transpass.performPass( r);
+		r.env.passfilter = 128;	//	128=decal only
+
+		////////////////////////////
+		//	ここからはforwardパスと同じ。。。。。
+		
+		//	auto exposure pass
+		autoexppass.performPass( r);
+		//	bloom+dof+tonemapping pass
+		pbrpostpass.performPass( r);
+		decalpass.performPass( r);		//	最後にやる
+		local dst = r.weatherPassBC( sdcolortex);
+		drawpass.performPass( r);
+		//
+		r.env.passfilter = 255;
+		r.env.depthtex = null;
+		
+		if( olduztex) swapUZTex();	//	ssgi,taaなんかで使う
+	}
+}

@@ -1,0 +1,262 @@
+import PropertyType;
+import SKViewPropertyID;
+
+function getTecs(){
+	local a = [];
+	local efxs = skFXGetEffects();
+	local icons = #( ("\ue430", 0xffff00ff), ("\ue2bd", 0x999999ff));
+	foreach( efx in efxs){
+		local efxname = efx.name;
+		foreach( i,tec in efx){
+			if( !tec.tag || !tec.tag.contains( "3d") || tec.tag.contains( "hide")){
+				continue;
+			}
+			local ispbr = tec.tag.contains( "pbr");
+			local icon = icons[ispbr?0:1];
+			a .. { lbl=tec.name, val=tec.name, tec=tec, icon=icon};
+		}
+	}
+	return a;
+}
+
+local testlist  = ["0:OFF","1:LESS","2:LEQUAL","3:GREATER","4:GEQUAL","5:EQUAL","6:NOTEQUAL","7:ALWAYS","8:NEVER"]
+
+//	共通プロパティー
+local tecprop = { pid="tec",	lbl="Shader",	type=LIST, list=getTecs };
+local blendmodeprop = { pid="blendmode",lbl="BlendMode",	type=LIST, list=["0:OPAQUE","1:MASKED","2:TRANSPAR","3:DECAL","4:MASKED DECAL","5:TRANS DECAL"] };
+local blendprop = { pid="blend",		lbl="$T.lbl_blend",			type=LIST,		list=::SKVP[IMAGEBLEND].list};
+local alphatestprop = { pid="alphatest",	lbl="AlphaTest",	type=BOOL };
+local depthtestprop = { pid="depthtest",	lbl="DepthTest",	type=LIST, list=testlist };
+local depthmaskprop = { pid="depthmask",	lbl="DepthMask",	type=BOOL };
+local cullfaceprop = { pid="cullface",	lbl="Culling",	type=LIST, list=["0:OFF","1:CW","2:CCW"] };
+local shadowprop = { pid="shadow",lbl="Shadow",	type=LIST, list=["0:OFF","1:RECV","2:CAST","3:RECV+CAST"] };
+
+local modeblends = [SK_VISIBLE_OPAQUE,SK_VISIBLE_OPAQUE,SK_VISIBLE_TRANSPARENT,SK_VISIBLE_DECAL,SK_VISIBLE_DECAL,SK_VISIBLE_DECAL]
+
+//	レガシープロパティ
+local legacyprops = [
+	tecprop,
+	{ pid="Ka",	lbl="Ambient",	type=RGB },
+	{ pid="Kd",	lbl="Diffuse",	type=RGBA },
+	{ pid="Ks",	lbl="Specular",	type=RGB },
+	{ pid="Ke",	lbl="Emit",	type=RGB },
+	blendmodeprop,
+	blendprop,
+	// alphatestprop,	blendmodepropで一緒に入る
+	// depthtestprop,	
+	// depthmaskprop,
+	cullfaceprop,
+	shadowprop,
+	{ pid="shiness",	lbl="Shiness", type=SCALAR, range=(1,100), q=1 },
+	{ pid="tex0",	lbl="ColorMap1", type=PATH },
+	{ pid="tex1",	lbl="ColorMap2", type=PATH },
+	{ pid="tex2",	lbl="ColorMap3", type=PATH },
+	{ pid="tex3",	lbl="ColorMap4", type=PATH },
+];
+
+//	PBRプロパティ
+local pbrprops0 = [
+	tecprop,
+	{ pid="mtype", lbl="PBRType", type=LIST, list=["0:STANDARD","1:DECAL","2:SUBSURF","3:SHEEN","4:CLEARCOAT","5:TRANSPAR","6:ANISOTRO","7:CLOTH"]}
+	{ pid="G1", lbl="PBR Params", type=HEADER, }
+	{ pid="basecol",	lbl="BaseColor",	type=RGBA },
+	{ pid="rough",	lbl="Roughness",	type=SCALAR, range=(0.0,1.0), q=100, ui="bar" },
+	{ pid="metal",	lbl="Metallic",	type=SCALAR, range=(0.0,1.0), q=100, ui="bar" },
+];
+
+local pbrprops1 = [
+	{ pid="G2", lbl="Textures", type=HEADER, }
+	{ pid="tex0",	lbl="ColorMap", type=PATH },
+	{ pid="tex1",	lbl="NormalMap", type=PATH },
+	{ pid="tex2",	lbl="ParamMap", type=PATH },
+	{ pid="G3", lbl="Misc", type=HEADER, }
+	cullfaceprop,
+	blendmodeprop,
+	blendprop,
+	shadowprop,
+	// alphatestprop,
+	// depthtestprop,
+	// depthmaskprop,
+];
+
+///////// mtype別
+local pbrtypeprops = [
+	[
+		{ pid="mparam0",	lbl="AO",	type=SCALAR, range=(0,255), qua=1, ui="bar" },
+		{ pid="mparam1",	lbl="Emission",	type=SCALAR, range=(0,255), qua=1, ui="bar" },
+	],
+	[],
+	[
+		{ pid="mparam012",	lbl="SS Tint",	type=RGB, },
+		{ pid="mparam3",	lbl="SS Tickness",	type=SCALAR, range=(0,255), qua=1, ui="bar" },
+	],
+]
+
+
+
+class PMMaterialPanel
+{
+	editor = null;
+	view = null;
+
+	mtlmenu = null;			//	MenuBehavior
+	proplist = null;		//	GPUIListView
+
+	selmtl = null;			//	Material
+
+	teclist = null;
+	
+	constructor( v, e){
+		view = v;
+		editor = e;
+		v.addEventListener( ACTION_EVENT, actionevent);
+		proplist = PropertyListBehavior( v.findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = e;
+		mtlmenu = MenuBehavior( v.findChild( "mtlmenu"));
+		teclist = getTecs();
+	}
+	
+	function setPM( p){
+		local mates = [];
+		foreach( i,f in p.face){
+			mates .. { lbl = i..":"..f.m.name, idx = i};
+		}
+		mtlmenu.setMenu( mates);
+		selectMaterial( 0);
+	}
+	
+	function selectMaterial( i){
+		selmtl = editor.pm.face[i].m;
+		assignProperties( selmtl);
+	}
+
+	function assignProperties( m){
+		local ispbr = m.tec.tag.contains( "pbr");
+		local props = null;
+		if( ispbr){	//	mtypeによってプロパティを変化
+			props = [ ...pbrprops0, ...pbrtypeprops[m.mtype], ...pbrprops1];
+		}else{
+			props = legacyprops;
+		}
+		proplist.bindProperties( props);
+		local prms = {};
+		foreach( p in props){
+			prms[p.pid] <- getMaterialParam( m, p.pid);
+		}
+		proplist.setParameters( prms);
+	}
+	
+	//	マテリアルにセット
+	
+	function getMaterialParam( m, pid){
+		switch( pid){
+		case "tec":
+			return m.tec.name;
+		//	値そのまま
+		case "mtype":
+		case "Ka": case "Kd": case "Ks": case "Ke":
+		case "blend": case "cullface": case "shiness": case "depthtest": case "depthmask": case "alphatest":
+		case "basecol": case "rough": case "metal":
+			return m[pid];
+		//	テクスチャ
+		case "tex0":
+		case "tex1":
+		case "tex2":
+		case "tex3":
+			local tex = m[pid];
+			return tex["ref"]["path"] || null;
+		//	特殊
+		case "blendmode":
+			if( m.visiblemask&SK_VISIBLE_DECAL){
+				if( !m.depthmask) return 5;
+				if( m.alphatest) return 4;
+				return 3;	//	3:DECAL
+			}else{
+				if( m.visiblemask&SK_VISIBLE_TRANSPARENT) return 2;	//	2:TRANSPAR
+				if( m.alphatest) return 1;
+				return 0;
+			}
+		case "shadow":
+			return ((m.visiblemask&SK_VISIBLE_SHADOW_RECEIVER)?1:0) + ((m.visiblemask&SK_VISIBLE_SHADOW_CASTER)?2:0);
+		//	PBR param
+		case "mparam0":
+		case "mparam1":
+		case "mparam2":
+		case "mparam3":
+			local sft = (3-(pid[6]-'0'))*8;
+			return (m.mparam>>sft)&0xff;
+		case "mparam012":
+			return m.mparam|0xff;	//	rgb
+		}
+	}
+	
+	function setMaterialParam( m, pid, val){
+		switch( pid){
+		case "tec":
+			if( val){
+				m.tec = skFXFindTechnique( val);
+				return true;
+			}
+			break;
+		//	値そのまま
+		case "mtype":
+		case "Ka": case "Kd": case "Ks": case "Ke":
+		case "blend": case "cullface": case "shiness": case "depthtest": case "depthmask": case "alphatest":
+		case "basecol": case "rough": case "metal":
+			m[pid] = val;
+			return true;
+		case "tex0":
+		case "tex1":
+		case "tex2":
+		case "tex3":
+			local tex = ::getTexture( editor.res.getResource( val));
+			m[pid] = tex;
+			return true;
+		//	特殊
+		case "blendmode":
+			m.visiblemask = (m.visiblemask&~SK_VISIBLE_MAIN) | modeblends[val];
+			m.alphatest = (val%3)==1;
+			m.depthmask = (val%3)==2?0:1;
+			editor.canvas.sk3d.updateSortOffset();	//	これやんないと最悪描画されない
+			return true;
+		case "shadow":
+			m.visiblemask = (m.visiblemask&~(SK_VISIBLE_SHADOW_CASTER|SK_VISIBLE_SHADOW_RECEIVER)) |
+			((val&1) ? SK_VISIBLE_SHADOW_RECEIVER : 0) | ((val&2) ? SK_VISIBLE_SHADOW_CASTER : 0);
+			return true;
+		case "mparam0":
+		case "mparam1":
+		case "mparam2":
+		case "mparam3":
+			local sft = (3-(pid[6]-'0'))*8;
+			m.mparam = (m.mparam&~(0xff<<sft)) | (val<<sft);
+			return true;
+		case "mparam012":
+			m.mparam = (m.mparam&0xff) | (val&0xffffff00);
+			return true;
+		}
+	}
+
+	function syncParam( m, pid){
+		proplist.setParameters( {[pid]=getMaterialParam( m, pid)});
+	}
+	
+	function propevent( e){
+		local cmd = e.actioncmd, pid = cmd.prop.pid;
+		if( setMaterialParam( selmtl, pid, cmd.val)){
+			editor.submitOp( editor.encodePM( editor.pm));	//	
+			if( pid == "tec" || pid == "mtype"){
+				assignProperties( selmtl);
+			}
+		}
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "mtlmenu":
+			selectMaterial( e.actioncmd.idx);
+			break;
+		}
+	}
+}

@@ -1,0 +1,362 @@
+declare weather;
+
+module mod_math;
+
+param def
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform lowp sampler2D coltex <id=COLORTEX1, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform lowp sampler3D n3tex <id=COLORTEX2, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform highp sampler2D ztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
+	
+	uniform highp mat4 invpmat <id=ENV2MAT>;
+	uniform highp mat4 invvmat <id=ENV3MAT>;
+	uniform highp mat4 vmat <id=VMAT>;
+	uniform highp mat4 P <id=MISC1MAT>;
+	
+	varying highp vec2 v_uv;
+	
+	fragout mediump vec4 fragcolor;
+}
+
+vs def
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv.xy;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	Rain
+//	
+//	time, length, width, angle
+//	density, 
+//	raincolor
+//	
+
+param rainparam
+{
+	flat varying highp vec4 v_rot;
+}
+
+vs rain
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv.xy;
+		//
+		float xdens = P[1].x;
+		float r = P[0].w;
+		float ca = cos( r), sa = sin( r);
+		v_rot = vec4( ca *xdens, -sa*0.5, sa * xdens, ca*0.5);
+	}
+}
+
+fs rain
+{
+	highp float hash( highp vec2 p) {
+		return fract( sin( dot( p, vec2( 41.0, 289.0))) * 45758.5453);
+	}
+
+	// 雨粒の形状
+	float raindrop( highp vec2 uv, highp float time) {
+		vec2 id = floor( uv);
+		vec2 gv = fract( uv) - 0.5;   // グリッド内座標
+		float n = hash( id);
+		float t = time * (0.8 + n) + n * 10.0;
+		float tn = fract( floor( t) * 13.4);
+		gv.x += (tn - 0.5) * 0.6;
+		gv.y += 1.0-fract( t) - 0.5;
+		gv = smoothstep( P[0].yz, vec2( 0.0), abs( gv));
+		return gv.x * gv.y;// + (fract( uv).y - 0.5 > 0.49 ? 1.0 : 0.0);	//	test
+	//	return smoothstep( P[0].y, 0.0, abs(gv.x)) * smoothstep( P[0].z, 0.0, abs(gv.y));
+	}
+	
+	void main(){
+		const vec2 offs0 = vec2( -0.2), offs1 = vec2( 0.2, 0.5);
+		vec4 pix = vec4( 0.0);
+		float c = 0.0;
+		vec2 duv = P[3].xy;
+		highp vec2 uv = v_uv * 0.4 + offs0;
+		// 雨の角度を回転行列で適用
+		mat2 rot = mat2( v_rot);
+		c += raindrop( rot * uv + offs1 -duv, P[0].x);
+		rot = mat2( v_rot * vec4( 1.5, 1.9, 1.6, 1.8));
+		c += raindrop( rot * uv + offs1 -duv*0.8, P[0].x*0.8) * 0.7;
+		rot = mat2( v_rot * vec4( 2.7, 3.4, 2.3, 3.4));
+		c += raindrop( rot * uv + offs1 -duv*0.6, P[0].x*0.6) * 0.5;
+		rot = mat2( v_rot * vec4( 3.1, 4.6, 2.8, 4.4));
+		c += raindrop( rot * uv + offs1 -duv*0.4, P[0].x*0.4) * 0.3;
+		//
+		pix = mix( pix, P[2], clamp( c, 0.0, 1.0));
+		fragcolor = pix;
+	}
+}
+
+technique rain
+{
+	apilevel = 30;
+
+	pass {
+		using rainparam;
+
+		param = def;
+		vs = rain;
+		fs = rain;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	Mist
+//	
+//	time, length, width, angle
+//	density, 
+//	raincolor
+
+fs mist
+{
+	float fbm( highp vec3 p) {
+		return texture( n3tex, p).x;
+	}
+
+	float fbm3( highp vec3 p){
+		p *= vec3( 128.0/256.0, 8.0/256.0, 128.0/256.0);
+		float w = 0.54;
+		float v = fbm( p) * w; w *= 0.5; p *= 2.0;
+		v += fbm( p) * w; w *= 0.5; p *= 2.0;
+		v += fbm( p) * w; w *= 0.5; p *= 2.0;
+		v += fbm( p) * w;
+		return v;
+	}
+
+	void main(){
+		vec4 pix = vec4( 0.0);
+		highp vec2 dxy = P[0].xy;
+		highp float modif = P[0].z;
+		highp vec2 uv = v_uv;
+		vec2 duv = P[3].xy;
+		highp float sc = P[1].y*0.002;
+		highp vec2 p = uv * vec2(1.0, P[1].z)*sc - duv;
+		p += dxy * 0.05;
+		
+		float n = fbm3( vec3( p.x, modif, p.y));
+
+		// 霧の濃さ（下の方を濃くする）
+		// float fogMask = smoothstep(0.3, 0.8, n);// * smoothstep(0.0, 0.6, uv.y);
+		float thrs = 1.0-P[1].x*0.01;
+		float fogMask = smoothstep(thrs-0.4, thrs+0.2, n);// * smoothstep(0.0, 0.6, uv.y);
+
+		// 陰影を付ける（ノイズの勾配を利用）
+		vec4 fogColor = mix( P[2]*vec4(0.6,0.6,0.6,1.0), P[2], fogMask);
+		fogColor.xyz *= fogColor.w;
+
+		// 背景とブレンド
+		pix = mix( pix, fogColor, fogMask * 0.6);
+
+		fragcolor = pix;
+	}
+}
+
+technique mist
+{
+	apilevel = 30;
+
+	pass {
+		param = def;
+		vs = def;
+		fs = mist;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	Cloud
+//	
+
+fs cloud
+{
+	// 画素のワールド座標復元
+	highp vec3 ReconstructWorldPos( highp vec2 uv, highp float depth) {
+		highp vec4 wvpp = vec4( vec3( uv, depth) * vec3( 2.0, -2.0, 2.0) + vec3( -1.0, 1.0, -1.0), 1.0);
+		highp vec4 wp =  (invpmat * wvpp);
+		return (invvmat * (wp / wp.w)).xyz;
+	}
+
+	// 2D value noise
+	// float vnoise( highp vec2 p) {
+	// 	vec2 i = floor( p);
+	// 	vec2 f = fract( p);
+	// 	float a = fract(sin(dot(i, vec2(127.1, 311.7))) * 43758.5453);
+	// 	float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
+	// 	float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+	// 	float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+	// 	vec2 u = f*f*(3.0 - 2.0*f);
+	// 	return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+	// }
+
+	// FBMで柔らかな雲影
+	float fbm( highp vec2 p, highp float t) {
+		// float amp = 0.5;
+		// float sum = 0.0;
+		// for( int i = 0; i < 3; i++) {
+		// 	sum += amp * vnoise( p);
+		// 	p *= 2.0;
+		// 	amp *= 0.5;
+		// }
+		// return sum;
+		return texture( coltex, p).x + texture( coltex, p*2.1-t*0.002).x*0.6 + texture( coltex, p*4.3+t*0.006).x*0.4;
+		// return texture( coltex, p).x;
+	}
+
+	void main() {
+		//	kari params
+		highp float iTime = P[0].x;
+		highp vec3 lightDir = normalize( vec3( -0.1, -1.0, 0.3));
+		highp float cloudHeight = 100.0;
+		highp vec2 windvec = P[0].zw;
+		highp float cloudScale = P[1].x;
+		vec3 cloudColor = P[2].xyz;
+		vec2 shadowStep = P[1].zw;
+		float ambientLift = 0.1;
+		//	
+		highp vec2 uv = v_uv;
+		highp float depth = texture2D( ztex, uv).r;
+		// スカイなどの無限遠（深度1.0近辺）は影処理を弱める
+		if( depth >= 0.999999) { fragcolor = vec4( 1.0); return; }
+		// 画素ワールド座標
+		highp vec3 worldPos = ReconstructWorldPos( uv, depth);
+		// 光線方向に雲レイヤまでレイを飛ばして交点を取得
+		highp float ldY = lightDir.y;
+		// 光が水平に近い場合は投影が不安定になるのでガード
+		// if( abs( ldY) < 0.05) {
+		// 	ldY = sign( ldY) * 0.05;
+		// }
+		highp float t = (cloudHeight - worldPos.y) / ldY;
+		// 雲より上にある面は影がほぼ落ちない（t<0）
+		// if( t <= 0.0) {
+		// 	fragcolor = vec4( 1.0);
+		// 	return;
+		// }
+		highp vec3 hitPos = worldPos + lightDir * t;
+		// 風で雲が流れるオフセット（ワールドXZ平面）
+		highp vec2 flow = windvec * iTime;
+		// 雲サンプリング座標（XZを使用）
+		highp vec2 cloudUV = (hitPos.xz+flow) * cloudScale;
+
+		// 雲マスク（0=快晴, 1=雲濃い）
+		float cloudMask = fbm( cloudUV, iTime);
+		// // ソフトさ調整：コントラストを落として淡く
+		cloudMask = smoothstep( shadowStep.x, shadowStep.y, cloudMask);
+		
+		// 影係数作成（明部1.0 → 影へ減算）
+		vec3 shadowed = mix( cloudColor, vec3( 1.0), cloudMask);
+
+		// 影で完全に黒く潰れないよう持ち上げ
+		// vec3 shadowed = vec3( 1.0 - shade) + ambientLift * shade;
+
+		// わずかなカラーシフト（空気光の青み）
+		// vec3 airTint = vec3(0.98, 0.99, 1.0);
+		// shadowed *= mix( vec3(1.0), airTint, shade * 0.25);
+
+		fragcolor = vec4( shadowed, 1.0);
+	}
+}
+
+technique cloud
+{
+	apilevel = 30;
+
+	pass {
+		param = def;
+		vs = def;
+		fs = cloud;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+//	
+//	Snow
+//	https://godotshaders.com/shader/multilayer-snowfall-shader/
+
+fs snow
+{
+	vec3 generate_snowflake( vec2 coord, float layer_index, float time, float wind_strength) {
+		float spread = 0.5;
+		float size = 0.5;
+		float speed = 0.5;
+		const mat3 NOISE_MATRIX = mat3(
+			vec3(13.323122, 23.5112, 21.71123),
+			vec3(21.1212, 28.7312, 11.9312),
+			vec3(21.8112, 14.7212, 61.3934)
+		);
+		// Scale coordinates based on layer depth
+		float layer_scale = 1.0 + layer_index * 0.5 / (max(size, 0.01) * 2.0);
+		vec2 scaled_coord = coord * layer_scale;
+		
+		// Apply movement (falling + wind)
+		vec2 movement = vec2(
+			scaled_coord.y * (spread * mod(layer_index * 7.238917, 1.0) - spread * 0.5) +
+			(-wind_strength) * speed * time * 0.5,  // Reverse the wind direction by negating wind_strength
+			-speed * time / (1.0 + layer_index * 0.5 * 0.03)
+		);
+		vec2 final_coord = scaled_coord + movement;
+		
+		// Generate noise pattern
+		vec3 noise_input = vec3( floor(final_coord), 31.189 + layer_index);
+		vec3 noise_val = floor(noise_input) * 0.00001 + fract(noise_input);
+		vec3 random = fract((31415.9 + noise_val) / fract(NOISE_MATRIX * noise_val));
+		
+		// Calculate snowflake shape
+		vec2 shape = abs(mod(final_coord, 1.0) - 0.5 + 0.9 * random.xy - 0.45);
+		shape += 0.01 * abs(2.0 * fract(10.0 * final_coord.yx) - 1.0);
+		// shape *= 0.6;
+		
+		// Calculate edge softness
+		float depth_offset = 5.0 * sin(time * 0.1);
+		float edge_softness = 0.005 + 0.05 * min(0.5 * abs(layer_index - 5.0 - depth_offset), 1.0);
+
+		// Calculate final shape
+		float shape_value = 0.6 * max(shape.x - shape.y, shape.x + shape.y) + max(shape.x, shape.y) - 0.01;
+
+		return vec3(smoothstep(edge_softness, -edge_softness, shape_value) * (random.x / (1.0 + 0.02 * layer_index * 0.5)));
+	}
+
+	void main() {
+		highp float t = P[0].x;
+		int num_of_layers = 14;
+		float wind = 0.2;
+		vec4 snow_color = vec4( 1.0);
+		float snow_transparency = 0.2;
+
+		vec2 uv = v_uv.xy;
+		vec3 snow_accumulation = vec3(0.0);
+		// Generate snow for each layer
+		for (int i = 0; i < num_of_layers; i++) {
+			snow_accumulation += generate_snowflake( uv, float(i), t, wind);
+		}
+		// Calculate final color
+		float snow_intensity = clamp( length(snow_accumulation), 0.0, 1.0);
+
+		// Apply transparency effect to the snow color
+		vec4 transparency_color = vec4( snow_color.rgb * (1.0 + snow_transparency), snow_intensity);
+		fragcolor = transparency_color;
+	}
+}
+
+technique snow
+{
+	apilevel = 30;
+
+	pass {
+		param = def;
+		vs = def;
+		fs = snow;
+	}
+}

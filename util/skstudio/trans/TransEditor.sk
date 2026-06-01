@@ -1,0 +1,426 @@
+import VirtualKeyCode;
+import ModifiersMask;
+
+class TransEditor extends EditorViewBase
+{
+	static pagenums = [20,50,100,200,500]
+
+	res = null;				//	Resource : 
+	transdict = null;		//	TransDict : 
+	srcdict = null;			//	flattb
+	
+	wordlist = null;		//	GPUIListView : 
+	groupmenu = null;
+	filteredit = null;
+	nummenu = null;
+	pager = null;
+
+	gwords = null;			//	グループでフィルターされたワード[3]
+	fwords = null;			//	グループ、文字列でフィルターされたワード
+	
+	static function createEditor( path){
+		if( !path.endsWith( ".trns")) return null;
+		local ed = ::loadSKView( "/skstudio/ui/trans/transeditor.ui", TransEditor);
+		ed.init( path);
+		return ed;
+	}
+
+	static function setwordview( la, v, i){
+		v.setValue( "idx", i.idx);
+		v.setValue( "key", i.key);
+		v.setValue( "srcword", i.srcword);
+		v.setValue( "dstword", i.dstword);
+		v.findChild( "chk").setSelected( !!i.check);
+		v.stretchSize( v.bnd.w, 10.0, true);	//	TODO: 一度小さくしないといけない。。。あとで直す
+		local d = v.computeSizeDelta();
+		if( d.x != 0.0 || d.y != 0.0){
+			v.stretchSize( v.bnd.w, v.bnd.h+d.y);
+		}
+	}
+
+	function init( path){
+		op = OperationStack();
+		wordlist = ListBehavior( findChild( "wordlist"));
+		wordlist.setviewfunc = setwordview;
+		wordlist.enteraction = false;
+		wordlist.listview.addEventListener( ITEM_EVENT, listevent);
+		wordlist.listview.addEventListener( ACTION_EVENT, listevent);
+		wordlist.listview.addEventListener( FOCUS_EVENT, listevent);
+		wordlist.listview.addEventListener( KEY_EVENT, typeevent);
+		wordlist.listview.addEventListener( IM_EVENT, typeevent);
+		groupmenu = MenuBehavior( findChild( "groupmenu"));
+		filteredit = findChild( "filteredit");
+		local nums = pagenums.map( @( v){ return { lbl=`$v / ${::T.lbl_page}`, val=v}; });
+		nummenu = MenuBehavior( findChild( "nummenu"), nums);
+		nummenu.selectItem( @( v) v.val==100);
+		pager = PagerBehavior( findChild( "pager"));
+		addEventListener( ACTION_EVENT, actionevent);
+
+		res = ::getResource( path);
+		local conf = decodeJSON( res.getContent());
+		transdict = TransDict( conf);
+
+		if( transdict._meta["srclang"]){	//	これが無いのは元辞書だけ
+			local srcres = res.getResource( transdict._meta.srclang .. ".trns")
+			srcdict = TranslationUtil.flattenTable( decodeJSON( srcres.getContent()).transdict);
+		}
+
+		updateGroups();
+	}
+
+	function setActive( b){
+		super.setActive( b);
+		if( b){
+			setPage( 0);
+		}
+	}
+
+	//	全て、未翻訳、更新分
+	function updateGroups(){
+		local alllist = [], chglist = [], uplist = [];
+		foreach( i,v in transdict.flattb){
+			local chk = transdict.checktb[i]||0;
+			local item = { key=i, srcword=srcdict[i]||"", dstword=v, idx=0, check=chk, };
+			alllist .. item;
+			if( chk){
+				uplist .. item;
+			}else{
+				chglist .. item;
+			}
+		}
+		alllist.sort( @( a) a.key);
+		foreach( i, v in alllist) v.idx = i+1;
+		chglist.sort( @( a) a.key);
+		uplist.sort( @( a) a.key);
+		local menudata = [
+			{ lbl=`$T.lbl_trans_group0 (${length( alllist)})`, val=0},
+			{ lbl=`$T.lbl_trans_group1 (${length( chglist)})`, val=1},
+			{ lbl=`$T.lbl_trans_group2 (${length( uplist)})`, val=2},
+		];
+		groupmenu.setMenu( menudata);
+		gwords = [alllist, chglist, uplist];
+		updateGroupFilter();
+	}
+
+	function updateChangeNum(){
+		local allnum = length( gwords[0]);
+		local chgnum = gwords[0].reduce( @( v, x) x+!v.check, 0);
+		local upnum = allnum - chgnum;
+		local menudata = [
+			{ lbl=`$T.lbl_trans_group0 ($allnum)`, val=0},
+			{ lbl=`$T.lbl_trans_group1 ($chgnum)`, val=1},
+			{ lbl=`$T.lbl_trans_group2 ($upnum)`, val=2},
+		];
+		groupmenu.setMenu( menudata);
+	}
+
+	function updateGroupFilter(){
+		local gi = groupmenu.selitem.val;
+		local fi = filteredit.getText().toLowerCase();
+		fwords = fi=="" ? gwords[gi] : gwords[gi].filter( @( v){
+			return v.key.toLowerCase().contains( fi) || v.srcword.toLowerCase().contains( fi) || v.dstword.toLowerCase().contains( fi);
+		});
+		setValue( "wordcnt", "$T.lbl_trans_wordcnt: "..length( fwords));
+		local wpp = nummenu.selitem.val;
+		pager.setPageNum( (length( fwords)+wpp-1)/wpp);
+		pager.setPage( 0);
+		// setPage( 0);
+	}
+
+	function setPage( p){
+		local wpp = nummenu.selitem.val;
+		local i0 = p*wpp;
+		local a = fwords.slice( i0, Math.min( i0+wpp, length( fwords)));
+		wordlist.setListItems( a);
+	}
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_edit_undo":
+			op.undo();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_copy":
+			copyWord();
+			return true;
+		case "menu_edit_paste":
+			pasteWord( getClipboard( "transword"));
+			return true;
+		case "menu_file_save":
+			save();
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			return true;
+		}
+	}
+	
+	function save(){
+		local t = transdict.write();
+		printf( "TRANSDICT! %S\n", encodeJSON( t, 5));
+		//
+		local bb = ByteBuffer();
+		encodeJSON( t, 5, bb);
+		bb.pos = 0;
+		res.file.save( bb);
+		::skstudio.fileview.refreshDir( res.path);
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "groupmenu":
+			break;
+		case "nummenu":
+			updateGroupFilter();
+			setPage( 0);
+			break;
+		case "pager":
+			setPage( pager.page);
+			break;
+		case "menubtn":
+			showMenuContextMenu( e);
+			break;
+		}
+	}
+
+	function showMenuContextMenu( e){
+		local menudata = [
+			{ id="copytsv", lbl="$T.lbl_copytsv", icon="\ue14d" },
+			{ id="pastetsv", lbl="$T.lbl_pastetsv", icon="\ue14f"},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "copytsv":
+			copyTSV();
+			break;
+		case "pastetsv":
+			local t = skGetClipboardData( ClipboardType.CLIPBOARD_TEXT);
+			if( t) pasteTSV( t);
+			break;
+		}
+	}
+
+	function copyTSV(){
+		local a = gwords[0].map( @( v) +{ key=v.key, srcword=v.srcword, dstword=v.dstword, check=v.check?1:0});
+		local sb = StringBuffer();
+		sb .. T.lbl_key .. "\t";
+		sb .. T.lbl_trans_srcword .. "\t";
+		sb .. T.lbl_trans_dstword .. "\t";
+		sb .. T.lbl_check .. "\t";
+		sb .. "\n";
+		foreach( v in a){
+			sb .. v.key .. "\t";
+			sb .. encodeESC( v.srcword) .. "\t";
+			sb .. encodeESC( v.dstword) .. "\t";
+			sb .. v.check .. "\t";
+			sb .. "\n";
+		}
+		skPutClipboardData( sb);
+	}
+
+	function pasteTSV( t){
+		local s = 0, e = 0;
+		local c = 0, lv = 1;
+		local newdict = clone transdict;
+		local row = 0, key, srcword;
+		for( ;; e++){
+			switch( t[e]){
+			case '\0':
+			case '\t':
+				local w = t.substring( s, e).trim();
+				s = e+1;
+				switch( row++){
+				case 0: key = w; break;
+				case 1: srcword = w; break;
+				case 2:
+					if( newdict.flattb[key] && newdict.flattb[key] != w && length( w)){
+						newdict.flattb[key] = w;
+						newdict.check( key, hashcode( srcword));
+					}
+					break;
+				}
+				if( !t[e]) goto TSVDONE;
+				break;
+			case '\n':
+				row = 0; key = srcword = null;
+				s = e+1;
+				break;
+			}
+		}
+	TSVDONE:
+		local self = this, olddict = transdict;
+		local redo = [@(){
+			self.transdict = newdict;
+			self.updateGroups();
+			self.setPage( 0);
+		}];
+		local undo = [@(){
+			self.transdict = olddict;
+			self.updateGroups();
+			self.setPage( 0);
+		}];
+		submitOp( redo, undo, null);
+	}
+
+	function listevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( cmd["src"]["name"] == "chk"){	//	翻訳済みチェックをon/off
+				checkWord( cmd.item, !cmd.src.isSelected());
+			}else
+			if( e.isMouseDown( BUTTON1_MASK)){
+				editWord( e, cmd, false);
+			}
+			break;
+		case ITEM_SELECTED:
+			break;
+		case FOCUS_GAINED:
+			skEnableInputMethods( true);	//	imを有効化
+			break;
+		case FOCUS_LOST:
+			if( !e.dst["enableime"]){
+				skEnableInputMethods( false);	//	IMEが有効なviewにフォーカスが移る場合もある
+			}
+			break;
+		}
+	}
+
+	function checkWord( item, b){
+		local self = this, wordlist = self.wordlist;
+		local sh = hashcode( item.srcword), oldchk = b?0:sh, newchk = b?sh:0;
+		local redo = [@(){
+			item.check = newchk;
+			self.transdict.check( item.key, newchk);
+			wordlist.refreshItem( item);
+			self.updateChangeNum();
+		}];
+		local undo = [@(){
+			item.check = oldchk;
+			self.transdict.check( item.key, oldchk);
+			wordlist.refreshItem( item);
+			self.updateChangeNum();
+		}];
+		submitOp( redo, undo, null);
+	}
+
+	//	デフォルトはテキストをクリアしてから入力開始
+	static vktypemap = {
+		//	タイプされても入力開始しない
+		[VK_ESCAPE]=-1, [VK_TAB]=-1, [VK_BACK_SPACE]=-1, [VK_ENTER]=-1,
+		//	最初の一文字を入力しない
+		[VK_SPACE]=2, 
+	};
+
+	//	
+	static vkpressmap = {
+		//	タイプされたら後ろから追記
+		[VK_F2]=1,
+		//	単に下に移動する
+		[VK_TAB]=3, [VK_ENTER]=4,
+	}
+
+	//	
+	function typeevent( e){
+		switch( e.id){
+		case KEY_PRESSED:
+		case KEY_REPEATED:
+			switch( vkpressmap[e.keycode]){
+			case 1:
+				e.consume();
+				local item = wordlist.getSelectedItems()[0];
+				editWord( e, item, false);
+				break;
+			case 4:	//	enterはチェック入れる
+				{
+					local item = wordlist.getSelectedItems()[0];
+					if( !item["check"]) checkWord( item, true);
+				}	
+			case 3:
+				e.consume();
+				local item = wordlist.getSelectedItems()[0];
+				local i = wordlist.items.indexOf( item);
+				if( i+1 < length( wordlist.items)){
+					wordlist.setSelectedIndex( i+1);
+					wordlist.scrollIndexToVisible( i+1);
+				}
+				break;
+			}
+			break;
+		case KEY_TYPED:
+		case IMTEXT_CHANGED:
+			if( e.modifiers & (CTRL_MASK|ALT_MASK)) break;
+			e.consume();
+			local type = vktypemap[e.keychar];
+			if( type != -1){
+				local item = wordlist.getSelectedItems()[0];
+				editWord( e, item, type!=2);
+			}
+			break;
+		}
+	}
+
+	function editWord( e, item, clear){
+		local iv = wordlist.getItemView( item);
+		local lbl = iv.findChild( "dstword");
+		local fn(){
+			local v = ::rootview.focusview, popv = v.parent;
+			if( clear){
+				v.setText( "");
+				local ee = clone e; ee.consumed = false;
+				ee.src = v;
+				::rootview.postEvent( ee);
+			}else{
+			}
+			local d0 = popv.computeSizeDelta();
+			local textevent( e){
+				switch( e.id){
+				case TEXT_CHANGED:
+					local d = popv.computeSizeDelta();
+					d.y -= d0.y;
+					if( d.y != 0.0){
+						popv.stretchSize( popv.bnd.w, popv.bnd.h+d.y);
+					}
+					break;
+				}
+			}
+			popv.addEventListener( TEXT_EVENT, textevent);
+		};
+		setTimeout( fn, 1);
+		local oldword = item.dstword;
+		local newword = Popups.showRename( lbl, {uipath="/skstudio/ui/trans/wordinput.ui", maxwidth=10000});
+		if( newword) newword = newword.trim();
+		if( newword <> oldword){
+			local self = this, wordlist = self.wordlist;
+			local oldchk = item.check, newchk = hashcode( item.srcword);
+			local redo = [@(){
+				item.dstword = newword;
+				item.check = newchk;
+				self.transdict.flattb[item.key] <- newword;
+				self.transdict.check( item.key, newchk);
+				wordlist.refreshItem( item);
+				wordlist.listview.updateLayout();
+			}];
+			local undo = [@(){
+				item.dstword = oldword;
+				item.check = oldchk;
+				self.transdict.flattb[item.key] <- oldword;
+				self.transdict.check( item.key, oldchk);
+				wordlist.refreshItem( item);
+				wordlist.listview.updateLayout();
+			}];
+			submitOp( redo, undo, null);
+		}
+	}
+}
+
+::skstudio.registerEditor( {
+	uid = "editor_trans",
+	matches = @( path){ return path.endsWith( ".trns"); }
+	createEditor = TransEditor.createEditor,
+	sideview = "side_transview"
+});

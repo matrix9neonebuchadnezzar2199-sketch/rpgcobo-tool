@@ -1,0 +1,263 @@
+declare background;
+
+module mod_math;
+
+param def
+{
+	attribute highp vec3 in_pos <ID=POSITION>;	//	wvp pos
+	attribute mediump vec4 in_uv <id=UV1>;
+	
+	uniform mediump vec4 color <id=UNICOLOR1>;	//	sRGB color
+	uniform mediump sampler2D coltex1 <id=COLORTEX1>;	//	sRGB texture
+	uniform mediump sampler2D coltex2 <id=COLORTEX1>;	//	sRGB texture
+	uniform mediump samplerCube ibltex <id=ENVTEX, MIN_FILTER=LINEAR_MIP, MAG_FILTER=LINEAR, WRAP_S=CLAMP, WRAP_T=CLAMP, WRAP_R=CLAMP>;
+	
+	uniform mediump mat4 dirlit <id=ENV1MAT>;
+	uniform highp mat4 invpmat <id=ENV2MAT>;
+	uniform mediump mat3 invvmat3 <id=ENV4MAT>;
+	
+	varying mediump vec4 v_uv;
+	varying highp vec3 v_wn;
+	varying highp vec3 v_wvpp;
+
+	const highp float PI = 3.14159265358979;
+}
+
+vs def
+{
+	void main(){
+		v_uv = in_uv;
+		v_wvpp = in_pos;
+		highp vec4 wvp = invpmat * vec4( v_wvpp, 1.0);// wvp.xyz /= wvp.w;
+		v_wn = invvmat3 * normalize( wvp.xyz * vec3( 1.0, -1.0, 1.0));
+		gl_Position = vec4( in_pos, 1.0);
+	}
+}
+
+fs decal
+{
+	void main(){
+		mediump vec4 pix = color;
+		$(COLORTEX1) pix *= texture2D( coltex1 , v_uv.xy);
+		$(COLORTEX2) pix *= texture2D( coltex2 , v_uv.xy);
+		pix = vec4( toLinear( pix.xyz), pix.w);
+		FRAGOUT
+	}
+}
+
+fs skybox
+{
+	void main(){
+		mediump vec4 pix = textureLod( ibltex, v_wn, 0.0) * vec4( dirlit[2].y * dirlit[3].xyz, 1.0);
+		FRAGOUT
+	}
+}
+
+fs tex_srgb
+{
+	void main(){
+		highp vec3 wn = normalize( v_wn);
+		highp float th = atan( wn.z, wn.x);
+		highp float ph = acos( clamp( wn.y, -1.0, 1.0));
+		highp vec2 uv = vec2( (th+PI) / (2.0*PI), 1.0-ph / PI);
+		mediump vec4 pix = textureLod( coltex1, uv, 0.0);// * vec4( dirlit[2].yyy, 1.0);
+		pix.xyz = toLinear( pix.xyz);	//	texture = sRGB
+		FRAGOUT
+	}
+}
+
+/////////////////// renderpass variations ///////////////////////
+
+param fragout_forward
+{
+	fragout mediump vec4 fragcolor;
+}
+
+param fragout_deferred
+{
+	fragout lowp vec4 frag0;
+	fragout highp uint frag1;
+	fragout highp uint frag2;
+}
+
+////////
+
+define decalout_legacy
+{
+	#define FRAGOUT fragcolor = vec4( toSRGB( clamp( pix.xyz, 0.0, 1.0)), pix.w);
+}
+
+define decalout_pbrforward
+{
+	#define FRAGOUT fragcolor = vec4( tonemap_inv( pix.xyz), pix.w);
+}
+
+define decalout_deferred
+{
+	#define FRAGOUT pix.xyz = tonemap_inv( pix.xyz); mediump float v = max( pix.x, max( pix.y, pix.z))+0.001; \
+		frag0 = vec4( pix.xyz/v, pix.w); frag1 = uint( (1<<29)|(63<<23)|((1024)|(1024<<11)|(1<<22))); frag2 = floatBitsToUint( v);
+}
+
+define pbrout_legacy
+{
+	#define FRAGOUT fragcolor = vec4( toSRGB( clamp( tonemap( pix.xyz), 0.0, 1.0)), pix.w);
+}
+
+define pbrout_pbrforward
+{
+	#define FRAGOUT fragcolor = pix;
+}
+
+define pbrout_deferred
+{
+	#define FRAGOUT mediump float v = max( pix.x, max( pix.y, pix.z))+0.001; \
+		frag0 = vec4( pix.xyz/v, pix.w); frag1 = uint( (1<<29)|(63<<23)|((1024)|(1024<<11)|(1<<22))); frag2 = floatBitsToUint( v);
+}
+
+// define pbrout_deferred_select ??
+// {
+// 	#define FRAGOUT mediump float v = max( pix.x, max( pix.y, pix.z))+0.001; \
+// 		frag0 = vec4( pix.xyz/v, pix.w); frag1 = (1<<29)|(1<<28)|((1024)|(1024<<11)|(1<<22)); frag2 = floatBitsToUint( v);
+// }
+
+/////////////////////////////////////////////////////////////////
+
+technique decal
+{
+	apilevel = 20;
+	tag = "bg";
+	
+	//	legacy pass | forward+tonemap pass = direct pass (default)
+	pass {
+		using colorspace, tonemapping, fragout_forward, decalout_legacy;
+		
+		passfilter = 511;
+		param = def;
+		vs = def;
+		fs = decal;
+	}
+	
+	//	pbr forward pass
+	pass {
+		using colorspace, tonemapping, fragout_forward, decalout_pbrforward;
+		
+		passfilter = 512;
+		param = def;
+		vs = def;
+		fs = decal;
+	}
+	
+	//	pbr deferred pass
+	pass {
+		apilevel = 30;
+		using colorspace, tonemapping, fragout_deferred, decalout_deferred;
+		
+		passfilter = 1024;
+		param = def;
+		vs = def;
+		fs = decal;
+	}
+}
+
+/////////////////////////////////////////////////////////////////
+
+technique skybox
+{
+	apilevel = 20;
+	tag = "bg";
+	
+	//	legacy pass
+	pass {
+		using colorspace, tonemapping, fragout_forward, decalout_legacy;
+		
+		passfilter = 255;
+		param = def;
+		vs = def;
+		fs = decal;
+	}
+	
+	//	forward+tonemap pass = direct pass (default)
+	pass {
+		apilevel = 30;
+		using colorspace, tonemapping, fragout_forward, pbrout_legacy;
+		
+		passfilter = 256;
+		param = def;
+		vs = def;
+		fs = skybox;
+	}
+
+	//	pbr forward pass
+	pass {
+		apilevel = 30;
+		using colorspace, tonemapping, fragout_forward, pbrout_pbrforward;
+		
+		passfilter = 512;
+		param = def;
+		vs = def;
+		fs = skybox;
+	}
+	
+	//	pbr deferred pass
+	pass {
+		apilevel = 30;
+		using g, colorspace, tonemapping, fragout_deferred, pbrout_deferred;
+		
+		passfilter = 1024;
+		param = def;
+		vs = def;
+		fs = skybox;
+	}
+}
+
+
+/////////////////////////////////////////////////////////////////
+
+technique tex_srgb
+{
+	apilevel = 20;
+	tag = "bg";
+	
+	//	legacy pass
+	pass {
+		using colorspace, tonemapping, fragout_forward, decalout_legacy;
+		
+		passfilter = 255;
+		param = def;
+		vs = def;
+		fs = tex_srgb;
+	}
+	
+	//	forward+tonemap pass = direct pass (default)
+	pass {
+		apilevel = 30;
+		using colorspace, tonemapping, fragout_forward, pbrout_legacy;
+		
+		passfilter = 256;
+		param = def;
+		vs = def;
+		fs = tex_srgb;
+	}
+
+	//	pbr forward pass
+	pass {
+		apilevel = 30;
+		using colorspace, tonemapping, fragout_forward, pbrout_pbrforward;
+		
+		passfilter = 512;
+		param = def;
+		vs = def;
+		fs = tex_srgb;
+	}
+	
+	//	pbr deferred pass
+	pass {
+		apilevel = 30;
+		using g, colorspace, tonemapping, fragout_deferred, pbrout_deferred;
+		
+		passfilter = 1024;
+		param = def;
+		vs = def;
+		fs = tex_srgb;
+	}
+}

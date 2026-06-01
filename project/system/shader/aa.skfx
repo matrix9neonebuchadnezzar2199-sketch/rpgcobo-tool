@@ -1,0 +1,701 @@
+declare aa;
+
+
+//////////////////////////////////////////////////////////////////////
+//	fxaa
+
+param fxaa
+{
+	attribute mediump vec4 in_pos <ID=POSITION>;
+	attribute mediump vec4 in_uv <id=UV1>;
+
+	uniform mediump sampler2D coltex1 <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=LINEAR, MAG_FILTER=LINEAR>;
+	uniform highp vec2 color1scale <id=COLORTEX1_PIX>;
+	
+	varying highp vec4 v_uv;
+	varying highp vec4 v_zw1;
+	varying highp vec4 v_zw2;
+
+	fragout lowp vec4 fragcolor;
+}
+
+vs fxaa
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv;
+		
+		highp vec2 zw = in_uv.xy - color1scale*(0.75);
+		v_zw1 = vec4( zw, zw+vec2(color1scale.x,0));
+		v_zw2 = vec4( zw+vec2(0,color1scale.y), zw+color1scale);
+	}
+}
+
+fs fxaa
+{
+	void main(){
+		const mediump vec2 FXAA_SPAN_MAX = vec2( 8.0, 8.0);
+		const mediump float FXAA_REDUCE_MIN = 1.0/128.0;
+		const lowp vec3 luma = vec3( 0.299, 0.587, 0.114);
+		
+		mediump vec2 rcpFrame = color1scale;
+		lowp vec3 rgbNW = texture2D( coltex1, v_zw1.xy).xyz;
+		lowp vec3 rgbNE = texture2D( coltex1, v_zw1.zw).xyz;
+		lowp vec3 rgbSW = texture2D( coltex1, v_zw2.xy).xyz;
+		lowp vec3 rgbSE = texture2D( coltex1, v_zw2.zw).xyz;
+		lowp vec3 rgbM  = texture2D( coltex1, v_uv.xy).xyz;
+		
+		lowp float lumaNW = dot( rgbNW, luma);
+		lowp float lumaNE = dot( rgbNE, luma);
+		lowp float lumaSW = dot( rgbSW, luma);
+		lowp float lumaSE = dot( rgbSE, luma);
+		lowp float lumaM  = dot( rgbM,  luma);
+		
+		lowp float lumaMin = min( lumaM, min( min( lumaNW, lumaNE), min( lumaSW, lumaSE)));
+		lowp float lumaMax = max( lumaM, max( max( lumaNW, lumaNE), max( lumaSW, lumaSE)));
+		
+		mediump vec2 dir = vec2( -((lumaNW + lumaNE) - (lumaSW + lumaSE)), ((lumaNW + lumaSW) - (lumaNE + lumaSE)) );
+		
+		mediump float dirReduce = max( (lumaNW + lumaNE + lumaSW + lumaSE) * (0.25 * 0.125), FXAA_REDUCE_MIN);
+		mediump float rcpDirMin = 1.0/(min(abs(dir.x), abs(dir.y)) + dirReduce);
+		dir = min( FXAA_SPAN_MAX, max( -FXAA_SPAN_MAX, dir * rcpDirMin)) * rcpFrame;
+		
+		lowp vec3 rgbA = 0.5 * ( texture2D( coltex1, v_uv.xy + dir * (1.0/3.0 - 0.5)).xyz + texture2D( coltex1, v_uv.xy + dir * (2.0/3.0 - 0.5)).xyz );
+		lowp vec3 rgbB = rgbA * 0.5 + 0.25 * ( texture2D( coltex1, v_uv.xy + dir * (0.0 - 0.5)).xyz + texture2D( coltex1, v_uv.xy + dir * (1.0 - 0.5)).xyz );
+		lowp float lumaB = dot( rgbB, luma);
+		lowp vec3 rgb = rgbB;
+		if( (lumaB < lumaMin) || (lumaB > lumaMax)) rgb = rgbA;
+		fragcolor = vec4( rgb, 1.0);
+	}
+}
+ 
+technique fxaa
+{
+	pass {
+		CULLFACE = OFF;
+		
+		param = fxaa;
+		vs = fxaa;
+		fs = fxaa;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+//	smaa
+
+param smaa_edge
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	uniform sampler2D coltex1 <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP>;
+	uniform highp vec2 color1scale <id=COLORTEX1_PIX>;
+	
+	varying highp vec2 v_uv;
+	varying highp vec4 v_uv12;
+	varying highp vec4 v_uv34;
+	varying highp vec4 v_uv56;
+	
+	fragout lowp vec4 fragcolor;
+}
+
+vs smaa_edge
+{
+	void main(){
+		v_uv = in_uv;
+		v_uv12 = (color1scale.xyxy * vec4(-1.0, 0.0, 0.0, -1.0)) + in_uv.xyxy;
+		v_uv34 = (color1scale.xyxy * vec4( 1.0, 0.0, 0.0,  1.0)) + in_uv.xyxy;
+		v_uv56 = (color1scale.xyxy * vec4(-2.0, 0.0, 0.0, -2.0)) + in_uv.xyxy;
+		gl_Position = in_pos;
+	}
+}
+
+fs smaa_edge
+{
+	void main(){
+		#define SMAA_THRESHOLD 0.1
+		#define SMAA_LOCAL_CONTRAST_ADAPTATION_FACTOR 2.0
+		
+		const vec2 threshold = vec2( SMAA_THRESHOLD);
+		
+		// Calculate lumas:
+		lowp vec3 weights = vec3(0.2126, 0.7152, 0.0722);
+		lowp float L = dot( texture2D( coltex1, v_uv).xyz, weights);
+		lowp float Lleft = dot( texture2D( coltex1, v_uv12.xy).xyz, weights);
+		lowp float Ltop  = dot( texture2D( coltex1, v_uv12.zw).xyz, weights);
+		
+		// We do the usual threshold:
+		lowp vec4 delta;
+		delta.xy = abs( L-vec2(Lleft, Ltop));
+		lowp vec2 edges = step( threshold, delta.xy);
+		
+		// Then discard if there is no edge:
+		if( dot( edges, vec2(1.0, 1.0)) == 0.0) discard;	//	do not write Z
+		
+		// Calculate right and bottom deltas:
+		lowp float Lright   = dot( texture2D( coltex1, v_uv34.xy).xyz, weights);
+		lowp float Lbottom  = dot( texture2D( coltex1, v_uv34.zw).xyz, weights);
+		delta.zw = abs( L - vec2(Lright, Lbottom));
+		
+		// Calculate the maximum delta in the direct neighborhood:
+		lowp vec2 maxDelta = max(delta.xy, delta.zw);
+		
+		// Calculate left-left and top-top deltas:
+		lowp float Lleftleft = dot( texture2D( coltex1, v_uv56.xy).xyz, weights);
+		lowp float Ltoptop   = dot( texture2D( coltex1, v_uv56.zw).xyz, weights);
+		delta.zw = abs( vec2( Lleft, Ltop) - vec2( Lleftleft, Ltoptop));
+		
+		// Calculate the final maximum delta:
+		maxDelta = max( maxDelta.xy, delta.zw);
+		lowp float finalDelta = max( maxDelta.x, maxDelta.y);
+		
+		// Local contrast adaptation:
+		edges.xy *= step( finalDelta, SMAA_LOCAL_CONTRAST_ADAPTATION_FACTOR * delta.xy);
+		
+		fragcolor = vec4( edges, 0.0, 1.0);
+	}
+}
+
+param smaa_weights
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	uniform sampler2D edgetex <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP>;
+	uniform highp vec2 edgescale <id=COLORTEX1_PIX>;
+	
+	uniform sampler2D areatex <id=COLORTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP>;
+	uniform sampler2D searchtex <id=COLORTEX3, WRAP_S=CLAMP, WRAP_T=CLAMP>;
+	
+	varying highp vec2 v_uv;
+	varying highp vec4 v_pixuv;
+	varying highp vec2 v_uv12;
+	varying highp vec2 v_uv34;
+	varying highp vec2 v_uv56;
+	
+	fragout lowp vec4 fragcolor;
+}
+
+define smaa_weights
+{
+	//	SMAA_PRESET_HIGH
+	#define SMAA_MAX_SEARCH_STEPS 16
+	#define SMAA_MAX_SEARCH_STEPS_DIAG 8
+	#define SMAA_DISABLE_DIAG_DETECTION 0
+	#define SMAA_AREATEX_MAX_DISTANCE_DIAG 20
+	#define SMAA_DISABLE_CORNER_DETECTION 0
+	#define SMAA_CORNER_ROUNDING 25
+	
+	#define SMAA_AREATEX_MAX_DISTANCE 16
+	#define SMAA_AREATEX_MAX_DISTANCE_DIAG 20
+	#define SMAA_AREATEX_PIXEL_SIZE (1.0 / vec2(160.0, 560.0))
+	#define SMAA_AREATEX_SUBTEX_SIZE (1.0 / 7.0)
+	#define SMAA_SEARCHTEX_SIZE vec2(66.0, 33.0)
+	#define SMAA_SEARCHTEX_PACKED_SIZE vec2(64.0, 16.0)
+	#define SMAA_CORNER_ROUNDING_NORM (float(SMAA_CORNER_ROUNDING) / 100.0)
+	
+	#define SMAA_AREATEX_SELECT(sample) sample.xy
+	#define SMAA_SEARCHTEX_SELECT(sample) sample.x
+	
+	#define SMAARound(v) floor((v) + .5)
+	#define SMAAOffset(x,y) vec2(x,y)
+	#define SMAASampleLevelZeroOffset(tex, coord, offset) texture2D(tex, coord + offset * edgescale.xy)
+}
+
+vs smaa_weights
+{
+	void main(){
+		v_uv = in_uv;
+		v_pixuv = in_uv / edgescale.xy;
+		v_uv12 = (edgescale.xyxy * vec4(-0.25, -0.125,  1.25, -0.125)) + in_uv.xyxy;
+		v_uv34 = (edgescale.xyxy * vec4(-0.125, -0.25, -0.125,  1.25)) + in_uv.xyxy;
+		v_uv56 = edgescale.xxyy * (vec4(-2.0, 2.0, -2.0, 2.0) * float( SMAA_MAX_SEARCH_STEPS)) + vec4(v_uv12.xz, v_uv34.yw);
+		gl_Position = in_pos;
+	}
+}
+
+fs smaa_weights
+{
+	lowp vec2 SMAAMovc2( lowp vec2 condw, lowp vec2 variable, lowp vec2 value) {
+		return lerp( variable, value, condw);
+	}
+	
+	mediump vec2 SMAADecodeDiagBilinearAccess2( mediump vec2 e) {
+		e.x = e.x * abs( 5.0 * e.x - 5.0 * 0.75);
+		return SMAARound( e);
+	}
+	
+	mediump vec4 SMAADecodeDiagBilinearAccess4( mediump vec4 e) {
+		e.xz = e.xz * abs(5.0 * e.xz - 5.0 * 0.75);
+		return SMAARound( e);
+	}
+	
+	mediump vec2 SMAASearchDiag1( sampler2D edgesTex, mediump vec2 texcoord, mediump vec2 dir, out mediump vec2 e) {
+		mediump vec4 coord = vec4(texcoord, -1.0, 1.0);
+		mediump vec3 t = vec3( edgescale.xy, 1.0);
+		for (int i = 0; i < SMAA_MAX_SEARCH_STEPS; i++) {
+			if (!(coord.z < float(SMAA_MAX_SEARCH_STEPS_DIAG - 1) && coord.w > 0.9)) break;
+			coord.xyz = t * vec3(dir, 1.0) + coord.xyz;
+			e = texture2D(edgesTex, coord.xy).xy; // LinearSampler
+			coord.w = dot(e, vec2(0.5, 0.5));
+		}
+		return coord.zw;
+	}
+		
+	mediump vec2 SMAASearchDiag2( sampler2D edgesTex, mediump vec2 texcoord, mediump vec2 dir, out mediump vec2 e) {
+		mediump vec4 coord = vec4(texcoord, -1.0, 1.0);
+		coord.x += 0.25 * edgescale.x; // See @SearchDiag2Optimization
+		mediump vec3 t = vec3( edgescale.xy, 1.0);
+		for (int i = 0; i < SMAA_MAX_SEARCH_STEPS; i++) {
+			if (!(coord.z < float( SMAA_MAX_SEARCH_STEPS_DIAG - 1) && coord.w > 0.9)) break;
+			coord.xyz = t * vec3(dir, 1.0) + coord.xyz;
+			e = texture2D(edgesTex, coord.xy).xy; // LinearSampler
+			e = SMAADecodeDiagBilinearAccess2( e);
+			coord.w = dot( e, vec2(0.5));
+		}
+		return coord.zw;
+	}
+	
+	mediump vec2 SMAAAreaDiag( sampler2D areaTex, mediump vec2 dist, mediump vec2 e, mediump float offset) {
+		mediump vec2 texcoord = vec2(SMAA_AREATEX_MAX_DISTANCE_DIAG) * e + dist;
+		texcoord = SMAA_AREATEX_PIXEL_SIZE * texcoord + 0.5 * SMAA_AREATEX_PIXEL_SIZE;
+		texcoord.x += 0.5;
+		texcoord.y += SMAA_AREATEX_SUBTEX_SIZE * offset;
+		return SMAA_AREATEX_SELECT( texture2D( areaTex, texcoord)); // LinearSampler
+	}
+	
+	mediump vec2 SMAACalculateDiagWeights( sampler2D edgesTex, sampler2D areaTex, mediump vec2 texcoord, mediump vec2 e, mediump vec4 subsampleIndices) {
+		mediump vec2 weights = vec2(0.0, 0.0);
+		// Search for the line ends:
+		mediump vec4 d;
+		mediump vec2 end;
+		if (e.x > 0.0) {
+			d.xz = SMAASearchDiag1(edgesTex, texcoord, vec2(-1.0,  1.0), end);
+			d.x += float(end.y > 0.9);
+		} else
+			d.xz = vec2(0.0, 0.0);
+			d.yw = SMAASearchDiag1(edgesTex, texcoord, vec2(1.0, -1.0), end);
+			if (d.x + d.y > 2.0) { // d.x + d.y + 1 > 3
+			vec4 coords = vec4(-d.x + 0.25, d.x, d.y, -d.y - 0.25) * edgescale.xyxy + texcoord.xyxy;
+			vec4 c;
+			c.xy = SMAASampleLevelZeroOffset(edgesTex, coords.xy, SMAAOffset(-1,  0)).xy;
+			c.zw = SMAASampleLevelZeroOffset(edgesTex, coords.zw, SMAAOffset( 1,  0)).xy;
+			c.yxwz = SMAADecodeDiagBilinearAccess4(c.xyzw);
+			mediump vec2 cc = vec2(2.0, 2.0) * c.xz + c.yw;
+			cc = SMAAMovc2( step(0.9, d.zw), cc, vec2(0.0, 0.0));
+			weights += SMAAAreaDiag(areaTex, d.xy, cc, subsampleIndices.z);
+		}
+		d.xz = SMAASearchDiag2(edgesTex, texcoord, vec2(-1.0, -1.0), end);
+		if (SMAASampleLevelZeroOffset(edgesTex, texcoord, SMAAOffset(1, 0)).x > 0.0) {
+			d.yw = SMAASearchDiag2(edgesTex, texcoord, vec2(1.0, 1.0), end);
+			d.y += float(end.y > 0.9);
+		} else {
+			d.yw = vec2(0.0, 0.0);
+		}
+		if (d.x + d.y > 2.0) { // d.x + d.y + 1 > 3
+			mediump vec4 coords = vec4(-d.x, -d.x, d.y, d.y) * edgescale.xyxy, texcoord.xyxy);
+			mediump vec4 c;
+			c.x  = SMAASampleLevelZeroOffset(edgesTex, coords.xy, SMAAOffset(-1,  0)).y;
+			c.y  = SMAASampleLevelZeroOffset(edgesTex, coords.xy, SMAAOffset( 0, -1)).x;
+			c.zw = SMAASampleLevelZeroOffset(edgesTex, coords.zw, SMAAOffset( 1,  0)).yx;
+			mediump vec2 cc = vec2(2.0, 2.0) * c.xz + c.yw;
+			cc = SMAAMovc2( step(0.9, d.zw), cc, vec2(0.0, 0.0));
+			weights += SMAAAreaDiag(areaTex, d.xy, cc, subsampleIndices.w).yx;
+		}
+		return weights;
+	}
+	
+	mediump float SMAASearchLength( sampler2D searchTex, mediump vec2 e, mediump float offset) {
+		mediump vec2 scale = SMAA_SEARCHTEX_SIZE * vec2(0.5, -1.0);
+		mediump vec2 bias = SMAA_SEARCHTEX_SIZE * vec2(offset, 1.0);
+		scale += vec2(-1.0,  1.0);
+		bias  += vec2( 0.5, -0.5);
+		scale *= 1.0 / SMAA_SEARCHTEX_PACKED_SIZE;
+		bias *= 1.0 / SMAA_SEARCHTEX_PACKED_SIZE;
+		return SMAA_SEARCHTEX_SELECT(texture2D(searchTex, (scale * e + bias))); // LinearSampler
+	}
+	
+	mediump float SMAASearchXLeft(sampler2D edgesTex, sampler2D searchTex, mediump vec2 texcoord, mediump float end) {
+		mediump vec2 e = vec2(0.0, 1.0);
+		for( int i = 0; i < SMAA_MAX_SEARCH_STEPS; i++) {
+			if (!(texcoord.x > end && e.y > 0.8281 && e.x == 0.0)) break;
+			e = texture2D(edgesTex, texcoord).xy; // LinearSampler
+			texcoord = -vec2(2.0, 0.0) * edgescale.xy + texcoord;
+		}
+		float offset = -(255.0 / 127.0) * SMAASearchLength(searchTex, e, 0.0) + 3.25;
+		return edgescale.x * offset + texcoord.x;
+	}
+	
+	mediump float SMAASearchXRight(sampler2D edgesTex, sampler2D searchTex, mediump vec2 texcoord, mediump float end) {
+		mediump vec2 e = vec2(0.0, 1.0);
+		for (int i = 0; i < SMAA_MAX_SEARCH_STEPS; i++) {
+			if (!(texcoord.x < end && e.y > 0.8281 && e.x == 0.0)) break;
+			e = texture2D(edgesTex, texcoord).xy; // LinearSampler
+			texcoord = vec2(2.0, 0.0) * edgescale.xy + texcoord;
+		}
+		float offset = -(255.0 / 127.0) * SMAASearchLength(searchTex, e, 0.5) + 3.25;
+		return -edgescale.x * offset + texcoord.x;
+	}
+	
+	mediump float SMAASearchYUp(sampler2D edgesTex, sampler2D searchTex, mediump vec2 texcoord, mediump float end) {
+		mediump vec2 e = vec2(1.0, 0.0);
+		for (int i = 0; i < SMAA_MAX_SEARCH_STEPS; i++) {
+			if (!(texcoord.y > end && e.x > 0.8281 && e.y == 0.0)) break;
+			e = texture2D(edgesTex, texcoord).xy; // LinearSampler
+			texcoord = -vec2(0.0, 2.0) * edgescale.xy + texcoord;
+		}
+		float offset = -(255.0 / 127.0) * SMAASearchLength(searchTex, e.yx, 0.0) + 3.25;
+		return edgescale.y * offset + texcoord.y;
+	}
+	
+	mediump float SMAASearchYDown(sampler2D edgesTex, sampler2D searchTex, mediump vec2 texcoord, mediump float end) {
+		mediump vec2 e = vec2(1.0, 0.0);
+		for (int i = 0; i < SMAA_MAX_SEARCH_STEPS; i++) {
+			if (!(texcoord.y < end && e.x > 0.8281 && e.y == 0.0)) break;
+			e = texture2D(edgesTex, texcoord).xy; // LinearSampler
+			texcoord = vec2(0.0, 2.0) * edgescale.xy + texcoord;
+		}
+		float offset = -(255.0 / 127.0) * SMAASearchLength(searchTex, e.yx, 0.5) + 3.25;
+		return -edgescale.y * offset + texcoord.y;
+	}
+	
+	mediump vec2 SMAAArea(sampler2D areaTex, mediump vec2 dist, mediump float e1, mediump float e2, mediump float offset) {
+		vec2 texcoord = vec2(SMAA_AREATEX_MAX_DISTANCE, SMAA_AREATEX_MAX_DISTANCE) * SMAARound(4.0 * vec2(e1, e2)) + dist;
+		texcoord = SMAA_AREATEX_PIXEL_SIZE * texcoord + 0.5 * SMAA_AREATEX_PIXEL_SIZE;
+		texcoord.y = SMAA_AREATEX_SUBTEX_SIZE * offset + texcoord.y;
+		return SMAA_AREATEX_SELECT( texture2D( areaTex, texcoord)); // LinearSampler
+	}
+	
+	void SMAADetectHorizontalCornerPattern(sampler2D edgesTex, inout lowp vec2 weights, mediump vec4 texcoord, mediump vec2 d) {
+#if !SMAA_DISABLE_CORNER_DETECTION
+		mediump vec2 leftRight = step(d.xy, d.yx);
+		mediump vec2 rounding = (1.0 - SMAA_CORNER_ROUNDING_NORM) * leftRight;
+		rounding /= leftRight.x + leftRight.y; // Reduce blending for pixels in the center of a line.
+		mediump vec2 factor = vec2(1.0, 1.0);
+		factor.x -= rounding.x * SMAASampleLevelZeroOffset(edgesTex, texcoord.xy, SMAAOffset(0,  1)).x;
+		factor.x -= rounding.y * SMAASampleLevelZeroOffset(edgesTex, texcoord.zw, SMAAOffset(1,  1)).x;
+		factor.y -= rounding.x * SMAASampleLevelZeroOffset(edgesTex, texcoord.xy, SMAAOffset(0, -2)).x;
+		factor.y -= rounding.y * SMAASampleLevelZeroOffset(edgesTex, texcoord.zw, SMAAOffset(1, -2)).x;
+		weights *= clamp(factor,vec2(0.0),vec2(1.0));
+#endif
+	}
+	
+	void SMAADetectVerticalCornerPattern( sampler2D edgesTex, inout lowp vec2 weights, mediump vec4 texcoord, mediump vec2 d) {
+#if !SMAA_DISABLE_CORNER_DETECTION
+		mediump vec2 leftRight = step(d.xy, d.yx);
+		mediump vec2 rounding = (1.0 - SMAA_CORNER_ROUNDING_NORM) * leftRight;
+		rounding /= leftRight.x + leftRight.y;
+		mediump vec2 factor = vec2(1.0, 1.0);
+		factor.x -= rounding.x * SMAASampleLevelZeroOffset(edgesTex, texcoord.xy, SMAAOffset( 1, 0)).y;
+		factor.x -= rounding.y * SMAASampleLevelZeroOffset(edgesTex, texcoord.zw, SMAAOffset( 1, 1)).y;
+		factor.y -= rounding.x * SMAASampleLevelZeroOffset(edgesTex, texcoord.xy, SMAAOffset(-2, 0)).y;
+		factor.y -= rounding.y * SMAASampleLevelZeroOffset(edgesTex, texcoord.zw, SMAAOffset(-2, 1)).y;
+		weights *= clamp(factor,vec2(0.0),vec2(1.0));
+#endif
+	}
+	
+	void main(){
+		mediump vec4 subsampleIndices = vec4(0.0); // Just pass zero for SMAA 1x, see @SUBSAMPLE_INDICES.
+		mediump vec4 weights = vec4(0.0);
+		mediump vec2 e = texture2D( edgetex, v_uv).xy;
+		if(e.y > 0.0) { // Edge at north
+#if !SMAA_DISABLE_DIAG_DETECTION
+			weights.xy = SMAACalculateDiagWeights( edgetex, areatex, v_uv, e, subsampleIndices);
+			if( weights.x == -weights.y) { // weights.x + weights.y == 0.0
+#endif
+				mediump vec2 d;
+				mediump vec3 coords;
+				coords.x = SMAASearchXLeft( edgetex, searchtex, v_uv12.xy, v_uv56.x);
+				coords.y = v_uv34.y; // vOffset[1].y = v_uv.y - 0.25 * SMAA_RT_METRICS.y (@CROSSING_OFFSET)
+				d.x = coords.x;
+				mediump float e1 = texture2D( edgetex, coords.xy).x; // LinearSampler
+				coords.z = SMAASearchXRight( edgetex, searchtex, v_uv12.zw, v_uv56.y);
+				d.y = coords.z;
+				d = abs( SMAARound( edgescale.zz * d - v_pixuv.xx));
+				mediump vec2 sqrt_d = sqrt( d);
+				mediump float e2 = SMAASampleLevelZeroOffset( edgetex, coords.zy, SMAAOffset(1, 0)).x;
+				weights.xy = SMAAArea( areatex, sqrt_d, e1, e2, subsampleIndices.y);
+				coords.y = v_uv.y;
+				SMAADetectHorizontalCornerPattern( edgetex, weights.xy, coords.xyzy, d);
+#if !SMAA_DISABLE_DIAG_DETECTION
+			} else
+				e.x = 0.0; // Skip vertical processing.
+#endif
+		}
+		if (e.x > 0.0) { // Edge at west
+			mediump vec2 d;
+			mediump vec3 coords;
+			coords.y = SMAASearchYUp( edgetex, searchtex, v_uv34.xy, v_uv56.z);
+			coords.x = v_uv12.x; // vOffset[1].x = v_uv.x - 0.25 * edgescale.x;
+			d.x = coords.y;
+			mediump float e1 = texture2D( edgetex, coords.xy).y; // LinearSampler
+			coords.z = SMAASearchYDown( edgetex, searchtex, v_uv34.zw, v_uv56.w);
+			d.y = coords.z;
+			d = abs( SMAARound( edgescale.ww * d - v_pixuv.yy));
+			mediump vec2 sqrt_d = sqrt( d);
+			mediump float e2 = SMAASampleLevelZeroOffset( edgetex, coords.xz, SMAAOffset(0, 1)).y;
+			weights.zw = SMAAArea( areatex, sqrt_d, e1, e2, subsampleIndices.x);
+			coords.x = v_uv.x;
+			SMAADetectVerticalCornerPattern( edgetex, weights.zw, coords.xyxz, d);
+		}
+		gl_FragColor = weights;
+	}
+}
+
+param smaa_blend
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	uniform sampler2D coltex1 <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP>;
+	uniform sampler2D blendtex <id=COLORTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP>;
+	uniform highp vec2 color1scale <id=COLORTEX1_PIX>;
+	
+	varying highp vec2 v_uv;
+	varying highp vec4 v_uv12;
+	
+	fragout lowp vec4 fragcolor;
+}
+
+vs smaa_blend
+{
+	void main(){
+		v_uv   = in_uv;
+		v_uv12 = (color1scale.xyxy * vec4( 1.0, 0.0, 0.0, 1.0)) + in_uv.xyxy;
+		gl_Position = in_pos;
+	}
+}
+
+fs smaa_blend
+{
+	mediump vec2 SMAAMovc2( mediump vec2 condw, mediump vec2 variable, mediump vec2 value) {
+		return lerp( variable, value, condw);
+	}
+	
+	mediump vec4 SMAAMovc4( mediump vec4 condw, mediump vec4 variable, mediump vec4 value) {
+		return lerp( variable, value, condw);
+	}
+	
+	void main(){
+		lowp vec4 pix;
+		// Fetch the blending weights for current pixel:
+		lowp vec4 a;
+		a.x = texture2D( blendtex, v_uv12.xy).w; // Right
+		a.y = texture2D( blendtex, v_uv12.zw).y; // Top
+		a.wz = texture2D( blendtex, v_uv).xz; // Bottom / Left
+		// Is there any blending weight with a value greater than 0.0?
+		if (dot( a, vec4(1.0)) <= 1e-5) {
+			pix = texture2D( coltex1, v_uv); // LinearSampler
+		} else {
+			mediump float h = float( max(a.x, a.z) > max(a.y, a.w)); // max(horizontal) > max(vertical) ? 1 : 0
+			mediump vec4 blendingOffset = vec4(0.0, a.y, 0.0, a.w);
+			mediump vec2 blendingWeight = a.yw;
+			blendingOffset = SMAAMovc4( vec4(h), blendingOffset, vec4(a.x, 0.0, a.z, 0.0));
+			blendingWeight = SMAAMovc2( vec2(h), blendingWeight, a.xz);
+			blendingWeight /= dot(blendingWeight, vec2(1.0));
+			mediump vec4 blendingCoord = (blendingOffset * vec4(color1scale.xy, -color1scale.xy)) + v_uv.xyxy;
+			pix =  blendingWeight.x * texture2D( coltex1, blendingCoord.xy); // LinearSampler
+			pix += blendingWeight.y * texture2D( coltex1, blendingCoord.zw); // LinearSampler
+		}
+		gl_FragColor = pix;
+	}
+}
+
+technique smaa_edge
+{
+	apilevel = 30;
+	
+	pass {
+		CULLFACE = OFF;
+		param = smaa_edge;
+		vs = smaa_edge;
+		fs = smaa_edge;
+	}
+}
+
+technique smaa_weights
+{
+	apilevel = 30;
+	
+	pass {
+		CULLFACE = OFF;
+		param = smaa_weights;
+		vs = smaa_weights;
+		fs = smaa_weights;
+	}
+}
+
+technique smaa_blend
+{
+	apilevel = 30;
+	
+	pass {
+		CULLFACE = OFF;
+		param = smaa_blend;
+		vs = smaa_blend;
+		fs = smaa_blend;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//	Snapdragon Game Super Resolution 1
+//	
+//	Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
+//				SPDX-License-Identifier: BSD-3-Clause
+
+param sgsr
+{
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
+	
+	uniform sampler2D ps0 <id=COLORTEX1>;
+	uniform highp mat4 ViewportInfo <id=MISC1MAT>;
+	
+	varying highp vec4 v_uv;
+	
+	fragout lowp vec4 fragcolor;
+
+	const int OperationMode = 1;
+	const float EdgeThreshold = 8.0/255.0;
+	const float EdgeSharpness = 2.0;
+	const vec3 GrayScale = vec3( 0.2125, 0.7154, 0.0721);
+}
+
+vs sgsr
+{
+	void main(){
+		gl_Position = in_pos;
+		v_uv = in_uv;
+	}
+}
+
+fs sgsr
+{
+	float fastLanczos2(float x)
+	{
+		float wA = x-4.0;
+		float wB = x*wA-wA;
+		wA *= wA;
+		return wB*wA;
+	}
+
+	vec2 weightY(float dx, float dy, float c, vec3 data){
+		float std = data.x;
+		vec2 dir = data.yz;
+
+		float edgeDis = ((dx*dir.y)+(dy*dir.x));
+		float x = (((dx*dx)+(dy*dy))+((edgeDis*edgeDis)*((clamp(((c*c)*std),0.0,1.0)*0.7)+-1.0)));
+
+		float w = fastLanczos2(x);
+		return vec2(w, w * c);	
+	}
+
+	vec2 edgeDirection(vec4 left, vec4 right)
+	{
+		vec2 dir;
+		float RxLz = (right.x + (-left.z));
+		float RwLy = (right.w + (-left.y));
+		vec2 delta;
+		delta.x = (RxLz + RwLy);
+		delta.y = (RxLz + (-RwLy));
+		float lengthInv = inversesqrt((delta.x * delta.x+ 3.075740e-05) + (delta.y * delta.y));
+		dir.x = (delta.x * lengthInv);
+		dir.y = (delta.y * lengthInv);
+		return dir;
+	}
+
+	float getLuminance( vec4 color){
+		$(APILV>=31){
+			return color[OperationMode];
+		} : {
+			return dot( color.xyz, GrayScale);
+		}
+	}
+
+	vec4 gatherLuminance( highp vec2 uv){
+		$(APILV>=31){
+			return textureGather( ps0, uv, OperationMode);
+		} : {
+			highp vec3 duv = vec3( ViewportInfo[0].xy, 0.0);
+			return vec4(
+				dot( texture( ps0, uv+duv.zy).xyz, GrayScale),
+				dot( texture( ps0, uv+duv.xy).xyz, GrayScale),
+				dot( texture( ps0, uv+duv.xz).xyz, GrayScale),
+				dot( texture( ps0, uv+duv.zz).xyz, GrayScale)
+			);
+		}
+	}
+
+	void main()
+	{
+		vec4 color = textureLod(ps0,v_uv.xy,0.0);
+		float lumi = getLuminance( color);
+
+		highp vec2 imgCoord = ((v_uv.xy*ViewportInfo[0].zw)+vec2(-0.5,0.5));
+		highp vec2 imgCoordPixel = floor(imgCoord);
+		highp vec2 coord = (imgCoordPixel*ViewportInfo[0].xy);
+		vec2 pl = (imgCoord+(-imgCoordPixel));
+		vec4  left = gatherLuminance( coord);
+
+		float edgeVote = abs(left.z - left.y) + abs(lumi - left.y)  + abs(lumi - left.z) ;
+		if(edgeVote > EdgeThreshold)
+		{
+			coord.x += ViewportInfo[0].x;
+
+			vec4 right = gatherLuminance( coord + vec2(ViewportInfo[0].x, 0.0));
+			vec4 upDown;
+			upDown.xy = gatherLuminance( coord + vec2(0.0,-ViewportInfo[0].y)).wz;
+			upDown.zw = gatherLuminance( coord + vec2(0.0, ViewportInfo[0].y)).yx;
+
+			float mean = (left.y+left.z+right.x+right.w)*0.25;
+			left = left - vec4(mean);
+			right = right - vec4(mean);
+			upDown = upDown - vec4(mean);
+			color.w = lumi - mean;
+
+			float sum = (((((abs(left.x)+abs(left.y))+abs(left.z))+abs(left.w))+(((abs(right.x)+abs(right.y))+abs(right.z))+abs(right.w)))+(((abs(upDown.x)+abs(upDown.y))+abs(upDown.z))+abs(upDown.w)));				
+			float sumMean = 1.014185e+01/sum;
+			float std = (sumMean*sumMean);	
+
+			vec3 data = vec3(std, edgeDirection(left, right));
+			
+			vec2 aWY = weightY(pl.x, pl.y+1.0, upDown.x,data);				
+			aWY += weightY(pl.x-1.0, pl.y+1.0, upDown.y,data);
+			aWY += weightY(pl.x-1.0, pl.y-2.0, upDown.z,data);
+			aWY += weightY(pl.x, pl.y-2.0, upDown.w,data);			
+			aWY += weightY(pl.x+1.0, pl.y-1.0, left.x,data);
+			aWY += weightY(pl.x, pl.y-1.0, left.y,data);
+			aWY += weightY(pl.x, pl.y, left.z,data);
+			aWY += weightY(pl.x+1.0, pl.y, left.w,data);
+			aWY += weightY(pl.x-1.0, pl.y-1.0, right.x,data);
+			aWY += weightY(pl.x-2.0, pl.y-1.0, right.y,data);
+			aWY += weightY(pl.x-2.0, pl.y, right.z,data);
+			aWY += weightY(pl.x-1.0, pl.y, right.w,data);
+
+			float finalY = aWY.y/aWY.x;
+			float maxY = max(max(left.y,left.z),max(right.x,right.w));
+			float minY = min(min(left.y,left.z),min(right.x,right.w));
+			float deltaY = clamp(EdgeSharpness*finalY, minY, maxY) -color.w;			
+			
+			//smooth high contrast input
+			deltaY = clamp(deltaY, -23.0 / 255.0, 23.0 / 255.0);
+
+			color.x = clamp((color.x+deltaY),0.0,1.0);
+			color.y = clamp((color.y+deltaY),0.0,1.0);
+			color.z = clamp((color.z+deltaY),0.0,1.0);
+		}
+
+		fragcolor = color;
+	}
+}
+
+technique sgsr
+{
+	apilevel = 30, 31;
+	
+	pass {
+		CULLFACE = OFF;
+		
+		param = sgsr;
+		vs = sgsr;
+		fs = sgsr;
+	}
+}

@@ -1,0 +1,885 @@
+//***LicenseHere
+
+import VirtualKeyCode;
+import ModifiersMask;
+import PropertyType;
+import RPGPropertyType;
+import SoundID;
+
+local srcdir = dirname( callee().getSourceName());
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	ResEditorSnd : 効果音
+//	
+//	
+//	
+
+local memcacheitems = ["0:Off","1:Short","2:Normal","3:Long","4:Resident",];
+
+local listwavfiles(){
+	local a = [
+		{ lbl="none", val=null, res=null},
+	];
+	foreach( r in ::getResource( "/resource/snd").getList()){
+		if( r.name.endsWith( ".wav") || r.name.endsWith( ".ogg")) a .. { lbl=r.name, val=r.path, res=r};
+	}
+	return a;
+}
+
+//	
+class ResEditorSnd extends EditorViewBase
+{
+	static props = [
+		{ pid="name", lbl="$T.lbl_name", type=LANGSTRING, defval=null }
+		{ pid="tags", lbl="$T.lbl_tags", type=CHECKBITS, list=@( pl) pl.ref.data._env.tags, defval=0 }
+		{ pid="wav", lbl="$T.lbl_file", type=LIST, list=listwavfiles, defval="" }
+		{ pid="gain", lbl="$T.lbl_gain", type=SCALAR, range=(0.1,2.0), q=100, defval=1.0, ui="bar" }
+		{ pid="muteg", lbl="$T.lbl_muteg", type=LIST, list=["-","1","2","3","4","5","6"], defval=0 }
+		{ pid="memcache", lbl="$T.lbl_cache", type=LIST, list=memcacheitems, defval=2 }
+		{ pid="detune", lbl="$T.lbl_detune", type=SCALAR, range=(0.0,1.0), q=100, defval=0.0, ui="bar" }
+		{ pid="src3d", lbl="$T.lbl_3dsound", type=LIST, list=@( pl) pl.ref.data._env.src3ds.map( @( v){
+			return { lbl=v.id, val=v.id, icon=v["disable"]?"\ue7f6":"\ue7f7"}
+		}), defval="3D_OFF" }
+	];
+
+	static inidata = { name = "", tags = 0, gain = 0.8, memcache = 2, detune = 0.0 };
+
+	res = null;				//	Resource : 
+	data = null;			//	::conf.res.chara_vox等のコピー。
+	allitems = null;		//	[] : data内の全アイテム。
+	tagitems = null;		//	タグでフィルターされたアイテム。
+	selitem = null;
+
+	resdirpath = null;		//	project/resource/...
+	
+	//	view
+	sndlist = null;			//	ListBehavior : 
+	proplist = null;		//	PropertyListBehavior : 
+	pager = null;
+	capsmenu = null;
+	preview = null;			//	ResPreview
+	taglist = null;			//	GPUIListView
+
+	reverbmenu = null;		//	MenuBehavior
+	xzcanvas = null;
+
+	//	snd
+	ctx = null;
+	mixer2d = null;
+	mixer3d = null;
+	playings = null;		//	id:s
+	
+	static function setviewfunc( la, v, i){
+		local d = i.data;
+		v.setValue( "sndid", i.id || "");
+		v.setValue( "sndname", d["name"] || "");
+		v.setValue( "wav", d["wav"]?d.wav.substring( d.wav.lastIndexOf( "/")+1):"");
+		local sndid = v.findChild( "sndid");
+		if( length( d["wav"])){
+			sndid.textbox.colormask = -1;
+		}else{
+			sndid.textbox.colormask = 0x666666ff;
+		}
+		local info = d["info"];
+		if( info){
+			local t = info.length/(info.freq/100);
+			v.setValue( "wavtime", sprintf( "%d:%02d", t/100, t%100 ));
+			v.setValue( "wavfmt", sprintf( "%.1f %dch %S", info.freq/1000.0, info.ch, info.format));
+		}else{
+			v.setValue( "wavtime", "");
+			v.setValue( "wavfmt", "");
+		}
+		local tags = la.ref.data._env.tags;
+		local b = d["tags"] || 0;
+		local s = "";
+		for( local l = 0;l < length( tags);l ++){
+			if( b & (1<<l)) s = s..tags[l]["icon"];
+		}
+		v.setValue( "sndtags", s);
+		//
+		v.pickable = false;
+	}
+
+	function init( path){
+		::soundmanager.getConf();
+		op = OperationStack();
+		//	
+		res = ::getResource( path);
+		res.userdata = null;
+		data = deepclone( res.getContent());
+		//
+		sndlist = ListBehavior( findChild( "itemlist"), []);
+		sndlist.setviewfunc = setviewfunc;
+		sndlist.listview.addEventListener( ITEM_EVENT, sndevent);
+		sndlist.listview.addEventListener( ACTION_EVENT, sndevent);
+		sndlist.ref = this;
+		proplist = PropertyListBehavior( findChild( "proplist"));
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.ref = this;
+		pager = PagerBehavior( findChild( "pager"));
+		//
+		taglist = findChild( "taglist");
+		taglist.addEventListener( ACTION_EVENT, tagevent);
+		updateTagList();
+		//
+		playings = {};
+		::soundmanager.checkctx();
+		ctx = ::soundmanager.ctx;
+		mixer2d = ctx.createMixer();
+		mixer2d[SK_SND_SEND] = 0;
+		mixer3d = ctx.createMixer( SK_SND_HRTF3D);
+		mixer2d.connect();
+		mixer3d.connect();
+		addEventListener( ACTION_EVENT, actionevent)
+		//	
+		reverbmenu = MenuBehavior( findChild( "reverbmenu"));
+		reverbmenu.setMenu( ::conf._resource.snd._env.reverbs.map( @( v)({
+			lbl="$T.reverb_"..v.id, id=v.id, icon="\ue049", rb=v,
+		})));
+		xzcanvas = XZCanvas( findChild( "3dpos"), this);
+		//	
+		allitems = [];
+		local caps = data._meta.caps;
+		local pre = Table.indexOf( RPGResource.typemap, res.name);
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "%S%03d", pre, l);
+			allitems .. {id=id, data=data[id]};
+		}
+		capsmenu = findChild( "capsmenu");
+		updateCapsView( caps);
+		pager.setPage( 0);
+		setPage( 0);
+		resdirpath = ::resroot.file.path .. "/resource/snd";
+		//
+		addEventListener( DROPTARGET_EVENT, dndevent);
+	}
+
+	function updateCapsView( caps){
+		pager.setPageNum( caps / 100);
+		capsmenu.setValue( "lbl", "×"..(caps));
+	}
+
+	function changeCaps( caps){
+		data._meta.caps = caps;
+		allitems.resize( caps);
+		local pre = Table.indexOf( RPGResource.typemap, res.name);
+		for( local l = 0;l < caps;l ++){
+			if( !allitems[l]){
+				local id = sprintf( "%S%03d", pre, l);
+				allitems[l] = {id=id, data=data[id]};
+			}
+		}
+		//	TODO はみ出したやつ消せてないけどいいかな？？？？？？
+		updateCapsView( caps);
+	}
+
+	function updateAllItems(){
+		local caps = data._meta.caps;
+		allitems = [];
+		local pre = Table.indexOf( RPGResource.typemap, res.name);
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "%S%03d", pre, l);
+			allitems .. {id=id, data=data[id]};
+		}
+		setPage( pager.page);
+	}
+
+	function setPage( p){
+		local items = allitems.slice( p*100, Math.min( p*100+100, length( allitems)));
+		sndlist.setListItems( items);
+		selectID( items[0]["id"]);
+	}
+
+	function updateTagList(){
+		taglist.setRowCount( length( data._env.tags));
+		foreach( i, v in data._env.tags){
+			local r = taglist.rows[i];
+			r.setValue( "icon", v.icon);
+		}
+	}
+
+	function filterData(){
+		local d = deepclone( data);
+		foreach( i, v in d){
+			if( i[0] == '_') continue;
+			if( !length( v["wav"])){
+				removei;
+			}
+		}
+		return d;
+	}
+
+	function execMenu( m){
+		printf( "%S execMenu %S\n", getclassname( this), encodeJSON( m));
+		switch( m["uid"]){
+		case "menu_file_save":
+			op.markSaved();
+			::skstudio.updateChangeFile( this);
+			local fd = filterData( data);	//	セーブしちゃまずいのはフィルタ
+			res.save( fd);
+			::soundmanager.loadConf();
+			return true;
+		case "menu_edit_undo":
+			op.undo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_redo":
+			op.redo();
+			refresh();
+			::skstudio.updateChangeFile( this);
+			return true;
+		case "menu_edit_copy":
+			copy();
+			return true;
+		case "menu_edit_paste":
+			paste( getClipboard( "snd"));
+			return true;
+		}
+		return false;
+	}
+
+	function refresh(){
+		itemSelected( selitem);
+	}
+
+	function refreshItem( item){
+		local i = sndlist.items.indexOf( item);
+		if( i >= 0) sndlist.refreshIndex( i);
+		xzcanvas.setSourceParamID( item.data.src3d);
+	}
+	
+	function itemSelected( item){
+		if( item){
+			setValue( "itemlbl", sprintf( "$T.lbl_property : %S - %S", item["id"], ::lang( item["data"]["name"])));
+			proplist.bindProperties( props);
+			proplist.setParameters( item.data);
+			if( item.data["src3d"]) xzcanvas.setSourceParamID( item.data.src3d);
+		}
+	}
+
+	function selectID( id){
+		local item = sndlist.items.find( @( v) v.id==id);
+		if( item){
+			selitem = item;
+			sndlist.setSelectedItem( item);
+			local d = item.data;
+			if( !d) d = item.data = data[item.id] <- {};
+			setDefaultProperties( props, d);
+			itemSelected( selitem);
+			sndlist.listview.updateMatrixAll();
+			sndlist.scrollItemToVisible( item);
+		}
+	}
+
+	function sndevent( e){
+		local cmd = e.actioncmd;
+		switch( e.id){
+		case ACTION_PERFORMED:
+			if( cmd["src"]["name"] == "playbtn"){
+				e.consume();
+				newthread().start( playSound, this, cmd.src, cmd.item.id, cmd.item.data, false);
+			}else{
+				selitem = e.actioncmd;
+				sndlist.setSelectedItem( selitem);
+				itemSelected( selitem);
+				if( e.isMouseDown( BUTTON2_MASK)){
+					showItemContextMenu( e);
+				}
+				break;
+			}
+			break;
+		case ITEM_SELECTED:
+			selitem = cmd;
+			local d = cmd.data;
+			if( !d) d = cmd.data = data[cmd.id] <- {};
+			setDefaultProperties( props, d);
+			itemSelected( selitem);
+			break;
+		}
+	}
+
+	function showItemContextMenu( e){
+		local cbdata = getClipboard( "snd");	//	開くたびにクリップボード取得しちゃうけどまーだいじょぶかな
+		local menudata = [
+			{ id="copy", lbl="$T.menu_edit_copy", icon="\ue14d" },
+			{ id="paste", lbl="$T.menu_edit_paste", icon="\ue14f", disable=!cbdata},
+			"-",
+			{ id="update", lbl="$T.lbl_updatesnd", icon="\ue923" },
+			"-",
+			{ id="sort", lbl="$T.lbl_idsort", icon="\ue240"},
+			{ id="dir", lbl="$T.lbl_openresdir", icon="\ue89e"},
+			{ id="import", lbl="$T.lbl_import_file", icon="\ue675"},
+		]
+		local ret = MenuPopup.run( menudata);
+		switch( ret["id"]){
+		case "copy": return copy();
+		case "paste": return paste( cbdata);
+		case "sort": return showIDSortDialog();
+		case "dir": return skOpenURL( "dir://"..resdirpath);
+		case "update": return updateSoundInfo();
+		case "import":
+			local sndpath = skstudio.showFileOpen( { filter=["*.wav","*.ogg","*.mp3","*.m4a","*.flac"], abspath=true, pathgroup="snd" });
+			if( sndpath){
+				local f = FileRef( sndpath);
+				showImportSound( f);
+			}
+			break;
+		}
+	}
+	
+	function copy(){
+		putClipboard( "snd", selitem);
+		printf( "COPY....... %S\n", encodeJSON( selitem, 1));
+	}
+
+	function paste( cbdata){
+		if( cbdata){
+			local item = selitem, resid = selitem.id, d = data[resid], oldd = deepclone( d), self = this;
+			local newd = cbdata.data;
+			local redo = [@(){
+				Table.clear( d);
+				Table.merge( d, newd);
+				self.refreshItem( item);
+			}];
+			local undo = [@(){
+				Table.clear( d);
+				Table.merge( d, oldd);
+				self.refreshItem( item);
+			}];
+			submitOp( redo, undo, null);	//	trk無し
+			refresh();
+		}
+	}
+
+	function showIDSortDialog(){
+		local idmap = DBSortDialog.run( "snd");
+		if( idmap){
+			local self = this;
+			local olddata = clone data, newdata = clone data, d = data;
+			foreach( id0, id1 in idmap){
+				if( olddata[id1]){ newdata[id0] <- olddata[id1]; } else delete newdata[id0];
+			}
+			local redo = [@(){
+				Table.clear( d) ... newdata;
+				self.updateAllItems();
+			}];
+			local undo = [@(){
+				Table.clear( d) ... olddata;
+				self.updateAllItems();
+			}];
+			submitOp( redo, undo, null);
+		}
+	}
+	
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd.cmd != "prop") return;
+		local pid = cmd.prop.pid, val = cmd.val;
+		switch( pid){
+		case "wav":
+			setWavOp( selitem.id, val);
+			break;
+		default:
+			setParamOp( selitem.id, pid, val);
+			break;
+		}
+	}
+
+	//	
+	function setParamOp( resid, pid, val){
+		local self = this;
+		local oldval = data[resid][pid];
+		local redo = [@(){
+			self.data[resid][pid] <- val;
+			self.updateListItemView( resid);
+		}];
+		local undo = [@(){
+			self.data[resid][pid] <- oldval;
+			self.updateListItemView( resid);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+	}
+
+	static fmtstr = [null,"8bit","16bit","adpcm",null,"32bit",null,null,null,null,"oggv"];
+
+	function setWavOp( resid, val){
+		local self = this;
+		local oldval = data[resid]["wav"], oldname = data[resid]["name"];
+		local newname = !length( oldname) && { [::lang.code]=val.substring( val.lastIndexOf( "/")+1, val.lastIndexOf( ".")) };
+		local oldinfo = data[resid]["info"];
+		local wd = ::getResourceContent( val);
+		if( wd instanceof ByteBuffer) wd = VorbisDecoder( wd);
+		//
+		local info = !wd ? null : { freq=wd.freq, ch=wd.ch, format=val.endsWith(".ogg") ? "ogg" : fmtstr[wd.format], length=wd["length"]||wd["pcmlength"]};
+		local redo = [@(){
+			self.data[resid].wav <- val;
+			self.data[resid].info <- info;
+			if( newname) self.data[resid].name <- newname;
+			self.updateListItemView( resid);
+		}];
+		local undo = [@(){
+			self.data[resid].wav <- oldval;
+			self.data[resid].info <- oldinfo;
+			if( newname) self.data[resid].name <- oldname;
+			self.updateListItemView( resid);
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+		refresh();
+	}
+
+	//	
+	function updateListItemView( resid){
+		local i = sndlist.items.findi( @( v) v.id==resid);
+		if( i >= 0) sndlist.refreshIndex( i);
+		xzcanvas.setSourceParamID( sndlist.items[i].data.src3d);
+	}
+
+	//	
+	function playSound( view, id, snd, is3d){
+		local bar = view.findChild( "playbar");
+		if( playings[id]){
+			playings[id].wakeupThrow( "interrupt");
+		}else{
+			local sp = ::soundmanager.createSoundPlayable( snd);
+			if( !sp) return;
+			sp.mixer = is3d ? mixer3d : mixer2d;
+			local s = sp.play(), wd = s.wav;
+			playings[id] <- currentthread();
+			try{
+				while( s.getState() != SK_SND_DONE){
+					local w = Math.saturate( s[SK_SND_PCMTIME] * (1.0 / wd.length)) * 10.0;
+					bar.anime( w);
+					suspend();
+				}
+			}catch( ex){
+				printexception( ex);
+				s.stop();
+			}
+			bar.anime( 0.0);
+			delete playings[id];
+		}
+	}
+
+	//	
+	function updateSoundInfo(){
+		local olddata = data;
+		local newdata = deepclone( data);
+		local changed = false;
+		foreach( i, v in newdata){
+			if( !v["wav"]) continue;
+			local wd = ::getResourceContent( v.wav);
+			if( wd instanceof ByteBuffer) wd = VorbisDecoder( wd);
+			if( wd){
+				local info = { freq=wd.freq, ch=wd.ch, format=v.wav.endsWith(".ogg") ? "ogg" : fmtstr[wd.format], length=wd["length"]||wd["pcmlength"]};
+				v.info = info;
+				if( info <> olddata[i].info){
+					printf( "%S  info changed...\n old: %S\nnew: %S\n", i, encodeJSON( olddata[i].info, 4), encodeJSON( v.info, 4));
+					changed = true;
+				}
+			}
+		}
+		if( !changed) return;
+		local self = this;
+		local redo = [@(){
+			self.data = newdata;
+			self.updateAllItems();
+		}];
+		local undo = [@(){
+			self.data = olddata;
+			self.updateAllItems();
+		}];
+		submitOp( redo, undo, null);	//	trk無し
+		refresh();
+	}
+
+	function tagevent( e){
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "capsmenu":
+			showChangeCaps( e);
+			break;
+		case "pager":
+			setPage( pager.page);
+			break;
+		case "reverbmenu":
+			xzcanvas.setReverbID( e.actioncmd.id);
+			break;
+		}
+	}
+
+	function showChangeCaps( e){
+		local menulist = [], pagenum = pager.pagenum;
+		for( local l = 1;l < 10;l ++){
+			menulist .. { lbl:"$T.lbl_caps: "..(l*100), val:l, icon:(pagenum==l)?"\ue5ca":null};
+		}
+		local ret = MenuPopup.run( menulist);
+		if( ret && ret.val != pagenum){
+			local self = this;
+			local caps = ret.val*100, oldcaps = data._meta.caps;
+			local redo = [@(){
+				self.changeCaps( caps);
+				if( self.pager.page >= self.pager.pagenum){
+					self.pager.setPage( self.pager.pagenum-1);
+					self.setPage( self.pager.page);
+				}
+			}];
+			local undo = [@(){
+				self.changeCaps( oldcaps);
+			}];
+			submitOp( redo, undo, null);
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////////////
+	//	dnd
+
+	function acceptDrag( e){
+		return false;
+	}
+	
+	function isDropable( f){
+		local n = f.name; n = n.substring( n.lastIndexOf( "."+1)).toLowerCase();
+		return (#["wav","ogg","mp3","m4a",]).contains( n);
+	}
+
+	function acceptDrop( ds, x, y){
+		if( ds instanceof FileDragSource){
+			local a = ds.filelist;
+			foreach( f in a){
+				if( isDropable( f)) return true;
+			}
+		}
+		return false;
+	}
+
+	function dndevent( e){
+		switch( e.id){
+		case TARGET_DRAG_ENTER:
+		case TARGET_DRAG_OVER:
+			break;
+		case TARGET_DRAG_EXIT:
+			break;
+		case TARGET_DROP:
+			local f = e.dragsrc.filelist[0];
+			showImportSound( f);
+			break;
+		}
+	}
+	
+	//	ファイルを指定してインポートダイアログ表示
+	//	※undo不可
+	function showImportSound( f){
+		local d = SoundImportDialog.prepareImport( f);
+		if( d){
+			local ret = SoundImportDialog.run( d);
+			if( ret){
+				local c = ret.conv, fn = ret.f.name;
+				local ext = (c=="none")?fn.substring( fn.lastIndexOf( ".")) : (c=="OGG") ? ".ogg" : ".wav";
+				::getResource( "/resource/snd").create( ret.name..ext, ret.outbb);
+				::skstudio.fileview.refreshDir( "/resource/snd");
+				Popups.showInfo( "$T.pop_sndimport");
+				refresh();
+			}
+		}
+	}
+}
+
+class ResEditorSnd.XZCanvas
+{
+	view = null;		//	SKImageView
+	editor = null;
+	sp = null;
+	srcpos = null;
+	srcvec = null;
+	srcparam = null;
+	canvasscale = 50.0;
+	mixer = null;
+
+	constructor( v, e){
+		view = v;
+		editor = e;
+		mixer = e.mixer3d;
+		sp = Sprite();
+		sp.shadersrc = skFXFindTechnique( "sp3dsound.def").getShaderSource(0);
+		sp.miscmat = Matrix();
+		srcpos = Vector3D( 0, 0, -15);
+		srcvec = Vector3D( 0, 0, -1);
+		srcparam = Source3DParam();
+		srcparam.maxdist = 50.0;
+		srcparam.refdist = 20.0;
+		srcparam.conein = Math.PI * 0.5;
+		srcparam.coneout = Math.PI * 1.5;
+		updateImage();
+		view.setSprite( sp);
+		view.updateLayout();
+		view.addEventListener( MOUSE_EVENT, mouseevent);
+	}
+
+	function setSourceParamID( sid){
+		local v = editor.data._env.src3ds.find( @( v) v.id==sid);
+		local s = Source3DParam();
+		if( v["disable"]){
+			s.conein = 0;
+			s.coneout = Math.PI2;
+			s.conegain = 0.0;
+			s.maxdist = 20;
+			s.refdist = 10;
+			s.rolloff = 0.0;
+			s.distmodel = 0;
+		}else{
+			s.conein = v.conein * Math.DTOR;
+			s.coneout = v.coneout * Math.DTOR;
+			s.conegain = 1.0 - v.conecut*0.01;
+			s.maxdist = v.distout;
+			s.refdist = v.distin;
+			s.rolloff = v.distcut*0.01;
+			s.distmodel = v.distmodel;
+		}
+		srcparam = s;
+		mixer[SK_SND_SOURCE3D] = s;
+		::soundmanager.ctx[SK_SND_CALC3D] = true;
+		updateImage();
+	}
+
+	function setReverbID( rid){
+		local rb = editor.data._env.reverbs.find( @( v) v.id==rid);
+		mixer[SK_SND_SEND] = rb.sends;
+		mixer[SK_SND_GAIN] = rb.gain*0.01;
+	}
+
+	function updateImage(){
+		local m = sp.miscmat;
+		m[0] = canvasscale;
+		m[4] = srcpos.x;
+		m[5] = srcpos.z;
+		m[6] = -srcvec.x;
+		m[7] = -srcvec.z;
+		m[8] = srcparam.maxdist;
+		m[9] = srcparam.refdist;
+		m[10] = -Math.cos( srcparam.coneout*0.5);
+		m[11] = -Math.cos( srcparam.conein*0.5);
+		view.repaint();
+	}
+
+	function mouseevent( e){
+		e.computeLocal( view.getInvMatrix());
+		switch( e.id){
+		case MOUSE_PRESSED:
+		case MOUSE_DRAGGED:
+			local ex = (Math.saturate( e.lx/view.bnd.w)*2.0-1.0);
+			local ey = (Math.saturate( e.ly/view.bnd.h)*2.0-1.0);
+			srcpos.x = ex * canvasscale; srcpos.z = ey * canvasscale;
+			if( !e.isShiftDown() && (ex||ey)){
+				srcvec.x = ex, srcvec.z = ey;
+				srcvec.normalize();
+			}
+			local m = Matrix().translate( srcpos);
+			mixer[SK_SND_POSITION] = m;
+			::soundmanager.ctx[SK_SND_CALC3D] = true;
+			updateImage();
+			if( e.id == MOUSE_PRESSED){
+				e.consume();
+				local item = editor.selitem;
+				local iv = editor.sndlist.getItemView( item);
+				newthread().start( editor.playSound, editor, iv, item.id, item.data, item.data.src3d!="3D_OFF");
+			}
+			break;
+		}
+	}
+}
+
+local freqprop = { pid="freq", lbl="$T.lbl_freq", type=SCALAR, range=(4000,48000), };
+local quaprop = { pid="quality", lbl="$T.lbl_quality", type=SCALAR, range=(1,100), ui="bar", };
+
+//	サウンドファイルのインポートダイアログ。
+//	効果音はwav,ogg、BGMはoggへのコンバートが可能。
+//	
+class SoundImportDialog extends UndoableDialog
+{
+	DIALOGUIPATH = srcdir .. "/ui/importsnddialog.ui"
+	
+	proplist = null;		//	PropertyListBehavior
+	data = null;			//	入力＋コンバート情報。prepareImportでやる
+
+	outbb = null;			//	コンバート後のByteBuffer。こいつを保存する
+	wav = null;				//	コンバートしたwav。
+	ss = null;				//	wavから作ったSoundSource
+
+	static function getprops( si){
+		local a = [
+			{ pid="name", lbl="$T.lbl_filename", type=STRING, }
+			{ pid="conv", lbl="$T.lbl_convert", type=LIST, refresh=1,
+				list = [
+					{ lbl="$T.lbl_noconvert", val="none", disable=!si["isnative"]},
+					{ lbl="ADPCM", val="ADPCM", disable=si["oggonly"]},
+					{ lbl="PCM 16bits", val="PCM16", disable=si["oggonly" ]},
+					{ lbl="PCM 8bits", val="PCM8", disable=si["oggonly" ]},
+					{ lbl="Ogg Vorbis", val="OGG", },
+				]
+			}
+		];
+		switch( si.conv){
+		case "ADPCM": case "PCM16": case "PCM8": a .. freqprop; break;
+		case "OGG": a .. freqprop .. quaprop; break;
+		}
+		return a;
+	}
+
+	//	先にinfileが入力可能なファイルかどうかをチェックする
+	//	ネイティブ再生可能（コンバート不要）かどうか、そうじゃなかったらここでPCM16にコンバートをかけて成功したらOK。
+	//	どっちにしても、コンバートを掛ける場合はPCM16変換は必要。
+	static function prepareImport( f, oggonly=false){
+		local bb = f.load( ByteBuffer()), isnative = false, orgwav=null, conv;
+		local pcm;
+		try{
+			orgwav = bbtowav( bb);
+			local t = int( orgwav.length/(orgwav.freq/1000.0));
+			pcm = { freq=orgwav.freq, ch=orgwav.ch, bb=orgwav.decode16(), time=t};
+			if( oggonly && !f.name.endsWith(".ogg")){	//	BGM,Voiceはwavが来たらoggにしないといけない
+				isnative = false;
+				conv = "OGG";
+			}else{
+				isnative = true;
+				conv = "none";
+			}
+		}catch( ex){
+			printf( "importAudioFile! %S\n", f.path);
+			local v = MediaImporter.importAudioFile( f);
+			pcm = { ...v };
+			conv = oggonly ? "OGG" : "ADPCM";
+		}
+		return {
+			f = f,
+			name = f.name.substring( 0, f.name.lastIndexOf( ".")),
+			orgbb = bb,
+			orgwav = orgwav;
+			isnative = isnative,	//	trueなら
+			oggonly = oggonly,	//	BGMの時true
+			pcm = pcm,
+			//	convert to
+			conv = conv,
+			freq = pcm.freq,
+			quality = 30,
+		};
+	}
+
+	static function bbtowav( bb){
+		if( bb[0] == 'R' && bb[1] == 'I'){
+			local wav = WaveBuffer.load( bb);
+			if( !wav) throw Exception( "wav error");
+			return wav;
+		}else{
+			return VorbisDecoder.decodeAll( bb);
+		}
+	}
+
+	static function run( d){
+		local p = SoundImportDialog( DIALOGUIPATH, d);
+		p.show( null);
+		if( p.ret){
+			p.data.outbb <- p.outbb;
+			return p.data;
+		}
+	}
+
+	constructor( v, d){
+		super( v);
+		data = d;
+		proplist = PropertyListBehavior( view.findChild( "proplist"), null);
+		proplist.listview.addEventListener( ACTION_EVENT, propevent);
+		proplist.listview.addEventListener( ITEM_EVENT, propevent);
+		proplist.ref = this;
+		view.setValue( "infile", rtf( "[b]%S[n]    %d:%02d    %dch    %dHz    %S" % (d.f.name, d.pcm.time/1000, (d.pcm.time/10)%100, d.pcm.ch, d.pcm.freq, sizestr( d.orgbb.size))));
+		view.setValue( "outsize", "");
+		refresh();
+		makePlayable();
+	}
+
+	function refresh(){
+		local props = getprops( data);
+		proplist.bindProperties( props);
+		proplist.setParameters( data);
+	}
+
+	//	再生可能な
+	function makePlayable(){
+		wav = null;
+		local d = data;
+		if( d.conv == "none"){
+			outbb = d.orgbb;
+			wav = d.orgwav;
+			view.setValue( "outsize", "");
+		}else{
+			local pcmbb = d.pcm.bb;	//	pcmbbは16bit PCM
+			if( d.pcm.freq != d.freq){	//	freq変換もやらんと
+				pcmbb = WavEncoder.resample( d.pcm.bb, d.pcm.ch, d.pcm.freq, d.freq);
+			}
+			switch( d.conv){
+			case "OGG":
+				local qua = d.quality*0.01;
+				local fu = VorbisEncoder.encodeAsync( pcmbb, d.pcm.ch, d.freq, qua);
+				//	wait ui
+				outbb = fu.suspendget();
+				break;
+			case "ADPCM":
+				outbb = WavEncoder.encodeADPCM( pcmbb, d.pcm.ch, d.freq);
+				break;
+			case "PCM8": case "PCM16":
+				outbb = WavEncoder.encodePCM( pcmbb, d.pcm.ch, d.freq, d.conv=="PCM16"?16:8);	//	pcm8の変換はencodeWAV内で
+				break;
+			}
+			wav = bbtowav( outbb);
+			view.setValue( "outsize", "%S (%S％)" % (sizestr( outbb.size), (outbb.size*100/d.orgbb.size)));
+		}
+	}
+
+	function propevent( e){
+		local cmd = e.actioncmd;
+		if( cmd["cmd"] == "prop"){
+			local prop = cmd.prop;
+			local data = this.data;
+			local val = cmd.val;
+			local trk = null;
+			local oldval = ::getProperty( prop, data);
+			//	
+			local self = this;
+			local redo = [@(){ ::setProperty( prop, data, val); }];
+			local undo = [@(){ ::setProperty( prop, data, oldval); }];
+			submitOp( redo, undo, trk);
+			if( prop["refresh"]) refresh();
+			//
+			makePlayable();
+		}
+	}
+
+	function close(){
+		super.close();
+		ss?.stop();
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_import":
+			ret = 1;
+			close();
+			break;
+		case "btn_play":
+			if( ss){
+				ss.stop();
+				ss = null;
+			}else
+			if( wav){
+				local m = ::soundmanager;
+				ss = m.ctx.createWaveSoundSource( wav);
+				ss.play( m.drymixer);
+			}
+			break;
+		}
+		super.actionevent( e);
+	}
+}
+

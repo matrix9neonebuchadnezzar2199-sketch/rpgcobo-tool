@@ -1,0 +1,245 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import MoveScreenFlags;
+
+local v_1 = Vector3D(), v_2 = Vector3D(), v_3 = Vector3D();
+
+//	移動時やイベント時のカメラワークを定義。平行プロジェクションは無し。
+//	カメラワーク間でトランジションが可能。
+//	・標準カメラ : 移動時のデフォルト。キャラが画面中心から10%離れたらカメラがその範囲に収まるように移動する。
+//	・前後固定カメラ : z軸に対する視点移動を行わない標準カメラ。横スクロールチックな感じに。
+//	・固定カメラ : 視点固定。キャラが画面中心から離れるほど回転補正を強く。
+//	x・俯瞰カメラ : ターゲットが2つ。視点側と焦点側。。。これいらんかなー。
+
+
+class RPGCamerawork extends SK3DCameraData
+{
+	static SerialUID = 0;
+	data = null;
+
+	cammots = null;		//	RPGCameraMotion[] : これは追加されていくのみで基本消えない。消すためにはカメラワーク自体の再設定を！
+	
+	function addMotion( m){
+		if( cammots) cammots .. m; else cammots = [m];
+	}
+
+	function update( stage, dt){
+		updateBody( stage, dt);
+		foreach( v in cammots){
+			v.update( dt); v.modifyCamera( this);
+		}
+	}
+	
+	function recover( stage){
+	}
+
+	static function createCamerawork( data){
+		if( data["type"] == 2){
+			return RPGCameraworkFixed( data);
+		}
+		return RPGCameraworkStandard( data);
+	}
+}
+
+//	マップに設定された回転を基準に
+//	
+class RPGCameraworkStandard extends RPGCamerawork
+{
+	target = null;			//	フォーカス対象ID。プレイヤー、特定のイベント、
+	roffs = null;			//	回転オフセット。dataから与えられる。※マップのカメラ回転からの相対回転。
+	poffs = null;			//	位置オフセット。dataから与えられる。カメラ方向の相対位置。
+
+	toloc = null;			//	現在のカメラ焦点位置。poffs加味済み。
+
+	followthrs = 0.2;		//	ターゲットがカメラ中心からこの値以上離れたら追従する。枠内でも少しずつ中心に寄る？
+	followspd = 10.0;		//	
+	
+	cammot = null;			//	CameraMotion : 
+
+	gy = 0.0;				//	
+	gytime = 0;			//	
+
+	constructor( d){
+		data = d;
+		target = 0;
+		roffs = Vector3D( d["hpb"]);
+		poffs = Vector3D( 0, d["yoffs"], 0).add( d["pos"]);
+		toloc = Vector3D();
+		fovy = d.fovy;
+		zoom = d.viewport;
+	}
+	
+	//	
+	function updateBody( stage, dt){
+		local tgtloc = stage.getLocation( target);	//	毎回取得。
+		//	回転は先に確定。
+		hpb( roffs).scale( Math.DTOR);
+		local cam0 = #Camera();
+		cam0.aspect = stage.cam.aspect;
+		toCamera( cam0);			//	現在カメラ取得。視点は未調整。※アスペクトは正しく！
+		local cp = v_1( poffs).add( tgtloc.pos).rotate( -hpb[0], 0, 0);	//	head回転のみ
+		local vp = v_2( toloc).rotate( -hpb[0], 0, 0);
+		local dp = v_3( cp).sub( vp);
+		local R = 2.5;
+		if( Math.abs( dp.x) < R) dp.x = 0; else dp.x = dp.x - R*Math.sign( dp.x);
+		if( Math.abs( dp.z) < R) dp.z = 0; else dp.z = dp.z - R*Math.sign( dp.z);
+		if( Math.abs( dp.y) < R) dp.y = 0; else dp.y = dp.y - R*Math.sign( dp.y);
+		dp.rotate( hpb[0], 0, 0);
+		toloc.add( dp);
+		//	Yはベースを移動していかないといけない
+		if( Math.abs( gy-tgtloc.pos.y) < 0.01){
+			if( (gytime+=dt) >= 200){
+				local _dy = (toloc.y-(gy+poffs.y)), dy = Math.abs( _dy);
+				local spd = (dy * 0.001 + 0.0002) * dt * Math.saturate( (gytime-200)/600.0);
+				if( spd >= dy){
+					toloc.y = gy+poffs.y;
+				}else{
+					toloc.y += spd * (_dy<0 ? 1:-1);
+				}
+			}
+		}else{
+			gytime = 0;
+			gy = tgtloc.pos.y;
+		}
+		to( toloc);
+	}
+	
+	//	ワープや場面切り替えでカメラを最新の位置に回復させるときに呼び出す。
+	function recover( stage){
+		local tgtloc = stage.getLocation( target);
+		toloc( poffs).rotate( hpb).add( tgtloc.pos);	//	カメラの中心にリセット
+		to( toloc);
+		update( stage, 1);
+		gy = to.y;
+	}
+}
+
+//	マップに配置された固定カメラ。ターゲットがカメラ内に入るように回転を調整する。
+//	
+class RPGCameraworkFixed extends RPGCamerawork
+{
+	// target = null;			//	フォーカス対象ID。プレイヤー、特定のイベント、固定だとないかな？
+	// toloc = null;			//	現在のカメラ焦点位置。poffs加味済み。
+	
+	cammot = null;			//	CameraMotion : 
+	
+	constructor( d){
+		data = d;
+	}
+
+	function updateBody( stage, dt){
+		local mk = stage.getMarker( data.mkid);
+		if( !mk) return;
+		//	カメラのeye位置を先に確定。
+		to( mk["pos"]).scale( 0.5).add( 0, mk["yoffs"], 0);
+		hpb( mk["hpb"]).scale( Math.DTOR).add( data["hpb"]);
+		fovy = mk.fovy;
+		zoom = mk.viewport;
+		//	
+		//	ターゲットとカメラ範囲によって角度を調整。
+		// local cam0 = toCamera( cam_0);	//	補正前カメラを取得。※アスペクトに注意
+		// local tloc = stage.getLocation( target);	//	毎回取得。
+		// local eye = cam0.eye;		//	ここは固定。
+		// lookat( eye, toloc);		//	
+	}
+
+	function recover( stage){
+		// toloc = Vector3D( data.pos).scale( 0.5).add( 0, data["yoffs"], 0);
+		update( stage, 1);
+	}
+}
+
+//	マーカープレビュー用。ゲームでは使わない
+//	
+class RPGCameraworkMarker extends SK3DCameraData
+{
+	static SerialUID = 0;
+	data = null;			//	マーカーのデータ
+	
+	cammot = null;			//	CameraMotion : 
+
+	constructor( d){
+		data = d;
+		to = Vector3D( d["pos"]).scale( 0.5).add( 0, d["yoffs"], 0);
+		hpb = Vector3D( d["hpb"]).scale( Math.DTOR);
+		fovy = d.fovy;
+		zoom = d.viewport;
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+//	
+//	CameraMotion : 
+//	演出用のカメラモーション。カメラワークに掛け合わされる。
+//	パターンとパラメータの組み合わせ。
+//	
+
+class RPGCameraMotion
+{
+	data = null;
+
+	t = 0;
+	w = 0.0;
+
+	constructor( d){
+		data = d;
+	}
+
+	function update( dt){
+		t += int( dt);	//	timeは大きくなりがちなのでintを保つ
+		local time = data.time;
+		switch( data["playtype"]){
+		case 1: w = Math.saturate( 1.0 - float( t) / time); break;
+		case 2: w = (float( t) / time) % 2.0; w = Math.min( w, 2.0-w); break;	// /\/\/\って感じでミラーリピート
+		default: w = Math.saturate( float( t) / time); break;
+		}
+		local ease = ::Easing.presets[1];
+		switch( data["easing"]){
+		case 1: ease = ::Easing.presets[5]; break;
+		case 2: ease = ::Easing.presets[6]; break;
+		case 3: ease = ::Easing.presets[7]; break;
+		}
+		w = ease( w);
+	}
+
+	function modifyCamera( cw){
+	}
+
+	function createCameraMotion( data){
+		if( data["type"] == 2){
+			return RPGCameraEyeMotion( data);
+		}
+		return RPGCameraFocusMotion( data);
+	}
+}
+
+//	注目点を固定して回転する
+//	
+class RPGCameraFocusMotion extends RPGCameraMotion
+{
+	function modifyCamera( cw){
+		cw.hpb.add( v_1( data["hpb"]).scale( w * Math.DTOR));
+		cw.to.add( v_1( data["pos"]).scale( w));
+		cw.zoom += (data["zoom"]||0) * w;
+	}
+}
+
+//	視点を固定して回転する。
+//	
+class RPGCameraEyeMotion extends RPGCameraMotion
+{
+	function modifyCamera( cw){
+		cw.lookfor( v_1( data["hpb"]).scale( w * Math.DTOR));	//	回転と位置に作用
+		cw.to.lerp( v_1( data["pos"]).scale( w));
+		cw.zoom += (data["zoom"]||0) * w;
+	}
+}
+
+//	カメラをリセットするモーション。このモーションだけ特別に、元のカメラを復元し、再生の終わった別のモーションを終了する機能がある
+//	
+class RPGCameraResetMotion extends RPGCameraMotion
+{
+	function modifyCamera( cw){
+	}
+}

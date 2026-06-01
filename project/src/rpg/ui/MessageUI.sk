@@ -1,0 +1,254 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import GamepadButtonCode;
+import PropertyType;
+import RPGPropertyType;
+
+////////////////////////////////////////////////////////////////////////////////////
+//	MessageUI.sk 会話ウィンドウの登録。
+//	会話ウィンドウは基本動作として、イベント終了時にUIを消す。
+//	更に、表示、消去、暗転、暗転解除の操作を受け付ける
+//	
+
+///////////////////////////////////////////////////////////////////////////////////
+//	通常の会話ウィンドウ。
+
+//
+local showTalkUI( uidef, prms){
+	//	hide, darken, lightenが有効
+	local view = rootview.findChild( "message_talk");
+	if( prms["op"]){
+		if( prms["op"] == "hide"){
+			view?.actionAndDie( prms["op"])?.waitAction();	//	hideの時は消さないと、、
+		}else{
+			view?.action( prms["op"])?.waitAction();
+		}
+		return null;
+	}
+	local msgtxt = MessageText( prms.text);		//	MessageText extends RichText
+	local binds = {
+		nameg = ptr({ hide=!length( prms["name"])}),
+		name = prms["name"],
+		text = msgtxt,
+	};
+	if( view){
+		view.actionAndDie( "hide");
+	}
+	// if( view){
+	// 	view.action( "show");
+	// 	view.bindValues( binds);
+	// }else{
+		local vprms = {
+			...uidef.defval,
+
+			layer = "message",
+			action = "show",
+			binds = binds,
+
+			...prms,
+
+			name = "message_talk",
+		};
+		view = RPGMain.showView( vprms);
+	// }
+	view.waitAction();
+	msgtxt.run( view.findChild( "text"));	//	表示済むまでブロック！
+	return view;	//	viewを返すとクローズタイミングを指定できる
+}
+
+local oplist = [
+	{ lbl="$T.uiop_show", val=null }	//	showの場合はop=nullが入る
+	{ lbl="$T.uiop_hide", val="hide" }	
+	{ lbl="$T.uiop_darken", val="darken" }
+	{ lbl="$T.uiop_lighten", val="lighten" }
+];
+
+RPGSystem.ui ..
+{
+	key = "message_talk"
+	lbl = "$T.ui_message_talk"
+	type = "message"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	icon = "\ue625"
+	
+	props = [
+		{ pid="op", lbl="$T.lbl_operation", type=LIST, list=oplist, refresh=true }
+		{ pid="text", lbl="$T.lbl_text", type=MESSAGE, variable=true, hide=@( pl) !!pl.getParam( "op"), cnt="cnt6.ui" },
+		{ pid="name", lbl="$T.lbl_name", type=STRING, variable=true, hide=@( pl) !!pl.getParam( "op") },
+		{ pid="uiclose", lbl="$T.uiclose", type=LIST, list=RPGProperties.uicloselist, hide=@( pl) !!pl.getParam( "op") },
+	],
+	
+	defval = {
+		uipath = "message_talk.ui",
+		text = "*message_talk*",
+		name = "",
+		pos = {bottom = 40,},	//	画面下部
+		uiclose = 1,
+	},
+
+	uifunc = @( t) showTalkUI( this, t),			//	
+};
+
+
+
+
+
+
+
+//	ログメッセージ。
+//	上から下に流れる。表示時間とか細かい調整行う？
+
+local makeLogView( t){
+	local v = ::loadSKView( "/resource/ui/message_log.ui");
+	v.bindValues({
+		text = rtf( t.text)
+	});
+	local d = v.computeSizeDelta();
+	if( d.y != 0.0){
+		v.stretchSize( v.bnd.w, v.bnd.h+d.y);
+	}
+	return v;
+}
+
+local showLogMessage( uidef, prms){
+	local g = rootview.findChild( "loggroup");
+	local newv = makeLogView( prms);
+	local a = clone g.children;
+	newthread().start( @(){	//	ログのスクロールはプログラムでまとめてやる。。。
+		local dy = newv.bnd.h / 10.0, dur = 100;
+		for( local l = 0;l < 10;l ++){
+			foreach( v in a){ v.pos.y += dy; v.matdirty = 1; v.repaint(); }
+			sleep( 10);
+		}
+	}, this);
+	g.addChild( newv);
+	newv.actionAndDie( "show");		//	最初から消すの前提
+}
+
+RPGSystem.ui ..
+{
+	key = "message_log"
+	lbl = "$T.ui_message_log"
+	type = "message"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
+	icon = "\ue625"
+	
+	props = [
+		{ pid="text", lbl="$T.lbl_text", type=MESSAGE, variable=true, defval="*message_log*" },
+	],
+	
+	defval = {
+		text = "*message_log*",
+		icon = "\uf818",
+	},
+
+	uifunc = @( t) showLogMessage( this, t),
+};
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+//	MessageText : RichTextに会話用の文字送りアニメーションを付与。
+//	run()を呼ぶと一文字ずつ表示していく。呼び出し元スレッドはブロックされる。
+
+//	文字送り形式でテキストをアニメーションさせる
+//	LabelViewを指定する。
+local NOANIME = 0x1000;
+local NOSOUND = 0x2000;
+local NOACTION = 0x1000 | 0x2000;
+
+local chsleep = {
+	[' ']  = 0   | NOACTION | NOSOUND,
+	['\n'] = 0   | NOACTION | NOSOUND,
+	['\r'] = 0   | NOACTION | NOSOUND,
+	['\t'] = 0   | NOACTION | NOSOUND,
+	[',']  = 200 | NOACTION | NOSOUND,
+	['.']  = 300 | NOACTION | NOSOUND,
+	['。'] = 500 | NOACTION,
+	['、'] = 300 | NOACTION,
+	['…'] = 400 | NOACTION,
+	['・'] = 200 | NOACTION,
+	['！'] = 0   | NOACTION | NOSOUND,
+	['!']  = 0   | NOACTION | NOSOUND,
+	['(']  = 0   | NOACTION | NOSOUND,
+	[')']  = 0   | NOACTION | NOSOUND,
+	['「']  = 0   | NOSOUND,
+	['」']  = 0   | NOSOUND,
+};
+
+class MessageText extends RichText
+{
+	static sleepscales = { "<":200, ">":50, "=":100, }
+
+	sleepbase = 40;
+	fastskip = false;		//	
+	autobreak = false;		//	クリック無しでページを送る。村人などが並列イベントで勝手にしゃべるような場合
+	interrupt = false;		//	表示の強制終了。
+
+	thread = null;			//	runしたスレッド。インタラプトを掛けるために保存。
+
+	sound = null;
+
+	function applyToLabel( lbl){
+		super.applyToLabel( lbl);
+		lbl.textbox.drawlen = 0;
+	}
+
+	//	※先にapplyToLabelしていないといけない！
+	//	ちょっと動きを全体的に整理して良いようにする。。。。
+	//	基本的に文字送りと同期してタグやページ送りも進んでいく
+	function run( lbl){
+		thread = currentthread();
+		local tb = lbl.textbox, tblen = tb.length, a_1 = [0,0,0,0,0,0];
+		//	アニメーションいれても良い
+		local pagebreak( pos){
+			local i = tb.getLineIndex( pos), li = tb.getLineInfo( i-1, a_1);	//[st,en,maxdescent,maxlinespace,y,w] 一つ前の行を取得。
+			if( !li) return;
+			local by = li[4]+li[3];	//	y+linespace
+			tb.y = -by;		//	TextBoxの表示上端をposの文字の上部に。
+			lbl.repaint();
+			sleep( 100);
+		}
+		//textの周囲にあるクリック待ち表示を表示させる
+		local waitclk(){
+			local clk = ::rootview.findChild( "waitclk");	//	これで良いんかなーーーー
+			clk?.action( "show");
+			::RPGMain.waitClick( 0x7fffffff);
+			clk?.action( "hide");
+		}
+		//	文字送りループスタート。
+		local ci = 0, skipping = false, charsleep = sleepbase;
+		for( local l = 0;l < tblen;l ++){
+			//	はみ出しチェック
+			if( tb.getCharPos( l, a_1)[1] > lbl.bnd.h){ skipping = false; waitclk(); pagebreak( l); }
+			//	タグチェック
+			while( l == (code[ci][0]??-1)){	//	タグがあった
+				local tag = code[ci++][1];
+				switch( tag){
+				case ".": skipping = false; waitclk(); break;
+				case "p": skipping = false; waitclk(); pagebreak( l); break;	//	はみ出し直後にあるとスキップしたほうが良いかも
+				case "<": case "=": case ">": charsleep = sleepbase*(sleepscales[tag]||100)/100; break;
+				}
+			}
+			if( skipping){
+				tb.drawlen = l+1;
+				lbl.repaint();
+			}else{
+				local c = tb[l], cs = chsleep[c] || 100;
+				//	1.文字スプライトアニメーション... なんかやり方は無いか
+				if( !(cs&NOANIME)){
+					//	animation
+				}
+				//	2.文字アニメ完了。音鳴らし＋描画文字位置設定
+				tb.drawlen = l+1;
+				if( !(cs&NOSOUND) && sound) playSound( sound);
+				lbl.repaint();
+				//	3.文字単位のスリープ。この間にクリック操作があった場合、次のwaitclkまで文字送りはスキップされる。
+				local slp = (charsleep*(cs&0xfff))/100;
+				if( ::RPGMain.waitClick( slp)) skipping = true; //	skip開始、、、
+			}
+		}
+		tb.drawlen = tblen;
+		lbl.repaint();
+		waitclk();	//	最後のwaitclick。テキストを消去したりスクロールを戻したりはしない。
+	}
+}

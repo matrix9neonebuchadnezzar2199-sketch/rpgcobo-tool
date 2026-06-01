@@ -1,0 +1,843 @@
+
+import CursorType;
+import ModifiersMask;
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//	SKRootView
+//
+//
+
+::rootview <- null;				//	global root view
+
+class SKRootView extends SKView
+{
+	prjmat = null;				//	Matrix
+	renderstates = null;		//	RenderStates
+	structrev = 0;				//	構造変化でインクリメントされていく
+
+	//	イベント処理用
+	mouses = null;				//	MouseState[10]
+	dndmouse = null;			//	MouseState : Drag&Drop中のマウス。一つのみ。。。
+	dragsource = null;			//	DragSource : ドラッグ中のソースデータ。
+	dropview = null;			//	SKView : dragsourceを受け取る対象のSKView。
+	focusview = null;			//	SKView : フォーカス対象。
+	
+	//	マウスカーソル
+	mctype = CURSOR_ARROW;
+	mcvisible = true;
+	mcmanager = null;			//	SystemMouseCursorManager|GameMouseCursorManager
+	
+	//	イベント関連
+	deliverqueue = null;		//	Event[]
+	eventqueue = null;			//	Event[]
+	eventthread = null;			//	thread :
+	dispatchlock = null;		//	Event
+	dorepaintall = true;
+	quit = false;
+	resizemode = 0;				//	int : 0=リサイズ無し, 1=setRect, 2=stretchSize
+	
+	prelisteners = null;
+	postlisteners = null;
+	
+	//	アップデート配列保存
+	updatefuncs = null;
+	updatesrev = -1;
+	
+	//	作業用
+	ev = null;					//	Event
+	abuf = null;				//	array : timer|buffered SKViewの一時的なバッファ
+	v_1 = Vector3D();			//
+
+	constructor(){
+		deliverqueue = [];
+		eventqueue = [];
+		abuf = [];
+		updatefuncs = [];
+		ev = Event();
+		
+		mouses = tuple( 10);
+		for( local l = 0;l < 10;l ++) mouses[l] = MouseState(l);
+		local mp = skGetMousePos( [0,0]);
+		mouses[0].mousex = mp[0];
+		mouses[0].mousey = mp[1];
+		
+		skGetScreenSize( abuf);
+		prjmat = Matrix.fromOrtho( 0, abuf[0], abuf[1], 0, -2000, 2000);
+		bnd.set( 0, 0, abuf[0], abuf[1]);
+		
+		mcmanager = SystemMouseCursorManager();
+		mcmanager.start( this);
+		
+		renderstates = RenderStates();
+		
+		eventthread = newthread();
+		eventthread.setFrameMask( -1);	//	どのフレームでも実行
+		eventthread.setName("EventThread");
+		eventthread.call( eventloop, this, null);
+	}
+
+	function setDisplayResolution( s){
+		scale( s);
+		local sc = skGetScreenSize([0,0]);
+		local w = sc[0]/s, h = sc[1]/s;
+		setRect( 0, 0, w, h);
+	}
+	
+	function updateLayout(){
+		prjmat = Matrix.fromOrtho( 0, bnd.w*scale.x, bnd.h*scale.y, 0, -2000, 2000);
+		local _w = bnd.w, _h = bnd.h;
+		if( resizemode == 2){
+			foreach( c in children){
+				c.stretchSize( _w, _h, true);
+			}
+		}
+		updateMatrixAll();
+		local maxreso = getMaxResolution();
+		skSetFontResolution( maxreso);
+	}
+
+	//	override
+	function processEvent( e) {
+		foreach( f in listeners[e.id / 100]){
+			f( e)
+			if( e.consumed) return false;
+		}
+		switch( e.id){
+		case QUIT_REQUESTED: quit = true; break;
+		case SCREEN_RESIZED: screenResized( e.x, e.y); break;
+		case SCREEN_REPAINT: dorepaintall = true; break;
+		case EVENT_REPOST: deliverEvent( e.actioncmd);
+		}
+		return false;
+	}
+	
+	function screenResized( sw, sh){
+		if( resizemode){
+			local w = sw/scale.x, h = sh/scale.y;
+			setRect( 0, 0, w, h);
+			//	ウィンドウリサイズに描画を追従させる
+			updateViews( 1);
+			renderViews();
+			skFlipScreen();
+			nextflip = false;
+			broadcastEvent( {cmd="resized"});
+		}
+	}
+
+	//	DPIによるスケールはscaleに入っている。
+	function getBufferResolution(){
+		return scale.x;
+	}
+
+	//////////////////////////////////////////////////////////////////////////////////
+	//	アップデート、アニメーション
+	//	
+	//	※update( dt)で一気に処理を行うこともできるが、updateViews( dt), renderViews(), 
+	//	　flipScreen()の3つの処理に小分けにすることも出来る。
+	//	
+	
+	nextflip = false;
+	
+	function update( dt){
+		if( nextflip){
+			skFlipScreen();
+		}else{
+			skSkipFlipScreen();
+		}
+		skSetFrameFlag( 1);
+		updateEvents( dt);
+		updateViews( dt);
+		nextflip = renderViews();
+	}
+
+	function updateFuncs( dt){
+		if( updatesrev != structrev){
+			findOwners( "updateFunc", updatefuncs);
+			updatesrev = structrev;
+		}
+		foreach( v in updatefuncs){
+			local f = v.updateFunc;
+			if( typeof( f) == SS_ARRAY){
+				foreach( c in f){ if( !c( dt)) removei; }
+				if( !length( f) && v.updateFunc == f){ v.updateFunc = null; removei; }
+			}else{
+				if( f) v.updateFunc( dt); else removei;
+			}
+		}
+	}
+	
+	function updateEvents( dt){
+		if( dispatchlock ){
+			skPeekEvents( deliverEventLocked, this, ev);
+			foreach( e in deliverqueue){
+				deliverEventLocked( e);
+			}
+			deliverqueue.clear();
+		}else{
+			skPeekEvents( deliverEvent, this, ev);
+			foreach( e in deliverqueue){
+				deliverEvent( e);
+			}
+			deliverqueue.clear();
+		}
+		if( dt > 0){
+			executeInterval( dt);		//	SetTimeout, SetIntervalの実行
+			eventthread.wakeup( dt);
+		}
+	}
+	
+	function updateViews( dt){
+		if( dt > 0){
+			updateFuncs( dt);
+		}
+		updateMatrixAll( false);
+	}
+	
+	function renderViews(){
+		if( skBeginRender()){
+			abuf.clear();
+			if( repaintCheck( abuf) || dorepaintall){
+				if( length( abuf) > 0){
+					skSetRenderStates( renderstates);
+					foreach( c in abuf){
+						c.renderToBuffer();
+					}
+					skSetRenderTarget( null);
+				}
+				skSetViewport();
+				skClearScreen();
+				skSetRenderStates( renderstates);
+				skSetMatrix( SK_MATRIX_PROJECTION, prjmat);
+				skInitMatrix( SK_MATRIX_VIEW);
+				renderAll();
+				if( dragsource){
+					skInitMatrix( SK_WORLD);
+					dragsource.dndrender( dndmouse);
+				}
+				skSetRenderStates( renderstates);
+				flushtempbufs();
+				skEndRender();
+				dorepaintall = false;
+				return true;
+			}else{
+				skEndRender();
+			}
+		}else{
+			dorepaintall = true;
+		}
+		return false;
+	}
+	
+	//////////////////////////////////////////////////////////////////////////////////
+	//	フォーカス、ドラッグ対象
+	
+	/**
+	 *	フォーカスを変更する
+	 */
+	function changeKeyEventFocus( c, cmd=null){
+		local oldc = focusview;
+		if( oldc) {
+			local e = Event();
+			e.id = FOCUS_LOST;
+			e.src = oldc;
+			e.dst = c;
+			postEvent( e);
+			oldc.setFocused( false);
+		}
+		focusview = c;
+		if( c){
+			local e = Event();
+			e.id = FOCUS_GAINED;
+			e.src = c;
+			e.dst = oldc;
+			e.actioncmd = cmd;
+			postEvent( e);
+			c.setFocused( true);
+		}
+		return true;
+	}
+	
+//	dumpfunc = false;
+	
+	function changeDragTarget( mid, v, e){
+		local m = mouses[mid];
+		if( m.dragview && m.dragview != v){
+			postEvent( Event().setMouseEvent( mid, mouses[mid].dragview, MOUSE_CANCELLED, e.x, e.y, e.modifiers, 0, m.outofmodal));
+		}
+		m.dragview = v;
+		m.outofmodal = false;		//	モーダルではなくなるはず
+	}
+	
+	//////////////////////////////////////////////////////////////////////////////////
+	//	マウスカーソル
+	
+	function setMouseCursorManager( m){
+		mcmanager = m;
+		m.start();
+		mcmanager.end();
+	}
+	
+	function setMouseVisible( b){
+		b = !!b;
+		if( mcvisible != b){
+			mcvisible = b;
+			mcmanager.visibleChanged( this);
+		}
+	}
+	
+	function refreshMouseCursor( t){
+		if( t != mctype){ mctype = t; mcmanager.cursorChanged( this); }
+	}
+	
+	//////////////////////////////////////////////////////////////////////////////////
+	//	イベント処理
+	
+	function eventloop( breakfunc){
+		local oldlock = dispatchlock;
+		dispatchlock = null;
+		for(;;){
+			if( breakfunc && breakfunc()){ break; }
+			local e = delete eventqueue[0];
+			if( !e) { suspend(); continue; }
+			dispatchlock = e;
+			try{
+				local g = e.id/100;
+				foreach( wf in prelisteners [g]){ wf( e); }
+				if( !e.consumed) e.src?.processEvent( e);
+				foreach( wf in postlisteners[g]){ wf( e); }
+			}catch( ex){
+				local msg = "error in SKRootView event loop...";
+				printException( ex, msg);
+				postErrorEvent( {type="event", error=ex, event=e, });
+			}
+			dispatchlock = null;
+		}
+		dispatchlock = oldlock;
+	}
+	
+	function suspendOrUpdate(){
+		local oldlock = dispatchlock;
+		dispatchlock = null;
+		suspend();
+		if( currentthread() == eventthread){
+			while( length( eventqueue)){
+				local e = delete eventqueue[0];
+				dispatchlock = (e);
+				try{
+					if( e.src) e.src.processEvent( e);
+				}catch( ex){
+					local msg = "error in SKRootView suspendOrUpdate loop...";
+					printException( ex, msg);
+				}
+			}
+		}
+		dispatchlock = oldlock;
+	}
+	
+	function addPreEventListener( type, func, self=null){
+		if( !prelisteners) prelisteners = tuple(30);
+		if( !prelisteners[type]) prelisteners[type] = [];
+		local fn = (func.bindenv( self || getcaller( 1)));
+		prelisteners[type] .. fn;	//	呼び出し元のthisがbindenvされる。
+		return fn;
+	}
+	
+	function removePreEventListener( type, func){
+		local r = prelisteners[type]?.removeValue( func);
+		if( r) return r;
+		foreach( i, clo in prelisteners[type]){	//	bindenv前のfunctionにも対応
+			local a = clo.unbindenv(); if( a[0] == func) return delete prelisteners[type][i];
+		}
+		return null;
+	}
+	
+	function addPostEventListener( type, func, self=null){
+		if( !postlisteners) postlisteners = tuple(30);
+		if( !postlisteners[type]) postlisteners[type] = [];
+		local fn = (func.bindenv( self || getcaller( 1)));
+		postlisteners[type] .. fn;	//	呼び出し元のthisがbindenvされる。
+		return fn;
+	}
+	
+	function removePostEventListener( type, func){
+		return postlisteners[type]?.removeValue( func);
+	}
+	
+	function postEvent( e){
+		eventqueue .. e;
+	}
+
+	function postToDeliver( e){
+		deliverqueue .. e;
+	}
+	
+	function deliverEvent( e){
+		local eid = e.id;
+		switch( eid / 100){
+		case MOUSE_EVENT:
+			deliverMouseEvent( e);
+			break;
+		case APP_EVENT:
+		case IAP_EVENT:
+//			printf("app event %d  %S enabled=%S\n", e.id, e.actioncmd?(". " .. e.actioncmd):"", isEnabled());
+			if( isEnabled()){
+				e = clone e;
+				e.src = this;
+				postEvent( e);
+			}
+			break;
+		case DRAGSOURCE_EVENT:
+			deliverDragSourceEvent( e);
+			break;
+		default:
+			local f = focusview || this;
+			while( f && !f.isEnabled()) f = f.parent;
+			if( f){
+				e = clone e;
+				e.src = f;
+				postEvent( e);
+			}
+			break;
+		}
+	}
+	
+	//	dispatchlock時の挙動
+	function deliverEventLocked( e){
+		local eid = e.id;
+		switch( eid / 100){
+		case MOUSE_EVENT:
+			deliverMouseEventLocked( e);
+			break;
+		case APP_EVENT:
+		case IAP_EVENT:
+			if( isEnabled()){
+				e = clone e;
+				e.src = this;
+				postEvent( e);
+			}
+			break;
+		default:
+			//	特定のイベントのみロック時でもpostする。そのイベントはロック解除後に順次実行される
+			if( e.id == KEY_RELEASED){
+				local re = Event();
+				re.id = EVENT_REPOST;
+				re.src = this;
+				re.actioncmd = e;
+				postEvent( re);
+			}
+			break;
+		}
+	}
+
+	//	タッチ排他チェック。trueの場合は排他制御に引っかかってタッチ無効。
+	function exclusiveTouchCheck( target, mm){
+		if( dragsource){
+			return true;	//	dnd中は他のタッチは一切無効
+		}else
+		if( target.exclusivetouch){	//	targetが排他タッチの場合は他にタッチされているコンポーネントがある場合タッチ無効。
+			foreach( m in mouses){
+				if( m.dragview && target!=m.dragview) return true;
+			}
+		}else
+		if( target.multitouch){
+			foreach( m in mouses){	//	targetが排他タッチでない場合は排他タッチのコンポーネントがタッチされてるかチェック。
+				if( m.dragview["exclusivetouch"]) return true;
+			}
+		}else{
+			foreach( m in mouses){	//	マルチタッチでないtargetの場合は他のタッチですでに押されている場合もチェック
+				local v = m.dragview; if( v["exclusivetouch"] || (v==target&&m!=mm)) return true;
+			}
+		}
+		return false;
+	}
+
+	function mouseEnterCheck( mid, m, toenter, x, y, id, mod){
+		local entered = m.entered;
+		if( entered != toenter) {
+			if( entered?.isEnabled()){
+				if( id==MOUSE_DRAGGED && entered && entered.exclusivedrag) return;	//	exclusivedragでもenabledじゃないなら切り替えて良し
+				local b = true;
+				foreach( m1 in mouses){ if( m!=m1 && entered==m1.dragview){ b = false; break; }}
+				if( b) postEvent( Event().setMouseEvent( mid, entered, MOUSE_EXITED, x, y, mod, 0, false, toenter));
+			}
+			if( toenter){	//	確実にenabled
+				local b = true;
+				foreach( i, m1 in mouses){ if( m!=m1 && toenter==m1.dragview){ b = false; break; }}
+				if( b)postEvent( Event().setMouseEvent( mid, toenter, MOUSE_ENTERED, x, y, mod, 0, false, entered));
+				//	マウスカーソル変更チェック
+				if( !mid){
+					local t = toenter.getMouseCursor();
+					if( t != mctype){ mctype = t; mcmanager.cursorChanged( this);}
+				}
+			}
+			m.entered = toenter;
+		}
+	}
+	
+	function getDropTargetView( dc, x, y, dragsource){
+		do{
+			if( dc.acceptDrop( dragsource, x, y)) break;
+			dc = dc.parent;
+		}while( dc);
+		return dc;
+	}
+
+	function deliverMouseEvent( e){
+		local eid = e.id;
+		local x = e.x, y = e.y;				//	global position
+		local v = v_1;
+		local target = pick( x, y, true, v);
+		local outofmodal = (v_1.z!=0.0);	//	ummm....
+		local mod = e.modifiers;
+		local mid = e.mouseid;
+		local m = mouses[mid];
+		switch( eid){
+		case MOUSE_EXITED:
+			mouseEnterCheck( mid, m, null, x, y, eid, mod);
+			break;
+		case MOUSE_PRESSED :
+			local mmod = mod & (64|128|256|512);
+			mouseEnterCheck( mid, m, outofmodal?null:target, x, y, eid, mod);
+			m.downx = x; m.downy = y; m.dndcheck = true;
+			m.downtime = e.time;
+			if( target){
+				if( exclusiveTouchCheck( target, m)){ break; }
+				if( m.dragview && m.dragview != target){	//	同じmouseidでpressが連続で来る。simulateMouseとかで起きうる
+					postEvent( Event().setMouseEvent( mid, m.dragview, MOUSE_CANCELLED, x, y, mod, e.count, m.outofmodal));
+				}
+				m.dragview = target;
+				m.dragbtn = mmod;
+				m.dsoffsx = v.x;
+				m.dsoffsy = v.y;
+				m.mousex = x;
+				m.mousey = y;
+				m.modifiers = m.modifiers|mod;
+				m.outofmodal = outofmodal;
+				postEvent( Event().setMouseEvent( mid, target, MOUSE_PRESSED, x, y, mod, e.count, outofmodal));
+			}
+			break;
+		case MOUSE_RELEASED :
+			local mmod = mod & (64|128|256|512);
+			if( dragsource){
+				if( m==dndmouse){
+					local dv = !target||outofmodal?null:getDropTargetView( target, x, y, dragsource);
+					if( dv){
+						postEvent( Event().setDDEvent( mid, dv, TARGET_DROP, x, y, mod, dragsource));
+					}
+					//	dragsource元のSKViewにもイベント通知。。。
+					if( m.dragview){
+						postEvent( Event().setDDEvent( mid, m.dragview, SOURCE_DROP, x, y, mod, dragsource));
+					}
+					dragsource = null;
+					dndmouse = null;
+				}
+				dorepaint = true;
+			}
+			if( m.dragview){
+				postEvent( Event().setMouseEvent( mid, m.dragview, MOUSE_RELEASED, x, y, mod, e.count, m.outofmodal));
+				if( (mmod) == m.dragbtn) m.dragview = null;
+			}
+			m.modifiers = m.modifiers&(~mmod);
+			break;
+		case MOUSE_CLICKED :	//	clickは補助的なイベントなので、ただ単にイベントを飛ばすだけ
+			if( m.dragview){
+				postEvent( Event().setMouseEvent( mid, m.dragview, MOUSE_CLICKED, x, y, mod, e.count, false));
+			}
+			break;
+		case MOUSE_MOVED :
+		case MOUSE_DRAGGED :
+			if( m.mousex == x && m.mousey == y && !(mod & GPUI_MASK)) break;	//	同一座標はキャンセル。ただしGPUI_MASKが付いてたら強制
+			//
+			mouseEnterCheck( mid, m, outofmodal||dragsource?null:target, x, y, eid, mod);
+			m.mousex = x;
+			m.mousey = y;
+			if( dragsource){
+				if( m != dndmouse) break;
+				local dv = !target||outofmodal?null:getDropTargetView( target, x, y, dragsource);
+				if( dv != dropview){
+					if( dropview){
+						postEvent( Event().setDDEvent( mid, dropview, TARGET_DRAG_EXIT, x, y, mod, dragsource));
+						postEvent( Event().setDDEvent( mid, m.dragview, SOURCE_DRAG_EXIT, x, y, mod, dragsource, dropview));
+					}
+					if( dv){
+						postEvent( Event().setDDEvent( mid, dv, TARGET_DRAG_ENTER, x, y, mod, dragsource));
+						postEvent( Event().setDDEvent( mid, m.dragview, SOURCE_DRAG_ENTER, x, y, mod, dragsource, dv));
+					}
+					dropview = dv;
+				}else{
+					if( dropview){
+						postEvent( Event().setDDEvent( mid, dropview, TARGET_DRAG_OVER, x, y, mod, dragsource));
+						postEvent( Event().setDDEvent( mid, m.dragview, SOURCE_DRAG_OVER, x, y, mod, dragsource, dropview));
+					}
+				}
+				dorepaint = true;	//	dragsourceが動いたのでrepaint
+			}else
+			if( m.dragview){
+				//	drag&dropチェック
+				if( m.dndcheck && Math.max( Math.abs( m.downx-x), Math.abs( m.downy-y)) >= 6){
+					local notouch = true;	//	他にタッチがあるとdndは無効
+					foreach( a in mouses){	if( a!=m && a.dragview) { notouch=false; break; }	}
+					local ds = m.dragview.dragsource, de;
+					if( notouch && ds && ds.acceptDrag( de=Event().setDDEvent( mid, m.dragview, SOURCE_DRAG_BEGIN, m.downx, m.downy, mod, getDnDAction( mod)))){
+						dragsource = ds; dropview = null; dndmouse = m;
+						postEvent( de);
+					}
+					m.dndcheck = false;
+				}else{
+					postEvent( Event().setMouseEvent( mid, m.dragview, MOUSE_DRAGGED, x, y, mod, 0, m.outofmodal));
+				}
+			}else{
+				if( target) postEvent( Event().setMouseEvent( mid, target, MOUSE_MOVED, x, y, mod, 0, outofmodal));
+			}
+			break;
+		case MOUSE_WHEEL_MOVED :
+		case MOUSE_HWHEEL_MOVED :
+			m.wheel += e.count;
+		case MOUSE_PAN:
+		case MOUSE_PINCH:
+			if( target){
+				e = clone e;
+				e.src = target;
+				postEvent( e);
+			}
+			break;
+		}
+	}
+	
+	function getDnDAction( mod){
+		return 0;
+	}
+	
+	//	dispatchlock時の挙動
+	function deliverMouseEventLocked( e){
+		local eid = e.id;
+		switch( eid){
+		case MOUSE_RELEASED :
+			local mid = e.mouseid;
+			local m = mouses[mid];
+			local x = e.x, y = e.y;				//	global position
+			local v = v_1;
+			local target = pick( x, y, true, v);
+			local outofmodal = (v_1.z!=0.0);	//	ummm....
+			local mod = e.modifiers;
+			if( dragsource){
+				if( m==dndmouse){
+					local dv = !target||outofmodal?null:getDropTargetView( target, x, y, dragsource);
+					if( dv){
+						postEvent( Event().setDDEvent( mid, dv, TARGET_DROP, x, y, mod, dragsource));
+					}
+					//	dragsource元のSKViewにもイベント通知。。。
+					if( m.dragview){
+						postEvent( Event().setDDEvent( mid, m.dragview, SOURCE_DROP, x, y, mod, dragsource));
+					}
+					dragsource = null;
+					dndmouse = null;
+				}
+				dorepaint = true;
+			}
+			if( m.dragview){
+				postEvent( Event().setMouseEvent( mid, m.dragview, MOUSE_RELEASED, x, y, mod, e.count, false));
+				if( (mod) == m.dragbtn) m.dragview = null;
+			}
+			m.modifiers = m.modifiers&(~mod);
+			break;
+		}
+	}
+
+	function deliverDragSourceEvent( e){
+		local eid = e.id;
+		local mid = e.mouseid;
+		local m = mouses[mid];
+		local x = e.x, y = e.y;				//	global position
+		local v = v_1;
+		local target = pick( x, y, true, v);
+		local outofmodal = (v_1.z!=0.0);	//	ummm....
+		local mod = e.modifiers;
+		if( !dragsource){
+			dragsource = FileDragSource( e.actioncmd);
+			dndmouse = mouses[mid];
+		}
+		switch( eid){
+		case SOURCE_DRAG_ENTER :
+		case SOURCE_DRAG_OVER :
+		case SOURCE_DRAG_EXIT :
+			local dv = (eid==SOURCE_DRAG_EXIT)||!target||outofmodal?null:getDropTargetView( target, x, y, dragsource);
+			if( dv != dropview){
+				if( dropview) postEvent( Event().setDDEvent( mid, dropview, TARGET_DRAG_EXIT, x, y, mod, dragsource));
+				if( dv) postEvent( Event().setDDEvent( mid, dv, TARGET_DRAG_ENTER, x, y, mod, dragsource));
+				dropview = dv;
+			}else{
+				if( dropview) postEvent( Event().setDDEvent( mid, dropview, TARGET_DRAG_OVER, x, y, mod, dragsource));
+			}
+			if( eid==SOURCE_DRAG_EXIT){
+				dragsource = null;
+				dndmouse = null;
+				dorepaint = true;
+			}
+			break;
+		case SOURCE_DROP :
+			local dv = !target||outofmodal?null:getDropTargetView( target, x, y, dragsource);
+			if( dv){
+				postEvent( Event().setDDEvent( mid, dv, TARGET_DROP, x, y, mod, dragsource));
+			}
+			dragsource = null;
+			dndmouse = null;
+			dorepaint = true;
+			break;
+		}
+	}
+	
+	//	継承先でエラーを取得できるようにfunction化
+	function printException( ex, msg){
+		println( msg);
+		printexception( ex);
+	}
+}
+
+function getMousePos( mid, root=null){
+	local m = ::rootview.mouses[mid];
+	local p = (#Vector3D()) (m.mousex, m.mousey, 0.0);
+	if( root) p.transform( root.getInvMatrix());
+	return p;
+}
+
+Event.dst <- null;
+
+function Event::setMouseEvent( _mid, _src, _id, _x, _y, _mod, _cnt, outofmodal, _dst=null){
+	mouseid = _mid;
+	src = _src;
+	id = outofmodal?(_id+MODAL_MOUSE_OFFSET):_id;
+	x = _x;
+	y = _y;
+	modifiers = _mod;
+	count = _cnt;
+	time = skGetTime();
+	dst = _dst;
+	return this;
+}
+
+function Event::setDDEvent( _mid, _src, _id, _x, _y, _mod, _dsrc, _dst=null){
+	mouseid = _mid;
+	src = _src;
+	id = _id;
+	x = _x;
+	y = _y;
+	modifiers = _mod;
+	dragsrc = _dsrc;
+	time = skGetTime();
+	dst = _dst;
+	return this;
+}
+
+function Event::isClicked(){
+	local m = ::rootview.mouses[mouseid];
+	return m?m.isClicked():false;
+}
+
+function Event::getMouseState(){
+	return ::rootview.mouses[mouseid];
+}
+
+class SKRootView.MouseState
+{
+	mouseid = -1;
+	entered = null ;
+	mousex = 0;	mousey = 0;
+	modifiers = 0;
+	wheel = 0;
+	
+	//	drag, click
+	dragview = null;
+	dragbtn = 0;
+	downtime = 0;
+	downx = 0;		downy = 0;
+	dsoffsx = 0;	dsoffsy = 0;
+	dndcheck = false;
+	
+	outofmodal = false;
+	
+	constructor( mid){
+		mouseid = mid;
+	}
+	
+	function isClicked(){
+		local dx = mousex-downx, dy = mousey-downy;
+		if( skGetTime() >= downtime + 300) return false;
+		return (dx*dx+dy*dy)<(100);		//	10 x 10
+	}
+
+	function isPressing( time){
+		return (modifiers&BUTTON1_MASK) && skGetTime( downtime) >= time;
+	}
+}
+
+class SKRootView.SystemMouseCursorManager
+{
+	function start( v){
+		skSetCursorVisible( v.mcvisible);
+		skSetCursorType( v.mctype);
+	}
+	
+	function end(){
+	}
+	
+	function cursorChanged( v){
+		skSetCursorType( v.mctype);
+	}
+	
+	function visibleChanged( v){
+		skSetCursorVisible( v.mcvisible);
+	}
+	
+	function update( dt, v){
+	}
+}
+
+class SKRootView.GameMouseCursorManager
+{
+	mcview = null;
+	
+	constructor( v){
+		mcview = v;
+		v.enabled = false;
+	}
+	
+	function start( v){
+		skSetCursorVisible( false);
+		mcview.startMethod( "start", v.mcvisible);
+		v.addChild( mcview);
+	}
+	
+	function end(){
+		mcview.removeFromParent();
+	}
+	
+	function cursorChanged( v){
+		mcview.startMethod( "change", v.mctype);
+	}
+	
+	function visibleChanged( v){
+		mcview.startMethod( v.mcvisible ? "show":"hide");
+	}
+	
+	function update( dt, v){
+		local m = v.mouses[0];
+		mcview.pos( m.mousex, m.mousey, 0.0).transform( v.getInvMatrix());
+		mcview.matdirty = 1;
+		//	ueni idou
+	}
+}
+
+class FileDragSource
+{
+	filelist = null;
+
+	constructor( pl){
+		filelist = array( length( pl));
+		foreach( i, v in pl) filelist[i] = FileRef( v);
+	}
+
+	function dndrender( dndmouse){
+	}
+}

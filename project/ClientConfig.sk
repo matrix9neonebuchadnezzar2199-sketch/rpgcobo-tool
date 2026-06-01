@@ -1,0 +1,145 @@
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	クライアント側で設定、保存されるコンフィグ
+//	セーブデータと同じフォルダにclient.jsonで保存される。
+//	初期化時には、OSやディスプレイのサイズ、CPU/GPU性能などを指標化してデフォルト値を設定する
+//	※このクラスはゲーム起動時の最初に読まれるため、プロジェクトのルートに置く
+
+import VirtualKeyCode;
+import ModifiersMask;
+import GamepadButtonCode;
+
+class ClientConfig
+{
+	static resolist = ["3840x2160","2560x1440","1920x1080","1600x900","1280x720"];	//	大きい順
+	static aspect = 9.0/16.0;
+
+	//	デフォルト設定定義。この内screen,renderは環境で書き換わる。
+	static defaultconf = {
+		game = {
+			lang = null,				//	conf.sk
+			savecurs = 0,				//	コマンドを記憶
+			battlespeed = 4,			//	バトルスピード
+			btnhelp = 1,				//	ボタンのヘルプ表示
+		},
+		screen = {
+			reso_window = "1920x1080",	//	Windows用。1920x1080のウィンドウで表示する。
+			reso_screen = "1920x1080",	//	フルスクリーン時はディスプレイ最大解像度。
+			fullscreen = 0,				//	ゲーム起動時のフルスクリーン設定。F10で切り替え可能。
+		},
+		render = {
+			quality = 3,				//	大雑把な描画品質
+			//	以下RenderHint
+			maxreso = 1080;				//	最大解像度。これ以上はアップスケールで対応。
+			antialias = 1;				//	none, fxaa, smaa。
+			upscale = 1;				//	bilinear, sgsr。
+			ssao_reso = 0;				//	SSAOの解像度。半分、等倍
+			ssao_qua = 1;				//	fast, normal, quality
+			ssgi_reso = 0;				//	SSGIの解像度。半分、等倍。※等倍はとても重いのでSS撮影用
+			ssgi_qua = 1;				//	fast, normal, quality
+			shadow_qua = 1;				//	シャドウの品質はどう設定させようか？ブラー、解像度、
+			blur_qua = 1;				//	色々なところで掛かるブラーの品質を指定。最大サンプリング数。
+		},
+		sound = {
+			bgmvol = 90,				//	
+			sevol = 90,				//	
+			vovol = 90,				//	
+		},
+		control = {
+			usegamepad = 2,				//	ゲームパッドを常に使用
+			usevirtualpad = 1,			//	他デバイスの接続が無ければバーチャルパッドを使用
+		},
+		keyboard_menu = {				//	キーマップは変化のあるもののみ定義。
+		},
+		keyboard_action = {
+		},
+		gamepad_menu = {
+		},
+		gamepad_action = {
+		},
+	};
+
+	static renderhints = [
+		{ maxreso= 720, antialias=1, upscale=1, ssao_reso=0, ssao_qua=0, ssgi_reso=0, ssgi_qua=0, shadow_qua=0, blur_qua=0, },
+		{ maxreso= 900, antialias=1, upscale=1, ssao_reso=0, ssao_qua=1, ssgi_reso=0, ssgi_qua=1, shadow_qua=1, blur_qua=1, },
+		{ maxreso=1080, antialias=2, upscale=1, ssao_reso=0, ssao_qua=2, ssgi_reso=0, ssgi_qua=2, shadow_qua=2, blur_qua=2, },
+		{ maxreso=1080, antialias=2, upscale=1, ssao_reso=1, ssao_qua=1, ssgi_reso=1, ssgi_qua=1, shadow_qua=2, blur_qua=2, },
+		{ maxreso=2160, antialias=2, upscale=1, ssao_reso=1, ssao_qua=2, ssgi_reso=1, ssgi_qua=2, shadow_qua=2, blur_qua=2, },
+	];
+
+	static def_keybtnmap = {
+		[BTN_START] = [VK_ENTER],
+		[BTN_A] = [VK_Z, VK_SPACE],
+		[BTN_B] = [VK_X, VK_ESCAPE],
+		[BTN_X] = [VK_C, VK_TAB],
+		[BTN_Y] = [VK_V, VK_CONTROL],
+		[BTN_LB] = [VK_A],
+		[BTN_RB] = [VK_D],
+	};
+
+	//	デバイスのGPU性能を取得し、LVにして返す。
+	//	GPU辞書を読み込んで、現在の環境からGPUの性能を割り出す。
+	//	LV.0 : 完全フル解像度。よっぽどのゲーミングPC用かSS撮影用。
+	//	LV.1 : 高性能ゲーミングPC。1080pまでフル解像度。
+	//	LV.2 : 一般ゲーミングPC、高性能ゲーミングスマホ。900pまでオリジナル解像度。
+	//	LV.3 : 廉価ゲーミングPC、ゲーミングスマホ。
+	//	LV.4 : オンボードPC、一般スマホ。720pまで。
+	//	LV.5 : 廉価スマホ。720pまで。Switchとかと同等を想定。
+	static function detectGPULV(){
+		return 2;
+	}
+
+	//	現在のディスプレイ解像度を元に最大で表示できるウィンドウ幅を返す
+	function getAvailableWindowSizes(){
+		local d = skGetDisplaySize( []);	//	w, h, xdpi, ydpi, fps
+		return resolist.filter( @( v){
+			local wh = v.split( "x"), w = int( wh[0]), h = int( wh[1]);
+			return (w<d[0]-320 && h<d[1]-128);
+		});
+	}
+	
+	//	
+	function getAvailableDisplaySizes(){
+		local d = skGetDisplaySize( []);	//	w, h, xdpi, ydpi, fps
+		return [
+			d[0].."x"..d[1],
+			...resolist.map( @( v){
+				local wh = v.split( "x"), w = int( wh[0]), h = int( wh[1]);
+				return (w!=d[0] && h!=d[1] && skSupportsDisplaySize( w, h)) ? v : undefined;
+			})
+		];
+	}
+
+	//	実行環境に合わせてclientconfを作成する。
+	static function new(){
+		local gpulv = detectGPULV();
+		local t = deepclone( defaultconf);
+		//	ウィンドウサイズ(Windowsのみ)
+		t.screen.reso_window = getAvailableWindowSizes()[0];
+		//	フルスクリーンサイズ。Windowsならディスプレイ解像度。
+		//	スマホなら最大で1080p。GPUレベルによってここも変える。
+		local d = skGetDisplaySize( []);	//	w, h, xdpi, ydpi, fps
+		t.screen.reso_screen = d[0].."x"..d[1];
+		
+		//	レンダラーの設定をGPUレベルに応じて設定する。
+		return t;
+	}
+	
+	//	
+	static function load(){
+		local f = FileRef( ::savedir, "client.json");
+		local t = decodeJSON( f.load());
+		return t;
+	}
+
+	//	::clientconfをセーブする。暗号化するような内容は無いのでそのままjsonに。
+	static function save(){
+		local f = FileRef( ::savedir, "client.json");
+		local json = encodeJSON( ::clientconf, 5);
+		f.save( json);
+	}
+}
+
+//	clientconfは、プログラムの最初期にロードされるので既に存在している可能性が高い。
+::clientconf <- ClientConfig.new();

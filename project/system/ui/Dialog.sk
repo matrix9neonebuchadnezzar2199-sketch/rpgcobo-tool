@@ -1,0 +1,425 @@
+
+import VirtualKeyCode;
+
+//
+//	ダイアログ機能をSKViewにつける。
+//
+::dialogcnt <- 0;
+
+class DialogBase
+{
+	view = null;
+	tapclose = false;
+	modalclose = 0;
+	adjustbounds = false;
+
+	starttime = 0;
+	buftime = 150;	//
+	ret = null;
+
+	opensnd  = "ui_popup2";
+	retsnd   = "ui_select2";
+	closesnd = "ui_back";
+
+	modal = 1;
+
+	tipskey = null;
+
+	function init( v){
+		view = v;
+		view.addEventListener( MOUSE_EVENT, modalevent);
+		view.addEventListener( KEY_EVENT, keyevent);
+		view.addEventListener( ACTION_EVENT, actionevent);
+		v.ref = this;
+		tipskey = getclassname( this);
+	}
+
+	function show( root=null, posview=null, shownfunc=null){
+		::playSound( opensnd);
+		starttime = skGetTime();
+		local usemodalinc = !root;
+		root = root || ::rootview.findChild( "dlglayer") || ::rootview;
+		suspend();
+		if( posview){
+			if( posview["mat"]){
+				local pos = Vector3D( posview.bnd.w/2, posview.bnd.h/2, 0).transform( posview.mat).transform( root.getInvMatrix());
+				view.pos( pos.x|0, pos.y|0, 0);
+			}else
+			if( posview["w"]){
+				view.pos( posview.x+posview.w>>1, posview.y+posview.h>>1, 0).transform( root.getInvMatrix());
+			}else{
+				view.pos( posview).transform( root.getInvMatrix());
+			}
+		}else{
+			view.pos.set( root.bnd.w>>1, root.bnd.h>>1, 0);
+		}
+		root.addChild( view);	//	先にaddしとかないとadjustBoundsできない。。。。
+		if( adjustbounds) adjustBounds( view, posview, root);
+		view.matdirty = true;
+		if( modal){
+			local oldcurs = ::gpui.gpuitarget;
+			local oldfocus = ::rootview.focusview;
+			view.requestFocus();
+			view.action( "open");
+			view.waitForMethod();
+			::gpui.updateGPUIMap();
+			if( usemodalinc) incModalDialog( 1);
+			local ex = null;
+			try{
+				shown();
+				if( shownfunc) shownfunc();
+				view.startModal( modalbreakcheck.bindenv( this));
+			}catch( _ex){
+				ex = _ex;
+			}
+			if( usemodalinc) incModalDialog( -1);
+			if( view.parent) view.removeFromParent();	//	削除されずにモーダルが抜けた場合は消す
+			if( oldfocus && ::rootview.contains( oldfocus)) oldfocus.requestFocus();
+			if( ::gpui.enabled){
+				::gpui.updateGPUIMap();
+				::gpui.moveCursorTo( oldcurs);
+			}
+			if( ex) throw ex;	//	インタラプトされた場合はダイアログ消去しょりしてからthrowする
+		}else{
+			shown();
+		}
+		return ret;
+	}
+
+	//	viewがrootからはみ出さないように調整。
+	//	PulldownMenuなどはオーバーライドして上下に補正するようにする
+	function adjustBounds( view, posview, root){
+		local p = view.pos, b = view.bnd;
+		if( root.bnd.h < (p.y+b.y+b.h) ) {
+			p.y = root.bnd.h - b.y-b.h;
+		}else if( 0.0 > p.y+b.y) {
+			p.y = -b.y;
+		}
+		if( root.bnd.w < (p.x+b.x+b.w) ) {
+			p.x = root.bnd.w - b.x-b.w;
+		}else if( 0.0 > p.x+b.x) {
+			p.x = -b.x;
+		}
+	}
+
+	//	オーバーライドしてモーダルを解除
+	function modalbreakcheck(){
+		return !(::rootview.contains( view)&&view.modal);
+	}
+	
+	function shown(){
+	}
+
+	inclose = false;
+	function close(){
+		if( inclose) return;
+		inclose = true;
+		if( ret){
+			::playSound( retsnd);
+		}else{
+			::playSound( closesnd);
+		}
+		view.action( "close");
+		view.waitForMethod();
+		if( view.parent) view.parent.removeChild( view);
+	}
+
+	function modalevent( e){
+		switch( e.id){
+		case MOUSE_RELEASED:
+			e.consume();
+			if( tapclose && !checkCancel( VK_ESCAPE)){
+				ret = null;
+				close();
+			}
+			break;
+		case MODAL_MOUSE_PRESSED:
+			e.consume();
+			if( modalclose && !checkCancel( modalclose==2 ? VK_ENTER : VK_ESCAPE)){
+				ret = modalclose==2 ? 1 : null;
+				close();
+			}else{
+				vibe();
+			}
+			break;
+		case MODAL_MOUSE_MOVED:
+			break;
+		}
+	}
+
+	function keyevent( e){
+		if( e.id != KEY_PRESSED) return;
+		switch( e.keycode){
+		case VK_ENTER:
+			//	ここでconsumeするとGPUIでのマウスシミュレーションに進まない。。。
+			e.consume();
+			if( okEnabled() && !checkCancel( e.keycode)){
+				enterClose();
+			}
+			break;
+		case VK_ESCAPE:
+			e.consume();
+			if( cancelEnabled() && !checkCancel( e.keycode)){
+				ret = null;
+				close();
+			}
+			break;
+		default:
+			local modkey = toModifierKeyString( e.keycode, e.modifiers);
+			local menu = ::["skstudio"]["keymenumap"][modkey];
+			if( menu){
+				if( execMenu( menu)) e.consume();
+			}
+			break;
+		}
+	}
+
+	function enterClose(){
+		ret = 1;
+		close();
+	}
+	
+	function execMenu( m){
+	}
+
+	function actionevent( e){
+		local name = e.src["name"];
+		switch( name){
+		case "btn_ok":
+			e.consume();
+			if( !checkCancel( VK_ENTER)){
+				ret = 1;
+				close();
+			}
+			break;
+		case "btn_alt":
+			e.consume();
+			if( !checkCancel( VK_ALT)){
+				ret = 2;
+				close();
+			}
+			break;
+		case "btn_cancel":
+		case "btn_close":
+			e.consume();
+			if( !checkCancel( VK_ESCAPE)){
+				ret = null;
+				close();
+			}
+			break;
+		default:
+			if( name?.startsWith( "btn_choice_")){
+				e.consume();
+				ret = name.substring( 11);
+				close();
+			}
+		}
+	}
+
+	function okEnabled(){
+		return view.findChild( "btn_ok")?.isAvailable();
+	}
+
+	function cancelEnabled(){
+		return view.findChild( "btn_cancel")?.isAvailable();
+	}
+
+	//	キャンセル処理を入れたいならここ
+	function checkCancel( c){
+		return skGetTime( starttime) < buftime;
+	}
+
+	function vibe(){
+		view.action( "vibe");
+	}
+
+	function incModalDialog( d){
+		local old = ::dialogcnt;
+		::dialogcnt += d;
+		if( !old != !::dialogcnt){
+			::rootview.broadcastEvent( {cmd="dialog_active", state=::dialogcnt});
+		}
+	}
+}
+
+class Popup extends DialogBase
+{
+	modalclose = 1;
+	adjustbounds = true;
+	poplayout = 0;					//	0,1,2:下上配置の左中右 3,4,5:右左配置の上中下
+
+	constructor( v){
+		init( v);
+		view.addEventListener( BROADCAST_EVENT, broadevent);
+	}
+
+	//	
+	function broadevent( e){
+		local bc = e["actioncmd"];
+		switch( bc["cmd"]){
+		case "cancel_popup":
+		case "screen_moving":
+			close();
+			break;
+		}
+	}
+	
+	//	コンテキストメニューならposviewにマウス位置、プルダウンメニューならメニューのボタンが入る。
+	function adjustBounds( view, posview, root){
+		local pr;
+		if( posview instanceof Rect2D){
+			pr = Rect2D( posview).transform( root.getInvMatrix());
+		}else
+		if( posview instanceof SKView){
+			view.updateMatrix();
+			pr = Rect2D( 0, 0, posview.bnd.w, posview.bnd.h).transform( posview.mat).transform( root.getInvMatrix());
+		}
+		if( pr){
+			local bnd = root.bnd;
+			local vr = Rect2D( 0, 0, view.bnd.w, view.bnd.h).transform( view.mat).transform( root.getInvMatrix());
+			if( poplayout<=2){
+				//	下に伸ばせるか、伸ばせないなら上に
+				local dx = pr.w * (poplayout*0.5);
+				if( pr.y+pr.h + vr.h <= bnd.h || pr.y - vr.h < 0.0){
+					view.pos( pr.x+dx, pr.y+pr.h, 0.0);
+				}else{
+					view.pos( pr.x+dx, pr.y-vr.h, 0.0);
+				}
+			}else{
+				//	まず右に伸ばせるか、伸ばせないなら左に
+				local dy = pr.h * ((poplayout-3)*0.5);
+				if( pr.x+pr.w + vr.w <= bnd.w || pr.x - vr.w < 0.0){
+					view.pos( pr.x+pr.w, pr.y+dy, 0.0);
+				}else{
+					view.pos( pr.x-vr.w, pr.y+dy, 0.0);
+				}
+			}
+		}
+		return super.adjustBounds( view, posview, root);
+	}
+}
+
+//	主に演出的な機能拡張をしたダイアログ
+//	アニメーションとバックグラウンドの暗転、ダイアログ表示のスタックなど。
+//	以前のDialogも不要ではないので残す
+//
+//	ダイアログ本体以外に↓が必要。
+//	bg.ui
+//	frame.ui
+//	
+
+class Dialog extends DialogBase
+{
+	static BGPATH = "/ui/dialog/bg.ui";
+	static DIALOGPATH = "/ui/dialog/frame.ui";
+	
+	g = null;
+
+	opensnd  = "ui_menu";
+	retsnd   = "ui_select2";
+	closesnd = "ui_back2";
+
+	constructor( vpath){
+		g = #GlobalState();
+		local v = g.createDialogView( vpath);
+		init( v);
+	}
+
+	//	Dialog2は表示箇所は指定できない。
+	function show(){
+		::playSound( opensnd);
+		starttime = skGetTime();
+		local root = ::rootview.findChild( "dlglayer") || ::rootview;
+		suspend();	//	suspendいらんかな？
+		local d0 = g.stk.last();
+		local br = root.getOriginalSize();
+		if( d0){
+			d0.view.action( "goback");	//	奥に引っ込む
+		}else{
+			g.bg = ::loadSKView( BGPATH);
+			g.bg.action( "show");		//	最初はbgを表示
+			g.bg.enabled = false;
+			g.bg.stretchSize( root.bnd.w, root.bnd.h);	//	全画面表示
+			g.bg.bindrect = ((0,0),(br[0],br[1]));
+			root.addChild( g.bg);			//	dlglayerに
+		}
+		g.stk .. this;
+		view.stretchSize( root.bnd.w, root.bnd.h);	//	全画面表示
+		view.bindrect = ((0,0),(br[0],br[1]));
+		//
+		local oldcurs = ::gpui.gpuitarget;
+		local bak = ::rootview.focusview;
+		root.addChild( view);
+		view.action( d0?"gofront" : "show");
+		view.waitForMethod();
+		::gpui.updateGPUIMap();
+		view.requestFocus();
+		incModalDialog( 1);
+		local ex = null;
+		try{
+			shown();
+			view.startModal( modalbreakcheck.bindenv( this));
+		}catch( _ex){
+			ex = _ex;
+		}
+		incModalDialog( -1);
+		if( view.parent) view.removeFromParent();	//	削除されずにモーダルが抜けた場合は消す
+		if( bak && ::rootview.contains( bak)) bak.requestFocus();
+		if( ::gpui.enabled){
+			::gpui.updateGPUIMap();
+			::gpui.moveCursorTo( oldcurs);
+		}
+		if( ex) throw ex;	//	インタラプトされた場合はダイアログ消去しょりしてからthrowする
+		return ret;
+	}
+
+	inclose = false;
+	function close(){
+		if( inclose) return;
+		// if( view.getRoot() != ::rootview) return;
+		inclose = true;
+		if( ret){
+			::playSound( retsnd);
+		}else{
+			::playSound( closesnd);
+		}
+		//
+		g.stk.pop();
+		local d0 = g.stk.last();
+		if( d0){
+			view.actionAndDie( "hide");		//	手前上に拡大しながら消える
+			d0.view.action( "gofront");		//	中央から拡大しながら表示
+		}else{
+			view.actionAndDie( "hide");		//	奥に縮小しながら消える
+			g.bg.actionAndDie( "hide");		//	フェードアウト。killもやる
+			g.bg = null;
+		}
+		view.waitForMethod();
+		view.removeFromParent();
+		//	フォーカスやGPUIの移動はshow内で入れ替えてる。
+	}
+}
+
+class Dialog.GlobalState	//	Dialog2のグローバルな
+{
+	stk = null;
+	vdata = null;		//	SKViewData : こいつの中身を変えつつダイアログを作る
+	bg = null;			//	SKView : 最初の一回目に表示される暗転
+
+	constructor(){
+		stk = [];
+		vdata = ::getResourceContent( ::Dialog.DIALOGPATH);
+	}
+
+	//	frame.uiの中身を直接変えてダイアログのSKViewを作る。
+	function createDialogView( vpath){
+		local e = vdata.rootdata.findChild( "dlgbody");
+		e.link = vpath;
+		local v = vdata.createSKView();
+		v.pickable = false;
+		//	ストレッチするタイプ、しないタイプは元の.uiのストレッチ設定に従う
+		local vd = ::getResourceContent( vpath);
+		v.findChild( "dlgbody").setParam( SKViewPropertyID.STRETCHALIGN, vd.rootdata.getStatic( SKViewPropertyID.STRETCHALIGN));
+		return v;
+	}
+}

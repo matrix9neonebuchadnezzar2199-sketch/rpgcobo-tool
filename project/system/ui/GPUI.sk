@@ -1,0 +1,1122 @@
+/**
+ *	GPUI
+ *	ゲームパッドでUIをコントロールするための機能を共通化する。
+ *	また、ゲームパッド未接続の時でもキーボードでコントロール可能にする。
+ *	方向キーでSKViewを選択するが、これはマウスカーソルの移動によって行われる。
+ *	クリックやプレスなどもゲームパッドのバーチャルボタンでマウスイベントとして発生させる。
+ *
+ *	GPUI() : GPUIを生成し、処理スレッドを立ち上げる。::gpuiが設定される。GPUIはある程度重い機能なので要らないなら使わないように。
+ *	::gpui.setGPUIDevice( gp) : GamepadもしくはVirtualPadのデバイスを設定する。nullの場合はキーボードのみ有効。
+ *	::gpui.enableGPUI( bool, sel) : 機能をオン・オフする。
+ *	
+ *	※プラットフォームや接続されているデバイスによってGPUIのモードを切り替える。
+ *	・FPS操作のゲームの場合。FPSはマウスムーブがカメラ回転になるので、その状態でUIのカーソル移動は不可能。
+ *	(1) PC+キーボードマウス		: GPUI操作不可。ホイール操作があるのでリストのタッチスクロールは不可。
+ *	(2) PC+ゲームパッド			: GPUI操作可。マウス操作も許可で、マウス移動したときにカーソル表示。
+ *	(3) ゲーム機				: GPUI操作可。全ての操作はゲームパッドで行う。
+ *	(4) ゲーム機+タッチパネル	: GPUI操作可。Switchのタッチパネル等。↑と条件は一緒。タッチスクロール可。
+ *	(5) スマホ+タッチパネル		: GPUI操作可。全ての操作はタッチパネルで行い、バーチャルコントローラーからカーソル移動も出来る。
+ *	(6) スマホ+ゲームパッド		: GPUI操作可。(2)と大体同じだがカーソル表示だけ不可というか無い。
+ *	・FPS以外のゲームの場合。常にGPUI操作可能。
+ *
+ *	UIFeatureとして以下のビットの組み合わせで全てのケースを網羅できる。
+ *	UI_GAMEPAD - ゲームパッド操作を許可する。ボタンによるカーソル移動。
+ *	UI_TOUCH   - タッチ操作を許可する。リストのタッチスクロール等。
+ *	UI_MOUSE   - マウス操作を許可する。
+ *	::uifeatureで指定する。enabled状態になって各操作が許可される。
+ *	uifeatureはデバイス接続などで動的に変化する。各UIはそれぞれ自主的にuifeatureを監視して処理を分岐するべし。
+ */
+
+enum UIFeature
+{
+	UI_KEYBOARD = 1
+	UI_GAMEPAD = 2
+	UI_TOUCH = 4
+	UI_MOUSE = 8
+};
+
+enum GamepadStateID
+{
+	GAMEPAD_NOTCONNECTED	= 0		// 未接続
+	GAMEPAD_PENDING			= 1		// 接続したが、使用するか未決定
+	GAMEPAD_ENABLED			= 2		// 接続したゲームパッドを使用
+	GAMEPAD_DISABLED		= 3		// 接続したゲームパッドを未使用
+	GAMEPAD_DISCONNECTED	= 4		// 使用中のゲームパッドが予期せず外れた。
+};
+
+enum GamepadConnectActionID
+{
+	ACTION_DISABLE			= 0		// 無効化する
+	ACTION_ASK				= 1		// 有効化するか確認する
+	ACTION_ENABLE			= 2		// 有効化する
+};
+
+//	Gamepadにキーマッピングの機能を追加
+Gamepad.mapping <- null;			//	ボタン、軸のマッピングオブジェクト。gamepad.jsonで定義。Gamepad.idとのマッピングが保存されている
+
+local axnames = ["axis0","axis1","axis2","axis3","axis4","axis5"];
+
+//	キーマッピングを適用する。破壊的な操作。
+function Gamepad::applyMapping( m){
+	local b = buttonmask, a = [axis0, axis1, axis2, axis3, axis4, axis5];
+	buttonmask = 0;
+	axis0 = axis1 = axis2 = axis3 = axis4 = axis5 = 0.0;
+	foreach( i, mapi in m.axes){
+		if( mapi >= 0) this[axnames[i]] = a[mapi];
+	}
+	foreach( i, mapi in m.btns){
+		if( mapi >= 0) if( b&(1<<mapi)) buttonmask |= (1<<i);
+	}
+}
+
+::uifeature <- UIFeature.UI_MOUSE | UIFeature.UI_KEYBOARD;
+::virtualpad <- null;	//	設定しておけばバーチャルパッドを仮想ゲームパッドとして使用可能
+
+import VirtualKeyCode;
+import ModifiersMask;
+import GamepadButtonCode;
+import GamepadType;
+
+local v_1 = Vector3D(), v_2 = Vector3D(), v_3 = Vector3D(), r_1 = Rect2D(), r_2 = Rect2D(), r_3 = Rect2D();
+
+
+local pickablePos( v, root, selectoutside=false){
+	if( !v.isAvailable() || !v.pickable) return null;
+	local gpui = v.gpui;
+	if( !gpui.cursmovable) return null;
+	local p = gpui.getCursorPos();
+	local target = root.pick( p.x, p.y, true, v_2);
+	if( !target && selectoutside) return p;	//	外を指した時にtrue返す・・・でok?
+	if( target==v || v.contains( target)) return p;
+	//	中心の一点のチェックだけだと部分的に隠されてるときに移動できなくなる。
+	local r = Math.min( v.bnd.w, v.bnd.h) * 0.25;
+	for( local l = 0;l < 4;l ++){
+		local th = (l+0.5)*Math.HPI, dx = Math.sin( th) * r, dy = Math.cos( th) * r;
+		target = root.pick( p.x+dx, p.y+dy, true, v_2);
+		if( target==v || v.contains( target)) return p.add( dx, dy, 0);
+	}
+	return null;
+}
+
+class GPUITarget
+{
+	cursmovable = true;			//	選択可能か
+	view = null;				//
+	regionview = null;			//	選択範囲を指定する。viewがそのまま入る場合が多い。
+
+	function setGPUIView( v){
+		view = v;
+		v.gpui = this;
+	}
+
+	function getGPUIGroup(){
+		for( local p = view; p; p = p.parent){
+			if( p.gpui instanceof ::GPUIGroup) return p.gpui;
+		}
+		return null;	//	これはあり得ない
+	}
+
+	function getCursorPos(){
+		return v_3( view.bnd.w*0.5, view.bnd.h*0.5, 0.0).transform( view.mat);	//	真ん中にする
+	}
+
+	function getCursorBounds(){
+		local v = regionview || view;
+		return r_1.set( 0, 0, v.bnd.w, v.bnd.h).transform( v.mat);
+	}
+
+	//	カーソルが指定したSKViewから移動できるか返す。
+	//
+	function canEnterCursorFrom( v, dir){
+		return true;
+	}
+
+	//	カーソルを指定したSKViewに移動できるか返す。
+	//
+	function canExitCursorTo( v, dir){
+		return true;
+	}
+
+	//	マウスカーソルが乗っているか
+	function isCursorOn(){
+		local p = ::getMousePos( 0, view);
+		if( p.x<0.0 || p.y<0.0 || p.x>=view.bnd.w || p.y>=view.bnd.h) return false;
+		if( view["innerpick"]){
+			local lp = p.transform( view.getInvMatrix());
+			if( !view.innerpick( lp.x, lp.y)) return false;
+		}
+		return true;
+	}
+
+	function isPickable(){
+		local pp = pickablePos( view, ::rootview);
+		return pp;
+	}
+	
+	//	
+	function enableStateChanged( b){
+	}
+}
+
+class GPUIGroup
+{
+	cursmovable = true;			//	選択可能か
+	view = null;				//
+	xloop = 0;					//	カーソル移動時にx方向にループするか。 0=move, 1=loop
+	yloop = 0;					//	カーソル移動時にy方向にループするか。 0=move, 1=loop
+	scrollable = false;			//	trueの場合カーソルがあったターゲットを表示できるようにviewの位置がスクロールする。
+
+	gpuimap = null;				//	gpui::updateGPUIMap()で入る
+
+	function setGPUIView( v){
+		view = v;
+		v.gpui = this;
+	}
+
+	//	表示範囲の中心
+	function getCursorPos(){
+		local r = view.getVisibleRect( null, r_1);
+		return v_1( r.x+r.w*0.5, r.y+r.h*0.5, 0.0);
+	}
+
+	function scrollTargetToVisible( tgt){
+		local v = tgt.view;
+		local r = r_1.set( 0.0, 0.0, v.bnd.w, v.bnd.h);
+		v.scrollRectToVisible( v, r);
+	}
+
+	function moveCursor( tgt0, dir){
+		if( gpuimap) return gpuimap.moveCursor( tgt0, dir);
+	}
+}
+
+
+/**
+ *	GPUITargetのマップをグループ化する。
+ *	リストやスクロールなんかは階層化された子グループとなる。
+ *
+ */
+class GPUIMap
+{
+	view = null;
+	targets = null;
+	parent = null;
+	children = null;
+
+	constructor( v){
+		view = v;
+		targets = [];
+		v.gpui.gpuimap = this;
+	}
+
+	function clear(){
+		targets.clear();
+		children?.clear();
+	}
+
+	function mapTargets( a){
+		for( local l = length( a)-1; l >= 0; l --){
+			local v = a[l];
+			if( !v.isAvailable()) continue;
+			local g = v.gpui;
+			if( !g){
+				if( v.children && !mapTargets( v.children)) return false;
+			}else
+			if( g.cursmovable){
+				if( g instanceof ::GPUIGroup){
+					//	子グループを作りマップする。
+					if( !children) children = [];
+					local gm = ::GPUIMap( v);
+					children .. gm;
+					gm.parent = this;
+					gm.mapTargets( v.children);
+				}else{
+					targets .. g;
+				}
+			}
+			if( v.modal) return false;		//	モーダルで打ち止め。
+		}
+		return true;
+	}
+
+	//	r0からr1にvのベクトルでカーソル移動することが出来るかチェックする。
+	//
+	function _movecchk( r0, r1, dir){
+		switch( dir){
+		case BTN_UP:	return r0.y >= r1.y+r1.h-3;
+		case BTN_RIGHT:	return r0.x+r0.w <= r1.x+3;
+		case BTN_DOWN:	return r0.y+r0.h <= r1.y+3;
+		case BTN_LEFT:	return r0.x >= r1.x+r1.w-3;
+		}
+		return true;
+	}
+
+	//	自分及び子グループの中から指定した方向の隣にあるカーソルターゲットを選択する。
+	//	見つからなかった場合は、loopが設定されている場合はループ方向に座標をリセットしたうえで再検索。
+	//	loopが設定されていない場合は、親グループに投げる。
+	//
+	function moveCursor( tgt0, dir, searchparent=true, _r0=null){
+		local sx, sy;
+		local r0 = r_2;
+		if( _r0){
+			r0.set( _r0);
+		}else
+		if( tgt0){
+			r0.set( tgt0.getCursorBounds());
+		}else{
+			local s = skGetScreenSize( #[0,0]), m = ::rootview.mouses[0];
+			r0.set( Math.clamp( m.mousex-1, 0, s[0]-2), Math.clamp( m.mousey-1, 0, s[1]-2), 2, 2);
+		}
+		sx = r0.x+r0.w*0.5;
+		sy = r0.y+r0.h*0.5;
+		local loopmode = (dir>=0) && ((dir&2) ? view.gpui.xloop : view.gpui.yloop);
+		local selectoutside = (dir>=0) && view.gpui.cursmovable;
+		local scrollable = view.gpui.scrollable;
+	LOOP:
+		local minlen = 1.0e+10;
+		local minc = null;
+		local _sqrt = Math.sqrt;
+		local _clamp = Math.clamp;
+		foreach( tgt in targets) {
+			local v = tgt.view;
+			if( tgt==tgt0 || !tgt.canEnterCursorFrom( tgt0, dir) || (tgt0&&!tgt0.canExitCursorTo( tgt, dir)) || (!scrollable && !pickablePos( v, view, selectoutside))) continue;		//	クリック可能なターゲットのみチェックする。
+			//	移動先となりえるかチェック。もっと賢く。
+			local r = tgt.getCursorBounds();
+			if( !_movecchk( r0, r, dir)) continue;
+			//
+			local cx = _clamp( sx, r.x, r.x+r.w);
+			local cy = _clamp( sy, r.y, r.y+r.h);
+			switch( dir){	//	カーソルが向きやすいようにバイアス
+			case BTN_RIGHT: cx -= 1; break;
+			case BTN_LEFT: cy += 1; break;
+			case BTN_DOWN: cx += 1; break;
+			case BTN_UP: cy -= 1; break;
+			}
+			local _dx = (cx-sx)*(cx-sx), _dy = (cy-sy)*(cy-sy), _d = _sqrt(_dx + _dy);
+			//	近くでは向きが合ってることを重視するため進行方向の距離に掛ける係数を小さく
+			if( dir>=0){
+				local w = 0.01 + _clamp( (_d-64.0)/128.0, 0.0, 1.0) * 0.01;
+				_d = (dir&2) ? _sqrt(_dy + _dx*w) : _sqrt(_dx + _dy*w);
+			}
+			if( _d < minlen) {
+				minlen = _d;
+				minc = tgt;
+			}
+		}
+		//	子グループに対する検索
+		foreach( cg in children) {
+			if( !pickablePos( cg.view, view)) continue;				//	クリック可能なアイテムのみチェックする。
+			local r = cg.view.getVisibleRect( null, r_1);
+			if( !_movecchk( r0, r, dir)) continue;
+			local t = cg.moveCursor( tgt0, dir, false, r_3.set( r_2));
+			if( t && t[1] < minlen){
+				minlen = t[1];
+				minc = t[0];
+			}
+		}
+		if( !minc){
+			//	ループ検索チェック
+			if( loopmode==1){
+				loopmode = 0;
+				local r = r_1.set( 0, 0, view.bnd.w, view.bnd.h).transform( view.mat);
+				switch( dir) {
+				case BTN_UP:    sy += r.h; r0.y += r.h; break;	//	scy = (sy+=r.h); これなんかだめ
+				case BTN_RIGHT: sx -= r.w; r0.x -= r.w; break;
+				case BTN_DOWN:  sy -= r.h; r0.y -= r.h; break;
+				case BTN_LEFT:  sx += r.w; r0.x += r.w; break;
+				}
+				goto LOOP;
+			}else
+			if( searchparent && parent){
+				return parent.moveCursor( tgt0, dir);
+			}
+		}
+		return minc ? (minc,minlen) : null;
+	}
+}
+
+import UIFeature;
+import GamepadStateID;
+import GamepadConnectActionID;
+import SystemFlags;
+
+class GPUI
+{
+	static vkvbmap = {	//	※ClientConfigで置き換わる
+		[VK_LEFT] = BTN_LEFT,
+		[VK_UP] = BTN_UP,
+		[VK_RIGHT] = BTN_RIGHT,
+		[VK_DOWN] = BTN_DOWN,
+		//	
+		[VK_SPACE] = BTN_A,
+		[VK_ESCAPE] = BTN_B, 
+		[VK_ALT] = BTN_X, 
+		[VK_CONTROL] = BTN_Y, 
+		[VK_ENTER] = BTN_START, 
+		[VK_Q] = BTN_LB, [VK_PAGE_DOWN] = BTN_ZL,
+		[VK_E] = BTN_RB, [VK_PAGE_UP] = BTN_ZR,
+	};
+
+	static swap_enter_escape = false;	//	決定ボタンとキャンセルボタンの割当を逆にする
+	static targetviewpath = "/system/asset/defcursor.png";
+	static gpmouseviewpath = "/system/asset/freecursor.png";		//	GamepadMouseCursorで使う。
+	static emuosname = null;			//	PCで他操作のテストを行いたい時に指定する
+
+	MAP_UPDATE_TIME = 200;			//	gpuigroupのアップデート周期(ミリ秒)
+
+	enabled = false;				//	bool : GPUIの処理が有効か。
+
+	thread = null;					//	thread : runが呼ばれるスレッド。基本的にずっと動作する。
+	gpuimap = null;					//	GPUIMap :
+	maprefreshtime = 0;
+
+	//	ターゲット、カーソル
+	gpuitarget = null;				//	GPUITarget : 現在カーソルが選択しているターゲット。cursmovableに限る。
+	gpdevice = null;				//	GPUIDevice : ゲームパッドデバイス
+	vpdevice = null;				//	GPUIDevice : バーチャルパッドデバイス
+
+	mousecurs = null;				//	MouseCursor : enabled,cursfreeの状態で表示が切り替わる。
+	cursfree = false;				//	bool : フリーカーソルモード。GPUIが有効なときにマウスやタッチ操作や、ゲームパッドでenableGPFreeCursor( true)の時にaxis操作された時にtrue
+	curslock = false;				//	bool : 
+
+	//	Gamepad接続
+	gpconaction = ACTION_ASK;		//	int : ゲームパッドが接続されているときの動作。
+	gpkeepalive = false;			//	bool : ゲーム機でtrue
+	gpstat = 0;						//	GamepadStateID : 変化するとrootviewにイベントとして伝えられる。
+	gamepad = null;					//	Gamepad|null : 接続されたゲームパッド。
+	gpchecktime = 0;				//	
+	gpautoupdate = true;			//	bool
+	unsupportgpmap = null;			//	サポートされないゲームパッドが接続したらここに追加
+	
+	//	マウスカーソル
+	mousevisible = true;
+	gppos = (0,0);
+
+	osstate = null;
+
+	constructor(){
+		::gpui <- this;
+		local gg = GPUIGroup();
+		gg.setGPUIView( ::rootview);
+		gpuimap = GPUIMap( ::rootview);
+		unsupportgpmap = {};
+		initPlatform();
+		thread = newthread( "GPUI thread");
+		thread.start( runGPUI, this);
+		::rootview.addPostEventListener( KEY_EVENT, keyevent);
+		::rootview.addPostEventListener( GPUI_EVENT, gpuievent);
+	}
+
+	function initPlatform(){
+		osstate = getOSState();
+		applyOSState( osstate);
+	}
+
+	//	
+	function updateOSState(){
+		local st = getOSState();
+		if( st<>osstate){
+			applyOSState( st);
+			osstate = st;
+		}
+	}
+
+	function applyOSState( st){
+		gpkeepalive = st.gpkeepalive;
+		gpautoupdate = st.gpautoupdate;
+		gpconaction = st.gpconaction;
+		::uifeature = st.uifeature;
+		createGPUIDevice();					//	※作り直さなくて良いなら作り直さない
+	}
+
+	//	プラットフォーム毎に状態チェック。
+	//	
+	function getOSState(){
+		local osname = emuosname || skGetOSName();
+		switch( osname){
+		case "Switch":
+			return {
+				gpkeepalive = true
+				gpautoupdate = true
+				gpconaction = ACTION_ENABLE
+				uifeature = UI_GAMEPAD | (::NX.getOperationMode()==0 ? UI_TOUCH : 0)	//	OperationMode_HandheldじゃないとUI_TOUCH無し
+			};
+		case "PS4":
+		case "PS5":
+			return {
+				gpkeepalive = true
+				gpautoupdate = true
+				gpconaction = ACTION_ENABLE
+				uifeature = UI_TOUCH | UI_GAMEPAD
+			};
+		case "Android":
+		case "iOS":
+			//	スマホの場合はゲームパッドのみ着脱の状態が変化する。キーボード、マウスは対応しない。
+			local gpbit = ::uifeature & UI_GAMEPAD;
+			return {
+				gpkeepalive = false
+				gpautoupdate = true
+				gpconaction = ACTION_ENABLE
+				uifeature = UI_TOUCH | gpbit
+			};
+		case "WebGL":
+			//	WebGL時には、PC場合はキーボードあり、スマホの場合はキーボード無しと断定しておく。
+			//	"Windows","Macintosh","Linux"とかあればPCかな。保守的にみるとキーボードは無いとしたほうが良い。
+			local _os = ::WebGL.getOSName();	//	UserAgentからosname取得
+			local ispc = _os=="Windows" ||_os=="Macintosh"||_os=="Linux";
+			return {
+				gpkeepalive = false
+				gpautoupdate = true
+				gpconaction = ACTION_ENABLE
+				uifeature = ispc ? UI_MOUSE | UI_KEYBOARD : UI_TOUCH
+			};
+		default:	//	== "Windows"
+			//	WindowsではskGetSystemFlagsによって接続されたデバイスをチェックしていかようにも動くようにする
+			local gpbit = ::uifeature & UI_GAMEPAD;
+			local f = skGetSystemFlags();
+			local t = {
+				gpkeepalive = false
+				gpautoupdate = true
+				gpconaction = ACTION_ENABLE
+				uifeature = ((f&SYSFLAG_MOUSE)?UI_MOUSE:0) | ((f&SYSFLAG_TOUCHPANEL)?UI_TOUCH:0) | ((f&SYSFLAG_KEYBOARD)?UI_KEYBOARD:0) | gpbit
+			};
+			if( ::["SteamAPI"]){	//	SteamDeckの場合はゲームパッドネイティブに。
+				if( ::SteamAPI.IsSteamRunningOnSteamDeck()){
+					t.gpkeepalive = true;
+					t.uifeature = (t.uifeature&~UI_KEYBOARD) | UI_GAMEPAD;	//	キーボード接続してるかはチェックすべきか。
+					t.gpconaction = ACTION_ENABLE;
+				}
+			}
+			return t;
+		}
+	}
+
+	function enableGPUI( b, sel=null){
+		if( b == enabled) return;
+		enabled = b;
+		cursfree = false;
+		if( b){
+			updateGPUIMap();
+			if( sel && pickablePos( sel.view, ::rootview)){
+				moveCursorTo( sel);
+			}
+		}else{
+			setGPUITarget( null);
+			updateMouseVisible();
+		}
+	}
+
+	function setGPUIDevice( d){
+		device = d;
+	}
+
+	function getGPUIDevice(){
+		return gpdevice || vpdevice;
+	}
+
+	function updateGPUIMap(){
+		if( enabled){
+			gpuimap.clear();
+			gpuimap.mapTargets( ::rootview.children);
+			maprefreshtime = skGetTime() + MAP_UPDATE_TIME;
+		}
+	}
+
+	//	カーソル変更をロックする。
+	function lockCursorChange( b){
+		curslock = b;
+		if( !b) invalidateGPUIMap();
+	}
+
+	//	現在の選択の見た目をそのままに別のカーソルに移したい場合に呼ぶ。
+	//	※かなり
+	function backupCursor(){
+		if( gpuitarget){
+			gpuitarget.view.enabled = false;
+			return gpuitarget;
+		}
+	}
+
+	//	backupCursorで退避したカーソルを元に戻す。
+	function restoreCursor( tgt){
+		if( tgt){
+			tgt.view.enabled = true;
+			moveCursorTo( tgt);
+			suspend();	//	eventthreadだとうまく動作しない
+		}
+	}
+
+	//	GPUIマップをすぐにアップデートするようにする。メニューを表示して表示のアニメーションが完了したり
+	//	リストのスクロール後などに呼び出すと良い。
+	function invalidateGPUIMap(){
+		maprefreshtime = 0;		//	次のrunGPUIループで更新される
+	}
+
+	//	定期アップデート処理。GPUIMapの再生成処理、カーソルロストチェック、GPUIEvent
+	//
+	function runGPUI(){
+		//local ss = skGetScreenSize( #[0,0]);
+		local t0 = skGetTime();
+		for( ;;){
+			suspend();
+			local t = skGetTime(), dt = t-t0;
+			t0 = t;
+			//	イベントスレッド処理中は何もしない。
+			if( ::rootview.dispatchlock){ continue; }
+			//	ゲームパッド接続状況更新
+			if( gpautoupdate) updateGPState( dt);
+			//	隠されたマウスカーソルを再表示するチェック
+			updateHiddenMouse( dt);
+			//	デバイスアップデート。GPUIEventを生成してpostEventする。
+			local evsrc = gpuitarget["view"] || ::rootview.focusview || ::rootview;
+			(gpdevice||vpdevice)?.update( dt, evsrc);
+			if( !enabled){ continue; }
+			//	GPUIMapのマップ再生成。
+			if( skGetTime() >= maprefreshtime){
+				updateGPUIMap();
+				// printf( "REFRESH GPUIMAP!!!!\n");
+			}
+			//	カーソルロストチェック。ロストした場合はすぐ別のGPUITargetが見つかる場合はそこに移動。
+			//	見つからない場合はひとまずカーソル描画を消してから再びカーソルが見つかるまで検索を続ける。
+			if( !curslock){
+				if( gpuitarget){
+					if( /*!cursfree && */ !pickablePos( gpuitarget.view, ::rootview)){
+						//	ロストしてフリーカーソルじゃない場合に
+						//	↑フリーカーソルでもpick出来ない状態の場合はやるべき
+						setGPUITarget( null);
+					}else{
+						//	カーソルは有効。gpuitargetに対して位置をアップデートする？
+					}
+				}else{
+					local tgt = gpuimap.moveCursor( null, -1)[0];
+					if( tgt){
+						//	moveCursorTo( tgt);
+						//	hideMouse( v);	//	カーソル移動時にはマウスを非表示化
+					}
+				}
+			}
+		}
+	}
+
+	//	カーソルをリセットする。
+	//	※
+	function resetCursor(){
+		updateGPUIMap();
+		moveCursorTo( gpuimap.moveCursor( null, 0)[0]);
+	}
+
+	//	※ターゲットの移動はこのメソッドから行う。gpuitargetの変更自体はsetGPUITarget。
+	//	指定したターゲットにマウスを移動する。
+	function moveCursorTo( tgt){
+		curslock = false;
+		if( tgt){
+			local pp = pickablePos( tgt.view, ::rootview);
+			if( !pp){
+				tgt.getGPUIGroup()?.scrollTargetToVisible( tgt);	//	スクロールを試す
+				suspend();
+				pp = pickablePos( tgt.view, ::rootview);
+			}
+			if( pp) setGPUITarget( tgt);	//	あくまでマウスでクリックできる対象のみ
+		}
+	}
+
+	function viewinfo( v){
+		local sb = #StringBuffer(); sb.clear();
+		if( !v){
+			sb .. "null";
+		}else{
+			sb .. v.name;
+			while( v.parent){ v = v.parent; sb .. "." .. v.name; }
+		}
+		return string( sb);
+	}
+
+	//	ターゲットをセットする。nullの場合は表示をオフにする。
+	//	このメソッドで外部からカーソルにセットしたいGPUITargetを指定することが出来る。
+	//
+	function setGPUITarget( tgt){
+		curslock = false;
+		if( tgt != gpuitarget){
+			if( gpuitarget){
+				local e = Event().setGPUIEvent( gpuitarget.view, GPUI_DESELECTED, 0); e.dst = tgt["view"];
+				::rootview.postEvent( e);
+			}
+			if( tgt){
+				local e = Event().setGPUIEvent( tgt.view, GPUI_SELECTED, 0); e.dst = gpuitarget["view"];
+				::rootview.postEvent( e);
+			}
+			gpuitarget = tgt;
+			updateMouseVisible();
+		}
+	}
+
+	function updateMouseVisible(){
+		::rootview.setMouseVisible( isMouseVisible());
+	}
+	
+	function setMouseVisible( b){
+		mousevisible = !!b;
+		mousecurs.updateMouseVisible();
+	}
+
+	function isMouseVisible(){
+		local b = mousevisible && (!enabled || cursfree);
+		return b;
+	}
+
+	function updateHiddenMouse( dt){
+		if( enabled && !cursfree){
+			local p = skGetMousePos( #(0,0));
+			local dx = p[0]-gppos[0], dy = p[1]-gppos[1];
+			if( dx*dx + dy*dy >= 200.0){
+				cursfree = true;
+				updateMouseVisible();
+			}
+		}
+	}
+
+	//	カーソルイベントを処理する。
+	//	デフォルト処理をオーバーライドしてカーソルを移動させないとかやれる。
+	//
+	function gpuievent( e){
+		if( !enabled || e.consumed==1) return;
+		//	キーコードから先にswitchしたほうが見やすい
+		local eid = e.id, c = e.keycode;
+		switch( c){
+		case BTN_UP:
+		case BTN_LEFT:
+		case BTN_RIGHT:
+		case BTN_DOWN:
+			if( eid == GPUI_REPEATED || eid == GPUI_PRESSED){
+				// if( gpuitarget && !gpuitarget.isCursorOn() && pickablePos( gpuitarget.view, ::rootview)){
+				// 	moveCursorTo( gpuitarget);	//	選択からマウスが外れちゃってる場合は戻すのみ
+				// 	updateGPUIMap();
+				// 	hideMouse( gpuitarget);	//	カーソル移動時にはマウスを非表示化
+				// }else{
+					local g = gpuitarget?.getGPUIGroup() || gpuimap;
+					local v = g.moveCursor( gpuitarget, gpuitarget?c:-1)[0];
+					// printf( "GPUI moveto? %S\n", viewinfo( v["view"]));
+					// foreach( i,v in g["gpuimap"]["targets"]) printf( "  [%d] - %S\n", i, viewinfo( v["view"]));
+					// printf( "---- lk %S fr %S  %S\n", curslock, cursfree, !gpuitarget ? "_" : pickablePos( gpuitarget.view, ::rootview));
+					if( v){
+						::playSound( "ui_move");
+						e.consume();
+						local gv = v.getGPUIGroup();
+						if( gv.scrollable && gv.scrollTargetToVisible( v)){
+							::rootview.updateMatrixAll( true);
+						}
+						moveCursorTo( v);
+						updateGPUIMap();
+						hideMouse( v);	//	カーソル移動時にはマウスを非表示化
+					}
+				// }
+			}
+			break;
+		}
+	}
+	
+	function hideMouse( tgt){
+		cursfree = false;
+		skGetMousePos( gppos);
+		updateMouseVisible();
+	}
+	
+	//	キーイベントでconsumeされたのにそのキーのGPUIイベントがそのまま飛んじゃうと問題が起きる。そのため、キーボードから
+	//	GPUIイベントの発生はSKViewのイベント処理の流れから生成してポストするようにする
+	function keyevent( e){
+		//	!enabled状態でもGPUI_XXXXはポストする。
+		if( e.consumed==1) return;	//	ゲームパッド接続状態でもkeyeventからのgpuiは有効！
+		local vb = vkvbmap[e.keycode];
+		if( vb == undefined) return;		//	キーがGPUIボタンにアサインされていない
+		local eid = e.id, evsrc = gpuitarget["view"] || ::rootview;	//	gpuitargetが無かったらroot？
+		switch( eid){
+		case KEY_PRESSED:
+			::rootview.postEvent( Event().setGPUIEvent( evsrc, GPUI_PRESSED, vb));
+			break;
+		case KEY_RELEASED:
+			::rootview.postEvent( Event().setGPUIEvent( evsrc, GPUI_RELEASED, vb));
+			break;
+		case KEY_REPEATED:
+			::rootview.postEvent( Event().setGPUIEvent( evsrc, GPUI_REPEATED, vb));
+			break;
+		}
+	}
+
+	//	[BTN_A] = [VK_A, VK_SPACE] ... のマップを渡す。vkvbmapとは逆
+	function setButtonKeyMap( bkmap){
+		local t = {
+			[VK_LEFT] = BTN_LEFT,
+			[VK_UP] = BTN_UP,
+			[VK_RIGHT] = BTN_RIGHT,
+			[VK_DOWN] = BTN_DOWN,
+		};
+		foreach( vb, vka in bkmap){
+			foreach( vk in vka) t[vk] <- vb;
+		}
+		GPUI.vkvbmap <- t;
+	}
+
+	function isButtonDown( vb){
+		if( (gpdevice||vpdevice)?.isButtonDown( vb)) return true;
+		return Table.find( vkvbmap, @( v, i) v==vb);	//	キーボード検索。ちょい遅
+	}
+	
+	////////////////////////////////////////////////////////////////////////////////////////////////
+	//	ゲームパッド接続判定処理
+	//
+
+	//	gpui.updateGPState()で手動でアップデート可能。
+	//	
+	function updateGPState( dt=10000){
+		if( (gpchecktime-=dt) > 0) return;
+		gpchecktime = 1000;
+		switch( gpstat){
+		case GAMEPAD_NOTCONNECTED :	// 未接続
+			//	デバイススキャンをして見つかった場合はコンフィグで設定している動作をする。
+			if( gamepad["connected"] || scanGamepad()){
+				switch( gpconaction){
+				case ACTION_DISABLE: changeGPState( GAMEPAD_DISABLED); break;
+				case ACTION_ASK: changeGPState( GAMEPAD_PENDING); break;
+				case ACTION_ENABLE: changeGPState( GAMEPAD_ENABLED); break;
+				}
+			}
+			break;
+		case GAMEPAD_PENDING :		// 接続したが、使用するか未決定
+			if( !gamepad.connected) changeGPState( GAMEPAD_NOTCONNECTED);
+			break;
+		case GAMEPAD_ENABLED : 		// 接続したゲームパッドを使用
+			if( !gamepad.connected){
+				if( gpkeepalive){
+					changeGPState( GAMEPAD_DISCONNECTED);	//	ここだけ異常系。ゲーム機はパッドが接続してないとダメ。
+				}else{
+					changeGPState( GAMEPAD_NOTCONNECTED);	//	外れたら自動的にゲームパッドを解除させるモード(PC)
+				}
+			}
+			break;
+		case GAMEPAD_DISABLED : 	// 接続したゲームパッドを未使用
+			if( !gamepad.connected) changeGPState( GAMEPAD_NOTCONNECTED);
+			break;
+		case GAMEPAD_DISCONNECTED : // 使用中のゲームパッドが予期せず外れた。
+			//	接続されててほしいコントローラーが切断されている。デバイススキャンをして回復を試みる。
+			if( scanGamepad()) changeGPState( GAMEPAD_ENABLED);
+			break;
+		}
+	}
+
+	function changeGPState( s){
+		local gp;
+		switch( gpstat=s){
+		case GAMEPAD_NOTCONNECTED:
+		case GAMEPAD_DISABLED:
+			::uifeature &= ~UI_GAMEPAD;
+			createGPUIDevice();
+			break;
+		case GAMEPAD_ENABLED:
+			::uifeature |= UI_GAMEPAD;
+			createGPUIDevice();
+			break;
+		}
+		local e = Event(); e.id = GPUI_GAMEPAD_CHANGED; e.keycode = s; e.actioncmd = gp;
+		::rootview.postEvent( e);	//	受け取って処理するのはRPGMainで
+	}
+	
+	function scanGamepad(){
+		//	途中でコントローラー切り替えた場合とかgpaの0番目がnullで1番目にGamePadが入るので、上から見ていって最初に見つかったやつにする
+		local unsupgp;
+		foreach( gp in skScanGamepads()){
+			if( gp){
+				if( gp.type == GAMEPAD_MISC){
+					local m = conf["_resource"]["gamepad"][gp.id];
+					if( !m){
+						unsupgp = gp; continue;
+					}else{
+						gp.type = m.type;
+						gp.mapping = m;	//	ボタンマッピング適用
+					}
+				}
+				return gamepad = gp;	//	決定
+			}
+		}
+		if( unsupgp){
+			if( !unsupportgpmap[unsupgp.id]){
+				local e = Event(); e.id = GPUI_GAMEPAD_NOTICE; e.keycode = 1;
+				::rootview.postEvent( e);	//	受け取って処理するのはRPGMainで
+				unsupportgpmap[unsupgp.id] <- 1;	//	1回だけNOTICE
+			}
+		} 
+		return gamepad = null;
+	}
+
+	function createGPUIDevice(){
+		local vpad = ::["virtualpad"];	//	グローバルにあるか。強引だが
+		if( gpstat == GAMEPAD_ENABLED){
+			gpdevice = GPUIGamepadDevice( gamepad, GPUIGamepadDevice.defaultvbmaplist);
+			if( vpad) vpad.setVisible( false);
+		}else{
+			gpdevice = null;
+			if( vpad && !(::uifeature & UI_KEYBOARD)){
+				vpad.setVisible( true);
+				vpdevice = GPUIGamepadDevice( vpad, GPUIGamepadDevice.defaultvbmaplist);
+			}
+		}
+	}
+
+	//	ゲームパッドを切り替えるかを答える。GAMEPAD_PENDINGの時のみ有効。
+	function answerUseGamepad( b){
+		if( gpstat == GAMEPAD_PENDING){
+			gpconaction = b ? ACTION_ENABLE : ACTION_DISABLE;
+			changeGPState( b ? GAMEPAD_ENABLED : GAMEPAD_DISABLED);
+		}
+	}
+
+	//	ゲームパッド接続のペンディング状態を解除する。answerされないままシーンを移ったりしたときに。
+	function cancelAnswerUseGamepad(){
+		if( gpstat == GAMEPAD_PENDING){
+			changeGPState( GAMEPAD_NOTCONNECTED);
+		}
+	}
+}
+
+Event.setGPUIEvent <- function( _src, _eid, _code){
+	src = _src;
+	id = _eid;
+	keycode = _code;
+	time = skGetTime();
+	return this;
+}
+
+/**
+ *	GamepadUIの操作デバイス。
+ *	共通の論理ボタン（上下左右、決定、キャンセルなどの意味を持つ）が配置されていて、それをデバイス毎の物理ボタンにマップする。
+ *	アナログ方向キーは無い。全てリピート機能の入るデジタルボタン。
+ *	論理ボタンはVirtualKeyCodeのIDが使用される。生成するイベントはGPUI_PRESSED, GPUI_REPEATED, GPUI_RELEASED。
+ *	使用されるVirtualKeyCodeは以下の通り
+ *	VK_LEFT,VK_UP,VK_RIGHT,VK_DOWN : カーソル移動
+ *	VK_ENTER : 決定
+ *	VK_ALT : サブメニュー
+ *	VK_ESC : 戻る
+ *	VK_PAGE_UP, VK_PAGE_DOWN : ページ切り替え
+ *	VK_DELETE : 消去
+ *	この中で、カーソル移動、決定、サブメニューだけはマウス操作（移動、プレス、リリース）をシミュレートする。
+ *	リピートは最後に押されたボタンにのみ行われる。
+ *
+ */
+class GPUIDevice
+{
+	REPEAT0 = 400;
+	REPEAT1 = 80;
+
+	buttons = null;				//	GPUIDevice.Button[] :
+	onstack = null;				//	GPUIDevice.Button : 押されているボタンの逆順スタック。
+	repeattime = 0;				//
+	downtime = 0;
+
+	vbmaplist = null;
+
+	constructor(){
+		onstack = [];
+	}
+
+	function createButtons( a){
+		vbmaplist = a;
+		local n = length( vbmaplist);
+		buttons = tuple( n);
+		foreach( i, vbmap in vbmaplist){
+			buttons[i] = createButton( vbmap);
+		}
+	}
+
+	//	サブクラスでオーバーライドしてボタン生成
+	function createButton( vbmap){
+		throw Exception( "not implemented");
+	}
+
+	function update( dt, src){
+		//	press / release
+		foreach( b in buttons){
+			b.update( dt);
+			local eid = b.getChange();
+			if( eid){
+				::rootview.postEvent( Event().setGPUIEvent( src, eid, b.vb));
+				if( eid==GPUI_PRESSED){
+					onstack[0] <- b;
+					downtime = skGetTime();
+				}else{
+					onstack.removeValue( b);
+				}
+				repeattime = skGetTime() + REPEAT0;
+			}
+		}
+		//	repeat
+		if( onstack[0] && skGetTime( repeattime) >= 0){
+			::rootview.postEvent( Event().setGPUIEvent( src, GPUI_REPEATED, onstack[0].vb));
+			repeattime += REPEAT1;
+		}
+	}
+
+	function reset(){
+		foreach( b in buttons){
+			b.reset();
+		}
+	}
+
+	function isButtonDown( vb){
+		foreach( b in onstack){
+			if( b.vb==vb) return true;
+		}
+		return false;
+	}
+}
+
+//	on/offの状態変化を取ることができるボタン
+class GPUIDevice.Button
+{
+	vbmap = null;		//	table : 対応情報
+	vb = 0;				//
+	devfunc = null;		//	function : on/offを判定する関数。
+	on = 0;				//	0=off, 1=on
+	devon = 0;
+	active = true;
+
+	constructor( func){
+		devfunc = func;
+	}
+
+	function reset(){
+		on = 0;
+		devon = active ? devfunc() : 0;
+	}
+
+	function update( dt){
+		devon = active ? devfunc() : 0;
+	}
+
+	function getChange(){
+		return (on!=devon) ? ((on=devon)?GPUI_PRESSED:GPUI_RELEASED) : 0;
+	}
+}
+
+class GPUIGamepadDevice extends GPUIDevice
+{
+	static defaultvbmaplist = [
+		{ vb = BTN_UP    , devkey = BTN_UP,    subkey = AXIS_L_U, },
+		{ vb = BTN_DOWN  , devkey = BTN_DOWN,  subkey = AXIS_L_D, },
+		{ vb = BTN_LEFT  , devkey = BTN_LEFT,  subkey = AXIS_L_L, },
+		{ vb = BTN_RIGHT , devkey = BTN_RIGHT, subkey = AXIS_L_R, },
+		{ vb = BTN_A , devkey = BTN_A, },
+		{ vb = BTN_B , devkey = BTN_B, },
+		{ vb = BTN_X , devkey = BTN_X, },
+		{ vb = BTN_Y , devkey = BTN_Y, },
+		{ vb = BTN_START , devkey = BTN_START, },
+		{ vb = BTN_ZL , devkey = BTN_ZL, subkey = AXIS_ZL},
+		{ vb = BTN_ZR , devkey = BTN_ZR, subkey = AXIS_ZR},
+		{ vb = BTN_LB , devkey = BTN_LB, },
+		{ vb = BTN_RB , devkey = BTN_RB, },
+		{ vb = BTN_LS , devkey = BTN_LS, },
+		{ vb = BTN_RS , devkey = BTN_RS, },
+	];
+	
+	static axisdata = [
+		{ axis = "axis1", vec = 1.0 }	//	U
+		{ axis = "axis1", vec = -1.0 }	//	D
+		{ axis = "axis0", vec = -1.0 }	//	L
+		{ axis = "axis0", vec = 1.0 }	//	R
+		{ axis = "axis3", vec = 1.0 }
+		{ axis = "axis3", vec = -1.0 }
+		{ axis = "axis2", vec = -1.0 }
+		{ axis = "axis2", vec = 1.0 }
+		{ axis = "axis4", vec = 1.0, thrs=0.1 }
+		{ axis = "axis5", vec = 1.0, thrs=0.1 }
+	];
+
+	gp = null;
+
+	constructor( _gp, a=null){
+		gp = _gp;
+		if( a) createButtons( a);
+	}
+
+	function update( dt, src){
+		gp.poll( dt);
+		if( gp.mapping) gp.applyMapping( gp.mapping);
+		super.update( dt, src);
+	}
+
+	static function gpbutton( gp, vb){
+		if( vb >= 32){
+			local v = axisdata[vb&31];
+			local a = v.axis, d = v.vec, t = v["thrs"]||0.3;
+			return @() gp[a]*d>=t?1:0;
+		}
+		local vbbit = 1<<vb;
+		return @() (gp.buttonmask & vbbit) ? 1 : 0;
+	}
+
+	function createButton( vbmap){
+		local func = gpbutton( gp, vbmap.devkey);
+		if( "subkey" in vbmap){
+			local fn0 = func, fn1 = gpbutton( gp, vbmap.subkey);
+			func = @() fn0()||fn1();
+		}
+		local b = Button( func);
+		b.vbmap = vbmap;
+		b.vb = vbmap.vb;
+		return b;
+	}
+}
+
+class GPUI.ImageCursrView extends SKImageView
+{
+	constructor( _sp){
+		super( _sp);
+		if( !sp.blend) sp.blend = SK_MIX;
+		bnd.x = -bnd.w*0.5;
+		bnd.y = -bnd.h*0.5;
+		bnd.scale( 1.0 / sp.reso);
+	}
+	
+	//	以下startMethodで呼ばれるスクリプト
+
+	// static ww = (0.85,0.95,1.05,1.10,1.0)
+	static ww = (-40.0,-24.0,-8.0,10.0,6.0,0.0);
+	static ss = (0.7,0.9,1.1,1.2,1.0);
+
+	function pop( p0, p1){
+		if( p0 && p1){
+			// foreach( w in ww){
+			// 	p0.lerp( p1, w, pos);
+			// 	pos.x = Math.mod2( pos.x, 0.0, ::rootview.bnd.w);
+			// 	pos.y = Math.mod2( pos.y, 0.0, ::rootview.bnd.h);
+			// 	matdirty = true; repaint();
+			// 	sleep( 16);
+			// }
+			local vec = (p1-p0).normalize();
+			if( vec.length()){
+				foreach( w in ww){
+					pos( vec).scale( w).add( p1);
+					matdirty = true; repaint();
+					sleep( 16);
+				}
+			}else{
+				foreach( s in ss){
+					scale( s);
+					matdirty = true; repaint();
+					sleep( 16);
+				}
+			}
+		}
+	}
+
+	function fadein(){
+	}
+	
+	function fadeout(){
+		removeFromParent();
+	}
+
+	function pressed( b){
+		scale( b?0.9:1.0);
+		matdirty = 1;
+		repaint();
+	}
+}

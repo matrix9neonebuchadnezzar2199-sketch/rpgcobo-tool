@@ -1,0 +1,978 @@
+import VirtualKeyCode;
+import ModifiersMask;
+import CollisionGroupID;
+import BlockFlagID;
+import PenMode;
+
+
+local m_1 = Matrix();
+
+local maprendersetlist(){
+	local a = [];
+	foreach( v in ::RenderSettings.data){
+		if( v.renderpass == 2) a .. { lbl=v.name, id=v.id, icon="\ue430", data=v }	//	deferredのみ
+	}
+	return a;
+}
+
+//	
+//	
+//	
+//	
+class MapCanvas extends CanvasBehavior
+{
+	editor = null;		//	MapEditor
+	
+	//	sk3d
+	bw3d = null;		//	SK3DBlockWorld : 
+	bwcol = null;		//	b3Body<BlockColiderInterface> : ブロック選択用。flagmaskを状況に応じて置き換えていく
+	skcol = null;		//	SK3DCollisionPreview : コリジョン確認用SK3DObject
+	
+	evgizmomap = null;		//	イベントのギズモ
+	mkgizmomap = null;		//	マーカーのギズモ
+	inimapgizmo = null;		//	初期位置ギズモ
+	selfbmap = null;		//	{fbuid:sk3d} : フリーブロックの複数選択対応
+	
+	//
+	poslbl = null;
+	sellbl = null;
+	sels = null;
+	gridchk = null;
+	cullchk = null;
+	colchk = null;
+	skychk = null;
+
+	infochk = null;
+	infop = null;
+
+	topbdr = null;
+	btmbdr = null;
+
+	constructor( e){
+		super( e.findChild( "3D"), e.findChild( "head"));
+		editor = e;
+		camwork.znear = 0.1;
+		camwork.zfar = 300.0;
+		local rsetid = "pbr_mapedit";	//	pbr
+		
+		poslbl = head.findChild( "poslbl");
+		sellbl = head.findChild( "sellbl");
+		sels = head.findChild( "sels");
+		
+		gridchk = head.findChild( "gridchk");
+		gridchk.setSelected( true);
+		infochk = head.findChild( "infochk");
+		infop = InfoPanel( e.findChild( "infop"), this);
+		colchk = head.findChild( "colchk");
+		cullchk = head.findChild( "cullchk");
+		skychk = head.findChild( "skychk");
+		view.addEventListener( DRAGSOURCE_EVENT, dndevent);
+		view.addEventListener( DROPTARGET_EVENT, dndevent);
+		view.dragsource = this;
+		
+		setRenderSettingID( rsetid);
+
+		evgizmomap = {};
+		mkgizmomap = {};
+		selfbmap = {};
+
+		local bdrsp = Sprite();
+		bdrsp.blend = SK_PMAMIX;
+		bdrsp.color = 0x00000080;
+		topbdr = SKImageView( bdrsp);
+		btmbdr = SKImageView( clone bdrsp);
+		view.addChild( topbdr);
+		view.addChild( btmbdr);
+		topbdr.setVisible( false);
+		btmbdr.setVisible( false);
+	}
+
+	function makeEnvMenu(){
+		local rid = envmenu["selitem"]["id"];
+		::RenderSettings.checkLoadData();
+		local idmap = #{ pbr_df=0, pbr_fw=0, pbr_draft=0, pbr_mapedit=1, };
+		local a = [];
+		local icons = #( ("\ue430", 0xffff00ff), ("\ue2bd", 0x999999ff));
+		foreach( v in ::RenderSettings.data){
+			if( !idmap[v.id]) continue;
+			local ispbr = v.renderpass >= 1;
+			a .. { lbl=v.name, id=v.id, icon=icons[ispbr?0:1], data=v }
+		}
+		local self = this;
+		a .. { lbl="$T.lbl_map_rsetid_link", id="*LINK", icon="\ue157", islink=true, data=@(){
+			local rsetid = self.editor.data.rsetid;
+			local d = ::RenderSettings.data.find( @( v) v.id==rsetid);
+			return d;
+		}};
+		a .. "-";
+		a ... maprendersetlist().filter( @( v) !(v.id in idmap));
+		//
+		if( !envmenu){
+			envmenu = MenuBehavior( head.findChild( "envmenu"), null, false);	//	no sync
+		}
+		envlist = a;
+		envmenu.setMenu( envlist);
+		envmenu.selectItem( getEnvItem( rid));
+	}
+
+	function setRenderSettingID( rsetid){
+		if( envmenu.selitem["islink"]){
+			rsetid = editor.data.rsetid;
+		}else{
+			local v = getEnvItem( rsetid);
+			if( !v){
+			}
+			envmenu?.selectItem( v);
+		}
+		view.renderer.setEnvironment( ::RenderSettings.getEnvironment( rsetid));
+	}
+
+	// function selectEnvironment( d){
+	// 	if( envmenu.selitem["islink"]){
+	// 		view.renderer.setWeather( editor.data["weather"]);
+	// 	}else{
+	// 		view.renderer.setWeather( null);
+	// 	}
+	// 	super.selectEnvironment( d);
+	// }
+	
+	function setBackground( bg){
+		skyboxbgpass = RPGStage.createBackground( bg);
+		if( skychk.isSelected()){
+			view.renderer.bgpass = skyboxbgpass;
+		}
+		view.repaint();
+	}
+	
+	function refreshLinkedEnv( rsetid){
+		if( envmenu.selitem["islink"]){
+			view.renderer.setEnvironment( ::RenderSettings.getEnvironment( rsetid));
+			// view.renderer.setWeather( editor.data["weather"]);
+		}else{
+			// view.renderer.setWeather( null);
+		}
+	}
+
+	function refreshLinkedWeather( wd){
+		printf( "refreshLinkedWeather!!!!!! %S\n", encodeJSON( wd, 5));
+		if( skychk.isSelected()){
+			view.renderer.setWeather( wd);
+		}
+	}
+	
+	//	BlockWorldを設定しなおす。サイズ変更、初期化、voxインポートなど、同じBlockWorldを使い続けられない場合にも
+	//	これが呼ばれる。undo/redoからも呼ばれる。
+	function setBlockWorld( bw){
+		if( bw3d) bw3d.kill();
+		if( bwcol) b3world.removeBody( bwcol);
+		if( skcol) skcol.kill();
+		
+		bw3d = SK3DBlockWorld( bw);
+		scn.addObject( bw3d);
+		_updatetec( gridchk.isSelected());
+		
+		local bci = BlockColiderInterface( bw);
+		bci.setFlagMask( BLK_SOLID|BLK_PLANT|BLK_BARRIOR|BLK_SOLIDFB);
+		local bcshp = b3Shape.createCustomConcave( bci);
+		bwcol = b3Body( 0, bcshp, bw3d.mat, G_STAGE, G_VIEW|G_CHARA|G_OBJECT);
+		bwcol.ref = bci;
+		b3world.addBody( bwcol);
+		
+		skcol = SK3DCollisionPreview( b3world);
+		scn.addObject( skcol);
+		skcol.visible = colchk.isSelected();
+		// bw3d.visible = false;
+		placeEventMarkerGizmos();
+	}
+
+	function _updatetec( b){
+		local tecname = b ? "vox.grid" : "vox.basic";
+		bw3d.setVoxelTec( skFXFindTechnique( tecname));
+	}
+
+	function moveCameraData( cd, asp=null){
+		local asp0 = camwork.cam.aspect;
+		if( asp != null){
+			cd = clone cd;
+			local dz = cd.focaldist(), fovy0 = cd.fovy;
+			if( asp > asp0){
+				cd.fovy = Math.atan2( cd.zoom*0.5*(asp/asp0), dz) * Math.RTOD * 2;
+				cd.zoom *= (asp/asp0);
+			}
+			local dz2 = cd.focaldist();
+		}
+		camwork.moveCameraData( cd);
+		if( asp != null){
+			if( asp > asp0){
+				local bh = (view.bnd.h - view.bnd.h * (asp0/asp)) * 0.5;
+				topbdr.setRect( 0, 0, view.bnd.w, bh);
+				btmbdr.setRect( 0, view.bnd.h-bh, view.bnd.w, bh);
+			}else{
+				local bw = (view.bnd.w - view.bnd.w * (asp/asp0)) * 0.5;
+				topbdr.setRect( 0, 0, bw, view.bnd.h);
+				btmbdr.setRect( view.bnd.w-bw, 0, bw, view.bnd.h);
+			}
+		}
+		topbdr.setVisible( !!asp);
+		btmbdr.setVisible( !!asp);
+		view.repaint();
+	}
+
+	///////////////////////////////////////////////////////////////////////////
+	//	イベント、マーカーギズモ
+
+	function clearEventMarkers(){
+		foreach( g in evgizmomap) scn.removeObject( g);
+		foreach( g in mkgizmomap) scn.removeObject( g);
+		Table.clear( evgizmomap);
+		Table.clear( mkgizmomap);
+		if( inimapgizmo){
+			scn.removeObject( inimapgizmo);
+			inimapgizmo = null;
+		}
+	}
+
+	//	イベントとマーカーを配置する。
+	function placeEventMarkerGizmos(){
+		clearEventMarkers();
+		foreach( evid, ev in editor.data["event"]){
+			placeEventGizmo( evid, ev);
+		}
+		foreach( mkid, mk in editor.data["marker"]){
+			placeMarkerGizmo( mkid, mk);
+		}
+		if( ::conf.setting.inimap.mapid == editor.mapid){
+			placeInimapGizmo( ::conf.setting.inimap);
+		}
+	}
+
+	//	イベント、マーカーの全ての状態を変更する。
+	//	
+	function setEventMarkerStates( s){
+		foreach( g in evgizmomap) g.setState( s);
+		foreach( g in mkgizmomap) g.setState( s);
+	}
+
+	function updateFunc( dt){
+		local b = super.updateFunc( dt);
+		if( bw3d){
+			bw3d.checkUpdateInCameraMesh( camwork.cam);
+		}
+		return b;
+	}
+
+	function loadInCameraMesh( slp){
+		if( bw3d){
+			bw3d.checkUpdateInCameraMesh( camwork.cam);
+			return bw3d.generateChunkMeshes( slp);
+		}
+	}
+	
+	function placeEventGizmo( evid, ev){
+		if( evgizmomap[evid]) scn.removeObject( evgizmomap[evid]);
+		local gz = SK3DEventGizmo( this, evid, ev);
+		gz.changeColor( ev.col);
+		gz.setVisible( ev.flags&1);
+		scn.addObject( gz);
+		evgizmomap[evid] <- gz;
+		return gz;
+	}
+	
+	function placeMarkerGizmo( mkid, mk){
+		if( mkgizmomap[mkid]) scn.removeObject( mkgizmomap[mkid]);
+		local gz = SK3DMarkerGizmo( this, mkid, mk);
+		gz.changeColor( mk.col);
+		gz.setVisible( mk.flags&1);
+		scn.addObject( gz);
+		mkgizmomap[mkid] <- gz;
+		return gz;
+	}
+
+	function placeInimapGizmo( inimap){
+		removeInimapGizmo();
+		local gz = SK3DInimapGizmo( this, "inimap", inimap);
+		scn.addObject( gz);
+		inimapgizmo = gz;
+	}
+	
+	function removeEventGizmo( evid){
+		local gz = delete evgizmomap[evid];
+		if( gz) scn.removeObject( gz);
+	}
+	
+	function removeMarkerGizmo( mkid){
+		local gz = delete mkgizmomap[mkid];
+		if( gz) scn.removeObject( gz);
+	}
+
+	function removeInimapGizmo(){
+		if( inimapgizmo){
+			scn.removeObject( inimapgizmo);
+			inimapgizmo = null;
+		}
+	}
+
+	//	フリーブロック複数選択表示
+
+	function clearFBSelection(){
+		foreach( fbuid, sk3d in selfbmap){
+			sk3d.kill();
+		}
+		Table.clear( selfbmap);
+	}
+
+	function setFBSelection( a){
+		foreach( fbuid, sk3d in selfbmap){
+			if( !a.contains( fbuid)){
+				sk3d.kill();
+				removei;
+			}
+		}
+		foreach( fbuid in a){
+			if( !(fbuid in selfbmap)){
+				local fb = editor.bw.getFreeBlock( fbuid);
+				if( fb) selfbmap[fbuid] <- _createfb( fb, fb.br);
+			}
+		}
+		updateFBSelection();
+	}
+
+	function addFBSelection( fbuid){
+		if( !(fbuid in selfbmap)){
+			local fb = editor.bw.getFreeBlock( fbuid);
+			if( fb) selfbmap[fbuid] <- _createfb( fb, fb.br);
+		}
+	}
+
+	function _createfb( fb, br){
+		local pm = RPGToolMesh.createVolumeMesh( br.w, br.h, br.d, -1);	//	色は別個指定
+		local sk3d = SK3DObject( pm);
+		sk3d.pos( br.x, br.y, br.z).scale( 0.5);
+		sk3d.ref = br;
+		scn.addObject( sk3d);
+		return sk3d;
+	}
+
+	//	これ呼んだあとにupdateFBSelectionColorしないと色が変になる
+	function updateFBSelection(){
+		// local scn = editor.canvas.scn;
+		foreach( fbuid, sk3d in selfbmap){
+			local fb = editor.bw.getFreeBlock( fbuid);
+			if( !fb){
+				removei;	//	無い！
+			}else{
+				if( fb.br <> sk3d["ref"]){
+					sk3d?.kill();
+					sk3d = selfbmap[fbuid] = _createfb( fb, fb.br);
+				}
+			}
+		}
+	}
+	
+	//	
+	function updateFBSelectionColor( fn){
+		foreach( fbuid, sk3d in selfbmap){
+			if( !sk3d) continue;
+			local mode = fn( fbuid, sk3d);
+			sk3d.visible = (mode>=0);
+			if( mode >= 0){
+				local c = ::penmodecol[mode];
+				c = (c<<24)|((c&0xff00)<<8)|((c&0xff0000)>>8) | 0x99;	//	ちょい透明度落とす
+				foreach( m in sk3d.getMaterials()){
+					m.Kmul = c;
+				}
+			}
+		}
+	}
+	
+	////////////////////////////////////////////////////////////////////////////
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "infochk":
+			infop.showStatics( e.src.isSelected());
+			break;
+		case "gridchk":
+			_updatetec( gridchk.isSelected());
+			break;
+		case "colchk":
+			skcol.visible = colchk.isSelected();
+			break;
+		case "cullchk":
+			bw3d.setVisibleFaceMask( cullchk.isSelected() ? editor.data.vs : 63);
+			break;
+		case "skychk":
+			local b = e.src.isSelected();
+			view.renderer.bgpass = b ? skyboxbgpass : colorbgpass;
+			view.repaint();
+			if( b){
+				view.renderer.setWeather( editor.data["weather"]);
+			}else{
+				view.renderer.setWeather( null);
+			}
+			break;
+		default:
+			break;
+		}
+		if( !e.consumed) super.actionevent( e);
+	}
+	
+	// function procevent( e){
+	// 	infop.procevent( e);	//	マウス位置の更新
+	// 	super.procevent( e);
+	// }
+
+	function dndevent( e){
+		e.computeLocal( view.getInvMatrix());
+		editor.tool?.dndevent( e);
+	}
+	
+	//	マウス、キーイベント
+	function defevent( e){
+		toolfunc = editor.tool?.canvasevent( e);
+	}
+
+	//	null指定すると!showstaticsのときviewが消える
+	function setHitInfo( hb){
+		if( hb){
+			poslbl.setText( sprintf( "%d %d %d", hb.bx, hb.by, hb.bz));
+			if( hb.blk){
+				local b = hb.blk, bt = ::blks[b&31];
+				sellbl.setText( sprintf( "%d-%d %S", b&31, (b>>5)%length( bt.variations), bt.name));
+			}
+		}else{
+			poslbl.setText( "-- -- --");
+			sellbl.setText( "");
+		}
+	}
+	
+	//	マップを上空からキャプチャする。
+	//	(w*4, d*4)のサイズで、
+	//	保存時は最大1024x1024のwebp。
+	function captureMapShot(){
+		local t0 = skGetTime();
+		local bw = editor.bw;
+		local w = bw.w * 4, h = bw.d * 4;
+		local renderer = SK3DRenderer( scn);
+		renderer.setEnvironment( ::RenderSettings.getEnvironment( "pbr_fw"));	//	bloomオフでーーーー
+		renderer.bgpass.setColor( 0x000000ff);
+		//
+		local cam = Camera();
+		local hw = bw.w*0.25, hh = bw.d*0.25;
+		cam.ortho( -hw, hw, -hh, hh, -1000, 1000);
+		cam.lookat( Vector3D( hw, 30, hh), Vector3D( hw, 0, hh), Vector3D( 0, 0, 1));
+		renderer.setCamera( cam);
+		local t1 = skGetTime();
+		//	レンダリング準備
+		_updatetec( false);
+		skcol.visible = false;
+		bw3d.generateAllMesh();
+		local t2 = skGetTime();
+		foreach( v in editor.tool["guides"]) v.visible = false;
+		scn.updateScene( 16);
+		//	レンダリング実行
+		local dst = Texture(); dst.create( w, h, SK_RGBA8, 1);	//	+depth
+		local old = skSetRenderTarget( dst);
+		local a = (0, 0, w, h);
+		renderer.render( a);
+		skSetRenderTarget( old);
+		//	状態を復元
+		_updatetec( gridchk.isSelected());
+		skcol.visible = colchk.isSelected();
+		foreach( v in editor.tool["guides"]) v.visible = true;
+		local t3 = skGetTime();
+		printf( "captureMapShot time %S %S %S total %S\n", t1-t0, t2-t1, t3-t2, t3-t0);
+		return dst;
+	}
+
+	//	DragSource
+
+	//	ドラッグ中描画処理
+	function dndrender( m){
+	}
+	
+	//	ドラッグ有効チェック
+	//	複数選択のドラッグ表示。。。ウィンドウのバッファをうまく使うとか
+	function acceptDrag( e){
+		return false;
+	}
+	
+	//	DropTarget ... nandemo
+	
+	function acceptDrop( ds, x, y){
+		return true;
+	}
+}
+
+class MapCanvas.InfoPanel
+{
+	canvas = null;
+	view = null;
+	showstatics = false;
+	statics = null;
+
+	bwseq = -1;
+	meshseq = -1;
+	oldcam = null;
+	statcache = null;		//	メッシュ等はカメラ移動で消えちゃうからキャッシュに保存しておく
+
+	constructor( v, c){
+		view = v;
+		canvas = c;
+		view.anime( 1);
+		statics = v.findChild( "statics");
+		oldcam = Camera();
+		statcache = {};
+	}
+
+	function showStatics( b){
+		view.anime( b?0:1);
+		showstatics = b;
+		if( b){
+			statics.setUpdateFunc( updateFunc.bindenv( this));
+		}else{
+			statics.setUpdateFunc( null);
+		}
+	}
+
+	static function numstr( v){
+		local sb = #StringBuffer();
+		sb.clear();
+		if( v >= 1000000){ v /= 1000; sb .. "k"; }
+		local threshold = 1000;
+		while( v >= threshold){
+			sb[0] <- sprintf( ",%03d", v%1000);
+			v /= 1000;
+		}
+		sb[0] <- string( v);
+		return string( sb);
+	}
+	
+	function updateFunc( dt){
+		local nx = #(0,);
+		if( (nx[0]-=dt) < 0){
+			updateStatics();
+			nx[0] = 100;
+		}
+		return true;
+	}
+
+	//	
+	function updateStatics(){
+		if( !showstatics) return;
+		local bw3d = canvas.bw3d, bw = bw3d.bw, cam = canvas.view.renderer.camera;
+		//	camera
+		if( cameradiff( oldcam, cam, 100.0) >= 1.0){
+			oldcam.set( cam);
+			local t = bw.getStatics( cam);
+			statics.setValues( { camchunks:numstr( t.chunks), camblks:numstr( t.blks), camfblks:numstr( t.fblks), });
+			local verts = 0, tris = 0;
+			foreach( ch in bw3d.vchunklist){
+				// if( !ch.incamera) continue;
+				if( ch.mesh && cam.isInside( ch.gbnd)){
+					verts += ch.vertlen();
+					tris += ch.trilen();
+				}
+			}
+			statics.setValues( { camverts:numstr( verts), camtris:numstr( tris)});
+		}
+		//	total
+		if( bw.seq != bwseq){
+			bwseq = bw.seq;
+			local t = bw.getStatics();
+			statics.setValues( { sumchunks:numstr( t.chunks), sumblks:numstr( t.blks), sumfblks:numstr( t.fblks), });
+		}
+		if( bw3d.meshseq != meshseq){
+			meshseq = bw3d.meshseq;
+			local verts = 0, tris = 0;
+			local chseqs = bw.collectDrawChunks( #{});	//	camを渡さないと全て取得
+			foreach( cpos, seq in chseqs){
+				local ch = bw3d.vchunkmap[cpos];
+				if( ch){ statcache[cpos] <- { seq: seq, verts: ch.vertlen(), tris: ch.trilen() }; }
+				local c = statcache[cpos];
+				if( c){ verts += c.verts; tris += c.tris; }
+			}
+			statics.setValues( { sumverts:numstr( verts), sumtris:numstr( tris)});
+		}
+	}
+}
+
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////////////
+//
+//	イベント用ギズモのSK3DObject。キャンバスに配置されるが、編集はMapToolEventのみ。
+//	xzの平面。mdl込み、mdlがない場合アイコン。イベント数分配置される。
+//	イベントツールに切り替わった時に配置される。他ギズモと違い、選択していない場合も表示される。
+//	
+//	ポータルのみサイズ可変、ドアは移動不能、他は2x2x2ブロック
+//	回転はコンテキストメニューでのみ対応。
+//	
+//	イベントギズモの状態
+//	0.半透明 : 他ツールでのデフォルト表示。Altでイベントツールに移動しつつ不透明状態に
+//	1.不透明 : イベントツールでの表示。
+//	2.マウスオン : ギズモにマウスが乗った状態。2Dボックスの中が塗りつぶされる。
+//	3.選択　 : イベントツールで選択された状態。axisガイドが表示される。
+//	
+
+::evcolorlist <- [
+	{ val=0, icon=["\uf122",0xffffffff] },
+	{ val=1, icon=["\uf122",0x26FFFFff] },
+	{ val=2, icon=["\uf122",0xFFFF4Dff] },
+	{ val=3, icon=["\uf122",0xFF4D4Dff] },
+	{ val=4, icon=["\uf122",0xFF73FFff] },
+	{ val=5, icon=["\uf122",0xFF9326ff] },
+];
+
+class SK3DEventGizmo extends SK3DObject
+{
+	canvas = null;		//	MapCanvas
+	br = null;			//	IRect3D
+	mask = -1;
+	fbrot = false;		//	
+
+	id = null;			//	
+	data = null;		//	
+	mdlobj = null;		//	RPG3DObject | アイコン3D
+	partobjs = null;	//	array[5]
+	lvecobj = null;		//	ライト方向
+	icon3d = null;		//	SK3DObject | null
+	
+	mode = PEN_GIZMO;
+	stat = 0;
+
+	light = null;
+
+	static partcols1 = [0xffff00ff, 0xff0000ff,0xff0000ff, 0x00ff00ff,0x00ff00ff, 0x0000ffff,0x0000ffff];
+	static partcols2 = [0xffffffff, 0xff9999ff,0xff9999ff, 0x99ff99ff,0x99ff99ff, 0x9999ffff,0x9999ffff];
+
+	constructor( c, evid, ev){
+		id = evid;
+		data = ev;
+		canvas = c;
+		mask = 255;
+		if( ev["mdl"]["r"]){	//	ポータルは大きさを変化させられる
+			local r = Rect3D( ev.mdl.r) * Vector3D( 2.0); r.expand( -0.01);	//	IRect3D化するときにデカくなる。。。。。
+			setRect( IRect3D( r));
+		}else
+		if( ev["mdl"]["fbuid"]){	//	ドアはFreeBlockの大きさに
+			fbrot = true;
+			local fb = FreeBlock.create({fbtype:ev.mdl.fbtype, fbparam:ev.mdl.fbparam});
+			local r = fb.br;
+			setRect( fb.br);
+		}else{
+			setRect( IRect3D( -1, 0, -1, 2, 2, 2));
+		}
+		updateModel();
+		setState( 0);
+		setBlockPosition( ev.pos);
+		updateMatrix();
+	}
+
+	function addedToScene( scn){
+		super.addedToScene( scn);
+		if( light) scn.addLight( light);
+	}
+	
+	function removedFromScene( scn){
+		super.removedFromScene( scn);
+		if( light) scn.removeLight( light);
+	}
+
+	function changeColor( c){
+		if( icon3d){
+			local col = evcolorlist[data.col]["icon"][1] || 0xffffffff;
+			icon3d.mesh.face[0].m.Kd = col & 0xffffff80;
+		}
+	}
+
+	//	rはローカル。
+	function setRect( r){
+		br = clone r;
+		if( fbrot){
+			setPivot( Vector3D( !(r.w&1)*-0.25, 0.0, !(r.d&1)*-0.25));
+		}
+		local pm = ::RPGToolMesh.create2DBorderBoxMesh( r.w, r.d, mode);
+		setPolygonMesh( pm);
+		local shp = b3Shape.createCompound();
+		local cp = Vector3D( r.w, 1, r.d).scale( 0.25);
+		clearChildren();
+		//	o
+		partobjs = array( 7);
+		{
+			local cs = b3Shape.createBox( cp.x, 0.1, cp.z);
+			shp.addChild( cs, Matrix(), 0, 0);
+		}
+		//	x,z
+		for( local l = 0;l < 2;l ++){
+			if( !(mask&(1<<l))) continue;
+			local v = Vector3D(), w = Vector3D( 0.05);
+			v[l*2] = cp[l*2]+0.05; w[2-l*2] = 0.2;
+			//	-,+
+			for( local j = 0; j < 2;j ++){
+				local pi = 1+l*4+j;
+				local om = PrimitiveMeshes.createBox( w.x, w.y, w.z);
+				local cm = SK3DObject( om);
+				_setmtl( om, partcols1[pi]);
+				cm.pos( v).scale( j*2-1);
+				addChild( cm);
+				local cs = b3Shape.createBox( w.x+0.015, w.y+0.015, w.z+0.015);
+				shp.addChild( cs, Matrix.fromTranslate( cm.pos), pi, 0);
+				partobjs[pi] = cm;
+			}
+		}
+		if( b3body){
+			b3body.setShape( shp);
+		}else{
+			b3body = b3Body( 0.0, shp, mat, G_EVENT, G_CHARA|G_OBJECT);
+			b3body.ref = this;
+		}
+		if( mdlobj) addChild( mdlobj);
+	}
+
+	function updateModel(){
+		mdlobj?.kill();
+		mdlobj = RPG3DObject.create3DObject( data);
+		icon3d = null;
+		addChild( mdlobj);
+		if( !( mdlobj instanceof RPG3DEffect)){
+			foreach( m in mdlobj.getMaterials()){
+				m.alphatest = 1; m.alpharef = 0.5;
+			}
+		}
+		if( mdlobj instanceof RPG3DGhost || mdlobj instanceof RPG3DDoor){
+			local role = ::RPGSystem.eventrole[data.role];
+			local col = evcolorlist[data.col]["icon"][1] || 0xffffffff;
+			local om = RPGToolMesh.createIconMesh( role.icon, col, 0.5, "evicon.ui", false);
+			om.face[0].m.Kd &= 0xffffff80;
+			om.face[0].m.depthtest = 0;
+			icon3d = SK3DObject( om);
+			icon3d.pos( 0.0, 0.5, 0.0);
+			icon3d.setBillboard( true);
+			if( mdlobj) mdlobj.addChild( icon3d);
+			else { addChild( icon3d); mdlobj = icon3d; }
+		}
+		updateLight();
+	}
+
+	function updateLight(){
+		if( lvecobj){ lvecobj.kill(); lvecobj = null; }
+		local li = null, va = data;
+		if( data["lcol"]){
+			li = Light();
+			li.enabled = true;
+			li.ch = 1;
+			li.type = 2;
+			li.k1 = va["lr"]||5.0;		//	lr=有効半径
+			li.color = va.lcol | 0xff;
+			li.power = va.lcol & 255;	//	1-255?
+			li.spotout = Math.cos( va.lspot[0] * Math.DTOR);
+			li.spotsharp = va.lspot[1]+1;
+			local lp = va["lpos"], lr = va["lhpb"];
+			local m = Matrix().translate( lp[0], lp[1], lp[2]).rotate( lr[0]*Math.DTOR + Math.PI, lr[1]*Math.DTOR, 0);	//	Math.PI = diroffs
+			li.setMatrix( gmat.mult34( m, m_1));
+			li.ref = { mat = m};	//	ワールドの変形が起きた場合、gmat*mで変形可能
+			//	light vec obj
+			local pm = ::PrimitiveMeshes.createBox( 0.02, 0.02, li.k1/2);
+			pm.pivot = Vector3D( 0, 0, li.k1/2);
+			local m = pm.face[0].m;
+			m.Kd = li.color;
+			lvecobj = RPG3DObject();
+			lvecobj.setSource( pm);
+			lvecobj.pos( lp);
+			lvecobj.rot.setHPB( lr[0]*Math.DTOR + Math.PI, lr[1]*Math.DTOR, 0);
+			addChild( lvecobj);
+		}
+		if( scn &&  li != light){
+			scn.removeLight( light);
+			scn.addLight( li);
+		}
+		light = li;
+	}
+
+	function setBlockPosition( p){
+		pos( p).scale( 0.5).add( 0, 0.0625, 0);
+		if( fbrot) pos.add( 0.25, 0, 0.25);
+		rot << Quaternion.fromHPB( p[3]*Math.PI*0.5, 0, 0);
+		matdirty = true;
+		if( light){
+			updateMatrix();
+			light.setMatrix( gmat.mult34( light.ref.mat, m_1));
+		}
+	}
+
+	function setBlockRect( evr){
+		local r = Rect3D( evr) * Vector3D( 2.0); r.expand( -0.01);	//	IRect3D化するときにデカくなる。。。。。
+		setRect( IRect3D( r));
+	}
+
+	function _setmtl( pm, col){
+		foreach( f in pm.face){
+			local m = f.m;
+			m.tec = skFXFindTechnique( "decal.def");
+			m.Kd = col;
+			m.visiblemask = SK_VISIBLE_TRANSPARENT;
+			m.polygonoffset1 = -40000;
+		}
+	}
+
+	//	ドアを設定
+	function setFreeBlock( fb){
+		ref = fb;
+		local r = unrotateRect( fb.br, fb.rot);
+		local cx = r.x+r.w/2, cy = r.y+r.h/2, cz = r.z+r.d/2;
+		r.x -= cx; r.y -= cy; r.z -= cz;
+		if( br <> r) setRect( r);
+		//	
+		pos( cx, cy, cz).add( 0.5).scale( 0.5);
+		rot.set( MapTool.rotquat[fb.rot&3]);
+		matdirty = true;
+	}
+
+	//	axisガイドは選択中止か表示されない？
+	function setState( s){
+		stat = s;
+		//	選択状態以外ではaxis非表示(当たり判定だけ生きてる。。。)
+		local showaxis = s==3;
+		foreach( v in partobjs) v?.setVisible( showaxis);
+		local c = 0xffffffff;
+		switch( s){
+		case 0: c = 0xffffff2f; break;
+		case 1: c = 0xffffff6f; break;
+		case 2: c = 0xffffffcf; break;
+		case 3: c = 0xffffffff; break;
+		}
+		foreach( m in getMaterials()){
+			m.Kmul = c;
+		}
+		local r = s==3 ? 1.0 : s==2 ? 1.0 : s==1 ? 0.6 : 0.4;
+		foreach( m in mdlobj?.getMaterials()){
+			m.alpharef = r;
+		}
+		mdlobj.setVisible( true);
+	}
+	
+	//	1: O
+	//	6: X
+	//	24: Z
+	function selectParts( bits){
+		for( local l = 1;l < 7;l ++){
+			if( partobjs[l]){
+				_setmtl( partobjs[l].mesh, ((bits&(1<<l))?partcols2:partcols1)[l]);
+			}
+		}
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////////////
+//
+//	マーカー用ギズモのSK3DObject。キャンバスに配置されるが、編集はMapToolEventのみ。
+//	平行移動のみ。マーカー数分だけ配置される。
+//	※初期位置マーカーもこれで置かれる。が、マーカーではない？
+//	直径1m固定。axisなし。
+//	
+
+class SK3DMarkerGizmo extends SK3DObject
+{
+	canvas = null;		//	MapCanvas
+	id = null;			//	
+	data = null;		//	
+	icon = null;
+
+	stat = 0;
+
+	constructor( c, mkid, mk){
+		canvas = c;
+		this.id = mkid;
+		this.data = mk;
+		setup();
+	}
+
+	function setup(){
+		local mk = data;
+		local mkdef = ::RPGSystem.markerdef[mk.type];
+		icon = data["icon"][0] ? data["icon"] : mkdef.icon;
+		local pm = RPGToolMesh.createIconMesh( icon, 0xffffffff, 0.5, "mkicon.ui", true);
+		setPolygonMesh( pm);
+		pos( mk.pos).scale( 0.5).add( 0, 0.0625, 0);
+		if( mk["dir"]){
+			rot << Quaternion.fromHPB( mk.dir*Math.DTOR, 0, 0);
+		}else
+		if( mk["hpb"]){
+			rot << Quaternion.fromHPB( mk.hpb[0]*Math.DTOR, 0, 0);
+		}else{
+			rot << Quaternion.fromHPB( mk.pos[3]*Math.PI*0.5, 0, 0);
+		}
+		updateMatrix();
+		local shp = b3Shape.createCylinder( 0.6, 0.15, 0.6);
+		b3body = b3Body( 0.0, shp, mat, G_EVENT, G_CHARA|G_OBJECT);
+		b3body.ref = this;
+		setState( 0);
+	}
+
+	function updateModel(){
+		local mkdef = ::RPGSystem.markerdef[data.type];
+		local ic = data["icon"][0] ? data["icon"] : mkdef.icon;
+		if( ic != icon){
+			local pm = RPGToolMesh.createIconMesh( icon=ic, 0xffffffff, 0.5, "mkicon.ui", true);
+			setPolygonMesh( pm);
+		}
+		if( "dir" in data){
+			rot.setHPB( data.dir*Math.DTOR, 0, 0);
+			matdirty = true;
+		}
+	}
+	
+	function setBlockPosition( p){
+		pos( p).scale( 0.5).add( 0, 0.0625, 0);
+		if( !("dir" in data) && !("hpb" in data)){
+			rot << Quaternion.fromHPB( p[3]*Math.PI*0.5, 0, 0);
+		}
+		matdirty = true;
+	}
+
+	function selectParts( bits){
+	}
+
+	function changeColor( c){
+		mesh.face[0].m.Kd = evcolorlist[c].icon[1];
+	}
+
+	function setState( s){
+		stat = s;
+		local m = mesh.face[0].m;
+		switch( s){
+		case 0: m.Kmul = 0xffffff4f; break;
+		case 1: m.Kmul = 0xffffff8f; break;
+		case 2: m.Kmul = 0xffffffcf; break;
+		case 3: m.Kmul = 0xffffffff; break;
+		}
+	}
+}
+
+class SK3DInimapGizmo extends SK3DMarkerGizmo
+{
+	id = "inimap"
+
+	//	inimapのdata.posはブロック座標ではなくワールド座標系。。。。。。
+	function setup(){
+		local pm = RPGToolMesh.createIconMesh( "\ue56a", 0xffffffff, 0.5, "mkicon.ui", true);
+		setPolygonMesh( pm);
+		pos( data.pos).add( 0, 0.0625, 0);
+		rot << Quaternion.fromHPB( data.pos[3], 0, 0);
+		updateMatrix();
+		local shp = b3Shape.createCylinder( 0.6, 0.15, 0.6);
+		b3body = b3Body( 0.0, shp, mat, G_EVENT, G_CHARA|G_OBJECT);
+		b3body.ref = this;
+		setState( 0);
+	}
+
+	function setBlockPosition( p){
+		pos( p).add( 0, 0.0625, 0);
+		rot << Quaternion.fromHPB( p[3], 0, 0);
+		matdirty = true;
+	}
+}

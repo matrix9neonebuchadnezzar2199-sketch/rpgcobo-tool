@@ -1,0 +1,771 @@
+
+import VarType;
+import VirtualKeyCode;
+import GamepadButtonCode;
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	RPGSystem.sk 
+//	
+
+//	グローバルランダム
+::rnd <- Random( Date().getTime()[0]^371141263);
+
+
+
+//	ComputingValue : 値と倍率を調整していき最終的な値をfixさせる計算オブジェクト。
+//	キャラのスコアパラメータの計算や、ダメージ計算に使用する。
+//	整数％単位を使い、最終値は全てintになる。
+//	
+class compval
+{
+	base = 0;
+	supply = 0;
+	baserate = 1.0;
+	totalrate = 1.0;
+	
+	constructor( b=0){
+		base = b;
+	}
+
+	function fix(){
+		return int( (base * baserate + supply) * totalrate);
+	}
+}
+
+//	
+//	
+class SettingMap
+{
+	keyname = "key";
+	_map = null;
+	_list = null;
+
+	constructor( kn="key", inilist=null){
+		keyname = kn; _map = {}; _list = [];
+		foreach( v in inilist){
+			this .. v;
+		}
+	}
+
+	function _get( key){
+		local v = _map[key];
+		if( !v && key){
+			local i = key.indexOf( '.');	//	key.subkey的な構造に対応
+			if( i >= 0) v = _map[key.substring( 0, i)];
+		}
+		return v;
+	}
+
+	function _concat( p){
+		local k = p[keyname], v = delete _map[k];	//	元あった要素を消去
+		if( v) _list.removeValue( v);
+		_list .. p;
+		_map[p[keyname]] <- p;
+	}
+
+	function _newslot( idx, p){
+		local k = p[keyname], v = delete _map[k];	//	元あった要素を消去
+		if( v) _list.removeValue( v);
+		idx = Math.clamp( idx, 0, length( _list));
+		_list[idx] <- p;
+		_map[p[keyname]] <- p;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+//	RPGSystem : RPGの色々なパラメータを定義する
+//	初期化はconfロード前に1回だけ行われる。プラグインなどで拡張可能だが、ツールでプラグインの構成を変えた場合には再起動が必要。
+//	
+::RPGSystem <-
+{
+	//	データベースには登録されないプリミティブなタイプ。
+	option = SettingMap()		//	オプションタイプ定義。30。グループ化
+	battlecmd = SettingMap()	//	バトルコマンド定義。10
+	ui = SettingMap()			//	メニュー画面、表示UI定義。
+	skilltype = SettingMap()	//	スキルタイプ定義。10。グループ化
+	moveaction = SettingMap()	//	イベントのステージ中の移動アルゴリズム。8
+	queststep = SettingMap()	//	クエストの各ステップ定義。10
+	
+	//	スキル使用条件、敵AI条件、イベント判断条件
+	reqchk = SettingMap()		//	イベント表示／自動実行条件他
+	skillreq = SettingMap()		//	スキル使用条件。20
+	aipagereq = SettingMap()	//	敵行動モード遷移条件。15
+	aitarget = SettingMap()		//	敵ターゲット選択条件。10
+	
+	//	イベント関係
+	eventcmd = SettingMap()		//	イベントコマンド定義。
+	eventrole = SettingMap()	//	イベントに設定可能なロールの定義。プラグインで拡張可能
+	markerdef = SettingMap()	//	マーカー
+	varaccs = []				//	ゲーム変数アクセッサ :sysvars, gvars, partyjoin, itemnum, enemynum, questclear, 
+	charainfodef = SettingMap()	//	キャラ情報取得
+	
+	//	各データのプロパティ定義
+	playerprops = []
+	enemyprops = []
+	itemprops = []
+	weaponprops = []
+	armorprops = []
+	jobprops = []
+	condprops = []
+	skillprops = []
+	questprops = []
+	stageprops = []
+	macroprops = []
+	settingprops = []
+	typeprops = []
+	dictprops = []
+	
+	///////////////////////////////////////////////////////////////////////////
+	//	計算式
+
+	//	LVまでの経験値
+	function getExpByLV( lv, et){
+		local m = et[0], n = 0.5 + et[1] / 150.0;		// local m = et[0], n = 0.75 + et[1] / 200.0;
+		local v = 0;
+		while( --lv) {
+			v += m; m *= 1 + n; n *= 0.91;
+		}
+		return v|0;
+	}
+
+	//	指定した経験値での到達レベル
+	function getLVByExp( exp, et){
+		local m = et[0], n = 0.5 + et[1] / 150.0;
+		local v = 0;
+		for( local lv = 1; lv <= 99; lv++){
+			v += m; m *= 1 + n; n *= 0.91;
+			if( (v|0) > exp) return lv;
+		}
+		return 99;
+	}
+	
+	///////////////////////////////////////////////////////////////////////////
+	//	説明文の組み立て
+
+	eqdescparams = ["PATK","MATK","PDEF","MDEF"];
+
+	//	アイテム、スキル、装備の詳細な説明文を装飾付きで返す。
+	function getDescription( v, prefix=null){
+		//	準備処理
+		local type, data, opds;
+		if( v instanceof RPGItem){
+			type = RPGData.getDataType( v.dataid);
+			data = v.data;
+			opds = [] ... data.option ...v.ownoptions;
+		}else
+		if( v instanceof RPGJob){
+			type = RPGData.getDataType( v.dataid);
+			data = v.data;
+			opds = data.option;
+		}else{	//	スキルはそのままデータのtableが来る
+			type = "skill";
+			data = v;
+			opds = v.option;
+		}
+		//	ここから組み立て。説明文、基本効果、オプションの3段階。
+		local sb = (#StringBuffer()).clear();
+		// if( prefix) sb .. prefix .. "\n"
+		switch( type){
+		case "item": case "skill":
+			sb .. "[U][-]";
+			if( data["skilltype"] == "unusable"){
+				sb .. "使用不能";
+			}else{
+				sb .. ::RPGSystem.getSkillBattleInfo( data, null);
+			}
+			sb .. "[+][O]";
+			break;
+		case "weapon": case "armor":	//	攻撃、防御
+			sb .. "[U][-]";
+			foreach( pid in eqdescparams){
+				local v = data[pid];
+				if( v) sb .. T[pid] .. " " .. v .. " ";
+			}
+			sb .. "[+][O]";
+			break;
+		}
+		sb .. "\n" .. data.desc;
+		if( opds[0]){
+			sb .. "\n[-]" .. ::RPGSystem.getOptionDescription( opds);
+		}
+		return RichText( string( sb));
+	}
+
+	function getConsumeInfo( c){
+		local sb = StringBuffer();
+		if( typeof( c) == SS_ARRAY){	//	スキル
+			if( !c[1]){
+				sb .. "$T.noconsume";
+			}else{
+				local consumedicts = #[ "MP", "TP", "HP", "MP", "TP", "HP"];
+				sb .. (T.consumefmt % T[consumedicts[c[0]]]) .. " " .. c[1];
+				if( c[0]/3) sb .. "％";
+			}
+		}else{	//	アイテム
+			sb .. "必ず消費";
+		}
+		return string( sb);
+	}
+	
+	//	スキル一覧時の右側のラベル。
+	//	MP:黄色？ TP:水色 HP:白
+	function getSkillListInfo( pc, skill){
+		local c = skill.consume;
+		if( !c[1]) return "";
+		local col = #["[#bff]","[#fc3]","[#fff]"];
+		return sprintf( "%S%S", col[c[0]%3], c[1]);
+	}
+
+	//	スキルやアイテムのバトル時に重要な情報を返す。
+	//	消費パラメータ、効果範囲、属性、、あと使用可能場面もかな？
+	//	使用キャラが消費の減衰をするならそれを反映した数値にする？
+	function getSkillBattleInfo( data, pc){
+		local sb = (#StringBuffer()).clear();
+		//	消費
+		local c = data.consume;
+		if( typeof( c) == SS_ARRAY){	//	スキル
+			local consumedicts = #[ "MP", "TP", "HP", "MP", "TP", "HP"];
+			if( c[1]){
+				sb .. (T.consumefmt % T[consumedicts[c[0]]]) .. " " .. c[1];
+				if( c[0] && !(c[0]&1)) sb .. "％";
+			}else{
+				sb .. "$T.noconsume";
+			}
+		}else{	//	アイテム
+			sb .. "$T.consumeitem";
+		}
+		//	ダメージ式、効果範囲
+		if( "dmgform" in data || "cmdtgt" in data){
+			// if( "dmgform" in data) sb .. ::conf.type.dmgform[data.dmgform].name .. "：";
+			if( "cmdtgt" in data) sb .. "  $T.cmdtgt" .. data.cmdtgt
+		}
+		//	属性
+		local elembits = data["elembits"]||0;
+		if( elembits){
+			sb .. "　";
+			foreach( i, e in ::conf.type.elem){
+				if( elembits & (1<<i)) sb .. e.icon;
+			}
+		}
+		return string( sb);
+	}
+
+	//	オプション配列の説明を返す。
+	function getOptionDescription( opds){
+		local sb = (#StringBuffer()).clear();
+		foreach( i, opd in opds){
+			local opt = ::RPGSystem.option[opd.opttype];
+			if( !opd["hide"] && opt["info"]){
+				// if( !i) sb .. "　";
+				sb .. "\u0002\uf7c0" .. ~(opt.info, opd) .. "\u0003";	//	制御コードで改行を禁止
+			}
+		}
+		return string( sb);
+	}
+
+	//	掛かっているコンディションをstring化する。ソートされる。
+	function getConditionString( conds){	//	RPGCondition[]
+		local sb = (#StringBuffer()).clear();
+		foreach( v in conds){
+			if( v.data["showstat"]){	//	ステータス画面に表示
+				if( v.LV >= 2){
+					sb .. sprintf( "%S\b%c", v.data.icon, 0xf7d0+v.LV-2);
+				}else{
+					sb .. v.data.icon;
+				}
+			}
+		}
+		return string( sb);
+	}
+
+	//	属性防御の文字列を返す。リッチテキスト構文。
+	function getElemRateString( edr, colnum=4){
+		local sb = (#StringBuffer()).clear();
+		foreach( i, e in ::conf.type.elem){
+			local v = edr[i];
+			sb .. e.icon .. (v ? sprintf( "[%S]%+2d", v<0?"D":"U", Math.clamp( v, -99, 99)):"[N]  0");
+			sb .. (i%colnum==colnum-1 ? "\n" : " ");
+		}
+		return string( sb);
+	}
+
+	//	状態耐性の文字列を返す。リッチテキスト構文。
+	function getCondRateString( cdr, colnum=4){
+		local sb = (#StringBuffer()).clear();
+		foreach( i, c in ::conf.type.resistg){
+			local v = cdr[i];
+			sb .. c.icon .. (v ? sprintf( "[%S]%+2d", v<0?"D":"U", Math.clamp( v, -99, 99)):"[N]  0");
+			sb .. (i%colnum==colnum-1 ? "\n" : " ");
+		}
+		return string( sb);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	
+class RPGResource
+{
+	static nums = "0123456789";
+	static typemap = {
+		"CE" : "chara_etc",		//	特殊なキャラ見た目。非表示ぐらい。
+		"CV" : "chara_vox",
+		"OV" : "obj_vox",
+		"EV" : "equip_vox",
+		"PC" : "event_pic",
+		"EP" : "enemy_pic",
+		"VP" : "event_pic",
+		"EM" : "enemy_pm",
+		"FX" : "efx",
+		"MV" : "map_vox",
+		"MA" : "map_asset",
+		"UI" : "ui",
+		"SE" : "snd",
+		"MU" : "bgm",
+		"VO" : "voice",
+		"GO" : "ghost",
+	};
+	_map = null;
+
+	function _get( resid){
+		return getResource( resid);
+	}
+
+	static function getResourceType( id){
+		if( !id[5] && nums.contains( id[2]) && nums.contains( id[3]) && nums.contains( id[4])) return typemap[id.substring(0,2)];
+	}
+
+	static function getResource( resid){
+		local restype = getResourceType( resid);
+		return ::conf._resource[restype][resid];
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//	キャラ、アイテム、スキルなどのデータアクセスラッパー。
+//	未定義のデータにアクセスしたときに
+//	他の機能として、デフォルトデータの作成、dataidからデータのタイプ取得、などのユーティリティメソッドを備える。
+//	
+class RPGData
+{
+	static alnums = "0123456789abcdefghijklmnopqrstuvwxyz";
+	static nums = "0123456789";
+	static typemap = {
+		"P" : "player",
+		"E" : "enemy",
+		"I" : "item",
+		"W" : "weapon",
+		"A" : "armor",
+		"J" : "job",
+		"K" : "cond",
+		"S" : "skill",
+		"Q" : "quest",
+		"M" : "map",
+		"X" : "macro",
+		"R" : "store",
+		"N" : "point",	//	ポイント。経験値、ゴールド、ジョブ経験値など。システム追加専用。
+	};
+
+	function _get( dataid){
+		return getData( dataid);
+	}
+	
+	static function getDataType( dataid){
+		if( !dataid[4] && alnums.contains( dataid[1]) && nums.contains( dataid[2]) && nums.contains( dataid[3])) return typemap[dataid.substring( 0, 1)];
+	}
+
+	static function getData( dataid){
+		local datatype = getDataType( dataid);
+		return ::conf[datatype][dataid];
+	}
+
+	//	デフォルトデータは、データタイプの中で一番若いIDのものをコピーして作られる。基本的にP000やE000などの0番目のデータは
+	//	デフォルトデータとして使われるデータにする。
+	static function createDefaultData( dataid){
+		local pre = dataid[0];
+		local datamap = ::conf[getDataType( dataid)];
+		local caps = datamap["_meta"]["caps"] || 100;
+		for( local l = 0;l < caps;l ++){
+			local id = sprintf( "%c%03d", pre, l);
+			if( datamap[id]){
+				local v = deepclone( datamap[id]);
+				v.name = "**%S**" % id;
+				return v;
+			}
+		}
+		throw Exception( "empty datamap dataid="..dataid);	//	全くデータない場合は流石に回復不能
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//	イベントから各種変数へのアクセッサ。GameSetting.varaccsで拡張可能。
+
+class RPGVarAccessor
+{
+	_cache = null;
+
+	constructor(){
+		_cache = {};
+	}
+
+	function _makevar( key){
+		foreach( ev in ::RPGSystem.varaccs){
+			local fn = ev.makevar( key);
+			if( fn) return fn;
+		}
+		return @( key, val=undefined){ return undefined; }	//	無効の場合はundefinedを返す
+	}
+
+	function _get( key){
+		local fn = _cache[key];
+		if( !fn) fn = _cache[key] <- _makevar( key);
+		return fn( key);
+	}
+	
+	function _set( key, val){
+		local fn = _cache[key];
+		if( !fn) fn = _cache[key] <- _makevar( key);
+		return fn( key, val);
+	}
+
+	static evarinfos = [
+		{ key="W", name="$T.var_work", type=VAR_ANY, varbits=1, },	//icon:"\uf808"
+		{ key="X", name="$T.var_work", type=VAR_ANY, varbits=1, },
+		{ key="Y", name="$T.var_work", type=VAR_ANY, varbits=1, },
+		{ key="Z", name="$T.var_work", type=VAR_ANY, varbits=1, },
+		{ key="A", name="$T.var_event", type=VAR_ANY, varbits=2, },
+		{ key="B", name="$T.var_event", type=VAR_ANY, varbits=2, },
+		{ key="C", name="$T.var_event", type=VAR_ANY, varbits=2, },
+		{ key="D", name="$T.var_event", type=VAR_ANY, varbits=2, },
+	]
+
+	//	指定した名前の変数の情報を取得する
+	//	
+	static function getVarInfo( key){
+		local i = evarinfos.find( @( v) v.key==key);
+		if( i) return i;
+		//
+		foreach( va in ::RPGSystem.varaccs){
+			local i = va.info( key);
+			if( i) return i;
+		}
+		return { key=key, name="$T.lbl_unknown", icon="\ueb8b", type=0, };
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//	データアクセス用グローバルを設定
+
+::rpgdata <- RPGData();
+::rpgres <- RPGResource();
+::rpgvar <- RPGVarAccessor();
+
+function dataname( dataid){
+	local d = ::rpgdata[dataid];
+	return d ? ((d["icon"]||"")..d["name"]) : dataid;
+}
+
+//	type.equpitype[i]を指定して武器かどうかを返す
+function isWeapon( eqtype){
+	return ::conf.type.eqtype[eqtype]["eqctg"]==0;
+}
+
+function isShield( eqtype){
+	return ::conf.type.eqtype[eqtype]["eqctg"]==1;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	リスト取得
+
+//	タイプをリストプロパティ形式に変換
+function typelist( typeid){
+	return ::conf.type[typeid].map( @( v, i){
+		return { idx=i, lbl=v.name, icon=v["icon"], val=i, data=v }
+	})
+}
+
+//	データをリストプロパティ形式に変換。いるかな
+function datalist( datatype){
+	local a = [];
+	foreach( i, v in ::conf[datatype]){
+		if( !i.startsWith( "_")) a .. { id=i, idx=int( i.substring( 1)), lbl=v.name, icon=v["icon"], val=i };
+	}
+	a.sort( @( v) v.id);
+	return a;
+}
+
+//	option, command, skilltypeなど
+function settinglist( setid){
+	return ::RPGSystem[setid].map( @( v, i){
+		return { lbl:v.lbl, icon:v["icon"], val:v.key }
+	})
+}
+
+//	スキルグループの一覧を返す。※ゲームではキャッシュされるべき
+function skillglist(){
+	local a = [];
+	foreach( i, v in ::conf.store){
+		if( v["type"] == 1) a .. { dataid=i, name=v.name, icon=v.icon, data=v, idx=int( i.substring( 1)), lbl=v.name, val=i };	//	idxはCHECKBITSに必要。
+	}
+	return a.sort( @( v) v.idx);
+}
+
+//	オートマクロのID一覧を返す。※ゲームではキャッシュされるべき
+function automacrolist(){
+	local a = [];
+	foreach( i, v in ::conf.macro){
+		if( i[0]!='_' && v.runmode >= 1) a .. { dataid=i, name=v.name, data=v, val=i, };
+	}
+	a.sort( @( v) v.dataid);
+	return a;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	ビット操作(32bit以上可)
+
+//	bit列をint[]にして返す
+function bitlist( bits){
+	local a = [];
+	if( typeof( bits) == SS_ARRAY){
+		foreach( i, v in bits){
+			for( local l = 0;l < 32;l ++) if( v&(1<<l)) a .. (i*32+l);
+		}
+	}else{
+		for( local l = 0;l < 32;l ++){
+			if( bits&(1<<l)) a .. l;
+		}
+	}
+	return a;
+}
+
+function bitget( bits, i){
+	return (typeof( bits)==SS_ARRAY) ? ((bits[i>>>5]||0)>>>(i&31))&1 : (i<32)?(bits>>>i)&1 : 0;
+}
+
+function bitset( bits, i){
+	local idx = i>>>5;
+	if( typeof( bits) == SS_ARRAY){
+		if( !(idx in bits)) bits.resize( idx+1, 0);
+		bits[idx] |= 1<<(i&31);
+	}else{
+		if( i >= 32){
+			bits = [bits].resize( idx+1, 0);
+			bits[idx] |= 1<<(i&31);
+		}else{
+			bits |= 1<<(i&31);
+		}
+	}
+	return bits;
+}
+
+function bitclr( bits, i){
+	if( typeof( bits) == SS_ARRAY){
+		if( bits[i>>>5]) bits[i>>>5] &= ~(1<<(i&31));
+	}else{
+		if( i < 32) bits &= ~(1<<(i&31));
+	}
+	return bits;
+}
+
+function bitdblist( bits, dbtype){
+	if( !bits) return #tuple( 0);
+	local dmap = ::conf[dbtype];
+	local fmt = "%S%%03d" % Table.indexOf( RPGData.typemap, dbtype);
+	return bitlist( bits).map( @( v){
+		local id = fmt % v;
+		return dmap[id] ? id : undefined;
+	});
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//	スクリプト、エラー処理
+//	スクリプト実行でExceptionが発生したときに、どこで発生したエラーかを特定し、ハンドラーに渡す。
+//	ハンドラーは復帰可能なら値を返し、不能なら渡されたExceptionを再度throwする。
+//	※メッセージ構文中のcompiletemplateでもエラーは起きうるが、それは別の対処？
+
+//	スタック情報の配列を受け取り、何の処理中かを返す。
+//	・イベント処理中なら、どのイベントのどの行の処理か。マクロも同じく。 execCommandで判定
+//	・判定処理中なら、どの判定部分で起きたか。 getvarで判定
+//	・バトルの計算中ならどの計算中で起きたか。 
+//	・コンパイルエラーならどのコードか。 "Script Compile Error"で判定
+local errorarised( ex){
+	local errinfo = { ex=ex};		//	ここにいれてく！
+	
+	return ::RPGSystem.handleerror( errinfo);
+}
+
+local scpcache = {};
+
+//	
+function compilescript( code){
+	local fn = scpcache[code];
+	if( fn) return fn;
+	try{
+		fn = compilestring( code);
+	}catch( ex){
+		fn = @(){ throw Exception( "Script Compile Error"); }	//	コンパイルエラー。。。実行時は常にエラー
+	}
+	//	実際返すfunctionはエラーをハンドリングするものに
+	local fn2 = @(){	//	this=RPGEventRunnerBase
+		try{
+			return fn();
+		}catch( ex){
+			return errorarised( ex);
+		}
+	}
+	return scpcache[code] <- fn2;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	条件判定
+
+function getvar( var, self){
+	if( typeof( var) == SS_STRING){
+		switch( var[0]){
+		case '.': case '\'': return var.substring( 1);
+		case '\t': return ~(compilescript( var), self);		//	functionを実行
+		default: return self[var];	//	変数の値取得
+		}
+	}else{
+		return var;		//	定数として返す
+	}
+}
+
+//	※lval, rvalのいずれかがboolの場合、両方ともboolとして比較する。
+function valcmp( lval, op, rval){
+	if( typeof( lval)==SS_BOOL || typeof( rval)==SS_BOOL){ lval = !!lval; rval = !!rval; }
+	switch( op){
+	case "==": return lval==rval;
+	case "!=": return lval!=rval;
+	case ">=": return lval>=rval;
+	case ">" : return lval> rval;
+	case "<=": return lval<=rval;
+	case "<" : return lval< rval;
+	}
+	return false;
+}
+
+function varcmp( req, self){
+	return ::valcmp( ::getvar( req.lvar, self), req.op, ::getvar( req.rvar, self));
+}
+
+local _reqchkmap = ::RPGSystem.reqchk._map;
+
+function reqchk( req, self=rpgvar){
+	switch( typeof( req)){
+	case SS_ARRAY:
+		foreach( r in req) if( !reqchk( r, self)) return false;
+		return true;
+	case SS_TABLE:
+		local fn = _reqchkmap[req["key"]]["func"] || ::varcmp;
+		return fn( req, self);
+	case SS_CLOSURE:
+		return req();
+	case SS_BOOL:
+		return req;
+	}
+	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//	ボタンアイコン
+
+local _vk( i){
+	return ::clientconf["keyboard"][i] || ClientConfig.def_keybtnmap[i][0];
+}
+
+//	ボタンID BTN_A, BTN_B等からアイコンの文字コードをstringにして返す。
+//	ゲームパッド、キーボード、無しの順。
+function buttonicon( i, dark=false){
+	dark = dark&1;
+	local gp = ::gpui.getGPUIDevice()["gp"];
+	if( gp){
+		local t = gp.type, cbase = 0xee00 + (t>=1&&t<4?t-1:0)*0x60 + dark*0x30;
+		switch( i){
+		case -1: return char( cbase + 44);
+		case -2: return char( cbase + BTN_LB)..char( cbase + BTN_RB);
+		case -3: return char( cbase + BTN_ZL)..char( cbase + BTN_ZR);
+		default: return char( cbase + i);
+		}
+	}else
+	if( ::uifeature & UIFeature.UI_KEYBOARD){
+		local cbase = 0xec00 + dark*0x100;
+		switch( i){
+		case -1: return char( cbase + VK_LEFT)..char( cbase + VK_UP)..char( cbase + VK_RIGHT)..char( cbase + VK_DOWN);
+		case -2: return char( cbase + _vk( BTN_LB))..char( cbase + _vk( BTN_RB));
+		case -3: return char( cbase + _vk( BTN_ZL))..char( cbase + _vk( BTN_ZR));
+		default: return char( cbase + _vk( i));
+		}
+	}else{
+		//	バーチャルパッドがある場合。
+		return "\uf25f";
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+function getBGMID(){
+	return ::soundmanager.currentbgm["name"];
+}
+
+//	
+function playBGMID( bgmid){
+	local t = ::conf._resource.bgm[bgmid];
+	if( t){
+		local bgm = ::playBGM( t);
+		bgm.name = bgmid;
+		return bgm;
+	}
+}
+
+function fadeBGMID( bgmid, fadetime){
+	local t = ::conf._resource.bgm[bgmid];
+	if( t){
+		local bgm = ::fadeBGM( t, fadetime);
+		bgm.name = bgmid;
+		return bgm;
+	}
+}
+
+//	サウンドのconf読み込みをリソースからにする
+SoundManager.confloader <- @(){
+	local c = ::conf._resource.snd, env = c._env;
+	local reverbs = env.reverbs.reduce( @( v, t){ t[v.id] <- v; return t; }, {});
+	local src3ds = env.src3ds.reduce( @( v, t){ t[v.id] <- v; return t; }, {});
+	local sounds = {};
+	foreach( i, v in c){
+		if( !i.startsWith( "_")) sounds[i] <- v;
+	};
+	//
+	return {
+		reverbs=reverbs, source3ds=src3ds, tags=env.tags, irwavs=env.irwavs, sounds=sounds, //	alias=::SystemSoundMap	ツールで音なるのいや
+	};
+}
+
+//	RenderSettingsのconf読み込みもリソースからにする
+getclass( RenderSettings).confloader <- @(){
+	return deepclone( ::conf._resource.renderset.rendersets);
+}
+
+
+local registerIcon(){
+	if( !getResource( "/resource")) return;
+	::Fonts.getFonts();
+	local dr = ::getResource( "/resource/icon/deficon.json");
+	::Fonts.registerEmoji( dr, 1);
+	local ur = ::getResource( "/resource/icon/usericon.json");
+	if( ur) ::Fonts.registerEmoji( ur, 2);
+	local vr = ::getResource( "/resource/icon/vkicon.json");
+	::Fonts.registerEmoji( vr, 3);
+}
+
+//	post_loadにフックを追加
+//	・アイコンを登録。デフォルトアイコン、ユーザーアイコン。
+module.hookAction( "post_load", registerIcon, 1111);
+
+
