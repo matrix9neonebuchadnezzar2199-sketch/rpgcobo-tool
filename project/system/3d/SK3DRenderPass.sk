@@ -1263,12 +1263,6 @@ class reg.GBlurPass extends reg.ImagePassBase
 	}
 	
 	function performPass( r){
-		// local ma = m.miscmat0;
-		// local invpmat = r.env.envmat1;
-		// ma[0] = invpmat[10];
-		// ma[1] = invpmat[14];
-		// ma[2] = invpmat[11];
-		// ma[3] = invpmat[15];
 		reconstructParam( r.camera, m.miscmat0, 0);
 		r.setRenderTarget( target, viewport);
 		skBindVertexBuffer( vtx);
@@ -1433,7 +1427,7 @@ class reg.DofBlurPass extends reg.ImagePassBase
 			return;
 		}
 		skBindVertexBuffer( vtx);
-		local idx = r.currenttarget?ridx:fidx;
+		local idx = ridx;
 		///////////////////////////////////////////////////////
 		//	coc
 		local dofz = r.camera.focus;
@@ -1487,13 +1481,13 @@ class reg.PBRPostPass extends SK3DRenderPass
 		local fx = p["postfx"];
 		//////////////////////////////////
 		//	bloom pass
-		bloomextpass = reg.DrawImagePass( { tec:"pbrsprite.extractbloom", src:null, target:null, thrs:fx["bloomthrs"]||0.9, pow:fx["bloompow"]||0.12});
-		bloomblurpass = reg.BlurImagePass( {src:null, target:null, kern:(3.1,24), blur:fx["bloomblur"]||3.3});
-		bloomextpass.enabled = true;
+		bloomextpass = reg.DrawImagePass( { tec:"pbrsprite.extractbloom", src:null, target:null, thrs:fx["bloomthrs"]??0.9, pow:fx["bloompow"]??0.12});
+		bloomblurpass = reg.BlurImagePass( {src:null, target:null, kern:(3.1,24), blur:fx["bloomblur"]??3.3});
+		bloomextpass.enabled = bloomextpass.ps.pow>0.0;
 		//////////////////////////////////
 		//	dof pass
-		dofblurpass = reg.DofBlurPass( {src:p.src, target:null, dofrange:fx["dofrange"]||50, blur:fx["dofblur"]||2.0});
-		dofblurpass.enabled = !!fx["dofblur"];
+		dofblurpass = reg.DofBlurPass( {src:p.src, target:null, dofrange:fx["dofrange"]??50, blur:fx["dofblur"]??2.0});
+		dofblurpass.enabled = dofblurpass.ps.blur>0.0;
 		//////////////////////////////////
 		//	mix pass
 		mixpass = reg.DrawImagePass( { tec:"pbrsprite.pbrmix", src:p.src, target:p.target});
@@ -1811,7 +1805,7 @@ class reg.PBRDeferredRendererPass extends SK3DRenderPass
 		super.setPassSetting( p);
 		exp = ExposureState();
 		exp.setPassSetting( p["exposure"]);
-		shadowpass = reg.ShadowMapRenderPass( null); //	
+		shadowpass = reg.ShadowMapRenderPass( null);
 		litprepass = reg.LightPreparePass( p, exp);	//	exp共有。IBLとかライト設定をまとめて渡す
 		basepass = reg.SceneRenderPass( {visiblemask:SK_VISIBLE_OPAQUE, target:"basefb", clearparam=[0,0,0,0,1]});
 		transpass = reg.SceneRenderPass( {visiblemask:SK_VISIBLE_TRANSPARENT, target:"transfb"});
@@ -1841,7 +1835,7 @@ class reg.PBRDeferredRendererPass extends SK3DRenderPass
 		g0tex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA8});
 		g1tex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R32UI});
 		g2tex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R32UI});
-		hdcolortex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA16F});
+		hdcolortex = r.createRenderTarget( {w:VP_FULL,h:VP_FULL, fmt:(ssgipass["enabled"]?SK_RGBA16F:SK_R11G11B10F) });  	// hdcolortex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA16F});
 		sdcolortex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_RGBA8});
 		ztex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_DEPTH32});
 		uztex = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R16UI});
@@ -1849,12 +1843,12 @@ class reg.PBRDeferredRendererPass extends SK3DRenderPass
 		transfb = r.createRenderTarget( {color0=hdcolortex, depth=ztex});
 		decalfb = r.createRenderTarget( {color0=sdcolortex, depth=ztex});
 		//	screen space
-		if( gblurpass){
+		if( gblurpass["enabled"]){
 			g1tex2 = r.createRenderTarget( #{w:VP_FULL,h:VP_FULL,fmt:SK_R32UI});
 		}else{
 			g1tex2 = null;
 		}
-		if( ssaopass){
+		if( ssaopass["enabled"]){
 			aotex = r.createRenderTarget( {w:VP_FULL,h:VP_FULL,fmt:SK_R8});
 		}
 		if( ssgipass){
@@ -1890,19 +1884,18 @@ class reg.PBRDeferredRendererPass extends SK3DRenderPass
 	//	DisplayListのカリング、RenderStateの退避などを予め行い呼び出される。
 	function performPass( r){
 		skSetLights( r.camera, r.scn.lights, r.env.envlights);	//	skSetLightsはレガシー用API。skCullLightsで機能置き換え予定
-		// if( r.bgpass.enabled) r.bgpass.clearDepth( r);	//	deferred passは毎回全てのバッファをクリア。そうする方が速い
 		//	shadow pass -> shadow
-		shadowpass.performPass( r);
+		shadowpass?.performPass( r);
 		//	light prepare pass -> lightidx, lightprm, dfg, ibl, sh, ...
 		litprepass.performPass( r);
 		//	deferred base pass (3D) -> gbuffers
 		r.env.passfilter = 1024;
 		r.bgpass.target = basepass.target;
 		basepass.performPass( r);
-		if( r.bgpass.enabled) r.bgpass.performPass( r);
+		if( r.bgpass["enabled"]) r.bgpass.performPass( r);
 		copyzpass.performPass( r);
 		r.env.depthtex = uztex;	//	koko uztex!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-		if( gblurpass.enabled) gblurpass.performPass( r);
+		if( gblurpass["enabled"]) gblurpass.performPass( r);
 		r.env.gtex0 = g0tex;		//	gtex0-2, ztexをここで設定。。。。。。
 		r.env.gtex1 = g1tex2 || g1tex;
 		r.env.gtex2 = g2tex;

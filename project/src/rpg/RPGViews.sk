@@ -637,11 +637,13 @@ class VirtualPad
 			case MOUSE_PRESSED:
 				v.anime( 1.0, 100.0);
 				self.buttonmask |= bit;
+				e.consume();
 				break;
 			case MOUSE_RELEASED:
 			case MOUSE_CANCELLED:
 				self.buttonmask &= ~bit;
 				v.anime( 0.0, 100.0);
+				e.consume();
 				break;
 			}
 		}

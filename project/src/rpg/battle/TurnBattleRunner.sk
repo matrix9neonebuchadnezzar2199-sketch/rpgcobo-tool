@@ -67,7 +67,6 @@ class TurnBattleRunner extends BattleRunnerBase
 		}catch( ex){
 			printexception( ex);
 			if( ex instanceof Exception){
-				
 			}
 			// foreach( pc in charas){	//	ここではやらない。暗転前に状態が戻っちゃう
 			// 	pc.endBattle();

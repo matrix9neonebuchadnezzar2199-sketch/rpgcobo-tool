@@ -640,6 +640,7 @@ class SK3DEventGizmo extends SK3DObject
 	partobjs = null;	//	array[5]
 	lvecobj = null;		//	ライト方向
 	icon3d = null;		//	SK3DObject | null
+	tr3d = null;
 	
 	mode = PEN_GIZMO;
 	stat = 0;
@@ -731,12 +732,17 @@ class SK3DEventGizmo extends SK3DObject
 			b3body.ref = this;
 		}
 		if( mdlobj) addChild( mdlobj);
+		if( tr3d){
+			tr3d.pos( 0.0, 0.0, -bnd.t-0.125);
+			tr3d.matdirty = true;
+		}
 	}
 
 	function updateModel(){
 		mdlobj?.kill();
 		mdlobj = RPG3DObject.create3DObject( data);
 		icon3d = null;
+		tr3d = null;
 		addChild( mdlobj);
 		if( !( mdlobj instanceof RPG3DEffect)){
 			foreach( m in mdlobj.getMaterials()){
@@ -752,8 +758,12 @@ class SK3DEventGizmo extends SK3DObject
 			icon3d = SK3DObject( om);
 			icon3d.pos( 0.0, 0.5, 0.0);
 			icon3d.setBillboard( true);
-			if( mdlobj) mdlobj.addChild( icon3d);
-			else { addChild( icon3d); mdlobj = icon3d; }
+			mdlobj.addChild( icon3d);
+			//	yajirusi
+			local pm = ::RPGToolMesh.createTriArrow( 0.25, mode);
+			tr3d = SK3DObject( pm);
+			tr3d.pos( 0.0, 0.0, -bnd.t-0.125);
+			mdlobj.addChild( tr3d);
 		}
 		updateLight();
 	}

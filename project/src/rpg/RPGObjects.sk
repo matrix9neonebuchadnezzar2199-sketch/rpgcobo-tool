@@ -1002,7 +1002,7 @@ class RPGStageState extends Serializable
 	<ser_o> estatmap = null;		//	イベント状態マップ。出現場所等。REMAPIDの更新で丸ごと破棄される
 	<ser_o> mapbmp = null;			//	Bitmap : オートマッピング時に埋まっていく。4ブロック1ピクセルぐらいかな
 	<ser_o> statmap = null;			//	stagepropsの情報を保存
-	<ser_o> etc = null;				//	{}色々なパラメータ
+	<ser_o> env = null;				//	{}色々なパラメータ
 	<ser_i> remapid = 0;			//	リストアID。enter時にこれが変化してたらマップリストアを行う。
 	<ser_o> dynassets = null;		//	動的アセット配置
 	<ser_o> reserved2 = null;
@@ -1034,6 +1034,7 @@ class RPGStageState extends Serializable
 				if( !v["parma"]) removei;
 			}
 			dynassets = null;
+			env = {};
 		}
 	}
 	
@@ -1044,9 +1045,9 @@ class RPGStageState extends Serializable
 		if( po["evid"]){
 			local ev = map.event[po.evid];
 			if( ev){	//	ポータルの向きに進んだ位置
-				local h = ev.pos[3]*Math.PI*0.5;
+				local h = (ev.pos[3]+2)*Math.PI*0.5;
 				local pos = Vector3D( ev.pos).scale( 0.5);
-				local vec = Vector3D( 0, 0, ev.mdl.r[1]*0.5+0.5).rotate( Quaternion.fromHPB( h, 0, 0));
+				local vec = Vector3D( 0, 0, (ev["mdl"]["r"][1]||1.0)*0.5+0.5).rotate( Quaternion.fromHPB( h, 0, 0));
 				pos.add( vec);
 				return (pos.x,pos.y,pos.z,h);
 			}

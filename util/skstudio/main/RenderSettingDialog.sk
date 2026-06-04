@@ -24,7 +24,7 @@ local foghead = { pid="FG", lbl="$T.lbl_fog", type=HEADER, }
 local nameprop = { pid="name",	lbl="$T.lbl_name",	type=LANGSTRING };
 local renderpassprop = { pid="renderpass",	lbl="$T.lbl_renderpass",	type=LIST, list=renderpasslist };
 local ownbufferprop = { pid="ownbuffer",	lbl="$T.lbl_ownbuffer",	type=BOOL };
-local shadowtypeprop = { pid="shadowtype", lbl="$T.lbl_shadowtype",	type=LIST, list=["0:OFF","1:1 Cascade","2:2 Cascades","3:3 Cascades"] };
+local shadowtypeprop = { pid="shadowtype", lbl="$T.lbl_shadow",	type=LIST, list=["0:OFF","1:1 Cascade","2:2 Cascades","3:3 Cascades"] };
 local shadowresoprop = { pid="shadowreso", lbl="$T.lbl_shadowreso",	type=LIST, list=[{lbl:"512",val:512},{lbl:"1024",val:1024},{lbl:"2048",val:2048}] };
 local shadowdensprop = { pid="shadowdens", lbl="$T.lbl_shadowdens",	type=SCALAR, range=(0.0,1.0), q=100 };
 local shadowfarprop = { pid="shadowfar", lbl="$T.lbl_shadowfar",	type=SCALAR, range=(10,10000), q=1 };

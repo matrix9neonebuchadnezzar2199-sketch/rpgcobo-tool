@@ -93,6 +93,7 @@ function preloaShaders( glob=null){
 	
 	//	ここでclient.confを読んでスクリーンサイズ、言語などを読む。
 	runsk( "/ClientConfig.sk");	//	$savedata/client.json
+	::clientconf = ClientConfig.load();
 	if( osname=="Windows"){
 		if( !clientconf.screen.fullscreen){
 			local wh = clientconf.screen.reso_window.split( "x");	//	"1920x1080"のような文字列

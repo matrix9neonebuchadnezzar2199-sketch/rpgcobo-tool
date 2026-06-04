@@ -103,13 +103,16 @@ import GamepadStateID;
 		local ns = ObjectInput.decode( f.load());
 		ns.saveslot = slot;
 		ns.savetime = f.lastmodified;
+		local bgmid = ns.stagemap[ns.mapid].env["bgmid"];
 		return moveMap({
 			dest = { mapid=ns.mapid, pos=ns.stagemap[ns.mapid].player.pos},
+			bgmid = bgmid,
 			isload = true,
+			wipe = 1,
 			loadfunc=@(){
 				::rpgstat = ns;
 				foreach( i, v in rpgstat.stagemap){
-					printf( "loadGame SNAPSHOT!!!!!!!! %S %S\n", i, encodeJSON( {evarmap=v.evarmap, estatmap=v.estatmap, statmap=v.statmap, player=v.player}, 5));
+					printf( "loadGame SNAPSHOT!!!!!!!! %S %S\n", i, encodeJSON( {evarmap=v.evarmap, estatmap=v.estatmap, statmap=v.statmap, player=v.player, env=v.env}, 5));
 				}
 				if( loadfn) loadfn();
 			},
@@ -121,6 +124,7 @@ import GamepadStateID;
 	function saveGame( slot){
 		local st = ::rpgstage;
 		::rpgstat.stagemap[st.mapid] <- st.getSnapshot();
+		::rpgstat.mapid = st.mapid;
 		::rpgstat.saveslot = slot;
 		::rpgstat.savetime = Date.currentTime();
 		local bb = ObjectOutput.encode( ::rpgstat);
@@ -197,10 +201,10 @@ import GamepadStateID;
 	
 	//	次に再生されるBGMのIDを取得する。
 	function _nextbgmid( cmd){
-		if( "bgmid" in cmd) return cmd["bgmid"] || ::getBGMID();	//	コマンドにbgmidが指定。nullの場合は現在のBGM。
+		if( "bgmid" in cmd) return cmd["bgmid"] || ::getBGMID() || "MU000";	//	コマンドにbgmidが指定。nullの場合は現在のBGM。
 		local mapid = cmd.dest.mapid;	//	行先のマップ
 		local sstat = ::rpgstat.stagemap[mapid];
-		return (!cmd["remap"] && sstat["env"]["bgmid"]) || ::conf.map[mapid].bgmid;	//	remapされるなら
+		return (!cmd["remap"] && sstat["env"]["bgmid"]) || ::conf.map[mapid].bgmid || ::getBGMID() || "MU000";	//	remapされるなら保存されたBGMIDは消える
 	}
 
 	//	マップ間移動を行う。また、マップ内移動はRPGStageを切り替えることなく行う。
@@ -213,48 +217,55 @@ import GamepadStateID;
 		//	
 		local doneptr = cmd["doneptr"] || ptr( false);	//	終了したらtrueになる。cmdに埋め込むことも可能
 		local fn = @(){
-			lockUI( true);
-			//	BGMの切り替えがある場合はこのタイミングでフェードアウトさせていく。
-			local nextbgmid = _nextbgmid( cmd);
-			if( nextbgmid != ::getBGMID()) ::fadeoutBGM();	//	BGMをフェードアウトする設定。
-			//	ワイプ＆ポーズ
-			RPGMain.wipein( cmd["wipe"]);
-			local st = ::rpgstage;
-			if( st){	//	現ステージが存在しない場合あり。立ち上げ時の最初のみ。
-				st.setPaused( true);
-				//	現在のマップ状況を保存。※バトルマップやタイトルマップではやらない。って限る必要も無いか。
-				if( !cmd["isload"]){	//	isload指定だと保存しない。
-					local sstat = st.getSnapshot();
-					::rpgstat.stagemap[st.mapid] = sstat;
+			try{
+				lockUI( true);
+				//	BGMの切り替えがある場合はこのタイミングでフェードアウトさせていく。
+				local nextbgmid = _nextbgmid( cmd);
+				if( nextbgmid != ::getBGMID()) ::fadeoutBGM();	//	BGMをフェードアウトする設定。
+				//	ワイプ＆ポーズ
+				RPGMain.wipein( cmd["wipe"]);
+				local st = ::rpgstage;
+				if( st){	//	現ステージが存在しない場合あり。立ち上げ時の最初のみ。
+					st.setPaused( true);
+					//	現在のマップ状況を保存。※バトルマップやタイトルマップではやらない。って限る必要も無いか。
+					if( !cmd["isload"]){	//	isload指定だと保存しない。
+						local sstat = st.getSnapshot();
+						::rpgstat.stagemap[st.mapid] = sstat;
+					}
 				}
+				//	remapフラグが立ってたらマップリストアをする。Relocate Map
+				if( cmd["remap"]) rpgvar.REMAPID += 1;	//	マップリストア！！
+				//	暗転時に呼び出すfunction。ニューゲーム、ロード等はここに挟みこむ
+				if( cmd["loadfunc"]) ~(cmd.loadfunc, st);
+				//	消すべきUIを消す。
+				cleanupLayers();
+				//	同じマップ内の移動で、マップリストアしないならRPGStageは同じで済む。ただこの場合はイベント位置などは初期化されない。
+				if( !cmd["remap"] && st["mapid"]==mapid && !cmd["isload"]){	//	isload指定では新規ステージを立てる。
+					//	位置の更新をして、ボクセルレンダリングの終了まで待つ。
+					local pp = RPGStageState.getPortalPos( cmd.dest);
+					st.setPlayerPosition( pp);
+					st.camwork.recover( st);	//	カメラワークのリセット
+					while( st.loadInCameraMesh( 150)) suspend();
+					st.setPaused( false);
+					RPGMain.wipeout( cmd["wipe"]);
+					if( nextbgmid != ::getBGMID()) ::playBGMID( nextbgmid);	//	BGMは変わる場合あり？
+				}else{
+					//	新しいステージを作ってそれを起動。現在のステージはpauseのまま
+					local sstat = ::rpgstat.stagemap[mapid];
+					if( !sstat) sstat = ::rpgstat.stagemap[mapid] <- RPGStageState();
+					sstat.enter( mapid, cmd.dest, rpgvar.REMAPID);
+					sstat.statmap.bgmid = nextbgmid;
+					st = RPGStage( mapid);
+					st.launch( cmd);	//	launch内でワイプアウトは行われる
+				}
+				doneptr << true;
+				lockUI( false);
+			}catch( ex){
+				printf( "moveMap() caused an error...\n");
+				printexception( ex);
+				doneptr << ex;
+				lockUI( false);
 			}
-			//	remapフラグが立ってたらマップリストアをする。Relocate Map
-			if( cmd["remap"]) rpgvar.REMAPID += 1;	//	マップリストア！！
-			//	暗転時に呼び出すfunction。ニューゲーム、ロード等はここに挟みこむ
-			if( cmd["loadfunc"]) ~(cmd.loadfunc, st);
-			//	消すべきUIを消す。
-			cleanupLayers();
-			//	同じマップ内の移動で、マップリストアしないならRPGStageは同じで済む。ただこの場合はイベント位置などは初期化されない。
-			if( !cmd["remap"] && st["mapid"]==mapid && !cmd["isload"]){	//	isload指定では新規ステージを立てる。
-				//	位置の更新をして、ボクセルレンダリングの終了まで待つ。
-				local pp = RPGStageState.getPortalPos( cmd.dest);
-				st.setPlayerPosition( pp);
-				st.camwork.recover( st);	//	カメラワークのリセット
-				while( st.loadInCameraMesh( 150)) suspend();
-				st.setPaused( false);
-				RPGMain.wipeout( cmd["wipe"]);
-				if( nextbgmid != ::getBGMID()) ::playBGMID( nextbgmid);	//	BGMは変わる場合あり？
-			}else{
-				//	新しいステージを作ってそれを起動。現在のステージはpauseのまま
-				local sstat = ::rpgstat.stagemap[mapid];
-				if( !sstat) sstat = ::rpgstat.stagemap[mapid] <- RPGStageState();
-				sstat.enter( mapid, cmd.dest, rpgvar.REMAPID);
-				sstat.statmap.bgmid = nextbgmid;
-				st = RPGStage( mapid);
-				st.launch( cmd);	//	launch内でワイプアウトは行われる
-			}
-			doneptr << true;
-			lockUI( false);
 		}
 		newthread().start( fn, this);	//	別スレッドで処理を実行
 		return doneptr;

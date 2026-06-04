@@ -205,7 +205,7 @@ class MapTools.tool_event extends MapTool
 		switch( e.id){
 		case ITEM_SELECTIONS:
 			if( !selgz || !cmd.find( @( v) v.id==selgz.id)){
-				selgz = getGizmo( cmd[0].id);
+				selgz = null;
 			}
 			updateGizmoStates();
 			break;
@@ -573,11 +573,12 @@ class MapTools.tool_event extends MapTool
 		local colmenu = evcolorlist.map( @( v, i){
 			return { id="color", val=i, lbl="Color"..i, icon=v.icon};
 		});
+		local rot = gz.data.pos[3]|0;
 		local dirlist = #[
-			{ id="rot", lbl="↑", val=0, },
-			{ id="rot", lbl="→", val=1, },
-			{ id="rot", lbl="↓", val=2, },
-			{ id="rot", lbl="←", val=3, },
+			{ id="rot", lbl="↑", val=0, checked=rot==0 },
+			{ id="rot", lbl="→", val=1, checked=rot==1 },
+			{ id="rot", lbl="↓", val=2, checked=rot==2 },
+			{ id="rot", lbl="←", val=3, checked=rot==3 },
 		];
 		local data = gz.data;
 		local ctxmenu;

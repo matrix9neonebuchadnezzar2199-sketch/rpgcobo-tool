@@ -857,6 +857,8 @@ class RPG3DDoor extends RPG3DObject
 	dr = null;
 	fb = null;
 
+	evinbnd = null;		//	イベントの中に入った判定のための範囲
+
 	//	BlockWorldに配置されたフリーブロックと同じ座標が入ってくる
 	//	※コリジョンの回転のみに適用。ブロックの回転はpivotが(0.25,0.25,0.25)
 	function setPosition( p){
@@ -865,6 +867,18 @@ class RPG3DDoor extends RPG3DObject
 		prevdir = dir = p[3];
 		rot.setHPB( dir, 0.0, 0.0);
 		matdirty = true;
+	}
+
+	//	
+	function runMatrix( pmatdirty=true){
+		local b = super.runMatrix( pmatdirty);
+		if( b) (evinbnd = clone bnd).offset( 0.0, 0.0, 0.5).transform( gmat);
+		return b;
+	}
+
+	function updateMatrix(){
+		super.updateMatrix();
+		if( b) (evinbnd = clone bnd).offset( 0.0, 0.0, 0.5).transform( gmat);
 	}
 
 	//	{ fbuid, fbtype, fbparam}全て正しい値が入っている必要あり。

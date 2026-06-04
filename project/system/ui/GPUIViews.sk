@@ -2351,15 +2351,20 @@ class GPUITextEdit.TextEdit extends SKTextEditBase
 			gpuiedit.animefunc( FOCUS_GAINED);
 			if( gpuiedit.checkdefocus) setUpdateFunc( checkDefocus);
 			if( gpuiedit.revertmode){
-				preedittext = getText();		//	ESCやTABやマウスでフォーカスが移った時にこのテキストに戻る
+				preedittext = getText();		//	ESCでこのテキストに戻る
 				gpuiedit.posttext( TEXT_RESTART);	//	戻ったことを通知するためにTEXT_CHANGEDイベント発行。。。いいかな
 			}
 		}else{
+			//	※フォーカス移った時はキャンセルじゃなくて決定にしたほうがいいかも。ESCでキャンセルするのはユーザーの意図がはっきりしてるし。
 			gpuiedit.animefunc( gpuiedit._entered ? MOUSE_ENTERED : MOUSE_EXITED);
-			if( preedittext){
-				gpuiedit.setText( preedittext);
+			// if( preedittext){
+			// 	gpuiedit.setText( preedittext);
+			// 	preedittext = null;
+			// 	gpuiedit.postIDEvent( ACTION_CANCELED, null);
+			// }
+			if( preedittext && preedittext != getText()){
 				preedittext = null;
-				gpuiedit.postIDEvent( ACTION_CANCELED, null);
+				gpuiedit.postActionEvent( null);
 			}
 		}
 		super.focusStateChanged( b);

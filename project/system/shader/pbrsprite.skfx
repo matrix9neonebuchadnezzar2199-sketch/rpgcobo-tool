@@ -100,8 +100,9 @@ fs extractbloom
 	}
 
 	void main(){
-		highp vec4 d = vec4( 0.0, 0.0, coltexscale);
-		fragcolor = tex( v_uv+d.xy);// ( tex( v_uv+d.xy)+tex( v_uv+d.zy)+tex( v_uv+d.xw)+tex( v_uv+d.zw)) * 0.25;
+		highp vec4 pix = texture2D( coltex, v_uv);
+		highp float lumi = max( dot( pix.xyz, vec3(0.2125, 0.7154, 0.0721)), 0.001);
+		fragcolor = pix * (sqrt( max( lumi+p1[0].x, 0.0)) / lumi * p1[0].y);
 	}
 }
 
@@ -187,10 +188,16 @@ fs dofblur
 		float SIGMA = R * 0.7;
 		float FALLOFF = 1.0 / (2.0*SIGMA*SIGMA);
 		//	
-		vec4 sum = vec4( 0.0);
-		float wsum = 0.00001;
-		for( float x = -R; x <= R; x += dx) {
-			float w = texture( coctex, uv+d*x).x * exp2( -x*x*FALLOFF);
+		float wsum = clamp( texture( coctex, uv).x + 0.01, 0.0, 1.0);
+		vec4 sum = texture( coltex, uv) * wsum;
+		for( float x = -R; x < 0.0; x += dx) {
+			float w = texture( coctex, uv+d*x).x * exp2( -x*FALLOFF);
+			vec4 c = texture( coltex, uv+d*x);
+			sum += c * w;
+			wsum += w;
+		}
+		for( float x = dx; x <= R; x += dx) {
+			float w = texture( coctex, uv+d*x).x * exp2( -x*FALLOFF);
 			vec4 c = texture( coltex, uv+d*x);
 			sum += c * w;
 			wsum += w;
@@ -276,23 +283,23 @@ technique pbrmix
 
 param firsthiz
 {
-	attribute mediump vec4 in_pos <ID=POSITION>;
-	attribute mediump vec2 in_uv <id=UV1>;
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec2 in_uv <id=UV1>;
 	uniform highp sampler2D ztex <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
-	uniform mediump mat4 p1 <id=MISC1MAT>;
+	uniform highp mat4 p1 <id=MISC1MAT>;
 
-	varying mediump vec2 v_uv;
+	varying highp vec2 v_uv;
 	fragout mediump uint fragcolor;
 }
 
 param buildhiz
 {
-	attribute mediump vec4 in_pos <ID=POSITION>;
-	attribute mediump vec2 in_uv <id=UV1>;
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec2 in_uv <id=UV1>;
 	uniform highp usampler2D ztex <id=COLORTEX1, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
-	uniform mediump mat4 p1 <id=MISC1MAT>;
+	uniform highp mat4 p1 <id=MISC1MAT>;
 
-	varying mediump vec2 v_uv;
+	varying highp vec2 v_uv;
 	fragout mediump uint fragcolor;
 }
 
@@ -410,15 +417,15 @@ technique reproject
 
 param ssao
 {
-	attribute mediump vec4 in_pos <ID=POSITION>;
-	attribute mediump vec4 in_uv <id=UV1>;
+	attribute highp vec4 in_pos <ID=POSITION>;
+	attribute highp vec4 in_uv <id=UV1>;
 	
 	uniform highp usampler2D gtex1 <id=GTEX2, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
 	uniform mediump sampler2D temptex <id=COLORTEX3, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
 	uniform mediump usampler2D uztex <id=DEPTHTEX, WRAP_S=CLAMP, WRAP_T=CLAMP, MIN_FILTER=NEAREST, MAG_FILTER=NEAREST>;
 	uniform highp vec2 uztexscale <id=DEPTHTEX_PIX>;
 	
-	uniform mediump mat4 p0 <id=MISC1MAT>;
+	uniform highp mat4 p0 <id=MISC1MAT>;
 	
 	varying highp vec4 v_uv;
 	
@@ -442,15 +449,15 @@ fs ssao
 		return reconstructWVP( wvpxy, texture( uztex, wvpxy*vec2(0.5,0.5)+0.5).x, p0[3]);
 	}
 
-	vec2 aosteps( const vec2 pos0, const vec2 vec, const float stepr, const float voffs, const float attnscale, const float tickdecay, const vec3 vpos, const vec3 vdir){
-		vec2 h = vec2( -1.0, -1.0 );
-		vec2 d = vec * stepr, offs = d * voffs;
+	vec2 aosteps( const highp vec2 pos0, const highp vec2 vec, const highp float stepr, const float voffs, const highp float attnscale, const highp float tickdecay, const highp vec3 vpos, const highp vec3 vdir){
+		highp vec2 h = vec2( -1.0, -1.0 );
+		highp vec2 d = vec * stepr, offs = d * voffs;
 		for( int s = 0; s < STEPCNT; s++){
-			vec3 ds = wvpos( pos0+offs ).xyz - vpos;
-			vec3 dt = wvpos( pos0-offs ).xyz - vpos;
-			vec2 dsdt = vec2( dot( ds, ds ), dot( dt, dt ) ) + 0.00001;
-			vec2 H = vec2( dot( ds, vdir ), dot( dt, vdir ) ) / sqrt( dsdt);	//	rsqrt = 1/sqrt
-			vec2 attn = clamp( dsdt * attnscale, 0.0, 1.0);
+			highp vec3 ds = wvpos( pos0+offs ).xyz - vpos;
+			highp vec3 dt = wvpos( pos0-offs ).xyz - vpos;
+			highp vec2 dsdt = vec2( dot( ds, ds ), dot( dt, dt ) ) + 0.00001;
+			highp vec2 H = vec2( dot( ds, vdir ), dot( dt, vdir ) ) / sqrt( dsdt);	//	rsqrt = 1/sqrt
+			highp vec2 attn = clamp( dsdt * attnscale, 0.0, 1.0);
 			H = mix( H, h, attn);
 			h = max( H, mix( H, h, tickdecay )); // h.x = ( H.x > h.x ) ? H.x : mix( H.x, h.x, tickdecay ); // h.y = ( H.y > h.y ) ? H.y : mix( H.y, h.y, tickdecay );
 			offs += d;
@@ -458,18 +465,18 @@ fs ssao
 		return h;
 	}
 
-	mediump vec3 unpackn( highp uint u1){
-		const mediump vec3 S = vec3( 1.0/1023.5, 1.0/1023.5, 1.0), T = -vec3( 1.0);
-		mediump vec3 un = vec3( (uvec3( u1)>>uvec3( 0, 11, 21)) & uvec3( 2047, 2047, 2)) * S + T;
+	highp vec3 unpackn( highp uint u1){
+		const highp vec3 S = vec3( 1.0/1023.5, 1.0/1023.5, 1.0), T = -vec3( 1.0);
+		highp vec3 un = vec3( (uvec3( u1)>>uvec3( 0, 11, 21)) & uvec3( 2047, 2047, 2)) * S + T;
 		return vec3( un.xy, sqrt( clamp( 1.0-dot( un.xy, un.xy), 0.0, 1.0)) * un.z);
 	}
 
 	void main(){
 		highp vec2 wvpp = v_uv.xy*2.0-1.0;	//	-1.0-1.0
 		highp vec2 cuv = v_uv.xy + bayer4( gl_FragCoord.xy) * uztexscale;
-		mediump vec3 vpos = wvpos( wvpp.xy);
-		mediump float zfade = clamp( (-vpos.z-p0[1].x) * p0[1].y, 0.0, 1.0);
-		mediump vec3 irt = mix( p0[0].xyz, vec3( 0.0, p0[0].y, 0.98), zfade);	//	0.98 <= tick=1.0
+		highp vec3 vpos = wvpos( wvpp.xy);
+		highp float zfade = clamp( (-vpos.z-p0[1].x) * p0[1].y, 0.0, 1.0);
+		highp vec3 irt = mix( p0[0].xyz, vec3( 0.0, p0[0].y, 0.98), zfade);	//	0.98 <= tick=1.0
 		//	calc occlusion => pix
 		mediump float occ = 1.0;
 		if( irt.x > 1e-4){
@@ -489,28 +496,28 @@ fs ssao
 				vec3 slicedir = vec3( sin( vec2( th+HPI, th)), 0.0 );	//	cos, sin
 				vec2 h = aosteps( wvpp, slicedir.xy*p0[2].xy, stepr, voffs, attnscale, irt.z, vpos, vdir );
 				// "Project (and normalize) the normal to the slice plane for the integration" - s2016_pbs_activision_occlusion - Slide 62
-				vec3 normalSlicePlane = normalize( cross( slicedir, vdir ) );
-				vec3 tangent = cross( vdir, normalSlicePlane );
-				float vndot = dot( vn, normalSlicePlane );
+				highp vec3 normalSlicePlane = normalize( cross( slicedir, vdir ) );
+				highp vec3 tangent = cross( vdir, normalSlicePlane );
+				highp float vndot = dot( vn, normalSlicePlane );
 				// Gram-Schmidt process https://en.wikipedia.org/wiki/Gram-Schmidt_process
-				vec3 normalProjected = vn - normalSlicePlane * vndot; // There is no need to divide by ||np|| as np is normalized
-				float projLength = length( normalProjected ) + 0.0001;
-				float cos_gamma = dot( normalProjected, vdir) / projLength; // cos() = a.b / ( ||a|| * ||b|| )		clamp(-1,1) iranai???
-				float gamma = -sign( dot( normalProjected, tangent ) ) * acos( cos_gamma );
+				highp vec3 normalProjected = vn - normalSlicePlane * vndot; // There is no need to divide by ||np|| as np is normalized
+				highp float projLength = length( normalProjected ) + 0.0001;
+				highp float cos_gamma = dot( normalProjected, vdir) / projLength; // cos() = a.b / ( ||a|| * ||b|| )		clamp(-1,1) iranai???
+				highp float gamma = -sign( dot( normalProjected, tangent ) ) * acos( cos_gamma );
 				// "We have to clamp them with the normal hemisphere" - s2016_pbs_activision_occlusion - Slide 58
 				// h = acos( h); h.x = gamma + max( -h.x - gamma, -HPI ); h.y = gamma + min( +h.y - gamma, +HPI );
 				h = max( -acos( h)-gamma*vec2( 1.0, -1.0), -HPI)*vec2( 1.0, -1.0) + gamma;	//	acos( clamp(h,-1,1)) iranai???
-				vec2 h2 = 2.0 * h;
-				vec2 innerIntegral = ( -cos( h2 - gamma ) + cos_gamma + h2 * sin( gamma ) );
+				highp vec2 h2 = 2.0 * h;
+				highp vec2 innerIntegral = ( -cos( h2 - gamma ) + cos_gamma + h2 * sin( gamma ) );
 				// float wc = dot( vn, cross( slicedir, vdir) ) * vdirxy;	//	wallDarkeningCorrection
-				float wc = vndot * vdirxy;	//	wallDarkeningCorrection wc no sign ha iminasi
+				highp float wc = vndot * vdirxy;	//	wallDarkeningCorrection wc no sign ha iminasi
 				// "Multiply each slice contribution by the length of the projected normal" - s2016_pbs_activision_occlusion - Slide 62
 				occ += ( projLength + wc*wc ) * 0.25 * ( innerIntegral.x + innerIntegral.y + p0[1].z );
 				th += dirstep;
 			}
 			occ = clamp( occ/float( DIRCNT), 0.0, 1.0);
 			mediump float ex = mix( p0[0].w, 1.0, zfade);		//	FadeToPowerExponent = 1.0
-			occ = pow( occ, 1.0/ex);
+			occ = pow( occ, 1.0/ex) * 1.1 - 0.1;
 			occ = mix( 1.0, occ, irt.x);
 		}
 		//	mix temp
@@ -520,6 +527,12 @@ fs ssao
 		// occ = mix( tocc, occ, mixw);
 		fragcolor = vec4( occ);
 	}
+}
+
+param ssao_draft
+{
+	const int DIRCNT = 3;
+	const int STEPCNT = 5;
 }
 
 param ssao_normal

@@ -25,25 +25,25 @@ param g
 {
 	struct G {
 		mediump vec4 col;		//	color + alpha
-		mediump float rough;
-		mediump float metal;
+		highp float rough;
+		highp float metal;
 		lowp uint mtype;		//	0,1,2,3,...
 		lowp float gsel;		//	G-Buffer Selector ID
-		mediump vec4 mparam;	//	mtype ni yoru
-		mediump vec3 n;			//	normal
+		highp vec4 mparam;	//	mtype ni yoru
+		highp vec3 n;			//	normal
 		//	outer input
 		highp vec3 wvp;			//	GBufferには書き出されない。ライティングパス用の入力
 		highp vec2 uv;			//	screen uv
 		//	precompute
-		mediump float rough2;	//	rough^2
-		mediump vec3 vn;		//	normlize( wvp)
-		mediump vec3 difcol;
-		mediump vec3 f0;		//  specular color
-		mediump vec3 dfg;
-		mediump vec3 energyCompensation;
-		mediump float NoV;
-		mediump vec3 reflected;
-		mediump vec4 etc;				//  clear coat normal, anisotropic refvec etc...
+		highp float rough2;	//	rough^2
+		highp vec3 vn;		//	normlize( wvp)
+		highp vec3 difcol;
+		highp vec3 f0;		//  specular color
+		highp vec3 dfg;
+		highp vec3 energyCompensation;
+		highp float NoV;
+		highp vec3 reflected;
+		highp vec4 etc;				//  clear coat normal, anisotropic refvec etc...
 	};
 }
 
@@ -70,7 +70,7 @@ fs packg
 
 	void packg_decal( const G g, out mediump vec4 f0, out highp uint u1, out highp uint u2){
 		//	exp( -5.0) ~ exp( 5.0)
-		mediump float v = max( g.col.x, max( g.col.y, g.col.z))+0.0001;
+		highp float v = max( g.col.x, max( g.col.y, g.col.z))+0.0001;
 		f0 = vec4( g.col.xyz/v, g.gsel);
 		u1 = packn( g.n) | ((1u<<29u) | (63u<<23u));
 		u2 = floatBitsToUint( v);
@@ -112,9 +112,9 @@ fs unpackg
 		u2 = texelFetch( gtex2, uv, 0).x;
 	}
 
-	mediump vec3 unpackn( highp uint u1){
-		const mediump vec3 S = vec3( 1.0/1023.5, 1.0/1023.5, 1.0), T = -vec3( 1.0);
-		mediump vec3 un = vec3( (uvec3( u1)>>uvec3( 0, 11, 21)) & uvec3( 2047, 2047, 2)) * S + T;
+	highp vec3 unpackn( highp uint u1){
+		const highp vec3 S = vec3( 1.0/1023.5, 1.0/1023.5, 1.0), T = -vec3( 1.0);
+		highp vec3 un = vec3( (uvec3( u1)>>uvec3( 0, 11, 21)) & uvec3( 2047, 2047, 2)) * S + T;
 		return vec3( un.xy, sqrt( clamp( 1.0-dot( un.xy, un.xy), 0.0, 1.0)) * un.z);
 	}
 
@@ -133,7 +133,7 @@ fs unpackg
 		//	common
 		unpackg_common( g, wvpp, f0, u1);
 		//	standard
-		mediump vec4 f = vec4( (uvec4( u2)>>uvec4( 26, 16, 8, 0)) & uvec4( 63, 255, 255, 255)) * vec4( 1.0/63.0, 1.0/255.0, 1.0/255.0, 1.0/255.0);
+		highp vec4 f = vec4( (uvec4( u2)>>uvec4( 26, 16, 8, 0)) & uvec4( 63, 255, 255, 255)) * vec4( 1.0/63.0, 1.0/255.0, 1.0/255.0, 1.0/255.0);
 		g.metal = f.x;
 		g.mparam.xyz = f.yzw;	//	emit, ao, bump
 	}
@@ -151,8 +151,8 @@ fs unpackg
 		//	common
 		unpackg_common( g, wvpp, f0, u1);
 		//	subsurf
-		mediump vec2 f = vec2( (uvec2( u2)>>uvec2( 26, 20)) & 63u) * (1.0/63.0);
-		mediump vec3 tint = vec3( (uvec3( u2)>>uvec3( 0, 6, 12)) & 63u) * (1.0/63.0);
+		highp vec2 f = vec2( (uvec2( u2)>>uvec2( 26, 20)) & 63u) * (1.0/63.0);
+		highp vec3 tint = vec3( (uvec3( u2)>>uvec3( 0, 6, 12)) & 63u) * (1.0/63.0);
 		g.metal = f.x;
 		g.mparam = vec4( tint, f.y);
 	}

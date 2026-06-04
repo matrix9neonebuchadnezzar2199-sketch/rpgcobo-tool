@@ -507,9 +507,11 @@ function forecastHeal( skill, src, dst){
 	if( skill.flags & (1<<FLAG_NOOP_ALIVE)){	//	死者にのみ有効なスキル。復活魔法ぐらい。
 		return 0.0;
 	}
-	local pid = DamageTypePID[skill["dmgtype"]];
-	local r = dst.getPointRate( pid);
-	if( pid && r < 100) return 1.0;		//	回復パラメータが最大じゃなければOK
+	if( skill["dmgtype"]){
+		local pid = DamageTypePID[skill["dmgtype"]];
+		local r = dst.getPointRate( pid);
+		if( pid && r < 100) return 1.0;		//	回復パラメータが最大じゃなければOK
+	}
 	if( dst.canRemoveAnyCondition( skill["remconds"])) return 1.0;
 	return 0.0;
 }

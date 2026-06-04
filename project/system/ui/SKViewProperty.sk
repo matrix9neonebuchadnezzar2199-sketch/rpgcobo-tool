@@ -180,10 +180,10 @@ class SKProperties
 local blendlist = ["0:OFF","1:MIX","2:PMAMIX","3:ADD","4:MULT","5:MIXADD", "6:MASKMIX", "7:MASKALPHA"];
 local wraplist = ["0:OFF","1:ON","2:ON(-)","3:OFF(FIT)","4:MANUAL ON"];
 local alignlist = ["0:←↑・","1:・↑・","2:・↑→","3:←・・","4:・〇・","5:・・→","6:←↓・","7:・↓・","8:・↓→","9:・↑・(LINE)","10:・〇・(LINE)","11:・↓・(LINE)"];
-local alignlist2 = ["0:←↑・","1:・↑・","2:・↑→","3:←・・","4:・〇・","5:・・→","6:←↓・","7:・↓・","8:・↓→","9:伸縮","10:内包","11:覆う","12:スケールダウン","13:タイリング"];
+local alignlist2 = ["0:←↑・","1:・↑・","2:・↑→","3:←・・","4:・〇・","5:・・→","6:←↓・","7:・↓・","8:・↓→","9:$T.lbl_imglayout0","10:$T.lbl_imglayout1","11:$T.lbl_imglayout2","12:$T.lbl_imglayout3","13:$T.lbl_imglayout4"];
 local alignlist3 = ["0:↑","1:〇","2:↓"];
 local buflist = ["0:OFF","1:ON","2:ON(+Z)"];
-local inputtypelist = ["0:通常","1:パスワード","2:メール","3:数値","4:電話番号","5:検索","6:チャット"];
+local inputtypelist = ["0:$T.lbl_inputtype0","1:$T.lbl_inputtype1","2:$T.lbl_inputtype2","3:$T.lbl_inputtype3","4:$T.lbl_inputtype4","5:$T.lbl_inputtype5","6:$T.lbl_inputtype6"];
 local resizetype = ["0:OFF","1:ON","2:ON+Anime"]
 
 ::SKVP <- SKProperties();
@@ -208,7 +208,7 @@ local resizetype = ["0:OFF","1:ON","2:ON+Anime"]
 ::SKVP .. { pid=IMAGELIST,		lbl="$T.lbl_imgpath",			type=PATHLIST,	};
 ::SKVP .. { pid=IMAGEFRAME,		lbl="$T.lbl_imgframe",		type=SCALAR,	range=(0,16), anime=2, defval=0.0, q=10};
 
-::SKVP .. { pid=BORDERWIDTH,		lbl="ボーダー幅",		type=SCALAR,	range=(1,16), anime=2};
+::SKVP .. { pid=BORDERWIDTH,		lbl="$T.lbl_borderwidth",		type=SCALAR,	range=(1,16), anime=2};
 
 ::SKVP .. { pid=LABEL,			lbl="$T.lbl_text",			type=STRING,	};
 ::SKVP .. { pid=FONT,			lbl="$T.lbl_font",			type=TEXTSTYLE,		};
@@ -216,10 +216,10 @@ local resizetype = ["0:OFF","1:ON","2:ON+Anime"]
 ::SKVP .. { pid=TEXTALIGN,		lbl="$T.lbl_textalign",		type=LIST,		list=alignlist};
 ::SKVP .. { pid=WRAPTEXT,		lbl="$T.lbl_textwrap",		type=LIST,		list=wraplist};
 ::SKVP .. { pid=MAXCHARS,		lbl="$T.lbl_maxchars",		type=SCALAR,		range=(0,1024) };
-::SKVP .. { pid=EDITABLE,		lbl="編集可能",		type=BOOL,		};
-::SKVP .. { pid=SPRITESHEET,		lbl="シートパス",		type=PATH,		};
-::SKVP .. { pid=TEXTADVANCE,		lbl="文字間の幅",		type=SCALAR,		range=(-16,16)};
-::SKVP .. { pid=PATHFORMAT,		lbl="パス形式",		type=STRING,	};
+::SKVP .. { pid=EDITABLE,		lbl="$T.lbl_editable",		type=BOOL,		};
+::SKVP .. { pid=SPRITESHEET,		lbl="$T.filetype_ssg",		type=PATH,		};
+::SKVP .. { pid=TEXTADVANCE,		lbl="$T.lbl_charspace",		type=SCALAR,		range=(-16,16)};
+::SKVP .. { pid=PATHFORMAT,		lbl="$T.lbl_format",		type=STRING,	};
 ::SKVP .. { pid=AUTOFITWEIGHT,	lbl="$T.lbl_fitgap",			type=SCALAR,	range=(0,1), defval=0.3, q=10};
 ::SKVP .. { pid=TEXTCLIP,		lbl="$T.lbl_textclip",		type=BOOL,		};
 ::SKVP .. { pid=USETEMPLATE,		lbl="$T.lbl_usetemplate",		type=BOOL,		};
@@ -231,10 +231,8 @@ local resizetype = ["0:OFF","1:ON","2:ON+Anime"]
 ::SKVP .. { pid=STRETCHALIGN,	lbl="$T.lbl_align",			type=ALIGN_STRETCH};
 ::SKVP .. { pid=TIPS,			lbl="$T.lbl_tips",			type=STRING, };
 
-::SKVP .. { pid=SDPATH	,		lbl="sdパス",			type=PATH,	};
-::SKVP .. { pid=CAMERANAME,		lbl="カメラ名",			type=STRING,	};
 ::SKVP .. { pid=CAMERADATA,		lbl="$T.lbl_camera",		type=CAMERA, cnt="cnt7.ui", anime=2};
-::SKVP .. { pid=CLEARBG,			lbl="BGをクリア",			type=BOOL,	};
+::SKVP .. { pid=CLEARBG,			lbl="$T.lbl_clearbg",			type=BOOL,	};
 ::SKVP .. { pid=BGCOLOR,			lbl="$T.lbl_bgcolor",			type=RGBA};
 
 ::SKVP .. { pid=BUTTONTYPE,		lbl="$T.lbl_btntype",			type=LIST,	list=["0:TAP","1:PUSH","2:PRESS","3:REPEAT","4:ITEM"] };
@@ -251,8 +249,8 @@ local resizetype = ["0:OFF","1:ON","2:ON+Anime"]
 ::SKVP .. { pid=INSET,			lbl="$T.lbl_inset",		type=VEC2,	range=(0,64)  };
 ::SKVP .. { pid=LISTALIGN,		lbl="$T.lbl_listalign",		type=LIST,		list=alignlist3};
 ::SKVP .. { pid=ROWSTRETCH,		lbl="$T.lbl_rowstretch",	type=LIST,		list=["0:NONE","1:MINIMIZE","2:MAXIMIZE","3:MIN+MAX"]};
-::SKVP .. { pid=LOOPCURS,			lbl="カーソルのループ",			type=LIST,	list=["0:NONE","1:X","2:Y","3:XY"]};
-::SKVP .. { pid=PREVIEROWWNUM,		lbl="プレビュー行数",		type=SCALAR,	range=(1,16) };
+::SKVP .. { pid=LOOPCURS,			lbl="$T.lbl_loopcursor",			type=LIST,	list=["0:NONE","1:X","2:Y","3:XY"]};
+::SKVP .. { pid=PREVIEROWWNUM,		lbl="$T.lbl_prevrownum",		type=SCALAR,	range=(1,16) };
 
 ::SKVP .. { pid=TEXTEDIT_ANIMETYPE,	lbl="$T.lbl_animetype",		type=LIST,	list=["0:ANIME","1:ACTION"] };
 ::SKVP .. { pid=TEXTEDIT_INPUTTYPE,	lbl="$T.lbl_inputtype",		type=LIST,	list=inputtypelist };

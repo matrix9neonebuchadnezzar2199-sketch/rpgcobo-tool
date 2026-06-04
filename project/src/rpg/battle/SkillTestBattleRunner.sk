@@ -44,7 +44,8 @@ class SkillTestBattleRunner extends BattleRunnerBase
 			}
 		}catch( ex){
 			printexception( ex);
-			skExit( 0);	//	owari
+			RPGMain.showUI( {key="misc_waitclick"});
+			endfunc( this);
 		}
 	}
 

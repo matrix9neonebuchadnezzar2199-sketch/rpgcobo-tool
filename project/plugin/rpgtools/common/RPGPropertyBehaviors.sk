@@ -8,19 +8,17 @@ import CollisionGroupID;
 
 local srcdir = dirname( callee().getSourceName());
 
-class PropertyBehaviors.NameIcon extends PropertyBehavior
+class PropertyBehaviors.NameIcon extends PropertyBehaviors.String
 {
 	static proptype = NAME_ICON;
 	static uipath = srcdir .. "/ui/prop_nameicon.ui"
 	
 	iconbtn = null;			//	GPUIButton
-	edit = null;			//	GPUITextEdit
-
 	iconstr = null;			//	string : アイコンの絵文字コード
 
 	function init(){
+		super.init();
 		iconbtn = view.findChild( "iconbtn");
-		edit = view.findChild( "edit");
 	}
 
 	function getParam(){
@@ -28,7 +26,7 @@ class PropertyBehaviors.NameIcon extends PropertyBehavior
 	}
 	
 	function setParam( v){
-		edit.setText( v[0]);
+		super.setParam( v[0]);
 		iconstr = v[1];
 		iconbtn.setValue( "icon", v[1]);
 	}
@@ -43,10 +41,8 @@ class PropertyBehaviors.NameIcon extends PropertyBehavior
 				postActionEvent( true);
 			}
 			break;
-		case "edit":
-			postActionEvent( true);
-			break;
 		}
+		super.paramevent( e);
 	}
 }
 
@@ -1507,8 +1503,8 @@ class PropertyBehaviors.Message extends PropertyBehavior
 		local self = this, ctxfunc = @( ed, m) self.textMenuSelected( m);
 		local styles = [
 			{ id="style", lbl="$T.lbl_reset", val="[O]", func=ctxfunc},
-			{ id="style", lbl=RichText( "[B]ボールド"), val="[B]", func=ctxfunc},
-			{ id="style", lbl=RichText( "[I]イタリック"), val="[I]", func=ctxfunc},
+			{ id="style", lbl=RichText( "[B]Bold"), val="[B]", func=ctxfunc},
+			{ id="style", lbl=RichText( "[I]Italic"), val="[I]", func=ctxfunc},
 			{ id="style", lbl=RichText( "[M]Mono Script"), val="[M]", func=ctxfunc},
 		];
 		local sizes = [
@@ -1527,21 +1523,21 @@ class PropertyBehaviors.Message extends PropertyBehavior
 			{ id="style", lbl=RichText( "[c3]${T.lbl_color}3"), val="[c3]", func=ctxfunc},
 		];
 		local textruns = [
-			{ id="textrun", lbl="改ページ", val="[p]", func=ctxfunc},
-			{ id="textrun", lbl="停止", val="[.]", func=ctxfunc},
+			{ id="textrun", lbl="$T.lbl_pagebreak", val="[p]", func=ctxfunc},
+			{ id="textrun", lbl="$T.lbl_pause", val="[.]", func=ctxfunc},
 			{ id="textrun", lbl="${T.lbl_speed} >", val="[>]", func=ctxfunc},
 			{ id="textrun", lbl="${T.lbl_speed} =", val="[=]", func=ctxfunc},
 			{ id="textrun", lbl="${T.lbl_speed} <", val="[<]", func=ctxfunc},
 		];
 		//
 		local a = [
-			{ id="style", lbl="テキストスタイル", func=ctxfunc, submenu=styles },
-			{ id="size", lbl="フォントサイズ", func=ctxfunc, submenu=sizes },
-			{ id="color", lbl="フォントカラー", func=ctxfunc, submenu=colors },
-			{ id="textrun", lbl="文字送り", func=ctxfunc, submenu=textruns },
+			{ id="style", lbl="$T.lbl_text$T.lbl_style", func=ctxfunc, submenu=styles },
+			{ id="size", lbl="$T.lbl_font$T.lbl_size", func=ctxfunc, submenu=sizes },
+			{ id="color", lbl="$T.lbl_font$T.lbl_color", func=ctxfunc, submenu=colors },
+			{ id="textrun", lbl="$T.lbl_textrun", func=ctxfunc, submenu=textruns },
 			"-",
-			{ id="dataname", lbl="アイテム名を挿入", icon="\uf120", func=ctxfunc },
-			{ id="dataiconname", lbl="アイテム名＋アイコンを挿入", icon="\uf120",func=ctxfunc },
+			{ id="dataname", lbl="$T.lbl_insert: '$T.lbl_itemname'", icon="\uf120", func=ctxfunc },
+			{ id="dataiconname", lbl="$T.lbl_insert: '\uf3a0$T.lbl_itemname'", icon="\uf120",func=ctxfunc },
 		];
 		edit.addContextMenu( a);
 	}
@@ -1664,17 +1660,17 @@ class PropertyBehaviors.EnemyGroup extends PropertyBehavior
 		"---",
 		{ lbl="$T.menu_edit_copy", val="copy", icon="\ue14d" },
 		{ lbl="$T.menu_edit_paste", val="paste", icon="\ue14f" },
-		"---",
-		{ lbl="$T.lbl_favorites", val="favo", icon=("\ue838",0xA3D900ff),
-			submenu = @(){
-				local a = ::workspace["enemy_favorites"];
-				return [
-					{lbl="$T.ctxmenu_file_add_favorite", val="addfavo", icon="\ue147"},
-					"-",
-					{lbl="お気に入りの管理", val="mngfavo", icon="\ue8b8"},
-				];
-			}
-		},
+		// "---",	TODO : お気に入り
+		// { lbl="$T.lbl_favorites", val="favo", icon=("\ue838",0xA3D900ff),
+		// 	submenu = @(){
+		// 		local a = ::workspace["enemy_favorites"];
+		// 		return [
+		// 			{lbl="$T.ctxmenu_file_add_favorite", val="addfavo", icon="\ue147"},
+		// 			"-",
+		// 			{lbl="お気に入りの管理", val="mngfavo", icon="\ue8b8"},
+		// 		];
+		// 	}
+		// },
 	];
 
 	canvas = null;			//	SKImageView : こいつのchildでグラを配置。スケールを正しく。。。
@@ -1739,6 +1735,16 @@ class PropertyBehaviors.EnemyGroup extends PropertyBehavior
 		case ACTION_PERFORMED:
 			if( e.isMouseDown( BUTTON2_MASK)){
 				showEnemyContextMenu( e.actioncmd.val, e);
+			}else{
+				local idx = enemylist.items.indexOf( cmd);
+				local prop = { datatype=["enemy"] };
+				local ret = DataSelectPopup.run( e, prop);
+				if( ret){
+					local v = getParam();
+					v[idx].id = ret;
+					setParam( v);
+					postActionEvent( true);
+				}
 			}
 			break;
 		}

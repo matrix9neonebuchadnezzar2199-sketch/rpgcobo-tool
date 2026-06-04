@@ -69,20 +69,25 @@ function startDebugMenu( m){
 	case "menu_debug_battle":
 		args = ["-slot", ::workspace.saveslotidx, "-battle", m.mapid, m.gid];
 		if( m["skillid"]) args .. "-skill" .. m.skillid;
+		if( m["enemyid"]) args .. "-enemy" .. m.enemyid;
 		break;
 	}
 	if( m["bwpath"]) args ... ["-bw", m.bwpath];
 	if( m["confpath"]) args ... ["-conf", m.confpath];
 	local exe = FileRef( "rpgcobo.exe");
-	local p = popen_s(), li;
+	local p = popen_s();
 	p.open( exe, ["-testplay", ...args], 0x100);
-	while( p.isrunning()){
-		while( li = p.readLine()){
-			printf( "::: %S\n", li.trim());
+	Dialogs.showWaiting( "$T.lbl_dupproj_run", @(){
+		if( p.isrunning()){
+			for( local li; li = p.readLine();){
+				printf( "::: %S\n", li.trim());
+			}
+			suspend();
+			return true;
 		}
-		suspend();
-	}
-	while( li = p.readLine()){
+	}, true);
+	p.kill();
+	for( local li; li = p.readLine();){
 		printf( "::: %S\n", li.trim());
 	}
 	p.close();

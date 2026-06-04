@@ -77,6 +77,10 @@
 	"btn_talk":{ "ja":"話す", "en":"Talk"},
 	"btn_sell":{ "ja":"売る","en":"Sell"},
 	"btn_page":{ "ja":"ページ切り替え", "en":"Change Page"},
+
+	"cursor":{ "ja":"カーソル", "en":"Cursor"},
+	"button":{ "ja":"ボタン", "en":"Button"},
+	"btn_tap":{ "ja":"画面タップ", "en":"Tap Screen"},
 	
 	"mymoney":{ "ja":"所持金", "en":"Money"},
 	"buyitem":{ "ja":"%S を購入", "en":"Buy %S"},
@@ -99,6 +103,7 @@
 	"postcommand":{ "ja":"行動後", "en":"After Command"},
 	"atwalking":{ "ja":"歩行時", "en":"At Walking"},
 	"stepcnt":{ "ja":"歩数", "en":"Step count"},
+	"playtime":{ "ja":"プレイ時間", "en":"Play Time"},
 	"spatk": {"ja":"攻", "en":"ATK"},
 	"spdef": {"ja":"防", "en":"DEF"},
 

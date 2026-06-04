@@ -206,7 +206,7 @@ class SystemVarAccessor
 
 	static varmap = SettingMap( "key", [
 		{
-			key = "MONEY", name = "所持金", type = VAR_INT, 
+			key = "MONEY", name = "$T.mymoney", type = VAR_INT, 
 			func = @( key, val=undefined){
 				if( val){
 					return ::rpgstat.money = Math.clamp( int( val), 0, 99999999);
@@ -215,14 +215,14 @@ class SystemVarAccessor
 			}
 		},
 		{
-			key = "AVELV", name = "平均レベル", type = VAR_INT, read = true,
+			key = "AVELV", name = "$T.lbl_level_avg", type = VAR_INT, read = true,
 			func = @( key, val=undefined){
 				local a = ::rpgstat.members.filter( @( v) !!v);
 				return (a.reduce( @( v, x) v.LV+x, 0.0) / length( a) + 0.5) | 0;
 			}
 		},
 		{
-			key = "MAXLV", name = "最大レベル", type = VAR_INT, read = true,
+			key = "MAXLV", name = "$T.lbl_level_max", type = VAR_INT, read = true,
 			func = @( key, val=undefined){
 				local a = ::rpgstat.members.filter( @( v) v);
 				return a.reduce( @( v, x) Math.max( v.LV, x), 0);
@@ -235,42 +235,42 @@ class SystemVarAccessor
 			}
 		},
 		{
-			key = "SYSTIME", name = "システム時間", type = VAR_INT, read = true,
+			key = "SYSTIME", name = "$T.lbl_systime", type = VAR_INT, read = true,
 			func = @( key, val=undefined){ return skGetTime(); }
 		},
 		{
-			key = "RND99", name = "ランダム(0-99)", type = VAR_INT, read = true,
+			key = "RND99", name = "$T.lbl_random(0-99)", type = VAR_INT, read = true,
 			func = @( key, val=undefined){ return ::rnd.nexti( 0, 100); }
 		},
 		makesvar({
-			key = "PTIME", name = "プレイ時間", type = VAR_INT, defval = 0,
+			key = "PTIME", name = "$T.playtime", type = VAR_INT, defval = 0,
 		}),
 		makesvar({
-			key = "STEPS", name = "歩数", type = VAR_INT, defval = 0,
+			key = "STEPCNT", name = "$T.stepcnt", type = VAR_INT, defval = 0,
 		}),
 		makesvar({
-			key = "DTIMER", name = "タイマー(↓)", type = VAR_INT, defval = -1,
+			key = "DTIMER", name = "$T.lbl_timer(↓)", type = VAR_INT, defval = -1,
 		}),
 		makesvar({
-			key = "UTIMER", name = "タイマー(↑)", type = VAR_INT, defval = -1,
+			key = "UTIMER", name = "$T.lbl_timer(↑)", type = VAR_INT, defval = -1,
 		}),
 		makesvar({
-			key = "SHOWTIMER", name = "表示タイマー", type = VAR_ANY, defval = null,
+			key = "SHOWTIMER", name = "$T.svar_showtimer", type = VAR_ANY, defval = null,
 		}),
 		makesvar({
-			key = "RESULT", name = "結果(バトル)", type = VAR_ANY, defval = 0,
+			key = "RESULT", name = "$T.lbl_result($T.lbl_battle)", type = VAR_ANY, defval = 0,
 		}),
 		makesvar({
-			key = "ERROR", name = "エラー", type = VAR_INT, defval = 0,
+			key = "ERROR", name = "$T.lbl_error", type = VAR_INT, defval = 0,
 		}),
 		makesvar({
-			key = "REMAPID", name = "マップの再配置ID", type = VAR_INT, defval = 1,
+			key = "REMAPID", name = "$T.lbl_remap ID", type = VAR_INT, defval = 1,
 		}),
 		makesvar({
-			key = "ENCOUNTER", name = "エンカウント", type = VAR_FLOAT, defval = 0.0,
+			key = "ENCOUNTER", name = "$T.svar_encounter", type = VAR_FLOAT, defval = 0.0,
 		}),
 		{
-			key = "INBATTLE", name = "バトル中か", type = VAR_BOOL, read = true,
+			key = "INBATTLE", name = "$T.svar_inbattle", type = VAR_BOOL, read = true,
 			func = @( key, val=undefined){ return !!::rpgstage.battle; }
 		},
 		{
@@ -278,25 +278,25 @@ class SystemVarAccessor
 			func = @( key, val=undefined){ return !!::rpgstage.battle["battledata"]["escapable"]; }
 		},
 		{
-			key = "UIFOCUS", name = "UIフォーカス", type = VAR_STRING, read = true,
+			key = "UIFOCUS", name = "UI $T.lbl_focus", type = VAR_STRING, read = true,
 			func = @( key, val=undefined){
 				return ::gpui.gpuitarget["view"]["name"] || "";
 			}
 		},
 		{
-			key = "ATKCHR", name = "攻撃キャラ", type = VAR_ANY, read = true,
+			key = "ATKCHR", name = "$T.svar_atkchara", type = VAR_ANY, read = true,
 			func = @( key, val=undefined) makeobjref( ::rpgstage["battle"]["atkchr"]);
 		},
 		{
-			key = "DEFCHR", name = "防御キャラ", type = VAR_ANY, read = true,
+			key = "DEFCHR", name = "$T.svar_defchara", type = VAR_ANY, read = true,
 			func = @( key, val=undefined) makeobjref( ::rpgstage["battle"]["defchr"]);
 		},
 		{
-			key = "MEMBERS", name = "パーティリスト", type = VAR_ANY, read = true,
+			key = "MEMBERS", name = "$T.svar_party", type = VAR_ANY, read = true,
 			func = @( key, val=undefined) ::rpgstat.members.map( @( v) makeobjref( v)),
 		},
 		{
-			key = "ENEMIES", name = "エネミーリスト", type = VAR_ANY, read = true,
+			key = "ENEMIES", name = "$T.svar_enemies", type = VAR_ANY, read = true,
 			func = @( key, val=undefined) ::rpgstage.battle["enemies"]?.map( @( v) makeobjref( v)) || null,
 		},
 	]);
@@ -335,16 +335,16 @@ class ButtonVarAccessor
 	varbits = 16
 
 	varmap = SettingMap( "key", [
-		{ key="BTN_TAP", name="画面タップ", type=VAR_BOOL, btn=BTN_A, },
+		{ key="BTN_TAP", name="$T.btn_tap", type=VAR_BOOL, btn=BTN_A, },
 		//
-		{ key="BTN_UP", name="UPボタン", type=VAR_BOOL, btn=BTN_UP, },
-		{ key="BTN_DOWN", name="DOWNボタン", type=VAR_BOOL, btn=BTN_DOWN, },
-		{ key="BTN_LEFT", name="LEFTボタン", type=VAR_BOOL, btn=BTN_LEFT, },
-		{ key="BTN_RIGHT", name="RIGHTボタン", type=VAR_BOOL, btn=BTN_RIGHT, },
-		{ key="BTN_A", name="Aボタン", type=VAR_BOOL, btn=BTN_A, },
-		{ key="BTN_B", name="Bボタン", type=VAR_BOOL, btn=BTN_B, },
-		{ key="BTN_X", name="Xボタン", type=VAR_BOOL, btn=BTN_X, },
-		{ key="BTN_Y", name="Yボタン", type=VAR_BOOL, btn=BTN_Y, },
+		{ key="BTN_UP", name="↑ $T.cursor", type=VAR_BOOL, btn=BTN_UP, },
+		{ key="BTN_DOWN", name="↓ $T.cursor", type=VAR_BOOL, btn=BTN_DOWN, },
+		{ key="BTN_LEFT", name="← $T.cursor", type=VAR_BOOL, btn=BTN_LEFT, },
+		{ key="BTN_RIGHT", name="→ $T.cursor", type=VAR_BOOL, btn=BTN_RIGHT, },
+		{ key="BTN_A", name="A $T.button", type=VAR_BOOL, btn=BTN_A, },
+		{ key="BTN_B", name="B $T.button", type=VAR_BOOL, btn=BTN_B, },
+		{ key="BTN_X", name="X $T.button", type=VAR_BOOL, btn=BTN_X, },
+		{ key="BTN_Y", name="Y $T.button", type=VAR_BOOL, btn=BTN_Y, },
 	]);
 	
 	function makevar( key){

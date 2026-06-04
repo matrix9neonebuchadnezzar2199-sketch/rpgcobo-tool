@@ -434,9 +434,9 @@ RPGSystem.eventrole .. {
 		nameprop,
 		mdlprop,
 		{ pid="gid", lbl="$T.lbl_group", type=LIST, list=@( pl){
-			local e = ::skstudio.editor;
-			if( !e["enemies"]) return [{ lbl="エネミー設定なし", val=1}];	//	とりあえずgid=1
-			return e.data["encount"].map( @( v, i) ({ lbl=::enemyGroupString( v.enemies), val=v.gid}) );
+			local ga = ::skstudio.editor["data"]["encount"];
+			if( !length( ga)) return [{ lbl="$T.lbl_noenemyg", val=1}];	//	とりあえずgid=1
+			return ga.map( @( v, i) ({ lbl=::enemyGroupString( v.enemies), val=v.gid}) );
 		}},
 		moveactionprop, ...RPGSystem.moveaction[cmd["moveaction"]]["props"],
 		reqs0prop,		//	スポーン条件。

@@ -373,7 +373,7 @@ class SkillCommand
 					local act = rp3d.manuaction.act( @(){
 						wait( EFX);
 						if( e["efx"]){ efx( e.efx); wait( EFX); }
-						popdamage( Math.abs( e.val));
+						popdamage( Math.abs( e.val), e.val > 0 ? 0x77ff77ff : 0xffffffff);
 					});
 				}
 				break;

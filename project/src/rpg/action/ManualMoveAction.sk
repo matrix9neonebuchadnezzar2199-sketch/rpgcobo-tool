@@ -335,13 +335,13 @@ class ManualMoveAction
 			case DMG_NONE: case DMG_SKIP: return;	//	表示しないで良し
 			case DMG_HEAL:
 				if( !val) return;	//	回復量0は表示なし
-				col = val < 0 ? 0x77ffffff : 0xffffffff;
+				col = val < 0 ? 0x77ff77ff : 0xffffffff;
 				x = Math.abs( val);
 				break;
 			case DMG_CRITICAL: type=1;
 			case DMG_HIT:
 			case DMG_SHIELD:
-				col = val < 0 ? 0x77ffffff : 0xffffffff;
+				col = val < 0 ? 0x77ff77ff : 0xffffffff;
 				x = Math.abs( val);
 				break;
 			case DMG_MISS:

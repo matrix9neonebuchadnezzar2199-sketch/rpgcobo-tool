@@ -112,32 +112,7 @@ class OverlayEffect
 //	・ラスター ... drawpass自体を入れ替える。
 //	✕ワイプ ... drawpassのtec又はステージの上に一枚の画像。変化速度あり
 //	　↑ワイプはUIとして配置される。ブラックアウト、ホワイトアウト、サークルワイプ、バトルワイプぐらいかな
-/*
-	エフェクトの追加
-	エフェクトの解除
-	エフェクトの全解除
 
-	"cmd_screen_flash0" = "フラッシュx1"
-	"cmd_screen_flash2" = "フラッシュx2"
-	"cmd_screen_flash2" = "フラッシュx3"
-	
-	"cmd_screen_color0" = "カラー:暗く"
-	"cmd_screen_color1" = "カラー:明るく"
-	"cmd_screen_color2" = "カラー:セピア"
-	"cmd_screen_color3" = "カラー:グレー"
-
-	"cmd_screen_raster0" = "ラスター:ブラー"
-	"cmd_screen_raster1" = "ラスター:ズームブラー"
-	"cmd_screen_raster2" = "ラスター:ワープ"
-	
-	"cmd_screen_quake0" = "画面揺れ:小"
-	"cmd_screen_quake1" = "画面揺れ:大"
-	"cmd_screen_quake1" = "画面揺れ:縦"
-	"cmd_screen_quake2" = "画面揺れ:連続"
-
-	"cmd_screen_quake0" = "画面揺れ:単発"
-	"cmd_screen_quake1" = "画面揺れ:連続"
-*/
 class ScreenEffect
 {
 	static sfxlist = [];

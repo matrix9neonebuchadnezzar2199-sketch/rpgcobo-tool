@@ -232,6 +232,24 @@ class RPGToolMesh
 		return pm;
 	}
 
+	static function createTriArrow( r, mode=PEN_SELECT){
+		local prim = ::PrimitiveMeshes;
+		local mb = prim.getMeshBuilder();
+		prim._createTriangle( r);
+		local pm = mb.toPolygonMesh();
+		mb.clear();
+		local m0 = pm.face[0].m = clone pm.face[0].m;
+		local c = penmodecol[mode]; c = (c<<24)|((c&0xff00)<<8)|((c&0xff0000)>>8);
+		//	m0 : 半透明デカール
+		m0.visiblemask = SK_VISIBLE_TRANSPARENT;
+		m0.polygonoffset1 = -90.0;
+		m0.Kd = c|0x7f;
+		m0.blend = SK_MIX;
+		m0.depthmask = 0;
+		m0.cullface = 0;
+		return pm;
+	}
+
 	//	
 	static function createIconMesh( ic, col, r, path, xz){
 		local v = ::loadSKView( srcdir.."/ui/"..path);

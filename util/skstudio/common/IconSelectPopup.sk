@@ -31,16 +31,16 @@ class IconSelectPopup extends Popup
 		{ lbl="$T.icon_deco", range=(0xf7c0,0xf800),  },
 		{ lbl="$T.icon_etc", range=(0xf800,0xf840),  },
 	];
-
+	
 	static buttongrouplist = [
-		{ lbl="キーボード", range=(0xec00,0xecff), },
-		{ lbl="キーボード ダーク", range=(0xed00,0xedff),  },
+		{ lbl="$T.lbl_keyword", range=(0xec00,0xecff), },
+		{ lbl="$T.lbl_keyword $T.lbl_dark", range=(0xed00,0xedff),  },
 		{ lbl="Xbox", range=(0xee00,0xee2f),  },
-		{ lbl="Xbox ダーク", range=(0xee30,0xee5f),  },
+		{ lbl="Xbox $T.lbl_dark", range=(0xee30,0xee5f),  },
 		{ lbl="PS4", range=(0xee60,0xee8f),  },
-		{ lbl="PS4 ダーク", range=(0xee90,0xeebf),  },
+		{ lbl="PS4 $T.lbl_dark", range=(0xee90,0xeebf),  },
 		{ lbl="Switch", range=(0xeec0,0xeeef),  },
-		{ lbl="Switch ダーク", range=(0xeef0,0xef1f),  },
+		{ lbl="Switch $T.lbl_dark", range=(0xeef0,0xef1f),  },
 	];
 
 	listview = null;			//	GPUIListView
@@ -50,14 +50,14 @@ class IconSelectPopup extends Popup
 
 	//	指定したプロパティ設定でデータ選択ポップアップを開始する。
 	//	
-	static function run( e, initype){
+	static function run( e, inisel, initype){
 		skCollectGarbage();
-		local p = IconSelectPopup( ::loadSKView( POPUPUIPATH), initype);
+		local p = IconSelectPopup( ::loadSKView( POPUPUIPATH), inisel, initype);
 		p.show( null, e.src);
 		return p.ret;
 	}
 
-	constructor( v, initype){
+	constructor( v, inisel, initype){
 		super( v);
 		g0 = v.findChild( "g0");
 		g1 = v.findChild( "g1");
@@ -71,6 +71,23 @@ class IconSelectPopup extends Popup
 			g1.setSelected( true);
 			setupEmojiIconList();
 		}
+		local iv = inisel && getIconView( inisel);
+		if( iv){
+			iv.setValue( "icon", "\uf23f\b"..inisel);
+			listview.gpui.scrollViewToVisible( iv, 0);
+		}
+	}
+
+	function getIconView( icon){
+		foreach( g in listview.rows){
+			local glist = g.findChild( "LIST");
+			foreach( c in glist.rows){
+				foreach ( v in c.children){
+					if( v.ref == icon) return v;
+				}
+			}
+		}
+		return null;
 	}
 
 	function setupCustomIconList( list){

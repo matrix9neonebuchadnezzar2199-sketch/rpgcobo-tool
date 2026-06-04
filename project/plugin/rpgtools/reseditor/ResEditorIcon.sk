@@ -245,7 +245,7 @@ class ResEditorIcon extends EditorViewBase
 
 	function showImportDialog(){
 		local d = FileDialog();
-		d.setTitle( "インポートフォルダを指定する");
+		d.setTitle( T.lbl_selectimportdir);
 		d.setMode( FileDialogMode.FILEDIALOG_SELECTDIR);
 		// if( editor.basedir){
 		// 	local dir = FileRef( editor.basedir, editor.data.imagedir);
@@ -290,9 +290,9 @@ class ResEditorIcon extends EditorViewBase
 			undo .. fn;
 			submitOp( redo, undo);
 			//	最後に情報表示
-			Popups.showInfo( "%S 個のアイコンが読み込まれました" % n);
+			Popups.showInfo( tmpl( T.tmpl_import_icons, {v=n}));
 		}else{
-			Popups.showError( "インポートする画像が見つかりません");
+			Popups.showError( "$T.pop_import_noimage");
 		}
 	}
 

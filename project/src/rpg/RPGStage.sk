@@ -286,7 +286,11 @@ class RPGStage
 		if( bw.dynassets){
 			local t = ss.dynassets = bw.dynassets.map( @( v) v && { resid=v.resid, pos=v.pos, parma=v.parma, blend=v.blend, });
 		}
-		printf( "STAGE SNAPSHOT!!!!!!!! %S\n", encodeJSON( {evarmap=ss.evarmap, estatmap=ss.estatmap, statmap=ss.statmap, player=ss.player, dynassets=ss.dynassets}, 5));
+		//	env
+		ss.env = {
+			bgmid = getBGMID(),
+		};
+		printf( "STAGE SNAPSHOT!!!!!!!! %S\n", encodeJSON( {evarmap=ss.evarmap, estatmap=ss.estatmap, statmap=ss.statmap, player=ss.player, dynassets=ss.dynassets, env=ss.env}, 5));
 		return ss;
 	}
 
@@ -532,8 +536,8 @@ class RPGStage
 			stepw += d.length();
 			if( stepw >= 1.0){
 				local c = int( stepw); stepw -= c;
-				::rpgvar.STEPS += c;
-				emitOption( "walk", ::rpgvar.STEPS, ::rpgstat.members);
+				::rpgvar.STEPCNT += c;
+				emitOption( "walk", ::rpgvar.STEPCNT, ::rpgstat.members);
 				foreach( m in ::rpgstat.members){
 					m?.spendSteps( c);
 				}

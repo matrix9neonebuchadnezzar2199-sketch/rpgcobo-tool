@@ -11,21 +11,21 @@ import GamepadType;
 module.hookAction( "editor_postload", @(){
 
 ::skstudio.registerCommand( {
-	uid="cmd_openprojdir", lbl="プロジェクトフォルダを開く", icon="\ue89e"
+	uid="cmd_openprojdir", lbl="$T.toolcmd_openprojdir", icon="\ue89e", modkey="~_P"
 	func = @(){
 		skOpenURL( "dir://" .. skGetCurrentDir());
 	}
 });
 
 ::skstudio.registerCommand( {
-	uid="cmd_opendatadir", lbl="データフォルダを開く", icon="\ue89e"
+	uid="cmd_opendatadir", lbl="$T.toolcmd_opendatadir", icon="\ue89e"
 	func = @(){
 		skOpenURL( "dir://" .. skGetDataDir());
 	}
 });
 
 ::skstudio.registerCommand( {
-	uid="cmd_opencachedir", lbl="キャッシュフォルダを開く", icon="\ue89e"
+	uid="cmd_opencachedir", lbl="$T.toolcmd_opencachedir", icon="\ue89e"
 	func = @(){
 		skOpenURL( "dir://" .. skGetCacheDir());
 	}
@@ -37,7 +37,7 @@ module.hookAction( "editor_postload", @(){
 //	
 
 ::skstudio.registerCommand( {
-	uid="cmd_iconcode", modkey="~_I", lbl="マウス上のアイコンコード", icon="\ueac7",
+	uid="cmd_iconcode", modkey="~_I", lbl="$T.toolcmd_iconcode", icon="\ueac7",
 	func = @(){
 		local ms = ::rootview.mouses[0];
 		local va = ::rootview.pickall( ms.mousex, ms.mousey, []);
@@ -51,7 +51,7 @@ module.hookAction( "editor_postload", @(){
 			local fa = tb.getAttribute( i);
 			if( fa.font.name != "icon") continue;
 			local c = tb[i];	//	こいつ！
-			Popups.showInfo( "アイコンの文字コードをコピーしました。(%x)" % c, char( c));
+			Popups.showInfo( "$T.toolcmd_iconcode_copied(%x)" % c, char( c));
 			skPutClipboardData( "%x" % c);
 			break;
 		}
@@ -76,7 +76,7 @@ module.hookAction( "editor_postload", @(){
 //	
 
 ::skstudio.registerCommand( {
-	uid="cmd_embedtips", modkey="~_E", lbl="TIPS埋め込み", icon="\ue887",
+	uid="cmd_embedtips", modkey="~_E", lbl="$T.toolcmd_embedtips", icon="\ue887",
 	func = @(){
 		local ms = ::rootview.mouses[0];
 		local va = ::rootview.pickall( ms.mousex, ms.mousey, []);
@@ -145,7 +145,7 @@ module.hookAction( "editor_postload", @(){
 });
 
 ::skstudio.registerCommand( {
-	uid="cmd_capturedialog", modkey="~_C", lbl="ダイアログのSS", icon="\ue412"
+	uid="cmd_capturedialog", modkey="~_C", lbl="$T.toolcmd_capturedialog", icon="\ue412"
 	func = @(){
 		local v = ::rootview.findChild( "dlglayer").children?.last();
 		if( v["ref"] instanceof DialogBase){
@@ -159,14 +159,14 @@ module.hookAction( "editor_postload", @(){
 			//
 			skPutClipboardData( img);
 			//
-			Popups.showInfo( "ダイアログのスクリーンショットをコピーしました。");
+			Popups.showInfo( "$T.toolcmd_capturedialog_done");
 		}
 	}
 });
 
 
 ::skstudio.registerCommand( {
-	uid="cmd_resetwinsize", /*modkey="~_C",*/ lbl="ウィンドウサイズをリセット", icon="\uea10"
+	uid="cmd_resetwinsize", lbl="$T.toolcmd_resetwinsize", icon="\uea10"
 	func = @(){
 		if( ::workspace["iniwindow"]==2){
 			skCreateScreen( "SKStudio", 1920, 1080, 4);
@@ -179,7 +179,7 @@ module.hookAction( "editor_postload", @(){
 
 
 ::skstudio.registerCommand( {
-	uid="cmd_gamepadmapping", /*modkey="~_C",*/ lbl="$T.lbl_gamepadmap", icon="\uea28"
+	uid="cmd_gamepadmapping", lbl="$T.toolcmd_gamepadmap", icon="\uea28"
 	func = @(){
 		GamepadMappingDialog.run();
 	}

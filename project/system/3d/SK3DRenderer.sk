@@ -67,6 +67,7 @@ class RenderHint
 	ssgi_qua = 1;				//	fast, normal, quality
 	shadow_qua = 1;				//	シャドウの品質はどう設定させようか？ブラー、解像度、
 	blur_qua = 1;				//	色々なところで掛かるブラーの品質を指定。最大サンプリング数。
+	pbr_qua = 0;				//	gblurをやるかぐらいかな？
 	
 	function set( t){
 		foreach( i,v in t){

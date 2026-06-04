@@ -739,6 +739,16 @@ function Event::getMouseState(){
 	return ::rootview.mouses[mouseid];
 }
 
+function reportErrorAction( func, type="general"){
+	try{
+		func();
+	}catch( ex){
+		local msg = "error in reportErrorAction...";
+		printexception( ex, msg);
+		::rootview.postErrorEvent( {type=type, error=ex, });
+	}
+}
+
 class SKRootView.MouseState
 {
 	mouseid = -1;

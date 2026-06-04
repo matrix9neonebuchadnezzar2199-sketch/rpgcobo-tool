@@ -40,6 +40,7 @@ class ClientConfig
 			ssgi_qua = 1;				//	fast, normal, quality
 			shadow_qua = 1;				//	シャドウの品質はどう設定させようか？ブラー、解像度、
 			blur_qua = 1;				//	色々なところで掛かるブラーの品質を指定。最大サンプリング数。
+			pbr_qua = 1;				//	gblurをやったり
 		},
 		sound = {
 			bgmvol = 90,				//	
@@ -61,11 +62,11 @@ class ClientConfig
 	};
 
 	static renderhints = [
-		{ maxreso= 720, antialias=1, upscale=1, ssao_reso=0, ssao_qua=0, ssgi_reso=0, ssgi_qua=0, shadow_qua=0, blur_qua=0, },
-		{ maxreso= 900, antialias=1, upscale=1, ssao_reso=0, ssao_qua=1, ssgi_reso=0, ssgi_qua=1, shadow_qua=1, blur_qua=1, },
-		{ maxreso=1080, antialias=2, upscale=1, ssao_reso=0, ssao_qua=2, ssgi_reso=0, ssgi_qua=2, shadow_qua=2, blur_qua=2, },
-		{ maxreso=1080, antialias=2, upscale=1, ssao_reso=1, ssao_qua=1, ssgi_reso=1, ssgi_qua=1, shadow_qua=2, blur_qua=2, },
-		{ maxreso=2160, antialias=2, upscale=1, ssao_reso=1, ssao_qua=2, ssgi_reso=1, ssgi_qua=2, shadow_qua=2, blur_qua=2, },
+		{ maxreso= 720, antialias=1, upscale=1, ssao_reso=0, ssao_qua=0, ssgi_reso=0, ssgi_qua=0, shadow_qua=0, blur_qua=0, pbr_qua=0 },
+		{ maxreso= 900, antialias=1, upscale=1, ssao_reso=0, ssao_qua=1, ssgi_reso=0, ssgi_qua=1, shadow_qua=1, blur_qua=1, pbr_qua=1 },
+		{ maxreso=1080, antialias=2, upscale=1, ssao_reso=0, ssao_qua=2, ssgi_reso=0, ssgi_qua=2, shadow_qua=2, blur_qua=2, pbr_qua=2 },
+		{ maxreso=1080, antialias=2, upscale=1, ssao_reso=1, ssao_qua=1, ssgi_reso=1, ssgi_qua=1, shadow_qua=2, blur_qua=2, pbr_qua=2 },
+		{ maxreso=2160, antialias=2, upscale=1, ssao_reso=1, ssao_qua=2, ssgi_reso=1, ssgi_qua=2, shadow_qua=2, blur_qua=2, pbr_qua=2 },
 	];
 
 	static def_keybtnmap = {
@@ -129,17 +130,20 @@ class ClientConfig
 	//	
 	static function load(){
 		local f = FileRef( ::savedir, "client.json");
-		local t = decodeJSON( f.load());
-		return t;
+		if( f.exists()){
+			local t = decodeJSON( f.load());
+			return t;
+		}
+		return new();
 	}
 
 	//	::clientconfをセーブする。暗号化するような内容は無いのでそのままjsonに。
 	static function save(){
 		local f = FileRef( ::savedir, "client.json");
-		local json = encodeJSON( ::clientconf, 5);
-		f.save( json);
+		local bb = encodeJSON( ::clientconf, 5, ByteBuffer()); bb.pos = 0;
+		f.save( bb);
 	}
 }
 
 //	clientconfは、プログラムの最初期にロードされるので既に存在している可能性が高い。
-::clientconf <- ClientConfig.new();
+::clientconf <- null;

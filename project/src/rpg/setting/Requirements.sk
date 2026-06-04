@@ -14,7 +14,7 @@ local reqchk = ::RPGSystem.reqchk;
 
 reqchk .. {
 	key = "varcmp",
-	lbl = "$T.lbl_varcmp"
+	lbl = "${T.lbl_varcmp} ..."
 	defval = { key="varcmp", lvar="G000", op="==", rvar=true}
 	lvar = {
 		constbits = 0, varbits = 1|2|4|8|16

@@ -63,38 +63,38 @@ import SKViewFXPropertyID;
 ::SKFP .. { pid=ENABLED,		lbl="$T.lbl_enable",			type=BOOL, anime=1};
 ::SKFP .. { pid=HSV,			lbl="$T.lbl_hsv",		type=VEC3,		range=(-100,100), anime=2};
 ::SKFP .. { pid=POWER,			lbl="$T.lbl_power",			type=SCALAR, range=(0.0,1.0), q=100, anime=2, ui="bar"};
-::SKFP .. { pid=BLURSIZE,		lbl="ブラー幅",		type=SCALAR, range=(0,64), q=100, anime=2};
-::SKFP .. { pid=CLIPBORDER,		lbl="端クリップ",		type=BOOL,	};
-::SKFP .. { pid=BLURDIR	,		lbl="ブラー方向",		type=SCALAR, range=(0,360), q=1, anime=2};
+::SKFP .. { pid=BLURSIZE,		lbl="$T.lbl_blur$T.lbl_size",		type=SCALAR, range=(0,64), q=100, anime=2};
+::SKFP .. { pid=CLIPBORDER,		lbl="$T.lbl_textclip",		type=BOOL,	};
+::SKFP .. { pid=BLURDIR	,		lbl="$T.lbl_blur$T.lbl_direction",		type=SCALAR, range=(0,360), q=1, anime=2};
 ::SKFP .. { pid=CENTERUV,		lbl="$T.lbl_center UV",		type=VEC2,	range=(0,1), q=100, anime=2};
 ::SKFP .. { pid=UVOFFSET,		lbl="UV $T.lbl_offset",		type=VEC2,	range=(-2,2), q=100, anime=2};
 ::SKFP .. { pid=MASKIMAGE,		lbl="$T.lbl_masktex",		type=PATH};
-::SKFP .. { pid=MASKINVERT,		lbl="$T.lbl_invert",			type=BOOL};
-::SKFP .. { pid=MASKDEPTH,		lbl="重み",			type=SCALAR, range=(0,1), q=100, anime=2};
-::SKFP .. { pid=MASKSPREAD,		lbl="ボカシ",			type=SCALAR, range=(0,1), q=100, anime=2};
-::SKFP .. { pid=HALOSIZE,		lbl="光輪幅",		type=SCALAR, range=(0,96), q=1, anime=2};
-::SKFP .. { pid=HALOCOLOR,		lbl="光輪色",		type=RGBA, anime=2};
-::SKFP .. { pid=HALORAY,		lbl="レイ",			type=VEC3, range=(0,1), q=100, anime=2};
-::SKFP .. { pid=HALOGLOW,		lbl="グロー",		type=SCALAR, range=(0,1), q=100, anime=2};
-::SKFP .. { pid=SHADOWCOLOR,	lbl="影色",			type=RGBA, anime=2};
-::SKFP .. { pid=SHADOWDELTA,	lbl="影位置",		type=VEC2,	range=(-64,64), q=1, anime=2};
+::SKFP .. { pid=MASKINVERT,		lbl="$T.lbl_invert",		type=BOOL};
+::SKFP .. { pid=MASKDEPTH,		lbl="$T.lbl_weight",		type=SCALAR, range=(0,1), q=100, anime=2};
+::SKFP .. { pid=MASKSPREAD,		lbl="$T.lbl_blur",			type=SCALAR, range=(0,1), q=100, anime=2};
+::SKFP .. { pid=HALOSIZE,		lbl="$T.lbl_halo$T.lbl_size",		type=SCALAR, range=(0,96), q=1, anime=2};
+::SKFP .. { pid=HALOCOLOR,		lbl="$T.lbl_halo$T.lbl_color",		type=RGBA, anime=2};
+::SKFP .. { pid=HALORAY,		lbl="$T.lbl_ray",			type=VEC3, range=(0,1), q=100, anime=2};
+::SKFP .. { pid=HALOGLOW,		lbl="$T.lbl_glow",		type=SCALAR, range=(0,1), q=100, anime=2};
+::SKFP .. { pid=SHADOWCOLOR,	lbl="$T.lbl_shadow$T.lbl_color",			type=RGBA, anime=2};
+::SKFP .. { pid=SHADOWDELTA,	lbl="$T.lbl_shadow$T.lbl_position",		type=VEC2,	range=(-64,64), q=1, anime=2};
 ::SKFP .. { pid=LENSK,			lbl="凹",			type=SCALAR, range=(0,1), q=100, anime=2};
 ::SKFP .. { pid=LENSKCUBE,		lbl="凸",			type=SCALAR, range=(0,1), q=100, anime=2};
-::SKFP .. { pid=CIRCLESIZE,		lbl="円サイズ",	type=SCALAR, range=(0,3), q=100, anime=2};
-::SKFP .. { pid=CIRCLEBLUR,		lbl="円ぼかし",	type=SCALAR, range=(0,1), q=100, anime=2};
+::SKFP .. { pid=CIRCLESIZE,		lbl="$T.lbl_circle$T.lbl_size",	type=SCALAR, range=(0,3), q=100, anime=2};
+::SKFP .. { pid=CIRCLEBLUR,		lbl="$T.lbl_circle$T.lbl_blur",	type=SCALAR, range=(0,1), q=100, anime=2};
 ::SKFP .. { pid=CIRCLEREVERSE,	lbl="$T.lbl_reverse",	type=BOOL, anime=1};
-::SKFP .. { pid=CIRCLEANGLE,	lbl="円角度",	type=SCALAR, range=(0,360), q=0, anime=2};
+::SKFP .. { pid=CIRCLEANGLE,	lbl="$T.lbl_circle$T.lbl_angle",	type=SCALAR, range=(0,360), q=0, anime=2};
 ::SKFP .. { pid=HSV0,			lbl="HSV0",		type=VEC3,	range=(0,100), anime=2};
 ::SKFP .. { pid=HSV1,			lbl="HSV1",		type=VEC3,	range=(0,100), anime=2};
 ::SKFP .. { pid=OFFSET,			lbl="$T.lbl_offset",	type=VEC2,	range=(-10,10), anime=2, ui="bar"};
 ::SKFP .. { pid=SHARPNESS,		lbl="$T.lbl_sharpness",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2, ui="bar"};
 
 ::SKFP .. { pid=TIME,			lbl="$T.lbl_time",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2, ui="bar"};
-::SKFP .. { pid=ANGLE,			lbl="$T.lbl_direction",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2};	//	*pi
-::SKFP .. { pid=COREWEIGHT,		lbl="コアの幅",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2, ui="bar"};	//	0.005~0.02
-::SKFP .. { pid=GLOWWEIGHT,		lbl="グローの幅",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2, ui="bar"};	//	0.05~0.2
-::SKFP .. { pid=CORECOLOR,		lbl="コア色",		type=RGB, anime=2};
-::SKFP .. { pid=GLOWCOLOR,		lbl="グロー色",		type=RGB, anime=2};
+::SKFP .. { pid=ANGLE,			lbl="$T.lbl_angle",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2};	//	*pi
+::SKFP .. { pid=COREWEIGHT,		lbl="$T.lbl_core$T.lbl_size",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2, ui="bar"};	//	0.005~0.02
+::SKFP .. { pid=GLOWWEIGHT,		lbl="$T.lbl_glow$T.lbl_size",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2, ui="bar"};	//	0.05~0.2
+::SKFP .. { pid=CORECOLOR,		lbl="$T.lbl_core$T.lbl_color",		type=RGB, anime=2};
+::SKFP .. { pid=GLOWCOLOR,		lbl="$T.lbl_glow$T.lbl_color",		type=RGB, anime=2};
 ::SKFP .. { pid=NOISE,			lbl="$T.lbl_noise",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2, ui="bar"};
 
 ::SKFP .. { pid=UVSCALE,		lbl="UV $T.lbl_scale",	type=SCALAR,	range=(0.0,1.0), q=100, anime=2, ui="bar"};

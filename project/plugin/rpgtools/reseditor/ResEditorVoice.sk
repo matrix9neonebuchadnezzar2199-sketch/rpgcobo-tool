@@ -51,7 +51,7 @@ local srcdir = dirname( callee().getSourceName());
 local geminigen( va, vo, tts, lc){
 	local apikey = ::account["apikeymap"]["gemini"];	//	GeminiのAPIキーはアカウントデータの中
 	if( !length( apikey)){
-		if( Dialogs.confirm( {msg="ボイス生成のためにGeminiのAPI Keyの設定が必要です。設定を開きますか？"})){
+		if( Dialogs.confirm( {msg="$T.confirm_geminivoice_apikey"})){
 			PreferenceDialog.run( "apikey");
 		}
 		return null;

@@ -31,7 +31,7 @@ class DBEditorEnemy extends EditorViewBase
 		RPGProperties.descprop,
 		{ pid="debug", lbl="$T.lbl_battletest", type=CUSTOMBUTTON, cnt="cnt5.ui", icon="\ue1c4", ui="1",
 			edit = @( val){
-				// ::skstudio.editor.editSelectedAsset();
+				::skstudio.editor.startDebug();
 			}
 		}
 	];
@@ -167,6 +167,20 @@ class DBEditorEnemy extends EditorViewBase
 		switch( e.src["name"]){
 		}
 	}
+
+
+	function startDebug(){
+		local enemyid = res.name;
+		//	現在の作業データをテンポラリに保存
+		local f = FileRef( "tmp/debugconf.json");
+		local bb = encodeJSON({ [`enemy.${res.name}`]=data, }, 5, ByteBuffer());
+		bb.pos = 0;
+		f.save( bb);
+		local mapid = Table.findi( ::conf.map, @( v, i) v["encount"][0]["enemies"][0]);
+		local gid = ::conf.map[mapid].encount[0].gid;
+		local m = { uid="menu_debug_battle", mapid=mapid, gid=gid, enemyid=enemyid, confpath=f.path, };
+		startDebugMenu( m);
+	}
 }
 
 local turnbitslist = [
@@ -187,11 +201,11 @@ local aireqlist(){
 }
 
 local ailvlist = [
-	{ lbl="低レベル", val=0 },
-	{ lbl="中レベル", val=1 },
-	{ lbl="中レベル", val=2 },
-	{ lbl="中レベル", val=3 },
-	{ lbl="高レベル", val=4 },
+	{ lbl="0:$T.lbl_level_low", val=0 },
+	{ lbl="1:$T.lbl_level_low", val=1 },
+	{ lbl="2:$T.lbl_level_mid", val=2 },
+	{ lbl="3:$T.lbl_level_mid", val=3 },
+	{ lbl="4:$T.lbl_level_high", val=4 },
 ]
 
 //	※プレイヤーでも編集できるようにしたい

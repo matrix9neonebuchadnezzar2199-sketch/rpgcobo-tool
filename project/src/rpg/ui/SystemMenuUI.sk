@@ -580,6 +580,7 @@ RPGSystem.ui ..
 		if( ev == "back"){
 			view.actionAndDie( "hide");//.waitAction();
 			playSound( "SE004");
+			ClientConfig.save();
 			return true;
 		}
 		//	

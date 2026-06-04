@@ -726,7 +726,7 @@ with SKView
 	//	
 	function renderAll(){
 		dorepaint = false;
-		if( !(visible&layerflags&1)) return;
+		if( !(visible&layerflags&1) | (layerflags&0x8000)) return;
 		if( buf){
 			skSetMatrix( SK_WORLD, mat);
 			skDrawSprite( buf);

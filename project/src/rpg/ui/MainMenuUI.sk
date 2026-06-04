@@ -38,7 +38,7 @@ function bindMainMenuInfo(){
 	local sec = (::rpgvar.PTIME / 1000);
 	local mstr = commanum( rpgstat.money);
 	local tstr = sprintf( "%02d:%02d:%02d", sec/3600, (sec/60)%60, sec%60);
-	local sstr = commanum( rpgvar.STEPS);
+	local sstr = commanum( rpgvar.STEPCNT);
 	return sprintf( "\uf25f %11s\n\uf25e %11s\n\uf25d %11s", mstr, tstr, sstr);
 }
 

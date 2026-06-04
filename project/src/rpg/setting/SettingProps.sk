@@ -126,6 +126,7 @@ settingprops .. {
 			return {
 				head = ""..i,
 				datatype = ["player"],
+				nullable = true
 			}
 		}
 	)

@@ -69,7 +69,7 @@ local itemselected( view, itemid){
 RPGSystem.ui ..
 {
 	key = "store_item"
-	lbl = "アイテムショップ"
+	lbl = "$T.ui_store_item"
 	type = "store"			//	mainmanu, submenu, choose, dialog, message, info, store, debug, misc, 
 	topinfo = @( t){
 		local d = ::conf.store[t["storeid"]];
@@ -144,9 +144,9 @@ RPGSystem.ui ..
 RPGSystem.ui ..
 {
 	key = "store_sellitem"
-	lbl = "アイテムの売却"
+	lbl = "$T.ui_store_sellitem"
 	type = "store"			//	mainmanu, submenu, choose, dialog, message, info, debug, misc, 
-	topinfo = "アイテムの売却";
+	topinfo = "$T.ui_store_sellitem";
 	icon = "\ue54c"
 
 	props = [					//	金額レートぐらいかな

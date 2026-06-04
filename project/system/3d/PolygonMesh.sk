@@ -546,6 +546,16 @@ PrimitiveMeshes <- class
 	function _v( mb, x, y, z, u, v){
 		mb.texcoord( u, v); mb.vertex( x, y, z);
 	}
+
+	function _createTriangle( r){
+		local mb = getMeshBuilder();
+		mb.begin( SK_TRIANGLES);
+		for( local l = 0;l < 3;l ++){
+			local th = 120*l*Math.DTOR, x = Math.sin( th)*r, z = -Math.cos( th)*r;
+			_v( mb, x, 0, z, 0.0, 0.0);
+		}
+		mb.end();
+	}
 	
 	function _createPlane( w, h, xz=true){
 		local mb = getMeshBuilder();

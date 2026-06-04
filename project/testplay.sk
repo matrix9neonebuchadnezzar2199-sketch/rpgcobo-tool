@@ -1,4 +1,4 @@
-﻿/////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////
 //	テストプレイ
 
 //	言語選択。workspaceから設定取ってきちゃうかな～
@@ -25,6 +25,7 @@ module.hookAction( "conf_postload", @(){
 ::savedir <- FileRef( skGetCurrentDir().."/savedata"); ::savedir.mkdirs();
 
 runsk( "/ClientConfig.sk");
+::clientconf = ClientConfig.load();
 if( !clientconf.screen.fullscreen){
 	local wh = clientconf.screen.reso_window.split( "x");	//	"1920x1080"のような文字列
 	skCreateScreen( "RPG-Cobo TestPlay", int( wh[0]), int( wh[1]), 5|16);
@@ -109,6 +110,10 @@ if( ::arguments.contains( "-skprof")) (prof = SKProfiler()).start();
 		local cmd = ::conf.map[emapid].encount.find( @( v) v.gid==gid);
 		local mapid = cmd.mapid;
 		local skillid = ((i=args.indexOf( "-skill")) >= 0) ? args[i+1] : null;
+		local enemyid = ((i=args.indexOf( "-enemy")) >= 0) ? args[i+1] : null;
+		if( enemyid){
+			cmd.enemies[0].id = enemyid;
+		}
 		//	
 		//	コマンドを拡張してマップ移動をバトルにする
 		local cmd_ = {
@@ -122,6 +127,7 @@ if( ::arguments.contains( "-skprof")) (prof = SKProfiler()).start();
 			},
 			//	バトル終了時のコールバック
 			endfunc = @( bt){
+				skExit( 0);
 			},
 		};
 		local sstat = ::rpgstat.stagemap[mapid];
@@ -137,11 +143,35 @@ SKIP:
 	;
 }
 
+//	flush log
 newthread().start( @(){
 	for( ;;){
 		flushStdOut(); suspend();
 	}
 }, this);
+
+//	debug shortcut
+import VirtualKeyCode;
+
+local revertRenderSkip( s){
+	local v = ::rootview.findChild( s);
+	v.layerflags = v.layerflags ^ 0x8000;
+}
+
+local rootevent( e){
+	if( e.id != KEY_PRESSED) return;
+	switch( e.keycode){
+	case VK_F2:
+		revertRenderSkip( "info");
+		revertRenderSkip( "stageui");
+		revertRenderSkip( "message");
+		revertRenderSkip( "menu");
+		break;
+	}
+}
+
+::rootview.addPostEventListener( KEY_EVENT, rootevent);
+
 
 RPGMain.mainloop();
 

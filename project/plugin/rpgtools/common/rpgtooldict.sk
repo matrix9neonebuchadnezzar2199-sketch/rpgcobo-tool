@@ -526,7 +526,14 @@
 	"qvar_enemy"						: {"ja":"エネミー討伐数", "en":"Num of Enemy kill"}
 	"qvar_party"						: {"ja":"パーティ加入", "en":"Party member"}
 	"qvar_quest"						: {"ja":"クエストの状態", "en":"State of Quest"}
-	
+	"svar_encounter"					: {"ja":"エンカウント", "en":"Encounter"}
+	"svar_inbattle"						: {"ja":"バトル中か", "en":"In Battle"}
+	"svar_atkchara"						: {"ja":"攻撃キャラ", "en":"Atk Chara"}
+	"svar_defchara"						: {"ja":"防御キャラ", "en":"Def Chara"}
+	"svar_party"						: {"ja":"メンバーリスト", "en":"Member List"}
+	"svar_enemies"						: {"ja":"エネミーリスト", "en":"Enemy"}
+	"svar_showtimer"					: {"ja":"表示タイマー", "en":"Show Timer"}
+
 	//	フォーマット
 	"format_own"						: {"ja":"%S の所持", "en":"%S's num"}
 	"format_kill"						: {"ja":"%S を討伐", "en":"%S's num"}
@@ -756,6 +763,12 @@
 	"dialog_resid_title"				: {"ja":"リソースの選択", "en":"Select Resource"}
 	"dialog_lvtype_title"				: {"ja":"成長タイプの管理", "en":"Manage Growth Types"}
 
+	"lbl_level_low"						: {"ja":"低レベル", "en":"Low Level"}
+	"lbl_level_mid"						: {"ja":"中レベル", "en":"Medium Level"}
+	"lbl_level_high"					: {"ja":"高レベル", "en":"High Level"}
+	"lbl_level_avg"						: {"ja":"平均レベル", "en":"Average Level"}
+	"lbl_level_max"						: {"ja":"最大レベル", "en":"Max Level"}
+
 	////////// システム設定
 
 	"setting_basic"						: {"ja":"基本設定", "en":"Basic Setting"}
@@ -919,6 +932,7 @@
 	"lbl_placeasset"					: {"ja":"マップアセット配置", "en":"Place Map Asset"}
 	"lbl_placeparma"					: {"ja":"永久配置", "en":"Permanent Place"}
 	"lbl_stage"							: {"ja":"ステージ", "en":"Stage"}
+	"lbl_noenemyg"						: {"ja":"エネミー設定なし", "en":"No Enemy Settings"}
 
 	//	イベントロール
 	"lbl_storeclerk"					: {"ja":"ショップ店員", "en":"Store Clerk"}
@@ -1005,6 +1019,8 @@
 	"icon_etc"							: {"ja":"その他アイコン", "en":"Etc Icons"}
 
 	"confirm_save_befor_edit"			: {"ja":"編集するために保存する必要があります。", "en":"This file need to be saved for editing."}
+	"pop_import_noimage"				: {"ja":"インポートする画像が見つかりません。", "en":"The image to import is not found."}
+	"tmpl_import_icons"					: {"ja":"$v 個のアイコンが読み込まれました", "en":"$v icons have been loaded."}
 
 	/////////////////////////////////////////////////////////////////////////////////////////////
 	//	マップサイドビュー
@@ -1161,7 +1177,7 @@
 		"en":"Windows .exe"
 	},
 
-	"lbl_build_openoutdir"				: {"ja":"出力フォルダを開く", "en":"Open Output folder"}
+	"lbl_build_opendir"					: {"ja":"出力フォルダを開く", "en":"Open Output folder"}
 	"confirm_overwrite_outdir"			: {"ja":"出力先のフォルダが存在します。上書きしますか？", "en":"The output folder exists. Do you want to overwrite it?"}
 	
 	"lbl_outdirname"					: {"ja":"出力フォルダ名", "en":"Output Folder"}
@@ -1235,5 +1251,8 @@
 	"ui_dialog_confirm"					: {"ja":"確認ダイアログ", "en":"Confirm Dialog"}
 	"ui_dialog_selchara"				: {"ja":"キャラ選択ダイアログ", "en":"Chara Selection Dialog"}
 	"ui_dialog_buyitem"					: {"ja":"アイテム売買ダイアログ", "en":"Item buy/sell Dialog"}
+	//	store
+	"ui_store_item"						: {"ja":"アイテムショップ", "en":"Item Shop"}
+	"ui_store_sellitem"					: {"ja":"アイテムの売却", "en":"Sell Item"}
 	
 });
