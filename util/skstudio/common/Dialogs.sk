@@ -28,6 +28,17 @@ class Dialogs
 		return dlg.ret ? (chk?.isSelected() ? 2 : 1) : 0;
 	}
 
+	static function notice( p){
+		local dlg = Dialog( "/skstudio/ui/dialog/confirm.ui");
+		local v = dlg.view;
+		v.setValue( "lbl", p.msg);
+		if( p["icon"]) v.setValue( "icon", p.icon);
+		v.findChild( "btn_ok").setVisible( false);
+		v.findChild( "bdr").setVisible( false);
+		v.setValue( "btn_cancel.lbl", "$T.lbl_close");
+		dlg.show();
+	}
+
 	//	ファイル変更をセーブするか選択するダイアログ。
 	//	
 	static function fileSaveCheck( pathlist){
@@ -155,7 +166,13 @@ class Dialogs
 			for( ;;){
 				suspend();
 				if( dlg.inclose && dlg.view.getRoot() != ::rootview) return;
-				if( !cont()){ dlg.ret = true; dlg.close(); break; }
+				try{
+					if( !cont()){ dlg.ret = true; dlg.close(); break; }
+				}catch( ex){
+					printf( "showWaiting caught interrupt close!!!\n");
+					printexception( ex);
+					dlg.ret = 0; dlg.close();
+				}
 			}
 		}, this);
 		dlg.show();

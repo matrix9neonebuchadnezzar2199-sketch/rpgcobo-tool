@@ -48,5 +48,5 @@ $tmpl = $tmpls[0]
 foreach( $dirmap in $tmpl.dirs) {
 	$srcdir = Join-Path $assetdir $dirmap.src
 	$dstdir = Join-Path (Get-Location) $dirmap.dst
-	Copy-Item -Path $srcdir -Destination $dstdir -Recurse -Force
+	Copy-Item -Path $srcdir\* -Destination $dstdir -Recurse -Force
 }

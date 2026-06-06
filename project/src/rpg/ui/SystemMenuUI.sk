@@ -473,8 +473,15 @@ local confimplmap = {
 				"action" : @( e){
 					local d = delta[e.name];
 					if( d){
-						vptr << Math.clamp( ~vptr+d, conf.range[0], conf.range[1]);
+						local v = Math.clamp( ~vptr+d, conf.range[0], conf.range[1]);
+						vptr << v;
 						playSound( "SE000");
+						//
+						if( conf["set"]){
+							conf.set( v);
+						}else{
+							::setField( ::clientconf, conf.pid, v);
+						}
 					}
 				}
 				"click" : @( e){
