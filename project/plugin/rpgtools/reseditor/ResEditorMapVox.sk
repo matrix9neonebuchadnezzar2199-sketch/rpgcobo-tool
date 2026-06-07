@@ -141,8 +141,14 @@ local inexprop( incatg, excatg){
 // local nameprop = { pid="name", lbl="$T.lbl_name", type=LANGSTRING, defval = "", }	//	名前なし！
 local vp0prop = { pid="vp0", lbl="$T.lbl_model", type=VOXEL_PARTS, dir=@() ::skstudio.editor.selcatg.dir0, restype="voxparts", usevcname=true, defval=null, showpartstree=true }
 local vp1prop = { pid="vp1", lbl="$T.lbl_model", type=VOXEL_PARTS, dir=@() ::skstudio.editor.selcatg.dir1, restype="voxparts", usevcname=true, defval=null, showpartstree=true }
-local pal0prop = { pid="pal0", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui", inipal=@() ::skstudio.editor.getIniPalette(), defval=[] };
-local pal1prop = { pid="pal1", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui", inipal=@() ::skstudio.editor.getIniPalette(), defval=[] };
+local pal0prop = { pid="pal0", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui", defval=[],
+	inipal=@() ::skstudio.editor.getIniPalette(),
+	palchange=@( palmod) ::skstudio.editor.paletteChanged( palmod, 0)
+};
+local pal1prop = { pid="pal1", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui", defval=[],
+	inipal=@() ::skstudio.editor.getIniPalette(),
+	palchange=@( palmod) ::skstudio.editor.paletteChanged( palmod, 1)
+};
 
 local doorcatgprop = { pid="catg", lbl="in/ex", type=LIST, }
 
@@ -700,6 +706,14 @@ class ResEditorMapVox extends EditorViewBase
 		local v = vp.vd8;
 		drawvp( vp, v?IMat(-v.w/2,-v.h/2,-v.d/2):IMat());
 		return vd0;
+	}
+
+	//	カラー選択パレットの変更をプレビューに反映
+	function paletteChanged( palmod, i){
+		//	マップボクセルはフルカラーなので作り直さないといけない！
+		local d = clone data[selcatg.id][selitem.id];
+		d["pal"..i] = palmod;
+		preview.setResourceData( selitem.id, d);
 	}
 }
 

@@ -45,10 +45,12 @@ class ColorPopup extends Popup
 
 	colpanel = null;
 	modalpicking = false;
+	cbfunc = null;
 
 	function init( v){
 		super.init( v);
 		colpanel = ColorPanelBehavior( v);
+		colpanel.view.addEventListener( VALUE_EVENT, valueevent);
 	}
 
 	function setColor( c){
@@ -77,6 +79,12 @@ class ColorPopup extends Popup
 		}
 	}
 
+	function valueevent( e){
+		if( e.id == VALUE_CHANGED && cbfunc){
+			cbfunc( e.actioncmd);
+		}
+	}
+
 	function actionevent( e){
 		super.actionevent( e);
 		if( e.src == view){
@@ -85,10 +93,11 @@ class ColorPopup extends Popup
 		}
 	}
 
-	static function run( cv, col){
+	static function run( cv, col, cbfunc=null){
 		local pop = ColorPopup( ::loadSKView( POPUPUIPATH));
 		cv = cv || ::getMousePos( 0);
 		pop.setColor( col);
+		pop.cbfunc = cbfunc;
 		pop.show( null, cv);
 		return pop.ret ? pop.colpanel.color : null;
 	}
@@ -167,8 +176,10 @@ class ColorPanelBehavior
 			if( mousein){
 				local c = pickScreenColor( e.x, e.y) | 0xff;
 				setColor( c);
+				view.postIDEvent( VALUE_CHANGED, c);
 			}else{
 				resetColor();
+				view.postIDEvent( VALUE_CHANGED, color);
 			}
 			break;
 		case MOUSE_EXITED:
@@ -186,7 +197,7 @@ class ColorPanelBehavior
 			color = (i<<8) | 255;
 			csp.setColor( color);
 			view.repaint();
-			view.postIDEvent( VALUE_CHANGED);
+			view.postIDEvent( VALUE_CHANGED, color);
 		}
 	}
 
@@ -208,7 +219,7 @@ class ColorPanelBehavior
 				if( length( t) == 6){
 					local i = int( t, 16);
 					setColor( (i<<8) | 255);
-					view.postIDEvent( VALUE_CHANGED);
+					view.postIDEvent( VALUE_CHANGED, color);
 				}
 			}
 			break;
@@ -277,6 +288,9 @@ class ColorPanelBehavior.ValueBars
 		num2.setRange( 0, 255, 1);
 		v.addEventListener( VALUE_EVENT, valueevent);
 		v.addEventListener( ACTION_EVENT, valueevent);
+		num0.view.addEventListener( ACTION_EVENT, numevent);
+		num1.view.addEventListener( ACTION_EVENT, numevent);
+		num2.view.addEventListener( ACTION_EVENT, numevent);
 	}
 
 	function updateBarColors( numset=true){
@@ -391,6 +405,7 @@ class ColorPanelBehavior.ValueBars
 	function updateColor(){
 		local hsv = (num0.getValue()/255.0*360.0, num1.getValue(), num2.getValue());
 		cp.setColor( hsvtorgb( hsv), false);
+		cp.view.postIDEvent( VALUE_CHANGED, cp.color);
 	}
 	
 	function valueevent( e){
@@ -399,8 +414,16 @@ class ColorPanelBehavior.ValueBars
 		case "bar0":case "bar1":case "bar2":
 			local i = e.src.name[3]-'0';
 			this["num"..i].setValue( this[e.src.name].getValue()*255.0);
+			updateColor();
 			break;
 		}
-		updateColor();
+	}
+
+	function numevent( e){
+		e.consume();
+		local hsv = (num0.getValue()/255.0*360.0, num1.getValue(), num2.getValue());
+		cp.setColor( hsvtorgb( hsv), false);
+		updateBarColors( false);
+		cp.view.postIDEvent( VALUE_CHANGED, cp.color);
 	}
 }

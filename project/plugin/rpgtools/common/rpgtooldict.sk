@@ -683,6 +683,7 @@
 	"lbl_dbedit"						: {"ja":"データベースの編集", "en":"Database Edit"}
 	"lbl_idsort"						: {"ja":"IDの整理", "en":"Organizing IDs"}
 	"lbl_openresdir"					: {"ja":"リソースのフォルダを開く", "en":"Open resource folder"}
+	"lbl_openmotdir"					: {"ja":"モーションのフォルダを開く", "en":"Open motion folder"}
 	
 	/////////////////////////////////////////////////////////////////////////////////////////////
 	//	データベースエディタ

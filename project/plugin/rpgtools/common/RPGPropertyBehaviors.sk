@@ -736,15 +736,22 @@ class PropertyBehaviors.VoxPalette extends PropertyBehavior
 
 	//	単色の編集
 	function editColor( i){
+		local orgmod = palmod;
+		local makepalmod( c){
+			local m = clone orgmod;
+			c = (c>>>24)|((c>>8)&0xff00)|((c<<8)&0xff0000);
+			m[i*2+1] = (m[i*2+1]&0xff000000) | c;
+			return m;
+		}
 		local ix = i%palimg.width, iy = i/palimg.width;
 		local px = ix*palview.bnd.w / palimg.width;
 		local py = (iy+1)*palview.bnd.h / palimg.height;
 		local c = palimg[i]||0; c = (c<<24)|((c>>8)&0xff00)|((c<<8)&0xff0000)|0xff;
-		local r = ColorPopup.run( Vector3D(px,py,0).transform( palview.mat), c);
+		local palchange = prop["palchange"];
+		local cbfunc = palchange && @( c) palchange( makepalmod( c));
+		local r = ColorPopup.run( Vector3D(px,py,0).transform( palview.mat), c, cbfunc);
 		if( r){
-			palmod = clone palmod;
-			r = (r>>>24)|((r>>8)&0xff00)|((r<<8)&0xff0000);
-			palmod[i*2+1] = (palmod[i*2+1]&0xff000000) | r;
+			palmod = makepalmod( r);
 			setImage( palmod);
 			postActionEvent( true);
 		}
@@ -754,7 +761,14 @@ class PropertyBehaviors.VoxPalette extends PropertyBehavior
 		switch( mi["id"]){
 		case "hsv":
 		{
-			local img0 = clone palimg, img1 = palimg, self = this, n = length( palmod)/2, sb = selbb;
+			local img0 = clone palimg, img1 = palimg, self = this, n = length( palmod)/2, sb = selbb, palchange = prop["palchange"];
+			local makepalmod( img){
+				local m = clone self.palmod;
+				for( local l = 0;l < n;l ++){
+					m[l*2+1] = (img1[l]&0xffffff) | (m[l*2+1]&0xff000000);
+				}
+				return m;
+			}
 			local hsvpropdef = {
 				name = "hsv",
 				props = [
@@ -777,15 +791,13 @@ class PropertyBehaviors.VoxPalette extends PropertyBehavior
 					}
 					self.palview.sp.tex0.load( img1);
 					self.palview.repaint();
+					if( palchange) palchange( makepalmod( img1));
 				}
 			}
 			local d0 = #{hsv=[0,0,0]};
 			local ret = PropertyEditPopup.run( palview, hsvpropdef, deepclone( d0));
 			if( ret && ret<>d0){
-				palmod = clone palmod;
-				for( local l = 0;l < n;l ++){
-					palmod[l*2+1] = (img1[l]&0xffffff) | (palmod[l*2+1]&0xff000000);
-				}
+				palmod = makepalmod( img1);
 				postActionEvent( true);
 			}
 			break;

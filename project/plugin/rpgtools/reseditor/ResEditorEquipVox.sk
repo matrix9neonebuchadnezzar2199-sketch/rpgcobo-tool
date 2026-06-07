@@ -23,7 +23,10 @@ class ResEditorEquipVox extends ResEditor
 	static props = [
 		{ pid="name", lbl="$T.lbl_name", type=LANGSTRING, }
 		{ pid="vox", lbl="$T.lbl_model", type=VOXEL_PARTS, dir="/resource/vox/equip", restype="voxparts",  }
-		{ pid="pal", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui", inipal=@() ::skstudio.editor.getIniPalette(), }
+		{ pid="pal", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui",
+			inipal=@( pl) pl.ref.getIniPalette(),
+			palchange=@( palmod) ::skstudio.editor.paletteChanged( palmod)
+		}
 		{ pid="pivot", lbl="$T.lbl_pivot", type=VEC3, range=(-32.0,32.0), q=10 }
 		{ pid="memo", lbl="$T.lbl_memo", type=STRING, multiline=true, cnt="cnt6.ui" }
 	];
@@ -68,8 +71,8 @@ class ResEditorEquipVox extends ResEditor
 	}
 
 	function itemAction( e){
-		local d = e.actioncmd["data"];
-		if( length( d["vox"][0])) editVox( d.vox[0]);
+		// local d = e.actioncmd["data"];	//	ダブルクリックで開くのは余計かも
+		// if( length( d["vox"][0])) editVox( d.vox[0]);
 	}
 
 	// function showItemContextMenu( e){
@@ -147,6 +150,18 @@ class ResEditorEquipVox extends ResEditor
 		local vp1 = vp.findChild( "1");
 		if( vp1["vd8"]) return vp1;
 		if( vp.children["vd8"]) return vp.children;
+	}
+
+	//	カラー選択パレットの変更をプレビューに反映
+	function paletteChanged( palmod){
+		local vc = ::getResourceContent( data[selitem.id].vox[0]);
+		if( !vc) return;
+		local pal = vc.pal.getModPalette( palmod);
+		local tex = pal.getTexture();
+		local sk3d = preview.sk3d;
+		foreach( m in sk3d.getMaterials()){
+			m.tex2 = tex;	//	もし武器が付いてたらそのパレットも変わっちゃうな
+		}
 	}
 }
 

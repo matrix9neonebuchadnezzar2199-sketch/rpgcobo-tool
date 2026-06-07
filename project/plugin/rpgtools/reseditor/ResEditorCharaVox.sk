@@ -39,7 +39,10 @@ class ResEditorCharaVox extends ResEditor
 		{ pid="tags", lbl="$T.lbl_tags", type=CHECKBITS, list=charataglist, defval=3 }
 		{ pid="vox", lbl="$T.lbl_model", type=GRAPHIC, dir="/resource/vox/chara", restype="chara_vox", defval=null }
 		{ pid="mot", lbl="$T.lbl_motion", type=LIST, list=@( pl) pl.ref.motlist, defval=null }
-		{ pid="pal", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui", inipal=@( pl) pl.ref.getIniPalette(), }
+		{ pid="pal", lbl="$T.lbl_palette", type=PALETTEMAP, cnt="cnt6.ui",
+			inipal=@( pl) pl.ref.getIniPalette(),
+			palchange=@( palmod) ::skstudio.editor.paletteChanged( palmod)
+		}
 		{ pid="colshp",	lbl="$T.lbl_collision",	type=LIST, list=colshplist, defval=SK_SHAPE_CAPSULE },
 		{ pid="colsize", lbl="$T.lbl_size", type=VEC3, range=(0.01,1.5),q=100, defval=(0.4,0.8,0.4) },
 		{ pid="animap", lbl="$T.lbl_anime", type=ANIMEMAP, defval=[], cnt="cnt6.ui", },
@@ -167,6 +170,7 @@ class ResEditorCharaVox extends ResEditor
 			"-",
 			{ id="sort", lbl="$T.lbl_idsort", icon="\ue240"},
 			{ id="dir", lbl="$T.lbl_openresdir", icon="\ue89e"},
+			{ id="motdir", lbl="$T.lbl_openmotdir", icon="\ue89e"},
 		]
 		local ret = MenuPopup.run( menudata);
 		switch( ret["id"]){
@@ -177,6 +181,11 @@ class ResEditorCharaVox extends ResEditor
 		case "delete": return deleteItem( selitem);
 		case "sort": return showIDSortDialog();
 		case "dir": return skOpenURL( "dir://"..resdirpath);
+		case "motdir": 
+			local d = selitem["data"];
+			local workpath = d.mot.substring( 14, length( d.mot)-4) + ".blend";
+			local f = FileRef( "work/mot/"+workpath);
+			return skOpenURL( "dir://"..f.path);
 		}
 	}
 
@@ -200,6 +209,18 @@ class ResEditorCharaVox extends ResEditor
 				args = f.path
 			};
 			Dialogs.launchTool( prm);
+		}
+	}
+
+	//	カラー選択パレットの変更をプレビューに反映
+	function paletteChanged( palmod){
+		local vc = ::getResourceContent( data[selitem.id].vox);
+		if( !vc) return;
+		local pal = vc.pal.getModPalette( palmod);
+		local tex = pal.getTexture();
+		local sk3d = preview.sk3d;
+		foreach( m in sk3d.getMaterials()){
+			m.tex2 = tex;	//	もし武器が付いてたらそのパレットも変わっちゃうな
 		}
 	}
 }
