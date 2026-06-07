@@ -359,8 +359,8 @@ local fullconf = {		//	PCのみ
 };
 
 local winresoconf = {		//	PCのみ
-	lbl = "$T.screen_reso_screen"
-	desc = "$T.screen_reso_screen_desc"
+	lbl = "$T.screen_reso_window"
+	desc = "$T.screen_reso_window_desc"
 	pid = "screen.reso_window"
 	type = "choice"
 	list = @() ClientConfig.getAvailableWindowSizes().map( @( v)({ lbl="[f2]"..v, val=v}))
@@ -374,8 +374,8 @@ local winresoconf = {		//	PCのみ
 };
 
 local scresoconf = {		//	PCのみ
-	lbl = "$T.screen_reso_window"
-	desc = "$T.screen_reso_window_desc"
+	lbl = "$T.screen_reso_screen"
+	desc = "$T.screen_reso_screen_desc"
 	pid = "screen.reso_screen"
 	type = "choice"
 	list = @() ClientConfig.getAvailableDisplaySizes().map( @( v)({ lbl="[f2]"..v, val=v}))

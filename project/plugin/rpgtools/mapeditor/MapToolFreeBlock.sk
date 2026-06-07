@@ -970,6 +970,7 @@ class MapTools.tool_crack extends MapTools.tool_fblk
 	//
 	function dndevent( e){
 		local rot = getCameraRot();// + drot;		//	drotは
+		local fblk = listfb();
 		switch( e.id){
 		case TARGET_DRAG_ENTER:
 		case TARGET_DRAG_OVER:

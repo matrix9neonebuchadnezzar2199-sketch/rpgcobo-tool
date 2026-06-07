@@ -53,6 +53,9 @@ local selectSaveSlotMenu( m){
 
 local clearSaveData( m){
 	if( Dialogs.confirm( {msg="$T.confirm_clearsavedata"})){
+		foreach( f in _savedir.getList( "*.bin")){
+			f.deleteFile();
+		}
 	}
 }
 
