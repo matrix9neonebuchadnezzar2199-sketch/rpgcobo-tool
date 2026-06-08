@@ -529,7 +529,6 @@ class RPG3DObject extends SK3DObject
 				if( br.bodyb == b3body) continue;	//	自分自身にも当たるけど無視
 				local n = br.normal, nlen = n.length();
 				if( nlen < 0.001) continue;
-				printf( "colcol\n");
 				if( br.dotSurfaceNormal() < 0.707) continue;	//	衝突面との角度差が45°以上ある場合は押し戻しの必要なし。ポリゴン面が連続していることが前提。
 				local sn = br.surfnormal;//, ny = n.y/nlen;
 				if( sn&&sn.y>FLOORANGLE){	//	フロアに対するコリジョンはxz成分の押し戻しは無しにする。
