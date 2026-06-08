@@ -13,22 +13,28 @@ function future::suspendget(){
 }
 
 local ipmap = {};
-::inetmode <- 0;
 
 //	global func
 function resolveIP( hostname, port=null){
-	local ipaddr = clone ipmap[hostname];
+	local ipaddr = clone ipmap[hostname], t0 = skGetTime();
 	if( !ipaddr){
-		local resolver = HostNameResolver( hostname, port, ::inetmode);
-		while( !(ipaddr=resolver.get())){
+		//	IPAddressが同時にIPv6とIPv4のアドレスを取れないな～
+		local ip1, ip2;
+		local r1 = HostNameResolver( hostname, port, 0);	//	0=IPv6||IPv4
+		local r2 = HostNameResolver( hostname, port, 1);	//	1=IPv4 only
+		do{
 			suspend();
-		}
-		if( !ipaddr.isValid()){
-			return null;			//	error
-		}
-		ipmap[ hostname] <- ipaddr;
-		resolver = null;
+			if( !ip1) ip1 = r1.get();
+			if( !ip2) ip2 = r2.get();
+		}while( !ip1 || !ip2);
+		//
+		printf( "resolveIP host:%S IP %S %S time=%S\n", hostname, ip1, ip2, skGetTime( t0));
+		if( ip2.isValid()) ipaddr = ip2;
+		else if( ip1.isValid()) ipaddr = ip1;	//	このケースになるのは IPv6 only の環境
+		else return null;	//	単に無効
+		ipmap[hostname] <- ipaddr;
 	}
+OK:
 	if( port != null) ipaddr.port = port;
 	return ipaddr;
 }
@@ -72,47 +78,6 @@ function parseURL( url){
 	}
 	t.path <- hi==urllen?"/":"/"..url.substring( hi+1);
 	return t;
-}
-
-//	特殊なネット環境をチェック。
-//	スマホなんかは接続が変化してIPv6の対応状況が変わったりするので定期的なチェックが必要。
-//	あと、インターフェースの情報を完全に信用してもいけないので実際に接続テストをした方がいい。
-function checkINet( url=null){
-	local a = IPAddress.getNetInterfaceInfoList();
-	printf( "checkINet interfaces %S\n", encodeJSON( a));
-	clearIPMap();
-	foreach( v in a){
-		if( v.flags & 1){
-			::inetmode = v["ipaddr6"] ? 0 : 1;
-			if( /*!::inetmode &&*/ url){
-				local con = TCPConnection();
-				con.setReader( function( con, buf){}, this);
-				con.setListener( function( id, c, src){}, this);
-				local urlreq = parseURL( url);
-				local ipaddr = resolveIP( urlreq.host, urlreq.port);	//	ホストとポートでIPAddressを生成
-				if( ipaddr){
-					con.connect( ipaddr);
-					local t0 = skGetTime();
-					while( skGetTime( t0) < 1000){	//	1秒だけ待つ
-						if( con.getState() == SOCKET_CONNECTED){
-							//	OK!!!!!!!
-							printf( "checkINet IPv6 available. %S => %S\n", url, ipaddr);
-							con.close();
-							return;
-						}
-						suspend();
-					}
-					//	timeout!!!!!!
-					printf( "checkINet IPv6 unreachable. FORCE IPv4 addressing. addr=%S\n", ipaddr);
-					::inetmode = 1;
-				}
-				con.close();
-			}
-			return;
-		}
-	}
-	//	メインのインターフェースがない？ネットに繋がってないとか
-	::inetmode = 1;
 }
 
 function getMD5( v){
