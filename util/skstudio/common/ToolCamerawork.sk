@@ -297,7 +297,8 @@ class ToolCamerawork
 			break;
 		case MOUSE_WHEEL_MOVED:
 			if( !mot && !(e.modifiers&(CTRL_MASK|SHIFT_MASK|ALT_MASK))){
-				zoomi = Math.clamp( zoomi+e.count, 0, 50);
+				local rev = ::workspace["wheelzoomrev"]?-1:1;
+				zoomi = Math.clamp( zoomi-rev*e.count, 0, 50);
 				zoom = getZoomScale( zoomi);
 				e.consume();
 			}

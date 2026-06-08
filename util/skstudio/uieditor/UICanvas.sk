@@ -697,7 +697,8 @@ class UISelectionLayer extends SKView
 			}
 			break;
 		case MOUSE_WHEEL_MOVED:
-			canvas.zoomfor( e.x, e.y, e.count);
+			local rev = ::workspace["wheelzoomrev"]?-1:1;
+			canvas.zoomfor( e.x, e.y, rev*e.count);
 			e.consume();
 			break;
 		case MOUSE_PINCH:

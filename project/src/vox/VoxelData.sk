@@ -430,8 +430,12 @@ class VoxLoader
 	}
 
 	function toVoxelContainer(){
-		// printnodes();
-		local parts = _partslist( nodes[nodes[0].childid], [], -1);
+		local parts;
+		if( !nodes[0]){
+			parts = [{ name="n0", x=0, y=0, z=0, rot=0, vdid=0, }];
+		}else{
+			parts = _partslist( nodes[nodes[0].childid], [], -1);
+		}
 		local vc = VoxelContainer( models, parts);
 		vc.pal = pal;
 		vc.meta = meta;
@@ -495,8 +499,12 @@ class VoxLoader
 	function loadchunk(){
 		if( !bb.remain) return false;
 		local id = bb.get4Code();
-		local size = bb.geti();
-		local numc = bb.geti();
+		local size  = bb.geti();
+		local csize = bb.geti();
+		local lim = bb.remain+4;
+		if( (size&0x7fffffff) >= lim || (csize&0x7fffffff) >= lim){
+			throw Exception( "vox invalid chunk: %S %S %S" % (id, size, csize));
+		}
 		//	load data
 		local pos0 = bb.pos;
 		local c = null;
@@ -569,11 +577,12 @@ class VoxLoader
 			bb.pos += size;
 		}
 		//	load children
-		if( numc > 0){
-			for( local l = 0;l < numc;l ++){
+		if( csize){
+			for( local l = 0;l < 8192;l ++){
 				local b = loadchunk();
-				if( !b) break;
+				if( !b) return true;
 			}
+			throw Exception( "vox invalid data structure");
 		}
 		return true;
 	}

@@ -521,7 +521,6 @@ with( skstudio){
 	registerMenu( { parentid="menu_edit", separator="*ui_map0", where=["editor_map"]});
 	registerMenu( { uid="editor_map_menu_edit_mapsize", parentid="menu_edit", lbl="$T.editor_map_menu_edit_mapsize", where=["editor_map"]});
 	registerMenu( { uid="editor_map_menu_edit_mapclear", parentid="menu_edit", lbl="$T.editor_map_menu_edit_mapclear", where=["editor_map"]});
-	registerMenu( { uid="editor_map_menu_edit_hoffset", parentid="menu_edit", lbl="$T.editor_map_menu_edit_hoffset", where=["editor_map"]});
 	registerMenu( { uid="editor_map_menu_edit_encount", parentid="menu_edit", lbl="$T.editor_map_menu_edit_encount", where=["editor_map"]});
 	
 	registerEditor( {

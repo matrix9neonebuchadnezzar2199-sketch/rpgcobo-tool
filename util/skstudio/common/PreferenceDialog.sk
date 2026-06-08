@@ -99,6 +99,10 @@ preferenceprops .. {
 }
 
 preferenceprops .. {
+	ctg="general", pid="wheelzoomrev", lbl="$T.lbl_wheelzoomrev", type=BOOL, defval = false
+}
+
+preferenceprops .. {
 	ctg="general", pid="canvasrotspd", lbl="$T.lbl_canvasrotspd", type=SCALAR, range=(0,100), defval = 50, ui="bar"
 }
 

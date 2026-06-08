@@ -244,44 +244,49 @@ class ResourcePreviewCanvas
 		view.setValue( "id", id=="rem" ? "$T.lbl_none" : id);
 		view.setValue( "subid", length( val["name"])?"- ".. ::lang(val["name"]) : "");
 		local v3 = view3d, vp = view.findChild( "pic");
-		v3.layerflags &= ~1;
-		if( vp) vp.layerflags &= ~1;
-		sk3d = null;
-		if( val["vox"]||val["vp0"]||val["vp1"]){
-			sk3d = _makevox3d( val);
-		}else
-		if( val["pic3d"]){
-			sk3d = _makepic3d( val);
-			sk3d.setPivot( null);
-		}else
-		if( vp && val["pic"]){
-			vp.layerflags |= 1;
-			local sp = _makepicsp( val);
-			vp.setSprite( sp);
-			vp.updateLayout();
-		}else
-		if( val["efx"]){
-			sk3d = _pausedEfx( val);
-		}else
-		if( val["preview"]){
-			local pm = ::PrimitiveMeshes.createBox( 0.5, 0.5, 0.5);
-			pm.face[0].m.fillmode = SK_LINE;
-			sk3d = RPG3DObject();
-			sk3d.setSource( pm);
-		}else
-		if( val["bw64"]){
-			local bb = uncompressZSTD( decodeBASE64( val.bw64, ByteBuffer()));
-			local bw = ObjectInput.decode( bb);
-			local bw3d = SK3DBlockWorld( bw);
-			bw3d.rembottom = false;
-			bw3d.setPivot( Vector3D( -bw.w*0.25, -bw.h*0.25, -bw.d*0.25));
-			bw3d.updateMatrix( true);
-			bw3d.generateAllMesh();
-			sk3d = bw3d;
-			local r = sk3d.gbnd;
-			local sc = 1.0/Math.sqrt( r.r*r.r+r.s*r.s+r.t*r.t);
-			sk3d.scale( sc);
-			sk3d.matdirty = true;
+		try{
+			v3.layerflags &= ~1;
+			if( vp) vp.layerflags &= ~1;
+			sk3d = null;
+			if( val["vox"]||val["vp0"]||val["vp1"]){
+				sk3d = _makevox3d( val);
+			}else
+			if( val["pic3d"]){
+				sk3d = _makepic3d( val);
+				sk3d.setPivot( null);
+			}else
+			if( vp && val["pic"]){
+				vp.layerflags |= 1;
+				local sp = _makepicsp( val);
+				vp.setSprite( sp);
+				vp.updateLayout();
+			}else
+			if( val["efx"]){
+				sk3d = _pausedEfx( val);
+			}else
+			if( val["preview"]){
+				local pm = ::PrimitiveMeshes.createBox( 0.5, 0.5, 0.5);
+				pm.face[0].m.fillmode = SK_LINE;
+				sk3d = RPG3DObject();
+				sk3d.setSource( pm);
+			}else
+			if( val["bw64"]){
+				local bb = uncompressZSTD( decodeBASE64( val.bw64, ByteBuffer()));
+				local bw = ObjectInput.decode( bb);
+				local bw3d = SK3DBlockWorld( bw);
+				bw3d.rembottom = false;
+				bw3d.setPivot( Vector3D( -bw.w*0.25, -bw.h*0.25, -bw.d*0.25));
+				bw3d.updateMatrix( true);
+				bw3d.generateAllMesh();
+				sk3d = bw3d;
+				local r = sk3d.gbnd;
+				local sc = 1.0/Math.sqrt( r.r*r.r+r.s*r.s+r.t*r.t);
+				sk3d.scale( sc);
+				sk3d.matdirty = true;
+			}
+		}catch( ex){
+			printf( "setResourceData failure: %S %S\n", id, encodeJSON( val));
+			printexception( ex);
 		}
 		if( sk3d){
 			v3.layerflags |= 1;
@@ -603,12 +608,17 @@ class ResourceFileSelectDialog extends Dialog
 		::skstudio.fileview.refreshDir( dir.path);
 		local a = [];
 		foreach( r in dir.getList()){
-			if( !r.name.endsWith( ".vox")) continue;
-			local vc = r.getContent();
-			local mottype = vc.meta["mot"];
-			if( !mottype) continue;
-			local mot = ::getResource( "/resource/mot/"..mottype)?.getList()[0].path;
-			a .. { id=r.name, data={ res = r, vox = r.path, mot = mot, ret = r.path }}
+			try{
+				if( !r.name.endsWith( ".vox")) continue;
+				local vc = r.getContent();
+				local mottype = vc.meta["mot"];
+				if( !mottype) continue;
+				local mot = ::getResource( "/resource/mot/"..mottype)?.getList()[0].path;
+				a .. { id=r.name, data={ res = r, vox = r.path, mot = mot, ret = r.path }}
+			}catch( ex){
+				printf( "vox load failure: %S\n", r.path);
+				printexception( ex);
+			}
 		}
 		previewlist.setItemList( a);
 	}
@@ -618,12 +628,17 @@ class ResourceFileSelectDialog extends Dialog
 		::skstudio.fileview.refreshDir( dir.path);
 		local a = [];
 		foreach( r in dir.getList()){
-			if( !r.name.endsWith( ".vox")) continue;
-			local vc = r.getContent();
-			for( local l = 0, vp; vp = vc.partsAt( l); l++){
-				if( vp.parent) continue;
-				local vox = (r.path, vp.name);
-				a .. { id=r.name, data={ res = r, vox = vox, name = vp.name, ret = vox }}
+			try{
+				if( !r.name.endsWith( ".vox")) continue;
+				local vc = r.getContent();
+				for( local l = 0, vp; vp = vc.partsAt( l); l++){
+					if( vp.parent) continue;
+					local vox = (r.path, vp.name);
+					a .. { id=r.name, data={ res = r, vox = vox, name = vp.name, ret = vox }}
+				}
+			}catch( ex){
+				printf( "vox load failure: %S\n", r.path);
+				printexception( ex);
 			}
 		}
 		a.sort( @( a,b) a.id<>b.id || a.data["name"]<>b.data["name"] )
