@@ -361,16 +361,20 @@ class RPGCharaBase extends RPGObject
 
 	//	
 	function setPoint( pid, val){
-		this[pid] = Math.clamp( val, 0, this["MAX"..pid]);
+		if( pid in this){
+			this[pid] = Math.clamp( val, 0, this["MAX"..pid]);
+		}
 	}
 
 	//	HP,MP,TPのキーを指定して値を加算する
 	function addPoint( pid, val){
-		this[pid] = Math.clamp( int( this[pid]+val), 0, this["MAX"..pid]);
+		if( pid in this){
+			this[pid] = Math.clamp( int( this[pid]+val), 0, this["MAX"..pid]);
+		}
 	}
 	
 	function getPoint( pid){
-		return this[pid];
+		return this[pid] || 0;
 	}
 
 	function hprate(){

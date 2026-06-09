@@ -351,11 +351,13 @@ class SkillCommand
 			ctx.hitani = null;
 		}
 		act( skill["hitact"], ctx);	//	hitactはdstに対して実行。
-		local rp3d = ::rpgstage.battle.getChara3D( dmg.dst);
-		rp3d.manuaction.act( @(){
-			dmg.dst.addPoint( dmg.pid, -dmg.val);
-			popdamage( dmg);
-		});
+		if( dmg.pid){
+			local rp3d = ::rpgstage.battle.getChara3D( dmg.dst);
+			rp3d.manuaction.act( @(){
+				dmg.dst.addPoint( dmg.pid, -dmg.val);
+				popdamage( dmg);
+			});
+		}
 	}
 
 	//	追加効果の発生

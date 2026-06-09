@@ -1139,6 +1139,51 @@ RPGSystem.option .. {
 	],
 }
 
+
+//	追撃スキル △どのタイミング？
+RPGSystem.option .. {
+	category = 1,
+	key = "opt_steal",
+	name = "$T.opt_steal",
+	icon = icon_skill,
+	condrem = true,
+	// info = @(){	//	this==opd
+	// },
+	action = @( opd, id, dmg, self){
+		if( id=="recoil" && dmg.src==self && dmg.isSuccess()){
+			local dst = dmg.dst;
+			if( dst.battleflags & 0x10000){
+				::RPGMain.showUI({ key="info_top", time=500, text="$T.noitems"});
+				sleep( 500);
+				return true;
+			}
+			local item, r = ::getvar( opd.successrate, opd), fail;
+			for( local l = 0, di; di=dst.data["item"..l]; l ++){
+				if( !di["itemid"] || !di["issteal"]) continue;
+				if( ::rnd( 0.0, 100.0) > di.rate*r){
+					fail = true;
+				}else{
+					item = RPGObject.create( di.itemid);
+					break;
+				}
+			}
+			if( !item){
+				::RPGMain.showUI({ key="info_top", time=500, text=fail?"$T.stealfail":"$T.noitems"});
+			}else{
+				::RPGMain.showUI({ key="info_top", time=500, text=tmpl( T["stealok"], {v=item.iconname()})} );
+				dst.battleflags |= 0x10000;
+				::rpgstage.battle.stoleitems .. item;
+			}
+			sleep( 500);
+			return true;
+		}
+	},
+	props = [
+		successrateprop,
+	],
+};
+
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 //	

@@ -413,6 +413,27 @@ import GamepadStateID;
 		}
 	}
 
+	//	id:pictureのマップ
+	picmap = {};
+
+	//	
+	function showPicture( cmd){
+		local pic = picmap[cmd.idx];
+		if( cmd.op == 0){	//	show
+			if( !pic){
+				pic = picmap[cmd.idx] <- EventPicView();
+				pic.name = "evpic%02d" % cmd.idx;
+				local pv = ::rootview.findChild( "picture");
+				pv.addChild( pic);	//	sort!
+			}
+		}else{	//	hide
+			if( !pic) return;
+			delete picmap[cmd.idx];
+		}
+		pic.operate( cmd);
+		if( cmd["wait"] && cmd["fadetime"]) sleep( cmd.fadetime);
+	}
+
 	//	
 	function pushTopInfo( ti){
 		local oldti = ::rootview.findChild( "info_top")["ref"];

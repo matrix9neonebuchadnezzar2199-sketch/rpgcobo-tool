@@ -147,6 +147,10 @@ class PicPropertyEditPopupV extends PropertyEditPopupV
 		updatePicture();
 	}
 
+	function refresh(){
+		updatePicture();
+	}
+
 	function updatePicture(){
 		local v = data;
 		if( v.op == 0){
@@ -168,6 +172,7 @@ class PicPropertyEditPopupV extends PropertyEditPopupV
 		switch( cmd["prop"]["pid"]){
 		case "picid": case "pos": case "scale": case "rot": case "color":
 			updatePicture();
+			break;
 		}
 	}
 

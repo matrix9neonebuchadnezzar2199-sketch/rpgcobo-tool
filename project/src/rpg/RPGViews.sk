@@ -111,6 +111,10 @@ class EventPicView extends SKView
 
 	//	アニメーションフレーム
 	aniu = 1; aniv = 1;
+	aniid = null;
+
+	first = true;
+	cmdfunc = null;				//	モーション用コマンド
 	
 	constructor(){
 		setPicID( null);
@@ -119,14 +123,14 @@ class EventPicView extends SKView
 
 	function setValue( a, b=undefined){
 		if( b==undefined){
-			setPicID( b);
+			setPicID( a);
 		}
 	}
 
 	function setPicID( pi){
 		picid = pi;
-		local pc = picdata = ::conf._resource.event_pic[pi] || ::conf._resource.event_pic["PC000"];
-		local tex = ::getTexture( pc.pic);
+		local pc = picdata = ::conf._resource.event_pic[pi] || ::conf._resource.enemy_pic[pi] || ::conf._resource.event_pic["PC000"];
+		local tex = ::getTexture( pc["pic"]||pc["pic3d"], 16);
 		if( pc["aniuv"]){
 			aniu = Math.max( 1, pc.aniuv[0]);
 			aniv = Math.max( 1, pc.aniuv[1]);
@@ -134,15 +138,92 @@ class EventPicView extends SKView
 		local w = tex.width / aniu, h = tex.height / aniv;
 		sp = Sprite( tex);
 		sp.setSubBounds( Rect2D( 0, 0, w, h));
-		sp.blend = pc.blend;
+		sp.bnd.set( 0, 0, w, h);
+		sp.blend = pc["blend"] ?? SK_PMAMIX;
 		sp.bnd.scale( pc.scale, pc.scale);
 		bnd.set( -(w*pc.cntpos[0])|0, -(h*pc.cntpos[0])|0, w, h).scale( pc.scale, pc.scale);
 		matdirty = true;
+		aniid = null;
+		removeUpdateFunc( @( o) o.getName() == "picanifunc");	//	実行中のアニメは中断。。。
 		repaint();
 	}
 
-	//	addUpdateFuncで追加
-	function updateAnime( dt){
+	function setPicAnime( ai){
+		local pa = picdata["animap"]?.find( @( v) v.id==ai);
+		if( pa){
+			removeUpdateFunc( @( o) o.getName() == "picanifunc");	//	実行中のアニメは中断。。。
+			aniid = ai;
+			local ani = Animation();
+			local st = pa["st"]||0, en = pa["en"]??st, spd = pa["spd"]??1.0, lp = pa["loop"];
+			ani.set( st, en, spd, lp);
+			local udiv = aniu, vdiv = aniv, sp = sp, self = this;
+			local picanifunc( dt){
+				ani.update( dt);
+				local fi = int( ani.frametime), us = 1.0 / udiv, vs = 1.0 / vdiv;
+				sp.uvmat0.set( us,0,0,0, 0,vs,0,0, 0,0,1,0, (fi%udiv)*us,(fi/udiv)*vs,0,1);
+				self.repaint();
+				return ani.animating;
+			}
+			addUpdateFunc( picanifunc);
+		}
+	}
+
+	//	イベントコマンドからのオペレーション
+	function operate( cmd){
+		if( cmd.op == 0) operateShow( cmd); else operateHide( cmd);
+	}
+
+	function operateShow( cmd){
+		local self = this;
+		local p0 = clone pos, p1 = Vector3D( cmd.pos[0], cmd.pos[1], 0.0);
+		local s0 = clone scale, s1 = Vector3D( cmd.scale * 0.01);
+		local r0 = clone rot, r1 = Vector3D( 0, 0, cmd.rot * Math.DTOR);
+		local c0 = spcolor, c1 = cmd["col"]|0;
+		local fade = cmd.fade+0.0;
+		if( first){
+			first = false;
+			pos( p0( p1));
+			scale( s0( s1));
+			rot( r0( r1));
+			setColor( c0=0);	//	for fade
+		}
+		if( cmd["picid"] && picid != cmd.picid){
+			setPicID( cmd.picid);
+			if( cmd["aniid"]) setPicAnime( cmd["aniid"]);
+		}else{
+			if( cmd["aniid"] && cmd["aniid"] != aniid) setPicAnime( cmd["aniid"]);;
+		}
+		removeUpdateFunc( @( o) o.getName() == "picmotfunc");	//	実行中のアクションは中断。。。
+		local tptr = ptr( 0);
+		local picmotfunc( dt){
+			local t = (tptr << (~tptr + dt));
+			local w = Math.saturate( t / fade);
+			p0.lerp( p1, w, self.pos);
+			s0.lerp( s1, w, self.scale);
+			r0.lerp( r1, w, self.rot);
+			self.matdirty = true;
+			self.setColor( Math.lerpcolor( c0, c1, w));
+			return w < 1.0;
+		}
+		if( fade>0.0) addUpdateFunc( picmotfunc);
+		else picmotfunc( 10000);
+	}
+
+	function operateHide( cmd){
+		local self = this;
+		local c0 = spcolor, c1 = 0;
+		local fade = cmd.fade+0.0;
+		removeUpdateFunc( @( o) o.getName() == "picmotfunc");	//	実行中のアクションは中断。。。
+		if( !fade) return removeFromParent();
+		local tptr = ptr( 0);
+		local picmotfunc( dt){
+			local t = (tptr << (~tptr + dt));
+			local w = Math.saturate( t / fade);
+			self.setColor( Math.lerpcolor( c0, c1, w));
+			if( w >= 1.0) self.removeFromParent();
+			return w < 1.0;
+		}
+		addUpdateFunc( picmotfunc);
 	}
 
 	function render(){

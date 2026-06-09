@@ -69,6 +69,9 @@ class PropertyEditPopup extends Popup
 		proplist.setParameters( data);
 	}
 
+	function refresh(){
+	}
+
 	function actionevent( e){
 		switch( e.src["name"]){
 		case "menubtn":
@@ -95,10 +98,12 @@ class PropertyEditPopup extends Popup
 		case "menu_edit_undo":
 			// if( op.undo()){ proplist.setParameters( data);}
 			op.undo();
+			refresh();
 			return true;
 		case "menu_edit_redo":
 			// if( op.redo()){ proplist.setParameters( data);}
 			op.redo();
+			refresh();
 			return true;
 		}
 		return false;

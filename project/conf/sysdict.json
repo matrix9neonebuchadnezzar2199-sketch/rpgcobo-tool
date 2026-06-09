@@ -154,6 +154,7 @@
 	"opt_parry":{ "ja":"ダメージの回避", "en":"Damage Avoid"},
 	"opt_reflect":{ "ja":"ダメージの反射", "en":"Damage Reflect"},
 	"opt_absorb":{ "ja":"ダメージの吸収", "en":"Damage Absorb"},
+	"opt_steal":{ "ja":"盗む", "en":"Steal"},
 	"opt_skillreplace":{ "ja":"スキル強制置換", "en":"Replace Skill"},
 	"opt_backup":{ "ja":"かばう", "en":"Backup"},
 	"opt_dyingskill":{ "ja":"死亡時スキル", "en":"Dying Skill"},

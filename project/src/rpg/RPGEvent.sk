@@ -508,6 +508,11 @@ class RPGEventRunner
 			}
 		}
 	}
+
+	function showPicture( cmd){
+		RPGMain.showPicture( cmd);
+		if( cmd["wait"] && cmd["fade"]) sleep( cmd.fade);
+	}
 	
 	//	カスタムUI操作。
 	//	

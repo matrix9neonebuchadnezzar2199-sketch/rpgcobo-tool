@@ -63,6 +63,8 @@ class BattleRunnerBase
 	defchr = null;					//	防御側のキャラ。SkillCommand実行中に一時的に書き換わる。マクロなどで参照可能。
 	cmdchr = null;					//	コマンド選択中のキャラ。
 
+	stoleitems = null;				//	盗みでゲットしたアイテム
+
 	//	
 	constructor( st, bd){
 		stage = st;
@@ -72,6 +74,7 @@ class BattleRunnerBase
 		enemies = [];
 		charas = [];
 		chara3ds = [];
+		stoleitems = [];
 	}
 	
 	//	サブクラスでUI、キャラを初期化。この時点ではまだ画面表示前。
@@ -466,18 +469,21 @@ class BattleRunnerBase
 		local alive3ds = alives.map( @( v) getChara3D( v));
 		foreach( p3d in alive3ds) p3d.anime2( {id="victory"});
 		//	取得値
-		local jxp = 0, money = 0, exp = 0, items = [];	//	items:RPGItem[]
+		local jxp = 0, money = 0, exp = 0, items = clone stoleitems;	//	items:RPGItem[]
 		foreach( e in enemies){
 			if( e.escaped) continue;	//	逃げたエネミーはカウント対象外
 			exp += e.data.exp;
 			jxp += e.data.jxp;
 			money += e.data.money;
-			//	ドロップアイテムは一人一つまで
-			for( local l = 0, di; di=e.data["item"..l]; l ++){
-				if( !di.itemid) continue;
-				local item = RPGObject.create( di.itemid);
-				items .. item;	//	スタックできる場合はするように。。。
-				break;
+			//	ドロップアイテムは一人一つまで。また、盗んだものがある場合はドロップは無し
+			if( !(e.battleflags & 0x10000)){	//	盗んだ場合に0x10000が立つ
+				for( local l = 0, di; di=e.data["item"..l]; l ++){
+					if( !di["itemid"]) continue;
+					if( di["issteal"] || ::rnd( 0.0, 100.0) > di.rate) continue;
+					local item = RPGObject.create( di.itemid);
+					items .. item;	//	スタックできる場合はするように。。。
+					break;
+				}
 			}
 		}
 		//	取得UIを表示、キャラにも経験値ゲージ追加。
@@ -540,8 +546,9 @@ class BattleRunnerBase
 		}
 		//	その他追加
 		::rpgstat.money += money;
-		foreach( item in items) ::rpgstat.addItemID( item.dataid, item.num);
-
+		foreach( item in items){
+			::rpgstat.addItemID( item.dataid, item.num);
+		}
 		//	最後にクリック待ち
 		RPGMain.showUI( { key="misc_waitclick"});	// RPGMain.waitClick();
 		RPGMain.showUI( { key="info_top", op="hide"});
