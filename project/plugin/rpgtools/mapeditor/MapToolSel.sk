@@ -817,6 +817,7 @@ class MapTools.tool_sel extends MapTool
 				if( b <> box){
 					box.set( b);
 					local p3d = self.guides["push"];
+					if( !p3d) self.addGuide( "push", p3d = SK3DObject());
 					local pm = RPGToolMesh.createPushMesh( box.w, box.h, box.d, 1<<hb0.f);
 					p3d.setSource( pm);
 					p3d.pos( box.x, box.y, box.z).scale( 0.5);

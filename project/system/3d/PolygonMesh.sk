@@ -960,6 +960,9 @@ with b3Shape
 		local prim = ::PrimitiveMeshes;
 		local mb = prim.getMeshBuilder();
 		_createPolygonMesh();
+		if( mb.isEmpty()){	//	メッシュ化できないやつは仕方がないので適当な形を入れておく
+			prim._createBox( 0.1, 0.2, 0.1);
+		}
 		local pm = mb.toPolygonMesh();
 		mb.clear();
 		

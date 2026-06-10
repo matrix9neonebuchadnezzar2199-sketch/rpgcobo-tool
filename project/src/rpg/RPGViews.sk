@@ -178,7 +178,7 @@ class EventPicView extends SKView
 		local p0 = clone pos, p1 = Vector3D( cmd.pos[0], cmd.pos[1], 0.0);
 		local s0 = clone scale, s1 = Vector3D( cmd.scale * 0.01);
 		local r0 = clone rot, r1 = Vector3D( 0, 0, cmd.rot * Math.DTOR);
-		local c0 = spcolor, c1 = cmd["col"]|0;
+		local c0 = spcolor, c1 = cmd["col"]??0xffffffff;
 		local fade = cmd.fade+0.0;
 		if( first){
 			first = false;
