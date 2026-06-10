@@ -264,7 +264,7 @@ class Popups
 	static function showRename( lbl, prms=null){
 		local root = ::rootview;
 		local r = Rect2D( 0, 0, lbl.bnd.w, lbl.bnd.h).transform( lbl.mat).transform( root.getInvMatrix());
-		local poptf = ::loadSKView( prms["uipath"] || "/skstudio/ui/uieditor/rename.ui");
+		local poptf = ::loadSKView( prms["uipath"] || "/skstudio/ui/dialog/rename.ui");
 		local edit = poptf.findChild( "textedit"), editlabel = edit.findChild( "editlabel");
 		r.w = Math.min( r.w, prms["maxwidth"] || 200);
 		poptf.stretchSize( r.w+edit.bnd.w-editlabel.bnd.w, r.h+edit.bnd.h-editlabel.bnd.h);

@@ -823,9 +823,9 @@ eventcmd .. {
 	props = [
 		{ pid="cmdtgt", lbl="$T.cmdtgt", type=LIST, list=hpmptgtlist, variable=1, }		//	対象範囲。個人、パーティ、全て
 		{ pid="playerid", lbl="$T.side_dbview_player", type=DATAID, datatype="player", variable=1, hide=@( pl) pl.getParam( "cmdtgt")!=TGT_PARTY_SINGLE }	//	↑で個人の場合の対象プレイヤー。データIDもしくはワーク、イベント、グローバル変数
-		{ pid="pid", lbl="$T.lbl_param", type=LIST, list=[{lbl="$T.EXP",val="exp"},{lbl="$T.JXP",val="jxp"},], },
-		{ pid="amount", lbl="$T.lbl_amount", type=SCALAR, range=(1,99999999), variable=true },
-		{ pid="ui", lbl="$T.lbl_showui", type=BOOL, variable=true, },
+		{ pid="pid", lbl="$T.lbl_param", type=LIST, list=[{lbl="$T.EXP",val="exp"},{lbl="$T.JXP",val="jxp"},], variable=1 },
+		{ pid="amount", lbl="$T.lbl_amount", type=SCALAR, range=(1,99999999), variable=1 },
+		{ pid="ui", lbl="$T.lbl_showui", type=BOOL, variable=1, },
 	]
 
 	defval = { cmdtgt=TGT_PARTY_ALL, pid="exp", who=0, playerid=null, amount=100, ui=true }
@@ -889,16 +889,16 @@ eventcmd .. {
 	color = color2
 
 	props = [
-		{ pid="playerid", lbl="$T.side_dbview_player", type=DATAID, datatype=["player"], variable=true },
+		{ pid="playerid", lbl="$T.side_dbview_player", type=DATAID, datatype=["player"], variable=1 },
 		{ pid="slot", lbl="$T.lbl_slot", type=LIST, list=@(){
 			local a = [
 				{ lbl="$T.lbl_anyslot", val=-1 },
 				...::conf.type.eqslot.map( @( v, i)({ lbl=v.name, icon=v.icon, val=i })),
 			];
 			return a;
-		}, hide=@( pl) pl.getParam( "op") },
-		{ pid="itemid", lbl="$T.lbl_item", type=DATAID, datatype=["weapon","armor"], variable=true },
-		{ pid="equipmyown", lbl="$T.lbl_equipmyown", type=BOOL, variable=true },
+		}, variable=1, hide=@( pl) pl.getParam( "op") },
+		{ pid="itemid", lbl="$T.lbl_item", type=DATAID, datatype=["weapon","armor"], nullable=true, variable=1 },
+		{ pid="equipmyown", lbl="$T.lbl_equipmyown", type=BOOL, variable=1 },
 	]
 
 	defval = { playerid="P000", itemid="W000", slot=-1, equipmyown=false}
@@ -966,9 +966,7 @@ eventcmd .. {
 	color = color2
 
 	props = [
-		{ pid="playerid", lbl="$T.side_dbview_player", type=DATAID, datatype=["player"], variable=true },
-		{ pid="op", lbl="$T.lbl_op", type=LIST, list=[{lbl="$T.lbl_add",val=0},{lbl="$T.lbl_remove",val=1},],  },
-		{ pid="jobid", lbl="$T.side_dbview_job", type=DATAID, datatype=["job"], variable=true },
+		{ pid="playerid", lbl="$T.side_dbview_player", type=DATAID, datatype=["player"], variable=1 },
 		{ pid="slot", lbl="$T.lbl_slot", type=LIST, list=@(){
 			local a = [
 				{ lbl="$T.lbl_anyslot", val=-1 },
@@ -976,16 +974,18 @@ eventcmd .. {
 				{ lbl="$T.lbl_none", val=null }	//	ジョブは使用可能になるがセットはされない。ジョブ画面等でセット可能に
 			];
 			return a;
-		}, hide=@( pl) pl.getParam( "op") },
+		} },
+		{ pid="jobid", lbl="$T.side_dbview_job", type=DATAID, datatype=["job"], nullable=true, variable=1, variable=1 },
 	]
 
-	defval = { playerid="P000", jobid="J000", slot=-1, op=0 }
+	defval = { playerid="P000", jobid="J000", slot=-1 }
 
 	cmdinfo = @( cmd){
 		local cmddef = RPGSystem.eventcmd[cmd.cmd];
 		local pi = propstr( cmddef.props, cmd, "playerid");
-		local ji = propstr( cmddef.props, cmd, "jobid");
-		local info = sprintf( "%S %S %S", pi, cmd.op?"-":"+" ,ji);
+		local si = propstr( cmddef.props, cmd, "slot");
+		local ji = propstr( cmddef.props, cmd, "jobid") || "$lbl_clear";
+		local info = sprintf( "%S %S ⇒ %S", pi, si,ji);
 		return {
 			info = info,
 		}

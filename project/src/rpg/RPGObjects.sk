@@ -759,7 +759,8 @@ class RPGPlayer extends RPGCharaBase
 	function cloneForCompare(){
 		local pc = clone this;
 		pc.equips = clone equips;
-		pc.jobs = deepclone( jobs);		//	ジョブ経験値なんかが更新されるのでdeepclone
+		pc.ownjobs = deepclone( ownjobs);		//	ジョブ経験値なんかが更新されるのでdeepclone
+		pc.jobs = jobs.map( @( v) v ? pc.ownjobs.find( @( j) j.dataid==v.dataid) : null);
 		pc.conds = [];					//	比較用に全状態クリア
 		pc.updateOptions();
 		pc.updateScoreMap();
@@ -1269,12 +1270,17 @@ class RPGState extends Serializable
 		if( itemid[0] == 'N'){
 			return addPointID( itemid, n);
 		}
+		local list = itemlistOf( itemid);
+		local item = RPGObject.create( itemid);
+		return addItem( item, n);
+	}
+
+	function addItem( item, n=1){
+		local itemid = item.dataid, list = itemlistOf( itemid);
 		local a_add( list, item){
 			local i = list.findi( @( v) !v);
 			if( i >= 0) list[i] = item; else list .. item;
 		}
-		local list = itemlistOf( itemid);
-		local item = RPGObject.create( itemid);
 		if( item.data["stacknum"]){
 			item.num = n;
 			local _item = list.find( @( v) v["dataid"]==itemid);

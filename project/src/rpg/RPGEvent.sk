@@ -37,6 +37,7 @@ class RPGEventCompiler
 	
 	function compile( cmdblock, srcname="unknown"){
 		hb .. "local locals = null; return @( arg=null, label=null){\n";
+		hb .. "_START_:\n";
 		parseblock( cmdblock, false);
 		//	hb,sbを結合してコンパイル
 		hb .. sb .. "}";
@@ -319,17 +320,46 @@ class RPGEventRunner
 		::rpgvar.ERROR = 0;
 		local a = null;	//	RPGCharaBase[]
 		if( cmd.cmdtgt == TGT_PARTY_SINGLE){
-			local p = cmd.playerid["player"] || ::rpgstat.playermap[cmd.playerid];	//	RPGObjectRefの場合は.playerでRPGPlayerが取れる
-			a = [p];
+			local pc = cmd.playerid["player"] || ::rpgstat.playermap[cmd.playerid];	//	RPGObjectRefの場合は.playerでRPGPlayerが取れる
+			if( !pc){ ::rpgvar.ERROR = 1212; return; }
+			a = [pc];
 		}else{
 			a = ::rpgstat.members;
 		}
-		local pid = cmd.param;	//	exp | jxp
-		local val = cmd.amount;
-		foreach( p in a){
-			if( !p) continue;
-			if( pid=="jxp") p.addJobExp( val);
-			else if( pid=="exp") p.addExp( val);
+		local pid = cmd["pid"] || "exp";	//	exp | jxp
+		local val = cmd["amount"] || 0;
+		if( !val) return;
+		//
+		local olds = a.map( @( v) v?v.cloneForCompare():null);	//	レベルアップ判定用
+		foreach( pc in [...a].reverse()){
+			if( !pc) continue;
+			if( pid=="jxp") pc.addJobExp( val);
+			else if( pid=="exp") pc.addExp( val);
+			if( cmd["ui"]){
+				local v = {i="\uf7c0 ", p=pc.name, v=commanum(val), u=T[pid]};
+				RPGMain.showUI( { key="message_log", text=tmpl( T.gotpoint_to, v)});
+			}
+		}
+		//
+		if( cmd["ui"]){
+			::playSound( "SE017");
+			local done = false;
+			foreach( i, pc in a){
+				if( !pc) continue;
+				local old = olds[i];
+				if( pc.LV > old.LV || pc.jobs.find( @( v, i) v&&v.JOBLV>old.jobs[i].JOBLV )){
+					if( !done){
+						done = true;
+						sleep( 500);	//	タイミング合わせ
+					}
+					::playSound( "SE014");
+					local lvui = RPGMain.showUI( { key = "misc_levelup", p0 = old, p1 = pc.cloneForCompare(), });	//	p1も比較用に状態リセット
+					if( pc.LV > old.LV && ::conf.setting["lvupheal"]){	//	レベルアップで回復設定
+						pc.HP = pc.MAXHP;
+						pc.MP = pc.MAXMP;
+					}
+				}
+			}
 		}
 	}
 
@@ -379,40 +409,62 @@ class RPGEventRunner
 		::rpgvar.ERROR = 0;
 		local p = cmd.playerid["player"] || ::rpgstat.playermap[cmd.playerid];	//	RPGObjectRefの場合は.playerでRPGPlayerが取れる
 		if( !p) return;
+		local jobid = cmd.jobid;
 		switch( cmd.op){
-		case 0:	//	追加(設定)
-		{
-			local job = p.ownjobs.find( @( v) v.dataid==cmd.jobid);
-			if( !job){ job = RPGObject.create( jobid); p.ownjobs .. job; }
-			local si = cmd.slot;
-			if( typeof( si) == SS_INTEGER && !p.jobs.contains( job)){	//	既についている場合は無視
-				if( si < 0){
-					si = p.jobs.findi( @( v, i) !p.jobs[i] && (job.jobslotbits & (1<<i)));
+		case 0:	//	セット。
+			if( jobid){
+				local job = p.ownjobs.find( @( v) v.dataid==jobid);
+				if( !job){ job = RPGObject.create( jobid); p.ownjobs .. job; }
+				local si = cmd.slot;
+				if( typeof( si) == SS_INTEGER && !p.jobs.contains( job)){	//	既についている場合は無視
+					if( si < 0){
+						// si = p.jobs.findi( @( v, i) !p.jobs[i] && (job.jobslotbits & (1<<i)));
+						si = p.jobs.findi( @( v, i) (job.jobslotbits & (1<<i)));	//	上書きしちゃおう
+					}
+					if( si in p.jobs) p.jobs[si] = job;
 				}
-				if( si in p.jobs) p.jobs[si] = job;
+				break;
+			}else{	//	外す。でも使用可能ジョブからは消さない。
+				local si = cmd.slot;
+				if( si in p.jobs) p.jobs[si] = null;
+				break;
 			}
 			break;
 		}
-		case 1:	//	削除。装備中でも強制的に
-		{
-			foreach( v in p.ownjobs){
-				if( v.dataid==cmd.jobid) removei;
-			}
-			foreach( v in p.jobs){
-				if( v.dataid==cmd.jobid) removei;
-			}
-			break;
-		}
-		}
-		if( p.updateOptions()) p.updateScoreMap();
+		p.updateOptions();
+		p.updateScoreMap();
 	}
 
 	function equipOp( cmd){
-		::rpgvar.ERROR = 0;
-		local p = ::rpgstat.playermap[cmd.playerid];	//	todo ObjectRef
-		
-		
-		
+		::rpgvar.ERROR = 1236;		//	追加できなかった的エラー
+		local p = cmd.playerid["player"] || ::rpgstat.playermap[cmd.playerid];	//	RPGObjectRefの場合は.playerでRPGCharaBaseが取れる
+		local eqid = cmd["itemid"], i = cmd["slot"]|0;
+		if( eqid){
+			local eqtype = ::rpgdata[eqid]["data"]["eqtype"]|0;
+			if( i < 0) i = ::conf.type.eqslot.findi( @( v) (v.eqtypebits & (1<<eqtype)));
+			if( i in p.equips){
+				local cureq = p.equips[i];
+				if( cmd["equipmyown"]){
+					local li = ::rpgstat.itemlistOf( eqid);
+					local eq = li.find( @( v) v.dataid==eqid);
+					if( eq){
+						::rpgstat.swapItem( eq, cureq);	//	cureqはリストに入ってないので、cureqがリストに入ってeqはあぶれる
+						p.equips[i] = eq;
+						::rpgvar.ERROR = 0;
+					}
+				}else{
+					if( cureq) ::rpgstat.addItem( cureq);
+					p.equips[i] = RPGObject.create( eqid);
+					::rpgvar.ERROR = 0;
+				}
+			}
+		}else{
+			if( i in p.equips){
+				if( p.equips[i]) ::rpgstat.addItem( p.equips[i]);
+				p.equips[i] = null;
+				::rpgvar.ERROR = 0;
+			}
+		}
 	}
 
 	function condOp( cmd){
@@ -1091,19 +1143,26 @@ class RPGStageEventRunner extends RPGEventRunner
 
 	//	ページ0のイベント処理を実行する。ロールに渡す引数はここで渡す
 	function run_running(){
-		mode = 2;
-		spawnandran = true;		//	スポーン時に実行用のフラグ
-		if( !data["pararun"]) rpgstage.mainevent = this;
-		//	元に戻すための現在位置取得。
-		local p0 = clone rp3d.pos, d0 = rp3d.dir;
-		//	実行！！！！
-		local wv = makewvar();
-		runCommandBlock( page.cmdblock, wv);
-		if( !data["pararun"]) rpgstage.mainevent = null;
-		//	※要検討。位置が変化してたら向きは元に戻さない。
-		if( p0.hypot( rp3d.pos) < 0.1){
-			rp3d.dir = d0;
+		try{
+			mode = 2;
+			spawnandran = true;		//	スポーン時に実行用のフラグ
+			if( !data["pararun"]) rpgstage.mainevent = this;
+			//	元に戻すための現在位置取得。
+			local p0 = clone rp3d.pos, d0 = rp3d.dir;
+			//	実行！！！！
+			local wv = makewvar();
+			runCommandBlock( page.cmdblock, wv);
+			//	※要検討。位置が変化してたら向きは元に戻さない。
+			if( p0.hypot( rp3d.pos) < 0.1){
+				rp3d.dir = d0;
+			}
+		}catch( ex){
+			printf( "EventRunner ERROR!!!\n");
+			printexception( ex);
+			RPGMain.showUI( { key="message_log", text="\uf800 EventRunner ERROR!!! Check a log file."});
+			sleep( 1000);
 		}
+		if( !data["pararun"]) rpgstage.mainevent = null;
 		trgcooltime = 200;	//	クールタイムテスト
 		//	イベント実行が終わったらスカウト状態に戻る
 		finishEventRunning();

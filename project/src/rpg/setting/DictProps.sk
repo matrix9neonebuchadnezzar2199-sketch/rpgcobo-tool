@@ -21,7 +21,7 @@ local dictprops = RPGSystem.dictprops;
 dictprops .. { category = 0, key = "LV", lbl = {ja="レベル",en="Level"} };
 dictprops .. { category = 0, key = "lv", lbl = {ja="レベル(略)",en="Level(short)"}, defval = {ja="Lv", en="Lv"} };
 dictprops .. { category = 0, key = "EXP", lbl = {ja="経験値",en="Exp"} };
-dictprops .. { category = 0, key = "exp", lbl = {ja="経験値(略)",en="Exp(short)"}, defval = {en="Exp"} };
+dictprops .. { category = 0, key = "exp", lbl = {ja="経験値(略)",en="Exp(short)"}, defval = {ja="Exp", en="Exp"} };
 dictprops .. { category = 0, key = "JXP", lbl = {ja="ジョブ経験値",en="Job Exp"}, defval = {ja="ジョブポイント", en="Job Point"} };
 dictprops .. { category = 0, key = "jxp", lbl = {ja="ジョブ経験値(略)",en="Job Exp(short)"}, defval = {ja="JP", en="JP"} };
 dictprops .. { category = 0, key = "HP", lbl = {en="HP"}, defval = {en:"HP"} };
@@ -125,8 +125,13 @@ dictprops .. { category = 3, key = "gotitem", lbl = "アイテム取得", defval
 } };
 
 dictprops .. { category = 3, key = "gotitem_n", lbl = "アイテム取得(複数)", defval = {
-	ja = "${v} を${n}個手に入れた！",
-	en = "Got ${n} of ${v}！"
+	ja = "${v} x ${n} を手に入れた！",
+	en = "Got ${v} x ${n} !"
+} };
+
+dictprops .. { category = 3, key = "gotpoint_to", lbl = "ポイント取得(個人)", defval = {
+	ja = "${i}${p} は [b]${v}${u}[n] を手に入れた！",
+	en = "${i}${p} got [b]${v}${u}[n] !"
 } };
 
 dictprops .. { category = 3, key = "nomoney", lbl = "お金が足りない", defval = {

@@ -131,8 +131,8 @@ class RPGCameraworkFixed extends RPGCamerawork
 		local mk = stage.getMarker( data.mkid);
 		if( !mk) return;
 		//	カメラのeye位置を先に確定。
-		to( mk["pos"]).scale( 0.5).add( 0, mk["yoffs"], 0);
-		hpb( mk["hpb"]).scale( Math.DTOR).add( data["hpb"]);
+		to( mk["pos"]).scale( 0.5).add( 0, mk["yoffs"], 0).add( data["dpos"]);
+		hpb( mk["hpb"]).scale( Math.DTOR).add( data["dhpb"]);
 		fovy = mk.fovy;
 		zoom = mk.viewport;
 		//	

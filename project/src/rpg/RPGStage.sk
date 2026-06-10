@@ -413,7 +413,7 @@ class RPGStage
 	//	dataにはトランジションのパラメータも入っているが、別に指定することもできる。
 	//	transにはトランジションタイプが入る。
 	function setCamerawork( data){
-		local d = { ...deepclone( map.camwork), ...data};
+		local d = deepclone( { ...map.camwork, ...data});
 		if( data["dzoom"]) d.viewport = Math.clamp( d.viewport-data.dzoom, 1.0, 100.0);
 		if( data["dpos"]){ if( !d["pos"]) d.pos<-(0,0,0); d.pos[0] += data.dpos[0]; d.pos[1] += data.dpos[1]; d.pos[2] += data.dpos[2]; }
 		if( data["dhpb"]){ d.hpb[0] += data.dhpb[0]; d.hpb[1] += data.dhpb[1]; d.hpb[2] += data.dhpb[2]; }
