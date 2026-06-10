@@ -1239,6 +1239,10 @@
 		"ja":"アセットのインストールが完了しました。ツールを再読み込みします。",
 		"en":"Downloading and installing default assets. Please wait for a moment."
 	}
+	"asset_install_error"				: {
+		"ja":"アセットのインストールが失敗しました。しばらくしてから試すか、git pullで最新にアップデートしてみてください。\n※Git のインストールが必要です。",
+		"en":"Asset installation failed. Please try again later or update to the latest version using git pull.\n*Git installation is required."
+	}
 	"asset_install_title"				: {"ja":"アセットのダウンロード中", "en":"Downloading assets"}
 
 	"lbl_closetool"						: {"ja":"ツールを閉じる", "en":"Close tool"}

@@ -35,6 +35,12 @@ class InstallTemplateDialog extends Dialog
 		}
 		//	
 		local sf = FileRef( projdir, "project/data/setting.json");
+		if( !sf.exists()){
+			view.setValue( "msg", rtf( "[#f30]$T.asset_install_error"));
+			FileRef( projdir, "project/data").deleteAll();
+			FileRef( projdir, "project/resource").deleteAll();
+			return;	//	closeしない
+		}
 		local st = decodeJSON( sf.load());
 		//	言語を変換。これも一瞬。
 		if( st.projlang != ::lang.code){

@@ -424,7 +424,8 @@ import GamepadStateID;
 				pic = picmap[cmd.idx] <- EventPicView();
 				pic.name = "evpic%02d" % cmd.idx;
 				local pv = ::rootview.findChild( "picture");
-				pv.addChild( pic);	//	sort!
+				pv.addChild( pic);
+				if( length( pv.children) > 1) pv.children.sort( @( v) v.name);
 			}
 		}else{	//	hide
 			if( !pic) return;

@@ -195,9 +195,15 @@ class EventPicView extends SKView
 		}
 		removeUpdateFunc( @( o) o.getName() == "picmotfunc");	//	実行中のアクションは中断。。。
 		local tptr = ptr( 0);
+		local ease = ::Easing.presets[1];
+		switch( cmd["easing"]){
+		case 1: ease = ::Easing.presets[5]; break;
+		case 2: ease = ::Easing.presets[6]; break;
+		case 3: ease = ::Easing.presets[7]; break;
+		}
 		local picmotfunc( dt){
 			local t = (tptr << (~tptr + dt));
-			local w = Math.saturate( t / fade);
+			local w = ease( Math.saturate( t / fade));
 			p0.lerp( p1, w, self.pos);
 			s0.lerp( s1, w, self.scale);
 			r0.lerp( r1, w, self.rot);
