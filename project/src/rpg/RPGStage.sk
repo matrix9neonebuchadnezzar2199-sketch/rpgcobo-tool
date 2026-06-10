@@ -55,9 +55,7 @@ class RPGStage
 	//	camera
 	cam = null;			//	Camera : scn.maincamera
 	camwork = null;		//	RPGCamerawork : 
-	camfade = null;		//	RPGCamerawork : トランジション元の
-	camfadew = 0.0;		//	
-	camfadespd = 1.0;	//	1.0だと1秒でトランジション
+	camfade = null;		//	RPGCameraFade : カメラトランジション
 	camdir = 0.0;
 	
 	//	map
@@ -337,6 +335,14 @@ class RPGStage
 			return { pos=player3d.pos, dir=player3d.dir, };
 		}else
 		if( typeof( id) == SS_INTEGER){	//	イベント、マーカー
+			//	先にEventRunnerを検索
+			local ev = getEvent( id);
+			if( ev){
+				if( ev["rp3d"]) return { pos=ev.rp3d.pos, dir=ev.rp3d.dir, }
+				local sp = ev["spawnpos"];
+				if( sp) return { pos=Vector3D( sp).scale( 0.5), dir=sp[3]*Math.HPI};
+			}
+			//	spawnしていない。又はマーカー
 			local v = map.event[id] || map.marker[id];
 			return _vtoloc( v);
 		}else{	//	stringでも検索。。。
@@ -346,7 +352,7 @@ class RPGStage
 		}
 	}
 
-	function _vtoloc( v){
+	static function _vtoloc( v){
 		return { pos=Vector3D( v.pos).scale( 0.5), dir=("dir" in v)? v.dir*Math.DTOR :v.pos[3]*0.5*Math.PI };
 	}
 
@@ -406,27 +412,28 @@ class RPGStage
 	//	指定したカメラワークに変更する。
 	//	dataにはトランジションのパラメータも入っているが、別に指定することもできる。
 	//	transにはトランジションタイプが入る。
-	function setCamerawork( data, trans=null){
-		local newcw = RPGCamerawork.createCamerawork( data);
+	function setCamerawork( data){
+		local d = { ...deepclone( map.camwork), ...data};
+		if( data["dzoom"]) d.viewport = Math.clamp( d.viewport-data.dzoom, 1.0, 100.0);
+		if( data["dpos"]){ if( !d["pos"]) d.pos<-(0,0,0); d.pos[0] += data.dpos[0]; d.pos[1] += data.dpos[1]; d.pos[2] += data.dpos[2]; }
+		if( data["dhpb"]){ d.hpb[0] += data.dhpb[0]; d.hpb[1] += data.dhpb[1]; d.hpb[2] += data.dhpb[2]; }
+		//
+		local newcw = RPGCamerawork.createCamerawork( d);
 		newcw.recover( this);
-		trans = trans || data["trans"];
-		if( trans){	//	トランジションと古いカメラワークを新しいカメラワークに設定する。
-			camfade = camwork;
-			camfadew = 1.0;
-			//	その他色々設定。速度とeasingぐらいか
+		if( data["fade"]){
+			camfade = RPGCameraFade();	//	camworkをフェードアウトさせる
+			camfade.set( data, camwork);
 		}else{
 			camfade = null;
-			camfadew = 0.0;
 		}
 		camwork = newcw;
 		updateCamerawork( 1);
-		printf( "setCamerawork ------ loadInCameraMesh\n");
 		loadInCameraMesh( 12);	//	1回だけ？それとも全部ロードするまで待つ？
 	}
 
 	//	カメラワークをマップデフォルトにリセットする。
-	function resetCamerawork( trans=null){
-		setCamerawork( map.camwork, trans);
+	function resetCamerawork( data){
+		setCamerawork( data);
 	}
 
 	//	カメラモーションを設定してカメラワークに追加する
@@ -492,13 +499,8 @@ class RPGStage
 		camwork.update( this, dt);
 		local cw = camwork;
 		if( camfade){
-			camfadew = Math.max( 0.0, camfadew-dt*camfadespd);
-			if( camfadew){
-				camfade.update( this, dt);
-				cw = camfade.lerp( camwork, camfadew, #SK3DCameraData());
-			}else{
-				camfade = null;
-			}
+			local cw1 = camfade.update( this, cw, dt);
+			if( !cw1) camfade = null; else cw = cw1;
 		}
 		cw.toCamera( cam);
 		scn.applyQuake( cam);
@@ -683,5 +685,37 @@ class RPGStage
 		default:
 		}
 		return bgpass || SK3DRenderer.PassRegistory.SkyboxBackgroundPass();
+	}
+}
+
+class RPGCameraFade
+{
+	w = 0;
+	time = 0;
+	ease = null;
+	fade = 1000.0;
+	foutcw = null;
+
+	function set( d, cw){
+		foutcw = cw;
+		ease = ::Easing.presets[1];
+		switch( d["easing"]){
+		case 1: ease = ::Easing.presets[5]; break;
+		case 2: ease = ::Easing.presets[6]; break;
+		case 3: ease = ::Easing.presets[7]; break;
+		}
+		fade = d["fade"]+0.0;
+	}
+
+	function update( stage, fincw, dt){
+		time += dt;
+		w = Math.min( time/fade, 1.0);
+		if( w < 1.0){
+			foutcw.update( stage, dt);
+			local retcw = foutcw.lerp( fincw, ease( w), #SK3DCameraData());
+			return retcw;
+		}else{
+			return null;
+		}
 	}
 }

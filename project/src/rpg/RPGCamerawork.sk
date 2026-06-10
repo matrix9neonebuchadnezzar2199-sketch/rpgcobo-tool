@@ -61,7 +61,7 @@ class RPGCameraworkStandard extends RPGCamerawork
 
 	constructor( d){
 		data = d;
-		target = 0;
+		target = d["target"]||0;
 		roffs = Vector3D( d["hpb"]);
 		poffs = Vector3D( 0, d["yoffs"], 0).add( d["pos"]);
 		toloc = Vector3D();

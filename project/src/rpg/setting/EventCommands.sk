@@ -1943,13 +1943,6 @@ local cameramarkers(){
 	return list;
 }
 
-local camtransprop = { pid="trans", lbl="$T.lbl_transition", type=LIST, list=[
-	{ lbl:"$T.speed_immediate", val=0, },
-	{ lbl:"$T.speed_quick", val=1, },
-	{ lbl:"$T.speed_normal", val=2, },
-	{ lbl:"$T.speed_slow", val=3, },
-], variable=1};
-
 local camrestoreprop = { pid="restore", lbl="$T.lbl_restoreonend", type=LIST, list=[
 	{ lbl:"$T.lbl_no", val=0, },
 	{ lbl:"$T.lbl_yes", val=1, },
@@ -1969,7 +1962,7 @@ eventcmd .. {
 	icon = "\ue41e"
 	color = color5
 
-	defval = { type=1, target=1, trans=0, zoom=0, pos=(0,0,0), hpb=(0,0,0), restore=0 }
+	defval = { type=1, target=1, dzoom=0, dpos=(0,0,0), dhpb=(0,0,0), restore=0, fade=0, easing=0, wait=true }
 
 	props = @( cmd){
 		local mklist = cameramarkers();
@@ -1979,20 +1972,18 @@ eventcmd .. {
 				{ lbl="$T.camwork_fixed", val=2, disable=!length( mklist)},
 			], set = @( prop, data, val){
 				Table.clear( data) ... deepclone( camvalmap[val]);
+				data.cmd <- "cmd_camwork";
 				if( "mkid" in data) data.mkid ??= cameramarkers()[0]["val"];
 			},
 		}];
 		switch( cmd.type){
 		case 0:
-			a .. camtransprop;
 			break;
 		case 1:
 			a .. { pid="target", lbl="$T.lbl_target", type=LIST, list=who2list, variable=1 };
-			a .. { pid="zoom", lbl="$T.lbl_zoom", type=SCALAR, ui="bar", range=(-10.0,10.0), q=10, variable=1 };
-			a .. { pid="pos", lbl="$T.lbl_focuspos", type=VEC3, range=(-10.0,10.0), q=100, variable=1 };
-			a .. { pid="hpb", lbl="$T.lbl_rotation", type=VEC3, range=(-180,180), variable=1 };
-			a .. camtransprop;
-			a .. camrestoreprop;
+			a .. { pid="dzoom", lbl="$T.lbl_zoom", type=SCALAR, ui="bar", range=(-10.0,10.0), q=10, variable=1 };
+			a .. { pid="dpos", lbl="$T.lbl_focuspos", type=VEC3, range=(-10.0,10.0), q=100, variable=1 };
+			a .. { pid="dhpb", lbl="$T.lbl_rotation", type=VEC3, range=(-180,180), variable=1 };
 			break;
 		case 2:
 			if( mklist){
@@ -2000,11 +1991,13 @@ eventcmd .. {
 			}else{
 				a .. { pid="mkid", lbl="$T.lbl_marker", type=STRING, variable=2 };
 			}
-			a .. { pid="zoom", lbl="$T.lbl_zoom", type=SCALAR, ui="bar", range=(-10.0,10.0), q=10, variable=1 };
-			a .. camtransprop;
-			a .. camrestoreprop;
+			a .. { pid="dzoom", lbl="$T.lbl_zoom", type=SCALAR, ui="bar", range=(-10.0,10.0), q=10, variable=1 };
 			break;
 		}
+		a .. { pid="fade", lbl="$T.lbl_fadetime", type=SCALAR, range=(0,3000), ui="bar", barrange=(0,3000,100), variable=1 }
+		a .. { pid="easing", lbl="$T.lbl_easing", type=LIST, list=easinglist, variable=1, hide=@( pl) pl.getParam( "fade")<=0 };
+		a .. { pid="wait", lbl="$T.lbl_waitfade", type=BOOL, variable=1, hide=@( pl) pl.getParam( "fade")<=0 };
+		if( cmd.type) a .. camrestoreprop;
 		return a;
 	}
 	

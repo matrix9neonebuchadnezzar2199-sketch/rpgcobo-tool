@@ -724,10 +724,21 @@ class RPGEventRunner
 
 	//	カメラワーク変更
 	function setCamerawork( cmd){
+		_removestopfunc( "camreset");	//	今ついてるcamresetがあれば消去
 		if( !cmd["type"]){
 			::rpgstage.resetCamerawork( cmd);
 		}else{
+			cmd = clone cmd;
+			switch( cmd["target"]){	//	なんかきもいマッピング。。。
+			case 1: cmd.target = 0; break;
+			case 2: cmd.target = evid; break;
+			}
 			::rpgstage.setCamerawork( cmd);
+			if( cmd["wait"] && cmd["fade"]) sleep( cmd.fade);
+			switch( cmd["restore"]){
+			case 1: _setstopfunc( "camreset", @() ::rpgstage.resetCamerawork( #{}) );
+			case 2: _setstopfunc( "camreset", @() ::rpgstage.resetCamerawork( #{fade=600,easing=2}) );
+			}
 		}
 	}
 
