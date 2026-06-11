@@ -825,6 +825,9 @@ class ResourceSelectDialog extends Dialog
 		if( prop.restype[0] == "snd" || prop.restype == "snd"){
 			return SoundSelectPopup.run( e, prop, sel);
 		}
+		if( prop.restype[0] == "voice" || prop.restype == "voice"){
+			return VoiceSelectPopup.run( e, prop, sel);
+		}
 		if( prop.restype[0] == "bgm" || prop.restype == "bgm"){
 			return BGMSelectPopup.run( e, prop, sel);
 		}
@@ -930,6 +933,101 @@ class BGMSelectPopup extends Popup
 
 	function stopbgm(){
 		return curbgm?.stop();
+	}
+}
+
+
+class VoiceSelectPopup extends Popup
+{
+	static UIPATH = "/skstudio/ui/dialog/sndselectpopup.ui";
+
+	modalclose = 2;
+
+	prop = null;
+	voicelist = null;
+	
+	mixer2d = null;
+	curvo = null;
+
+	retid = null;
+
+	static function run( e, prop){
+		local p = VoiceSelectPopup( ::loadSKView( UIPATH), prop);
+		p.show( null, e.src);
+		p.stopbgm();
+		if( p.ret){
+			return p.retid;
+		}
+	}
+	
+	static function setsndview( la, v, i){
+		v.setValue( "resid", i.id);
+		v.setValue( "lbl", i.lbl);
+		v.pickable = false;
+	}
+
+	constructor( v, p){
+		super( v);
+		prop = p;
+		voicelist = ListBehavior( view.findChild( "sndlist"));
+		voicelist.setviewfunc = setsndview;
+		view.findChild( "catglist").setVisible( false);
+		//
+		local data = ::conf._resource.voice;
+		local a = [], filter = p["filter"] || @() 1;
+		foreach( i, d in data){
+			if( i.startsWith( "_")) continue;
+			if( !filter( i, d)) continue;
+			a .. { id=i, data=d, lbl=d.name};
+		}
+		a.sort( @( v) v.id);
+		voicelist.setListItems( a);
+
+		::soundmanager.checkctx();
+		local ctx = ::soundmanager.ctx;
+		mixer2d = ctx.createMixer();
+		mixer2d[SK_SND_SEND] = 0;
+		mixer2d.connect();
+	}
+
+	function actionevent( e){
+		switch( e.src["name"]){
+		case "btn_rem":
+		{
+			retid = "rem";
+			ret = 1;
+			close();
+			break;
+		}
+		case "sndlist":
+		{
+			local cmd = e.actioncmd;
+			if( cmd["src"]["name"] == "playbtn"){
+				playvoice( cmd.item.id);
+				voicelist.setSelectedItem( cmd.item);	//	一応選択もしておくか
+			}else{
+				retid = cmd.id;
+				ret = 1;
+				close();
+			}
+			break;
+		}
+		}
+		super.actionevent( e);
+	}
+
+	function playvoice( id){
+		if( curvo) curvo.stop();
+		curvo = null;
+		local sp = ::getVoicePlayable( id, "*");
+		if( sp){
+			sp.play();
+			curvo = sp;
+		}
+	}
+
+	function stopbgm(){
+		// return curbgm?.stop();
 	}
 }
 

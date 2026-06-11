@@ -423,7 +423,6 @@ class ResEditor.ResPreview extends ResourcePreviewCanvas
 	playbtn = null;		//	GPUIButton
 	rbtn = null;
 	lbtn = null;
-	loopchk = null;
 	pntchk = null;
 	anig = null;
 
@@ -438,7 +437,6 @@ class ResEditor.ResPreview extends ResourcePreviewCanvas
 		animenu = MenuBehavior( v.findChild( "animenu"));
 		datamenu = v.findChild( "datamenu");
 		playbtn = v.findChild( "playbtn");
-		loopchk = v.findChild( "loopchk");
 		rbtn = v.findChild( "rbtn");
 		lbtn = v.findChild( "lbtn");
 		pntchk = v.findChild( "pntchk");

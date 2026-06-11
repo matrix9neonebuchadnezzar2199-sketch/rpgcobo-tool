@@ -123,7 +123,6 @@ class ResEditorEfx.ResPreview
 	animenu = null;		//	MenuBehavior
 	datamenu = null;
 	playbtn = null;		//	GPUIButton
-	// loopchk = null;
 	pntchk = null;
 
 	sk3d = null;

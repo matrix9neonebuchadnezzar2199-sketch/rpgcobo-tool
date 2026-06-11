@@ -130,22 +130,6 @@ local ttsmodellist = [
 
 
 
-
-//	ボイスのリソースパスを取得。ttsボイスと普通ボイスどっちも？
-function getVoiceFile( va, vo, lang){
-	local model = va[lang].model;
-	local bb = #ByteBuffer(); bb.clear();
-	bb.putt( vo.text);
-	bb.putt( vo.style);
-	bb.pos = 0;
-	local h = bb.hashcode( 9818998);	//	32bitでえーかなー
-	return sprintf( "%S-%S-%08x.ogg", lang, model, h);
-}
-
-function getVoicePath( va, vo, lang){
-	return "/resource/voice_tts/" .. getVoiceFile( va, vo, lang);
-}
-
 ::voiceconf_changed <- false;		//	ボイスが編集されて保存された時にtrue
 
 
@@ -357,7 +341,7 @@ class ResEditorVoice extends EditorViewBase
 			::skstudio.updateChangeFile( this);
 			local _data = filterValidData( data);	//	セーブ時にフィルター
 			save( _data);
-			voiceconf_changed = true;
+			::voiceconf_changed = true;
 			return true;
 		case "menu_edit_undo":
 			op.undo();
@@ -697,9 +681,11 @@ class VoicePropertyEditPopup extends PropertyEditPopup
 			local mixer = ed.mixer2d;
 			local path = getPath();
 			local ovdata = ovdatamap[path] || ed.getTTSVoiceData( path);
-			local wav = VorbisDecoder.decodeAll( ovdata);
-			local ss = mixer.ctx.createWaveSoundSource( wav);
-			ss.play( mixer);
+			if( ovdata){
+				local wav = VorbisDecoder.decodeAll( ovdata);
+				local ss = mixer.ctx.createWaveSoundSource( wav);
+				ss.play( mixer);
+			}
 			break;
 		}
 		super.actionevent( e);
@@ -748,7 +734,7 @@ class VoicePropertyEditPopup extends PropertyEditPopup
 //	ツール終了時にTTSの不要なファイルを消去するフック
 
 local cleanupTTSFiles(){
-	if( voiceconf_changed){	//	ボイスが保存された時のみ実行。
+	if( ::voiceconf_changed){	//	ボイスが保存された時のみ実行。
 		local ttsdir = FileRef( ::resroot.file, "resource/voice_tts");
 		local ttslist = ttsdir.getList( "*.ogg");
 		local ttsmap = ttslist.reduce( @( v, t){ t[v.name]<-v; return t}, {});

@@ -45,22 +45,15 @@ local who2list = [
 	{ lbl="$T.who_event", val=2 }
 ]
 
-//	
-local erroplist = [
-	{ lbl="エラーを回避して続行", val=0 }
-	{ lbl="エラーを無視して続行", val=1 }
-	{ lbl="エラーを表示して中断", val=2 }
-];
-
 //	条件プロパティ
 local reqsprop = { pid = "reqs", lbl = "$T.lbl_reqs", type = REQUIREMENTS, cnt="cnt6v.ui" }
 
 //	勝敗処理
 local losefuncprop = {
-	pid = "losefunc", lbl = "敗北時の処理", type = LIST, list = [
-		{ lbl="敗北マクロ(X002)", val=0, },
-		{ lbl="回復して続行", val=1, },
-		{ lbl="そのまま続行", val=2, },
+	pid = "losefunc", lbl = "$T.losefunc", type = LIST, list = [
+		{ lbl="$T.losefunc0", val=0, },
+		{ lbl="$T.losefunc1", val=1, },
+		{ lbl="$T.losefunc2", val=2, },
 	],
 }
 
@@ -2134,6 +2127,75 @@ eventcmd .. {
 	
 	exec = @( runner, cmd){
 		runner.playSound( cmd);
+	}
+}
+
+//	cmd_voice : ボイス
+//	
+eventcmd .. {
+	category = 5
+	key = "cmd_voice"
+	name = "$T.cmd_voice"
+	icon = "\ue029"
+	color = color5
+	
+	props = @(){
+		local a = [];
+		a .. { pid="ch", lbl="$T.lbl_channel", type=SCALAR, range=(0,15), ui="bar", variable=1 }
+		a .. { pid="voiceid", lbl="$T.lbl_voiceactor", type=RESID, restype="voice", variable=1, refresh=1 },
+		a .. { pid="voicekey", lbl="$T.lbl_voicekey", type=LIST, variable=1,
+			list = @( pl){
+				local vaid = pl.getParam( "voiceid");
+				local va = ::conf._resource.voice[vaid];
+				if( !va){
+					return [{ lbl="$T.lbl_none", val=0, }];
+				}else{
+					local tb = {};
+					foreach( lang in ::sakana.languagelist){
+						foreach( v in va[lang.code]["list"]){
+							local k = v.key;
+							if( tb[k]) tb[k].lbl = tb[k].lbl..(lang.icon);
+							else tb[k] <- { lbl=k.." "..lang.icon, val=k, }
+						}
+					}
+					local a = Table.map( tb, @( v, i) v).sort( @( v) v.val);
+					return a;
+				}
+			},
+			set = @( prop, data, val){
+				::soundmanager.checkctx();
+				data[prop.pid] = val;
+				local sp = ::getVoicePlayable( data["voiceid"], val);
+				if( sp) sp.play();
+			}
+		};
+		a .. { pid="vol", lbl="$T.lbl_gain", type=SCALAR, range=(0,200), ui="bar", variable=true }
+		a .. { pid="play", lbl="", type=CUSTOMBUTTON, cnt="cnt5.ui", tostring="PLAY", icon="\ue745", ui="1", 
+			edit=@( pl){
+				::soundmanager.checkctx();
+				local vaid = proplist.getParam( "voiceid"), vkey = proplist.getParam( "voicekey");
+				local sp = ::getVoicePlayable( vaid, vkey);
+				if( sp) sp.play();
+			}
+		};
+		return a;
+	}
+	
+	cmdinfo = @( cmd){
+		local cmddef = RPGSystem.eventcmd[cmd.cmd];	//	this jan
+		local props = fget( this, "props", this, cmd);
+		local ai = propstr( props, cmd, "voiceid");
+		local ki = propstr( props, cmd, "voicekey");
+		local info = `$ai - $ki`;
+		return {
+			info = info,
+		}
+	}
+	
+	defval = { voiceid="VA000", voicekey="BTL_BEGIN1", vol=100, pan=0, ch=0 }
+	
+	exec = @( runner, cmd){
+		runner.playVoice( cmd);
 	}
 }
 

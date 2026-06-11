@@ -1983,7 +1983,8 @@ class PropertyBehaviors.Camera extends PropertyBehavior
 ::proptextfuncmap <- {
 	[LIST] = @( prop, data){
 		local val = data[prop.pid];
-		local li = fget( prop, "list", prop, null).map( @( v, i) typeof( v)==SS_TABLE ? v : { lbl=v, val=i });
+		local pl = { getParam = @( pid) prop[pid], }
+		local li = fget( prop, "list", prop, pl).map( @( v, i) typeof( v)==SS_TABLE ? v : { lbl=v, val=i });
 		local str = li.find( @( v) v.val==val)["lbl"] || val;
 		if( typeof( str) == SS_CLOSURE) str = str();
 		return str;

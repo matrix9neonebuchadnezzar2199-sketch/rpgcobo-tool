@@ -48,7 +48,7 @@ local varaccsfunc( storage, vartype, defval){
 	switch( vartype){
 	case VAR_BOOL:
 		return @( key, val=undefined){
-			local a = ::rpgstat[storage]; return (val==undefined) ? bool( fget( a, key) ?? defval) : a[key]<-bool( val);
+			local a = ::rpgstat[storage]; return (val==undefined) ? !!( fget( a, key) ?? defval) : a[key]<-!!( val);
 		}
 	case VAR_INT:
 		return @( key, val=undefined){
@@ -58,9 +58,13 @@ local varaccsfunc( storage, vartype, defval){
 		return @( key, val=undefined){
 			local a = ::rpgstat[storage]; return (val==undefined) ? float( fget( a, key) ?? defval) : a[key]<-float( val);
 		}
-	case VAR_STRING:
+	case VAR_STRING:	//	VARIABLE型なので'から始まっている
 		return @( key, val=undefined){
-			local a = ::rpgstat[storage]; return (val==undefined) ? string( fget( a, key) ?? defval) : a[key]<-string( val);
+			local a = ::rpgstat[storage]; return (val==undefined) ? string( fget( a, key) ?? defval).substring( 1) : a[key]<-"'"..string( val);
+		}
+	case VAR_SCRIPT:
+		return @( key, val=undefined){
+			local a = ::rpgstat[storage]; return (val==undefined) ? ::compilestring_c( fget( a, key) ?? defval) () : 0;	//	スクリプトには代入不可？
 		}
 	default:	//	any
 		return @( key, val=undefined){

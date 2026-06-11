@@ -78,7 +78,8 @@ enum VarType
 	VAR_INT = 2,
 	VAR_FLOAT = 3,
 	VAR_STRING = 4,
-	VAR_ANY = 5,			//	table, arrayも入る。が、シリアライズできないオブジェクトは無理
+	VAR_SCRIPT = 5,
+	VAR_ANY = 6,			//	table, arrayも入る。が、シリアライズできないオブジェクトは無理
 }
 
 //	イベントのトリガー条件。有効条件

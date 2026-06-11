@@ -252,11 +252,14 @@ class ResEditorCharaVox.ResPreview extends ResEditor.ResPreview
 
 	function setAnimations(){
 		local animelist = sk3d["animelist"];
+		local selid = animenu.selitem["id"];
 		if( animelist){
 			local menudata = animelist.map( @( v){
 				return { lbl = "$T.anim_"..v.id, icon = v["icon"]||"\uf2c0", id = v.id, val = v }
 			});
+			// menudata[0] <- { lbl = "$T.lbl_pause", val = { st:0, }, icon="\ue034", }
 			animenu.setMenu( menudata);
+			animenu.selectItem( @( v) v.id==selid);
 		}else{
 			animenu.setMenu( [{lbl="$T.lbl_none", val = null}]);
 		}
@@ -267,6 +270,9 @@ class ResEditorCharaVox.ResPreview extends ResEditor.ResPreview
 		case "playbtn":
 			local v = animenu.selitem.val;
 			sk3d.tanime( v);
+			break;
+		case "stopbtn":
+			sk3d.tanime( { st=0});
 			break;
 		case "pntchk":
 			if( sk3d) skcol?.setVisible( pntchk.isSelected());

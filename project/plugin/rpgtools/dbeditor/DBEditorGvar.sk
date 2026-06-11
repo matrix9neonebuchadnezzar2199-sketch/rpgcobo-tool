@@ -71,9 +71,9 @@ class DBEditorGvar extends EditorViewBase
 		gvarlist.setRowCount( 100);
 		for( local l = 0;l < 100;l ++){
 			local r = gvarlist.rows[l];
-			local typemenu = r.findChild( "typemenu");
-			if( !typemenu.ref){
-				typemenu.ref = MenuBehavior( typemenu, gvartypes);
+			local varfield = r.findChild( "varfield");
+			if( !varfield.ref){
+				local vf = varfield.ref = VariableBehavior( varfield, #{ constbits=15, nullable=1});
 			}
 			local id = "G%03d" % (p*100+l);
 			setVarItem( r, id, data[id]);
@@ -84,14 +84,8 @@ class DBEditorGvar extends EditorViewBase
 		r.ref = id;
 		r.setValue( "nameedit", v["name"]||"");
 		local type = v["type"]||0;
-		local typemenu = r.findChild( "typemenu").ref;
-		typemenu.selectItem( @( m) m["val"]==type);
-		local valedit = r.findChild( "valedit");
-		if( !type){
-			valedit.setText( ""); valedit.setVisible( false);
-		}else{
-			r.setValue( "valedit", string( v["defval"])); valedit.setVisible( true);
-		}
+		local varfield = r.findChild( "varfield").ref;
+		varfield.setVar( v["defval"] ?? null);
 		r.setValue( "idlbl", ( id, type?0xffffffcc:0xffffff44));
 	}
 
@@ -134,6 +128,8 @@ class DBEditorGvar extends EditorViewBase
 			return float( val);
 		case VAR_STRING:
 			return string( val);
+		case VAR_SCRIPT:
+			return string( val);
 		case VAR_ANY:
 			return val;
 		}
@@ -146,10 +142,24 @@ class DBEditorGvar extends EditorViewBase
 			local vold = data[gvarid];
 			local vnew = vold? clone vold : { name="", type=0, defval=0, };
 			vnew.name = pv.findChild( "nameedit").getText();
-			local typemenu = pv.findChild( "typemenu").ref;
-			local valedit = pv.findChild( "valedit");
-			vnew.type = typemenu.selitem.val;
-			vnew.defval <- _realval( valedit.getText(), vnew.type);
+			local varfield = pv.findChild( "varfield").ref;
+			local var = varfield.var;
+			local type = VAR_NONE;	//	VAR_NONE, VAR_BOOL, VAR_INT, VAR_FLOAT, VAR_STRING, VAR_ANY
+			switch( typeof( var)){
+			case SS_INTEGER: type = VAR_INT; break;
+			case SS_FLOAT:   type = VAR_FLOAT; break;
+			case SS_BOOL:	 type = VAR_BOOL; break;
+			case SS_STRING:
+				if( var[0] == '\t'){ type = VAR_SCRIPT; break; }
+				else if( var[0] == '\''){ type = VAR_STRING; break; }
+				else{ type = VAR_STRING; var = "'"..var; break; }	//	こんなデータは来ないとは思うけど
+			default:
+				var = null;	//	any...
+				type = VAR_NONE;
+				break;
+			}
+			vnew.type = type;
+			vnew.defval <- _realval( var, type);
 			setVarItem( pv, gvarid, vnew);
 			//
 			local redo = [@(){

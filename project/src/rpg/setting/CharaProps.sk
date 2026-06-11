@@ -426,6 +426,7 @@ enemyprops .. {
 
 //	プレイヤーの戦闘系のプロパティをエネミーにも追加
 enemyprops .. { ...findprop( playerprops, "MAXHP"), range=(1,999999), };
+// enemyprops .. { ...findprop( playerprops, "MAXHP"), range=(1,999999), type=VARIABLE, varbits=0, constbits=2|8 },	//	VARIABLEにできる！
 
 // enemyprops .. findprop( playerprops, "MAXMP");	//	MP,TPはエネミーにはいらない
 enemyprops .. findprop( playerprops, "PATK");

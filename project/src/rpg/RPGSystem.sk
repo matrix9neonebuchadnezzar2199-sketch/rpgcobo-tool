@@ -708,6 +708,7 @@ function buttonicon( i, dark=false){
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+//	Sound, BGM, Voice
 
 function getBGMID(){
 	return ::soundmanager.currentbgm["name"];
@@ -731,6 +732,49 @@ function fadeBGMID( bgmid, fadetime){
 		return bgm;
 	}
 }
+
+//	ボイスのリソースパスを取得。ttsボイスと普通ボイスどっちも？
+function getVoiceFile( va, vo, lang){
+	local model = va[lang].model;
+	local bb = #ByteBuffer(); bb.clear();
+	bb.putt( vo.text);
+	bb.putt( vo.style);
+	bb.pos = 0;
+	local h = bb.hashcode( 9818998);	//	32bitでえーかなー
+	return sprintf( "%S-%S-%08x.ogg", lang, model, h);
+}
+
+function getVoicePath( va, vo, lang){
+	return "/resource/voice_tts/" .. getVoiceFile( va, vo, lang);
+}
+
+//	keyglobはGlob指定。
+//	SoundPlayableを返す。
+function getVoicePlayable( vaid, keyglob){
+	local va = ::conf._resource.voice[vaid];
+	if( !va) return null;
+	local lc, vot = va[lc=::lang.code];	//	使用言語
+	if( !vot){
+		foreach( lang in ::sakana.languagelist){
+			if( vot = va[lc=lang.code]) break;
+		}
+	}
+	if( !vot) return;
+	local hita = vot.list.filter( @( v) globMatch( keyglob, v.key));
+	if( !hita[0]) return null;
+	local vo = ::rnd.choosea( hita);
+	local path = getVoicePath( va, vo, lc);
+	local r = ::getResource( path);
+	if( !r) return;
+	local sp = SoundPlayable();
+	local gain = ::soundmanager.sevol;
+	sp.res = r;
+	sp.mixer = ::soundmanager.drymixer;
+	return sp;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
 
 //	サウンドのconf読み込みをリソースからにする
 SoundManager.confloader <- @(){

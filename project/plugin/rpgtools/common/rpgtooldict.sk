@@ -359,6 +359,12 @@
 	"onstack1"							: {"ja":"歩行をスキップ", "en":"Skip moving"}
 	"onstack2"							: {"ja":"ジャンプ", "en":"Jump"}
 	"onstack3"							: {"ja":"ワープ", "en":"Warp"}
+
+	//	バトル敗北時、フィールドで死亡時
+	"losefunc"							: {"ja":"敗北時の処理", "en":"Operation at Defeated"}
+	"losefunc0"							: {"ja":"敗北マクロ(X002)", "en":" Defeat Macro(X002)"}
+	"losefunc1"							: {"ja":"回復して続行", "en":" Recover and Continue"}
+	"losefunc2"							: {"ja":"そのまま続行", "en":" Continue"}
 	
 	//	イベントコマンド
 	"cmd_category0"						: {"ja":"一般処理", "en":"General commands"}
@@ -433,6 +439,7 @@
 	"cmd_cammot"						: {"ja":"カメラモーション", "en":"Camera Motion"}
 	"cmd_actiontool"					: {"ja":"キャラ演出ツール", "en":"Chara Action Tool"}
 	"cmd_snd"							: {"ja":"効果音", "en":"Play Sound"}
+	"cmd_voice"							: {"ja":"ボイス再生", "en":"Play Sound"}
 	"cmd_light"							: {"ja":"ライト点灯", "en":"light On/Off"}
 	"cmd_bgm"							: {"ja":"BGMの再生", "en":"Play BGM"}
 	"cmd_screenfxon"					: {"ja":"画面効果ON", "en":"ScreenFX On"}
@@ -498,6 +505,7 @@
 	"cmd_cammot_tips"					: {"ja":"カメラに対してモーションを追加します。", "en":""}
 	"cmd_actiontool_tips"				: {"ja":"キャラ演出ツールを実行します。", "en":""}
 	"cmd_snd_tips"						: {"ja":"キャラから効果音を発生します。", "en":""}
+	"cmd_voice_tips"					: {"ja":"指定したボイスを再生します。", "en":"Plays the specified voice."}
 	"cmd_light_tips"					: {"ja":"キャラからライトを点灯させます。", "en":"Turn on the light from the character."}
 	"cmd_bgm_tips"						: {"ja":"BGMを再生します。", "en":""}
 	"cmd_screenfxon_tips"				: {"ja":"様々な画面効果を追加します。", "en":""}
@@ -813,7 +821,7 @@
 
 	"setting_hotelheal0"				: {"ja":"HP,MPのみ回復", "en":"Heal only HP, MP"}
 	"setting_hotelheal1"				: {"ja":"状態異常も回復", "en":"Heal Bad Status too"}
-	"setting_hotelheal3"				: {"ja":"死亡も回復", "en":"Revive too"}
+	"setting_hotelheal2"				: {"ja":"死亡も回復", "en":"Revive too"}
 	
 	////////// スキルプロパティ
 
@@ -991,6 +999,7 @@
 	"lbl_talkstyle"						: {"ja":"話し方", "en":"How to say"}
 	"lbl_voiceactor"					: {"ja":"ボイスアクター", "en":"Voice Actor"}
 	"lbl_voicemodel"					: {"ja":"ボイスモデル", "en":"Voice Model"}
+	"lbl_voicekey"						: {"ja":"ボイスキー", "en":"Voice Key"}
 	"lbl_addttsvoice"					: {"ja":"TTSボイスを追加", "en":"Add TTS Voice"}
 	"lbl_addsndvoice"					: {"ja":"音声ボイスを追加", "en":"Add Sound Voice"}
 	"lbl_genvoice"						: {"ja":"ボイス生成", "en":"Generate Voice"}

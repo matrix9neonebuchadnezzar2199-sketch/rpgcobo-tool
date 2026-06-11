@@ -208,12 +208,7 @@ class SoundManager
 		if( !sp) return null;
 		foreach( i,v in params) sp[i] = v;	//	パラメータ置き換え
 		//	ミュートグループ処理。
-		local g = sp.muteg;
-		if( g){
-			local s = muteg[g];
-			if( s) s.stop();
-			muteg[g] <- sp;		//	※ミュートグループに対してSoundPlayableの参照は残り続ける
-		}
+		muteGroup( sp);
 		//	スレッドを切り離して再生するケースもある
 		//	メインスレッド又はコルーチンでoggデコードが必要なとき
 		if( sp.needthread()){
@@ -222,6 +217,15 @@ class SoundManager
 			sp.play();
 		}
 		return sp;
+	}
+
+	function muteGroup( sp){
+		local g = sp.muteg;
+		if( g){
+			local s = muteg[g];
+			if( s) s.stop();
+			muteg[g] <- sp;		//	※ミュートグループに対してSoundPlayableの参照は残り続ける
+		}
 	}
 
 	function getSoundPlayable( sid){
