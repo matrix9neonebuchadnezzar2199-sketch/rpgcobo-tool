@@ -1675,6 +1675,12 @@ RPGSystem.option .. {
 					local sp = getVoicePlayable( vaid, opd[v.id]);
 					// printf( "VO!!!!! %S %S %S   %S %S\n", self.name, vaid, id, opd[v.id], sp);
 					if( sp){
+						local rp3d = ::rpgstage.battle?.getChara3D( self);
+						if( rp3d){
+							local sm = rp3d.scn.sk3dsound;
+							sp.src3d = ::soundmanager.source3ds["WIDE"];	//	遠くでも聞けるように
+							sm.setup3DSound( sp, rp3d, null);
+						}
 						sp.play();
 						::opt_voice_sp = sp;
 					}

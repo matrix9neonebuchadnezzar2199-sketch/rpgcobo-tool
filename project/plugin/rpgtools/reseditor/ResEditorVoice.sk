@@ -708,9 +708,38 @@ class VoicePropertyEditPopup extends PropertyEditPopup
 		local genfunc = tts.genfunc;
 		local vt = genfunc( va, vo, tts, lc);
 		if( vt){
+			trimPCM16( vt.data);	//	そのままだと先頭に無音が多い！
+			local ovdata = VorbisEncoder.encode( vt.data, vt.ch, vt.freq, 0.3);
+			//	※一応生成データを残しておく
+			local dir = FileRef( "log/tts");
+			dir.mkdirs();
+			local d = Date();
+			local dstr = "-%04d02d%02d%02d%02d%02d" % (d.tm_year+1900, d.tm_mon+1, d.tm_mday, d.tm_hour, d.tm_min, d.tm_sec);
+			local fn = getVoiceFile( va, data, lc);
+			local logf = FileRef( dir, fn.substring( 0, length( fn)-4) .. dstr .. ".ogg");
+			logf.save( ovdata); ovdata.pos = 0;
+			//	//	
 			local path = getVoicePath( va, data, lc);
-			ovdatamap[path] <- VorbisEncoder.encode( vt.data, vt.ch, vt.freq, 0.3);
+			ovdatamap[path] <- ovdata;
 		}
+	}
+
+	//	先頭の無音部をトリムする。後ろの方はしない
+	function trimPCM16( bb){
+		bb.endian = 0;
+		local len = bb.remain / 2;
+		local v = 0.0;
+		for( local l = 0;l < len;l ++){
+			v *= 0.96;
+			local h = Math.abs( bb.gets()<<16>>16);	//	ungigned -> signed
+			v += h;
+			if( v >= 32768.0){
+				bb.pos = Math.max( bb.pos-32, 0);	//	ちょっとだけ前に
+				return;
+			}
+		}
+		//	mmm----------------------------------------
+		bb.pos = 0;
 	}
 
 	static function run2( cv, propdef, data){

@@ -451,9 +451,11 @@ class TransSideView.MakeTargetDialog extends Dialog
 		local html = TranslationUtil.makePlainTranslationHTML( srcconf.transdict, srcitem.code, dstitem.code);
 		local d = Date(), dstr = "%02d%02d_%02d%02d" % ( d.tm_mon+1, d.tm_mday, d.tm_hour, d.tm_min);
 		//	
+		local dir = FileRef( "log/trans");
+		dir.mkdirs();
 		{
 			local bb = ByteBuffer(); bb.putText( html); bb.pos = 0;
-			FileRef( "log/googletrans_srchtml_%S.html" % dstr).save( bb);		//	一応ログに保存しておく。エラー時などに追跡したい
+			FileRef( dir, "googletrans_srchtml_%S.html" % dstr).save( bb);		//	一応ログに保存しておく。エラー時などに追跡したい
 		}
 		local req = { q=html, source=srcitem.code, target=dstitem.code, format="html"};
 		local url = "https://translation.googleapis.com/language/translate/v2";
@@ -464,7 +466,7 @@ class TransSideView.MakeTargetDialog extends Dialog
 		http.addHeader( "X-goog-api-key", key);
 		http.addHeader( "Content-Type", "application/json; charset=utf-8");
 		local bb = http.post( url, encodeJSON( req, 5));
-		FileRef( "log/googletrans_result_%S.json" % dstr).save( bb); bb.pos = 0;	//	一応ログに保存しておく。エラー時などに追跡したい
+		FileRef( dir, "googletrans_result_%S.json" % dstr).save( bb); bb.pos = 0;	//	一応ログに保存しておく。エラー時などに追跡したい
 		// local bb = FileRef( "tmp/trns.json").load();
 		//	
 		local ret = decodeJSON( bb), rethtml = ret["data"]["translations"][0]["translatedText"];
