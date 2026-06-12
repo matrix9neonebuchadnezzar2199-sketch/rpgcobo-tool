@@ -12,6 +12,7 @@
 import PropertyType;
 import RPGPropertyType;
 import SkillFlag;
+import DamageResultType;
 
 local valtypes = (
 	{ val:"base", lbl:"$T.val_base" },
@@ -1531,5 +1532,159 @@ RPGSystem.option .. {
 			defval = 0,
 		},
 		{ pid="scp", lbl="$T.lbl_script", type=SCRIPT, multiline=8, cnt="cnt6.ui" },
+	],
+};
+
+//	ボイス再生
+//	※ボイス指定ここで良くない？、、いや、状態異常時にセリフパターン変えたいときとかにボイス指定は邪魔
+//	掛け声：攻撃スキル、必殺スキル、バフ・回復スキル、ダメージ、ミス・シールド、死亡
+//	セリフ：戦闘開始、勝利、辛勝、ピンチターン
+//	セリフは誰か一人が喋ったらしばらく誰もしゃべらない。また、誰の掛け声もセリフも基本被らない。
+//	頻度指定。あまり重要ではないが
+//	
+//	※パーティ人数で確率を調整するべき。
+//	
+
+local atkskillmap = { attack=1, debuff=1, enhance=1, };
+local buffskillmap = { heal=1, buff=1 };
+
+local isPartyPinch(){
+	local score = 0.0, w = 0.0;
+	local ma = ::rpgstat.members;
+	foreach( pc in ::rpgstat.members){
+		if( !pc) continue;
+		w += 1.0;
+		if( pc.isDead()) score += 2.0;
+		else score += (1.0 - (pc.HP*1.0 / pc.MAXHP))*1.25;
+	}
+	return false;
+	return (score/w) >= 1.0;
+}
+
+::speaktypelist <- [
+	//////////////// 掛け声系
+	{	//	通常攻撃のみ。ダメージスキル使用時。
+		id = "attack1"
+		lbl = "$T.skilltype_attack"
+		action = "attack"
+		test = @( opd, id, dmg, self){
+			local skill = dmg.skill;
+			if( self==dmg.src && (skill["flags"]&1) && atkskillmap[skill["skilltype"]]) return 1.0;
+		}
+	},
+	{	//	通常攻撃以外、ダメージ・状態異常スキル使用時。
+		id = "attack2"
+		lbl = "$T.lbl_spskill"
+		action = "skillchange"	//	スキル決定時。useact前
+		test = @( opd, id, dmg, self){
+			local skill = dmg.skill;
+			if( self==dmg.src && !(skill["flags"]&1) && atkskillmap[skill["skilltype"]]) return 1.0;
+		}
+	},
+	{	//	バフ・回復スキル使用時。
+		id = "buff"
+		lbl = "$T.skilltype_buff"
+		action = "attack"
+		test = @( opd, id, dmg, self){
+			local skill = dmg.skill;
+			if( self==dmg.src && buffskillmap[skill.skilltype]) return 1.0;
+		}
+	},
+	{	//	ダメージ被弾時。死亡時には↓になるように。ダメージが現HPの1/10以下の場合は無し
+		id = "damage"
+		lbl = "$T.damage"
+		action = "hit"
+		test = @( opd, id, dmg, self){
+			if( self!=dmg.dst) return 0.0;
+			local skill = dmg.skill;
+			if( dmg.val < self[dmg.pid]/10) return 0.0;
+			return 1.0;
+		}
+	},
+	{	//	ダメージミス時。ダメージが入らなかったときかな
+		id = "miss"
+		lbl = "$T.miss"
+		action = "hit"
+		test = @( opd, id, dmg, self){
+			if( self!=dmg.dst) return 0.0;
+			switch( dmg.result){
+			case DMG_MISS: return 1.0;
+			case DMG_SKIP: return 0.0;		//	これは何となくしゃべらないほうが良いかも
+			case DMG_SHIELD: return dmg.val<self[dmg.pid]/10 ? 1.0:0.0;	//	10%以下のダメージなら喋る
+			default: return 0.0;	//	ダメージ無くても状態異常が付く場合もあるから喋らないでおく
+			}
+		}
+	},
+	{	//	死亡時。石化とかは無し。HPが0になるダメージの時、
+		id = "die"
+		lbl = "$T.deadtype2"
+		action = "hit"
+		test = @( opd, id, dmg, self){
+			if( self!=dmg.dst) return 0.0;
+			if( dmg.pid=="HP" && dmg.val>=self.HP) return 1.0;
+		}
+	},
+	//////////////// セリフ系
+	{	//	バトル開始
+		id = "prebattle"
+		lbl = "$T.anim_fight"
+		action = "preturn"
+		test = @( opd, id, turn){
+			return (turn==0 && !isPartyPinch()) ? 1.0 : 0.0;
+		}
+	},
+	{	//	バトル勝利
+		id = "victory1"
+		lbl = "$T.anim_victory"
+		action = "victory"
+		test = @( opd, id) isPartyPinch() ? 0.0 : 1.0
+	},
+	{	//	バトル辛勝
+		id = "victory2"
+		lbl = "$T.lbl_na_victory"
+		action = "victory"
+		test = @( opd, id) isPartyPinch() ? 1.0 : 0.0
+	},
+	{	//	ピンチターン => アクティブバトルの場合に変えないと
+		id = "pinch"
+		lbl = "$T.lbl_pinchturn"
+		action = "preturn"
+		test = @( opd, id) isPartyPinch() ? 1.0 : 0.0
+	},
+];
+
+::opt_voice_sp <- null;		//	鳴らしてるボイス
+
+RPGSystem.option .. {
+	category = 3,
+	key = "opt_voice",
+	name = "$T.opt_voice",
+	icon = icon_etc,	//	\ue029
+	condrem = true,
+	action = @( opd, id, dmg, self){
+		if( opt_voice_sp?.isPlaying()) return;
+		::opt_voice_sp = null;
+		local vaid = self.data["voiceid"];	;	//	VA000~
+		if( !::conf._resource.voice[vaid]) return;
+		if( !self.isCommandable()) return;	//	操作不能時もしゃべらない。
+		foreach( v in ::speaktypelist){
+			if( v.action != id) continue;
+			local r = v.test( opd, id, dmg, self)+0.0;
+			if( ::rnd( 1.0) < r){
+				if( length( opd[v.id])){
+					local sp = getVoicePlayable( vaid, opd[v.id]);
+					// printf( "VO!!!!! %S %S %S   %S %S\n", self.name, vaid, id, opd[v.id], sp);
+					if( sp){
+						sp.play();
+						::opt_voice_sp = sp;
+					}
+				}
+				return;	//	testが通ったらreturn
+			}
+		}
+	},
+	props = [
+		// orderprop,	//	orderいらんかも
+		...speaktypelist.map( @( v) +{ pid=v.id, lbl=v.lbl, type=STRING, defval="", }),
 	],
 };

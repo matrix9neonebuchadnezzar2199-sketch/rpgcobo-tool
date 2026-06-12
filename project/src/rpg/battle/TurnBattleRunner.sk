@@ -130,7 +130,7 @@ class TurnBattleRunner extends BattleRunnerBase
 		//	
 		//	ターン開始
 		//	
-		emitOption( "preturn", turn);	//	ターン開始。マクロとかでキャラの行動を入れ替えたりとかも出来る。
+		emitOption( "turn", turn);	//	ターン開始。マクロとかでキャラの行動を入れ替えたりとかも出来る。
 		//	コマンド処理。メインイベント実行とは排他的。
 		while( cmdqueue[0]){
 			suspend();

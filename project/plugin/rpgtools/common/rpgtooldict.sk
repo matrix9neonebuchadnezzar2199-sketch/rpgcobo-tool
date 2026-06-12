@@ -391,6 +391,8 @@
 	"cmd_iterate_valset"				: {"ja":"値を代入", "en":"Set value to"}
 	"cmd_iterate_keyset"				: {"ja":"キーを代入", "en":"Set key to"}
 	"cmd_iterate_skipnull"				: {"ja":"Nullをスキップ", "en":"Skip Nulls"}
+	"cmd_getmain"						: {"ja":"メインイベント昇格", "en":"Get to Main Event"}
+	"cmd_getmain_retvar"				: {"ja":"結果を代入", "en":"Set result to"}
 	"cmd_comment"						: {"ja":"コメント", "en":"Comment"}
 	
 	"cmd_compute"						: {"ja":"変数の設定", "en":"Var Operation"}
@@ -461,6 +463,7 @@
 	"cmd_jump_tips"						: {"ja":"指定したラベルにジャンプします。", "en":""}
 	"cmd_pagejump_tips"					: {"ja":"別ページへジャンプします", "en":""}
 	"cmd_iterate_tips"					: {"ja":"配列かテーブルの各要素に対してループ処理を行います。", "en":""}
+	"cmd_getmain_tips"						: {"ja":"並列イベントを一時的にメインイベントに昇格します。", "en":""}
 	"cmd_comment_tips"					: {"ja":"処理に影響のないコメントです。", "en":""}
 
 	"cmd_compute_tips"					: {"ja":"様々な計算をしつつ結果を変数に格納します。", "en":""}
@@ -864,6 +867,11 @@
 	"lbl_needshield"					: {"ja":"要:盾装備", "en":"Req: Shield Equipped"}
 	"lbl_sealbits"						: {"ja":"封印時に不発", "en":"Unuse when Sealed"}
 	"lbl_onetime"						: {"ja":"1回のみ", "en":"One Time"}
+
+	"lbl_spskill"						: {"ja":"必殺スキル", "en":"Special Skill"}
+	"lbl_na_victory"					: {"ja":"バトル辛勝", "en":"Battle narrow victory"}
+	"lbl_pinchturn"						: {"ja":"ピンチターン", "en":"Pinch Turn"}
+
 	
 	////////// require
 

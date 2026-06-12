@@ -350,6 +350,7 @@ class SkillCommand
 		if( ctx["hitani"]["id"]=="avoid" && dmg.dst.isSkillFlagSealed( 1<<FLAG_AVOIDABLE)){	//	回避封印状態では"avoid"アニメーションは再生しない。マヒ時に動かないため。無理やりだが。。。
 			ctx.hitani = null;
 		}
+		emitOption( "hit", dmg);	//	ヒット時に何か演出したかったときとか用
 		act( skill["hitact"], ctx);	//	hitactはdstに対して実行。
 		if( dmg.pid){
 			local rp3d = ::rpgstage.battle.getChara3D( dmg.dst);

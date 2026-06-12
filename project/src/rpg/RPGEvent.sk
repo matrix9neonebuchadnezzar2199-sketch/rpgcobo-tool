@@ -1165,7 +1165,7 @@ class RPGStageEventRunner extends RPGEventRunner
 		try{
 			mode = 2;
 			spawnandran = true;		//	スポーン時に実行用のフラグ
-			if( !data["pararun"]) rpgstage.mainevent = this;
+			if( !page["pararun"]) rpgstage.mainevent = this;
 			//	元に戻すための現在位置取得。
 			local p0 = clone rp3d.pos, d0 = rp3d.dir;
 			//	実行！！！！
@@ -1181,7 +1181,7 @@ class RPGStageEventRunner extends RPGEventRunner
 			RPGMain.showUI( { key="message_log", text="\uf800 EventRunner ERROR!!! Check a log file."});
 			sleep( 1000);
 		}
-		if( !data["pararun"]) rpgstage.mainevent = null;
+		if( rpgstage.mainevent==this) rpgstage.mainevent = null;
 		trgcooltime = 200;	//	クールタイムテスト
 		//	イベント実行が終わったらスカウト状態に戻る
 		finishEventRunning();
@@ -1233,7 +1233,7 @@ class RPGStageEventRunner extends RPGEventRunner
 
 	//	イベント実行可能か。メインイベントの同時起動、イベント前回起動からのクールタイム、イベント前回起動からの連続トリガーキャンセル
 	function eventTriggerable(){
-		if( !data["pararun"] && stage["mainevent"]) return false;		//	pararunは並行イベントフラグ
+		if( !page["pararun"] && stage["mainevent"]) return false;		//	pararunは並行イベントフラグ
 		if( trgcooltime) return false;
 		if( trgdisable) return false;
 		return true;
@@ -1289,6 +1289,26 @@ class RPGStageEventRunner extends RPGEventRunner
 			throw { jumpfunc = RPGEventCompiler().compile( p.cmdblock) };
 		}
 	}
+
+	//	
+	function getToMainEvent( cmd){
+		local st = ::rpgstage, time = cmd["time"]|0;
+		if( cmd["op"]){
+			//	メインイベント状態に昇格する
+			local t0 = skGetTime();
+			while( st["mainevent"] != this){
+				if( !st["mainevent"]){ st["mainevent"] = this; break; }
+				if( skGetTime( t0) >= time) break;
+				suspend();
+			}
+			if( cmd["retvar"]) this[cmd.retvar] = (st["mainevent"]==this);
+		}else{
+			//	メインイベント状態を外す
+			if( st["mainevent"] == this){
+				st["mainevent"] = null;
+			}
+		}
+	}
 }
 
 //	自動実行マクロイベント用のrunner。
@@ -1329,7 +1349,7 @@ class RPGMacroEventRunner extends RPGEventRunner
 		local ismain = data["runmode"]<=1, oldevent;	//	手動も実行時はmain扱い。
 		if( ismain){ oldevent = rpgstage.mainevent; rpgstage.mainevent = this; }	//	oldeventはメインメニューの場合!=nullがある
 		runCommandBlock( data.cmdblock, wv);
-		if( ismain){ rpgstage.mainevent = oldevent; }
+		if( rpgstage["mainevent"]==this){ rpgstage.mainevent = oldevent; }
 		finishEventRunning();
 		mode = 0;
 		suspend();

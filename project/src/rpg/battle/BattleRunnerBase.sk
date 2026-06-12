@@ -468,6 +468,7 @@ class BattleRunnerBase
 		local alives = members.filter( @( v) !v.isDefeated());	//	defeatedなキャラは経験値はいらない
 		local alive3ds = alives.map( @( v) getChara3D( v));
 		foreach( p3d in alive3ds) p3d.anime2( {id="victory"});
+		emitOption( "victory", null);	//	勝利演出で使う
 		//	取得値
 		local jxp = 0, money = 0, exp = 0, items = clone stoleitems;	//	items:RPGItem[]
 		foreach( e in enemies){

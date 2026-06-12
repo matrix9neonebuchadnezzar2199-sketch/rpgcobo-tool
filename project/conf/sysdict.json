@@ -162,6 +162,7 @@
 	"opt_walkdmg":{ "ja":"歩行ダメージ／回復", "en":"Walk Damage/Heal"},
 	"opt_autocond":{ "ja":"自動コンディション", "en":"Auto Condition"},
 	"opt_script":{ "ja":"スクリプト実行", "en":"Exec Script"},
+	"opt_voice":{ "ja":"ボイス再生", "en":"Play Voice"},
 	
 	"config_game":{ "ja":"ゲーム設定", "en":"Game Setting"},
 	"config_video":{ "ja":"ビデオ設定", "en":"Video Setting"},
