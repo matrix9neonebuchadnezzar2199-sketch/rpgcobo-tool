@@ -466,7 +466,7 @@ eventcmd .. {
 	})
 
 	parsecode = @( cmd){
-		push( "/* "); push( rem); push( " */").lf();
+		push( "/* "); push( cmd["rem"]); push( " */").lf();
 	}
 }
 

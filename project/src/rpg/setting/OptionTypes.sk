@@ -1597,7 +1597,10 @@ local isPartyPinch(){
 		test = @( opd, id, dmg, self){
 			if( self!=dmg.dst) return 0.0;
 			local skill = dmg.skill;
+			if( !atkskillmap[skill["skilltype"]]) return 0.0;
+			if( !dmg.isSuccess()) return 0.0;
 			if( dmg.val < self[dmg.pid]/10) return 0.0;
+			if( dmg.val >= self[dmg.pid]) return 0.0;		//	死亡
 			return 1.0;
 		}
 	},
@@ -1659,8 +1662,9 @@ RPGSystem.option .. {
 	category = 3,
 	key = "opt_voice",
 	name = "$T.opt_voice",
-	icon = icon_etc,	//	\ue029
-	condrem = true,
+	icon = icon_etc,		//	\ue029
+	order = 100,			//	優先度最弱
+	
 	action = @( opd, id, dmg, self){
 		if( opt_voice_sp?.isPlaying()) return;
 		::opt_voice_sp = null;

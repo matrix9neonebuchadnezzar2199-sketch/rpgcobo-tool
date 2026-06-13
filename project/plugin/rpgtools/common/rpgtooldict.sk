@@ -1051,6 +1051,7 @@
 	"confirm_save_befor_edit"			: {"ja":"編集するために保存する必要があります。", "en":"This file need to be saved for editing."}
 	"pop_import_noimage"				: {"ja":"インポートする画像が見つかりません。", "en":"The image to import is not found."}
 	"tmpl_import_icons"					: {"ja":"$v 個のアイコンが読み込まれました", "en":"$v icons have been loaded."}
+	"pop_ttsgen_faulure"				: {"ja":"ボイスの生成が失敗しました。", "en":"Voice generation failed."}
 
 	/////////////////////////////////////////////////////////////////////////////////////////////
 	//	マップサイドビュー

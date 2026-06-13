@@ -279,7 +279,7 @@ class SystemVarAccessor
 		},
 		{
 			key = "ESCAPABLE", name = "$T.lbl_escapable", type = VAR_BOOL, read = true,
-			func = @( key, val=undefined){ return !!::rpgstage.battle["battledata"]["escapable"]; }
+			func = @( key, val=undefined){ return !!::rpgstage.battle["battledata"]["escape"]; }
 		},
 		{
 			key = "UIFOCUS", name = "UI $T.lbl_focus", type = VAR_STRING, read = true,

@@ -78,6 +78,7 @@ local geminigen( va, vo, tts, lc){
 		},
 	};
 	local http = HTTPClient();
+	http.throwhttperror = false;
 	http.verbose = true;
 	http.addHeader( "x-goog-api-key", apikey);
 	http.addHeader( "Content-Type", "application/json");
@@ -98,8 +99,15 @@ local geminigen( va, vo, tts, lc){
                 "totalTokenCount":1
         }	*/
 	//	
+	if( http.statuscode >= 400){
+		Popups.showError( "$T.pop_ttsgen_faulure\n"..encodeJSON({ code=http.statuscode, message=http.statusstr}));
+		throw Exception( "generation failure....");
+	}
 	local data64 = res.candidates[0]["content"]["parts"][0]["inlineData"]["data"];
-	if( !data64) throw Exception( "generation failure....");
+	if( !data64){
+		Popups.showError( "$T.pop_ttsgen_faulure\n"..encodeJSON( res.candidates[0]));
+		throw Exception( "generation failure....");
+	}
 	local data = decodeBASE64( data64, ByteBuffer());
 	return { freq = 24000, ch=1, bits=16, data=data };
 }
@@ -778,6 +786,9 @@ local cleanupTTSFiles(){
 		}
 		//	残ったttsmapのファイルは消去して良し
 		printf( "TTSMAP UNUSED!!!!!!!!!!!!!!!!! %S\n", encodeJSON( ttsmap, 5));
+		foreach( f in ttsmap){
+			f.deleteFile();
+		}
 	}
 }
 
