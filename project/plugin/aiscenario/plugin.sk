@@ -10,6 +10,7 @@ pluginfo <- {
 	ver = "0.1.0",
 	tags = [ "editor", "aiscenario" ],
 	order = 100,
+	lock = false,
 	desc = {
 		"ja":"JSONシナリオから村人イベントを map.json へ取り込む PoC",
 		"en":"PoC: import villager events from scenario JSON into map.json",

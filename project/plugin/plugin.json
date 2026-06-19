@@ -5,6 +5,7 @@
 		"prop1":1234
 	},
 	"aiscenario":{
-		"enable":true
+		"enable":true,
+		"lock":false
 	}
 }
