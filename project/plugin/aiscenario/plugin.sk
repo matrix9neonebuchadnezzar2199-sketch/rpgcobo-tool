@@ -1,0 +1,44 @@
+//
+//	AI Scenario Importer (PoC) — JSON から villager イベントを map.json へ追記。
+//
+
+local srcdir = dirname( callee().getSourceName());
+
+pluginfo <- {
+	name = { "ja":"AI Scenario Importer (PoC)", "en":"AI Scenario Importer (PoC)" },
+	auther = "matrix9neonebuchadnezzar2199-sketch",
+	ver = "0.1.0",
+	tags = [ "editor", "aiscenario" ],
+	order = 100,
+	desc = {
+		"ja":"JSONシナリオから村人イベントを map.json へ取り込む PoC",
+		"en":"PoC: import villager events from scenario JSON into map.json",
+	},
+	props = [],
+};
+
+function loadPlugin( args, opt){
+	if( !::["SKStudio"]) return false;
+
+	local registerImporter = @(){
+		::runsk( srcdir + "/ScenarioImporter.sk");
+		::skstudio.registerMenu( {
+			uid = "aiscenario_import_poc",
+			parentid = "menu_edit",
+			block = "*9",
+			lbl = { "ja":"[PoC] シナリオJSON取り込み", "en":"[PoC] Import scenario JSON" },
+			func = @( m){
+				ScenarioImporter.importSample( srcdir + "/sample/villager.json");
+			},
+		});
+		printf( "[aiscenario] plugin loaded (menu: [PoC] シナリオJSON取り込み)\n");
+	};
+
+	if( !::getResource( "/data/setting.json")){
+		module.hookAction( "editor_postload", registerImporter, 100);
+		return true;
+	}
+
+	module.hookAction( "editor_postload", registerImporter, 100);
+	return true;
+}

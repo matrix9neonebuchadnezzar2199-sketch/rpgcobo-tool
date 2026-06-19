@@ -1,0 +1,127 @@
+//
+//	外部シナリオJSON → map.json へ villager イベントを追記する PoC。
+//
+
+ScenarioImporter <- {
+	EVENT_ID_MIN = 1000000,
+	EVENT_ID_MAX = 1999999,
+
+	//	event キーは int または "#1000001#" 文字列の両方があり得る。
+	function parseEventIdKey( key){
+		if( typeof( key) == SS_INTEGER) return key;
+		if( typeof( key) == SS_STRING){
+			if( key.len() >= 2 && key[0] == '#' && key[key.len()-1] == '#'){
+				return int( key.slice( 1, key.len()-1));
+			}
+			if( key[0] >= '0' && key[0] <= '9') return int( key);
+		}
+		return null;
+	},
+
+	function allocNextEventId( eventTb){
+		local maxi = this.EVENT_ID_MIN;
+		foreach( i, v in eventTb){
+			local n = parseEventIdKey( i);
+			if( n != null && n > maxi) maxi = n;
+		}
+		local next = maxi + 1;
+		if( next > this.EVENT_ID_MAX){
+			throw Exception( "event id exhausted (max " + this.EVENT_ID_MAX + ")");
+		}
+		return next;
+	},
+
+	function formatDisplayName( name, evid){
+		if( !length( name)) return sprintf( "*villager-%d", evid % 1000000);
+		if( name[0] != '*') return "*" + name;
+		return name;
+	},
+
+	function buildVillagerEvent( src, evid){
+		local pos = src["pos"];
+		if( typeof( pos) != SS_ARRAY || pos.len() < 4){
+			throw Exception( "villager.pos must be [x,y,z,dir]");
+		}
+		return {
+			role = "villager",
+			col = 0,
+			flags = 1,
+			mdlid = src["mdlid"] || "CV000",
+			moveaction = src["moveaction"] || "stop",
+			movespd = src["movespd"] || 4,
+			msg = src["msg"] || "",
+			name = formatDisplayName( src["name"], evid),
+			pop = null,
+			pos = [ pos[0], pos[1], pos[2], pos[3] ],
+			reqs0 = null,
+			spawndist = src["spawndist"] || 1,
+			standani = null,
+		};
+	},
+
+	function loadScenarioJson( jsonPath){
+		local f = FileRef( jsonPath);
+		if( !f.exists()){
+			throw Exception( "scenario file not found: " + jsonPath);
+		}
+		local scenario = decodeJSON( f.load());
+		if( typeof( scenario) != SS_TABLE) throw Exception( "invalid scenario json root");
+		return scenario;
+	},
+
+	function importFromFile( jsonPath){
+		local scenario = loadScenarioJson( jsonPath);
+		local mapid = scenario["map"];
+		if( !length( mapid)) throw Exception( "scenario.map is required");
+
+		local events = scenario["events"];
+		if( typeof( events) != SS_ARRAY || !length( events)){
+			printf( "[aiscenario] no events in %S\n", jsonPath);
+			return 0;
+		}
+
+		local mapres = ::getResource( "/.x/map/" + mapid);
+		if( !mapres){
+			throw Exception( "map resource not found: " + mapid);
+		}
+
+		local mapdata = deepclone( mapres.getContent()) || {};
+		if( !("event" in mapdata) || typeof( mapdata.event) != SS_TABLE){
+			mapdata.event <- {};
+		}
+
+		local imported = 0;
+		local ids = [];
+		foreach( src in events){
+			local role = src["role"] || "villager";
+			if( role != "villager"){
+				printf( "[aiscenario] WARN: unsupported role=%S (skipped)\n", role);
+				continue;
+			}
+			local evid = allocNextEventId( mapdata.event);
+			local ev = buildVillagerEvent( src, evid);
+			mapdata.event[evid] <- ev;
+			ids.push( evid);
+			++imported;
+		}
+
+		if( !imported){
+			printf( "[aiscenario] nothing imported from %S\n", jsonPath);
+			return 0;
+		}
+
+		mapres.save( mapdata);
+		printf( "[aiscenario] imported %d villager(s) into %S ids=%S\n", imported, mapid, ids);
+		return imported;
+	},
+
+	function importSample( jsonPath){
+		try{
+			return importFromFile( jsonPath);
+		}catch( ex){
+			printf( "[aiscenario] import failed: %S\n", ex);
+			printexception( ex);
+			return -1;
+		}
+	},
+};
