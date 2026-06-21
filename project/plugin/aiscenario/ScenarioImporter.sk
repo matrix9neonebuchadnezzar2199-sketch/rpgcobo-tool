@@ -1,5 +1,5 @@
 //
-//	外部シナリオJSON → map.json へ villager イベントを追記する PoC。
+//	外部シナリオJSON → map.json へイベントを追記（villager / custom）。
 //
 
 ScenarioImporter <- {
@@ -32,10 +32,73 @@ ScenarioImporter <- {
 		return next;
 	},
 
-	function formatDisplayName( name, evid){
-		if( !length( name)) return sprintf( "*villager-%d", evid % 1000000);
+	function formatDisplayName( name, evid, role="villager"){
+		if( !length( name)) return sprintf( "*%s-%d", role, evid % 1000000);
 		if( name[0] != '*') return "*" + name;
 		return name;
+	},
+
+	//	TODO(verify): trigger 数値 — 観測値 contact=1, examine=2, auto=6
+	function convertTrigger( t){
+		if( typeof( t) == SS_INTEGER) return t;
+		if( typeof( t) == SS_STRING){
+			local m = { examine=2, auto=6, contact=1 };
+			if( t in m) return m[t];
+		}
+		return 2;
+	},
+
+	function convertConditions( conds){
+		if( typeof( conds) != SS_ARRAY || !length( conds)) return null;
+		return ScenarioCommandBuilder.normalizeReqs( conds);
+	},
+
+	function buildPage( p){
+		return {
+			cmdblock = ScenarioCommandBuilder.buildBlock( p["commands"] || []),
+			memo = p["memo"] || "",
+			moveaction = p["move"] || "stop",
+			movespd = p["movespd"] || 4,
+			pararun = p["parallel"] || false,
+			reqs = convertConditions( p["conditions"]),
+			standani = p["standani"] || null,
+			trigger = convertTrigger( p["trigger"]),
+		};
+	},
+
+	function buildCustomEvent( src, evid){
+		local pos = src["pos"];
+		if( typeof( pos) != SS_ARRAY || pos.len() < 4){
+			throw Exception( "custom.pos must be [x,y,z,dir]");
+		}
+		local pages = src["pages"];
+		if( typeof( pages) != SS_ARRAY || !length( pages)){
+			throw Exception( "custom.pages is required");
+		}
+		local page = [];
+		foreach( p in pages) page.push( buildPage( p));
+		return {
+			col = 0,
+			flags = 1,
+			mdlid = src["mdlid"] || "CV000",
+			name = formatDisplayName( src["name"], evid, "custom"),
+			page = page,
+			pos = [ pos[0], pos[1], pos[2], pos[3] ],
+			role = "custom",
+			spawndist = src["spawndist"] || 1,
+		};
+	},
+
+	function buildEvent( src, evid){
+		local role = src["role"] || "villager";
+		switch( role){
+		case "villager":
+			return buildVillagerEvent( src, evid);
+		case "custom":
+			return buildCustomEvent( src, evid);
+		default:
+			return null;
+		}
 	},
 
 	function buildVillagerEvent( src, evid){
@@ -53,7 +116,7 @@ ScenarioImporter <- {
 			moveaction = src["moveaction"] || "stop",
 			movespd = src["movespd"] || 4,
 			msg = src["msg"] || "",
-			name = formatDisplayName( src["name"], evid),
+			name = formatDisplayName( src["name"], evid, "villager"),
 			pop = null,
 			pos = [ pos[0], pos[1], pos[2], pos[3] ],
 			reqs0 = null,
@@ -104,12 +167,12 @@ ScenarioImporter <- {
 		local ids = [];
 		foreach( src in events){
 			local role = src["role"] || "villager";
-			if( role != "villager"){
+			local evid = allocNextEventId( mapdata.event);
+			local ev = buildEvent( src, evid);
+			if( !ev){
 				printf( "[aiscenario] WARN: unsupported role=%S (skipped)\n", role);
 				continue;
 			}
-			local evid = allocNextEventId( mapdata.event);
-			local ev = buildVillagerEvent( src, evid);
 			mapdata.event[evid] <- ev;
 			ids.push( evid);
 			++imported;
@@ -121,7 +184,7 @@ ScenarioImporter <- {
 		}
 
 		mapres.save( mapdata);
-		printf( "[aiscenario] imported %d villager(s) into %S ids=%S\n", imported, mapid, ids);
+		printf( "[aiscenario] imported %d event(s) into %S ids=%S\n", imported, mapid, ids);
 		return imported;
 	},
 

@@ -1,17 +1,30 @@
-# AI Scenario Importer (PoC v1)
+# AI Scenario Importer (PoC v1 + v2)
 
-外部シナリオ JSON から `data/map.json` の対象マップへ **villager** イベントを追記する PoC プラグイン。
+外部シナリオ JSON から `data/map.json` の対象マップへイベントを追記するプラグイン。
+
+- **v1:** `role: villager`（`msg` 直書き）
+- **v2:** `role: custom`（`pages[]` / `commands[]` → `page[]` / `cmdblock[]`）
 
 ## 使い方
 
 1. RPG-Cobo ツール起動（プロジェクトを開いた状態）
-2. **編集 → [PoC] シナリオJSON取り込み**
-3. ログに `imported N villager(s) into M001 ids=[...]` が出る
-4. 対象マップを**閉じて開き直す**（またはツール再起動）→ 村人配置・会話を確認
+2. **編集** メニューから取り込みを実行:
+   - `[PoC] villager JSON取り込み` — `sample/villager.json`
+   - `[PoC] custom JSON取り込み` — `sample/custom.json`
+3. ログは **表示 → システムコンソール**（Ctrl+@）
+4. 対象マップを**閉じて開き直す** → 配置・会話を確認
 
-## サンプル
+## ファイル構成
 
-`sample/villager.json` — 取り込み対象の中間 JSON。`map` にマップ ID、`events[]` に villager 定義。
+```
+project/plugin/aiscenario/
+├─ plugin.sk
+├─ ScenarioImporter.sk
+├─ ScenarioCommandBuilder.sk   # v2: type → cmd_* 変換
+└─ sample/
+   ├─ villager.json
+   └─ custom.json
+```
 
 ## データ仕様（PoC v1）
 
