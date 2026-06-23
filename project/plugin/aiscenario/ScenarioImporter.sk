@@ -38,11 +38,11 @@ ScenarioImporter <- {
 		return name;
 	},
 
-	//	TODO(verify): trigger 数値 — 観測値 contact=1, examine=2, auto=6
+	//	trigger codes confirmed by author (PR#3): contact=3, examine=2, auto=6
 	function convertTrigger( t){
 		if( typeof( t) == SS_INTEGER) return t;
 		if( typeof( t) == SS_STRING){
-			local m = { examine=2, auto=6, contact=1 };
+			local m = { examine=2, auto=6, contact=3 };
 			if( t in m) return m[t];
 		}
 		return 2;

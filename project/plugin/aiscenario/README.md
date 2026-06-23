@@ -26,6 +26,11 @@ project/plugin/aiscenario/
    └─ custom.json
 ```
 
+## データ仕様（v2 custom）
+
+- **trigger（文字列→数値）:** `examine`=2, `auto`=6, `contact`=3（作者確認 PR#3）
+- **message.uiclose:** `0`=開いたまま / `1`=イベント終了時に閉じる / `2`=即閉じ（**既定 2**、未指定時）
+
 ## データ仕様（PoC v1）
 
 - 対応 role: `villager` のみ（`msg` に会話文を直接設定）

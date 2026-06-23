@@ -14,7 +14,7 @@
           "parallel": false,
           "conditions": [],
           "commands": [
-            { "type": "message", "text": "こんにちは、旅の人。" },
+            { "type": "message", "text": "こんにちは、旅の人。", "uiclose": 0 },
             { "type": "wait", "time": 500 },
             {
               "type": "choice",
