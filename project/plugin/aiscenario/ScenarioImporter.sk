@@ -142,6 +142,19 @@ ScenarioImporter <- {
 		return scenario;
 	},
 
+	//	対象 mapid が現在アクティブなマップエディタで開かれていれば
+	//	そのエディタを返す。そうでなければ null。
+	//	※ ::skstudio.editor は map 以外のエディタ（DB編集等）の場合があるため
+	//	  mapid フィールドの存在を防御的にチェックする。
+	function getActiveMapEditor( mapid){
+		local ed = ::skstudio["editor"];
+		if( !ed) return null;
+		if( !("mapid" in ed)) return null;	//	マップエディタ以外
+		if( ed.mapid != mapid) return null;	//	別マップを編集中
+		if( !("data" in ed) || typeof( ed.data) != SS_TABLE) return null;
+		return ed;
+	},
+
 	function importFromFile( jsonPath){
 		local scenario = loadScenarioJson( jsonPath);
 		local mapid = scenario["map"];
@@ -153,14 +166,30 @@ ScenarioImporter <- {
 			return 0;
 		}
 
-		local mapres = ::getResource( "/.x/map/" + mapid);
-		if( !mapres){
-			throw Exception( "map resource not found: " + mapid);
-		}
-
-		local mapdata = deepclone( mapres.getContent()) || {};
-		if( !("event" in mapdata) || typeof( mapdata.event) != SS_TABLE){
-			mapdata.event <- {};
+		//	NOTE(PR#3): 編集中マップは MapEditor.data に最新が保持されるため、
+		//	アクティブエディタが対象なら editor.data へ、そうでなければ disk へ追記する。
+		//	既知の制約: 非アクティブだが開いている同マップは検出できない（TODO(verify)）。
+		local activeEd = getActiveMapEditor( mapid);
+		local eventTb;		//	追記先イベントテーブル
+		local mapdata = null;	//	経路B でのみ使用（保存対象）
+		local mapres = null;	//	経路B でのみ使用
+		if( activeEd){
+			//	経路A: 編集中エディタの data に直接追記する。
+			//	ギズモ（3D表示）の即時生成は PoC スコープ外。マップ再オープンで反映。
+			if( !("event" in activeEd.data) || typeof( activeEd.data.event) != SS_TABLE){
+				activeEd.data.event <- {};
+			}
+			eventTb = activeEd.data.event;
+			printf( "[aiscenario] target map %S is open in editor; importing into editor data\n", mapid);
+		}else{
+			//	経路B: 従来どおりディスクの map.json を読んで追記する。
+			mapres = ::getResource( "/.x/map/" + mapid);
+			if( !mapres) throw Exception( "map resource not found: " + mapid);
+			mapdata = deepclone( mapres.getContent()) || {};
+			if( !("event" in mapdata) || typeof( mapdata.event) != SS_TABLE){
+				mapdata.event <- {};
+			}
+			eventTb = mapdata.event;
 		}
 
 		local imported = 0;
@@ -176,12 +205,12 @@ ScenarioImporter <- {
 					++skipped;
 					continue;
 				}
-				local evid = allocNextEventId( mapdata.event);
+				local evid = allocNextEventId( eventTb);
 				if( !length( src["name"])){
 					local prefix = role == "custom" ? "custom" : "villager";
 					ev.name = formatDisplayName( "", evid, prefix);
 				}
-				mapdata.event[evid] <- ev;
+				eventTb[evid] <- ev;
 				ids.push( evid);
 				++imported;
 			}catch( ex){
@@ -195,8 +224,19 @@ ScenarioImporter <- {
 			return 0;
 		}
 
-		mapres.save( mapdata);
-		printf( "[aiscenario] imported %d, skipped %d into %S ids=%S\n", imported, skipped, mapid, ids);
+		//	保存（経路で分岐）
+		if( activeEd){
+			//	経路A: 本家 savefunc に倣った保存作法。
+			activeEd.save();
+			activeEd.op.markSaved();
+			::skstudio.updateChangeFile( activeEd);
+			printf( "[aiscenario] imported %d, skipped %d into %S (editor) ids=%S\n", imported, skipped, mapid, ids);
+			printf( "[aiscenario] NOTE: reopen map %S to see newly added events in the editor view.\n", mapid);
+		}else{
+			//	経路B: ディスク保存。
+			mapres.save( mapdata);
+			printf( "[aiscenario] imported %d, skipped %d into %S (disk) ids=%S\n", imported, skipped, mapid, ids);
+		}
 		return imported;
 	},
 
