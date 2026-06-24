@@ -21,6 +21,8 @@
     --sky-deep: #0f1a14;
     --danger: #a63d3d;
     --border-wood: #6b4423;
+    --sidebar-w: 268px;
+    --sidebar-collapsed-w: 52px;
   }
   * { box-sizing: border-box; }
   body {
@@ -244,13 +246,7 @@
     border-color: var(--danger);
   }
 
-  .preset-bar {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 12px 14px 0;
-  }
-  .preset-bar .btn { font-size: 0.82em; padding: 6px 12px; }
+  .preset-bar { display: none; }
 
   .err-box {
     display: none;
@@ -474,34 +470,250 @@
   .checkbox-row input { width: auto; }
   .checkbox-row label { margin: 0; font-weight: normal; }
 
-  /* 左上ロゴ */
-  .page-logo {
+  /* アプリシェル + 左サイドバー */
+  .app-shell { min-height: 100vh; }
+  .main-wrap {
+    margin-left: var(--sidebar-w);
+    transition: margin-left 0.28s ease;
+  }
+  body.sidebar-collapsed .main-wrap {
+    margin-left: var(--sidebar-collapsed-w);
+  }
+  .sidebar {
     position: fixed;
-    top: 16px;
-    left: 16px;
-    z-index: 200;
-    display: block;
-    line-height: 0;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: var(--sidebar-w);
+    background: linear-gradient(180deg, var(--wood-dark), #2a1810);
+    border-right: 3px solid var(--wood-light);
+    z-index: 180;
+    display: flex;
+    flex-direction: column;
+    transition: width 0.28s ease;
+    overflow: hidden;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.35);
   }
-  .page-logo img {
-    height: 36px;
+  body.sidebar-collapsed .sidebar { width: var(--sidebar-collapsed-w); }
+  .sidebar-toggle {
+    flex: 0 0 auto;
+    width: 100%;
+    padding: 12px;
+    background: rgba(0,0,0,0.2);
+    border: none;
+    border-bottom: 2px solid var(--wood-light);
+    color: var(--parchment);
+    font-size: 1.1em;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .sidebar-toggle:hover { background: rgba(232, 168, 56, 0.15); }
+  .sidebar-logo {
+    padding: 12px 14px 8px;
+    border-bottom: 1px solid rgba(139, 90, 43, 0.4);
+  }
+  .sidebar-logo img {
+    height: 28px;
     width: auto;
-    display: block;
-    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+    filter: drop-shadow(0 1px 4px rgba(0,0,0,0.4));
   }
-  @media (max-width: 600px) {
-    .page-logo { top: 10px; left: 10px; }
-    .page-logo img { height: 28px; }
-    .signboard { padding-top: 56px; }
+  body.sidebar-collapsed .sidebar-logo { padding: 10px 8px; text-align: center; }
+  body.sidebar-collapsed .sidebar-logo img { height: 24px; }
+  .sidebar-scroll {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 10px 0 16px;
+  }
+  .sidebar-section { padding: 0 12px; margin-bottom: 16px; }
+  .sidebar-section-title {
+    font-size: 0.72em;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--lantern);
+    margin: 0 0 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(232, 168, 56, 0.3);
+  }
+  body.sidebar-collapsed .sidebar-section-title,
+  body.sidebar-collapsed .sidebar-section .btn .label,
+  body.sidebar-collapsed .history-list,
+  body.sidebar-collapsed .sidebar-hint,
+  body.sidebar-collapsed .btn-clear-history { display: none; }
+  body.sidebar-collapsed .sidebar-section .btn {
+    padding: 10px;
+    font-size: 1.25em;
+    text-align: center;
+  }
+  body.sidebar-collapsed .sidebar-section .btn .btn-icon { display: inline; }
+  .sidebar .btn {
+    display: block;
+    width: 100%;
+    margin-bottom: 6px;
+    text-align: left;
+    font-size: 0.84em;
+    padding: 8px 12px;
+  }
+  .sidebar-hint {
+    font-size: 0.72em;
+    color: rgba(244, 228, 193, 0.55);
+    margin: 6px 0 0;
+    line-height: 1.4;
+  }
+  .history-list { list-style: none; margin: 0; padding: 0; }
+  .history-item {
+    position: relative;
+    background: rgba(244, 228, 193, 0.08);
+    border: 1px solid rgba(139, 90, 43, 0.5);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    padding: 8px 10px;
+    cursor: default;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .history-item:hover {
+    background: rgba(244, 228, 193, 0.14);
+    border-color: var(--lantern);
+  }
+  .history-item-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .history-item-meta { flex: 1; min-width: 0; }
+  .history-item-name {
+    font-size: 0.85em;
+    font-weight: 700;
+    color: var(--parchment);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .history-item-sub {
+    font-size: 0.72em;
+    color: rgba(244, 228, 193, 0.6);
+    margin-top: 2px;
+  }
+  .history-item-time {
+    font-size: 0.68em;
+    color: rgba(244, 228, 193, 0.45);
+  }
+  .btn-load {
+    flex: 0 0 auto;
+    padding: 4px 8px !important;
+    font-size: 0.72em !important;
+    margin: 0 !important;
+    background: var(--moss) !important;
+    color: #fff !important;
+    border-color: #3d6348 !important;
+  }
+  .btn-load:hover { filter: brightness(1.1); }
+  .history-empty {
+    font-size: 0.78em;
+    color: rgba(244, 228, 193, 0.45);
+    padding: 8px 4px;
+    font-style: italic;
+  }
+  .btn-clear-history {
+    width: 100%;
+    margin-top: 4px;
+    font-size: 0.75em !important;
+    padding: 6px !important;
+    color: rgba(244, 228, 193, 0.7) !important;
+    background: transparent !important;
+    border-color: rgba(166, 61, 61, 0.5) !important;
+  }
+
+  /* 履歴ホバープレビュー */
+  .history-popover {
+    display: none;
+    position: fixed;
+    z-index: 500;
+    width: min(420px, calc(100vw - 24px));
+    max-height: min(480px, 70vh);
+    overflow-y: auto;
+    background: var(--parchment);
+    border: 3px solid var(--border-wood);
+    border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    padding: 12px 14px;
+    pointer-events: none;
+  }
+  .history-popover.show { display: block; pointer-events: auto; }
+  .history-popover-title {
+    font-size: 0.82em;
+    font-weight: 700;
+    color: var(--moss);
+    margin: 0 0 8px;
+    padding-bottom: 6px;
+    border-bottom: 2px dotted var(--border-wood);
+  }
+  .history-popover .preview-flow {
+    margin: 0;
+    padding: 8px 10px;
+    font-size: 0.82em;
+  }
+  .history-popover .choice-fork { margin: 10px 0; }
+  .history-popover .branch-tree { gap: 8px; }
+  .history-popover .choice-fork-head { font-size: 0.9em; padding: 6px 10px; }
+
+  /* 左上ロゴ（メインエリア用・非表示 sidebar 内に移動） */
+  .page-logo { display: none; }
+
+  @media (max-width: 768px) {
+    .sidebar {
+      width: var(--sidebar-w);
+      transform: translateX(0);
+    }
+    body.sidebar-collapsed .sidebar {
+      transform: translateX(calc(-1 * var(--sidebar-w) + var(--sidebar-collapsed-w)));
+    }
+    .main-wrap { margin-left: var(--sidebar-collapsed-w); }
+    body.sidebar-collapsed .main-wrap { margin-left: var(--sidebar-collapsed-w); }
+    body:not(.sidebar-collapsed) .main-wrap { margin-left: var(--sidebar-w); }
   }
 </style>
 </head>
 <body>
 
-<a class="page-logo" href="https://github.com/djkotori/rpgcobo-tool" title="RPG-Cobo" target="_blank" rel="noopener">
-  <img src="logo.png" alt="RPG-Cobo">
-</a>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar" aria-label="サイドバー">
+    <button type="button" class="sidebar-toggle" id="sidebarToggle" title="サイドバーを折りたたむ">☰</button>
+    <div class="sidebar-logo">
+      <a href="https://github.com/djkotori/rpgcobo-tool" target="_blank" rel="noopener" title="RPG-Cobo">
+        <img src="logo.png" alt="RPG-Cobo">
+      </a>
+    </div>
+    <div class="sidebar-scroll">
+      <div class="sidebar-section">
+        <h2 class="sidebar-section-title">プリセット</h2>
+        <button type="button" class="btn btn-secondary" data-preset="villager" title="村人・一言">
+          <span class="btn-icon">🧑</span><span class="label"> 村人・一言</span>
+        </button>
+        <button type="button" class="btn btn-secondary" data-preset="yesno" title="YES/NO 依頼">
+          <span class="btn-icon">❓</span><span class="label"> YES/NO 依頼</span>
+        </button>
+        <button type="button" class="btn btn-secondary" data-preset="yesno-if" title="YES/NO + フラグ分岐">
+          <span class="btn-icon">🔀</span><span class="label"> YES/NO + if</span>
+        </button>
+        <p class="sidebar-hint">テンプレートをフォームへ読み込みます。</p>
+      </div>
+      <div class="sidebar-section">
+        <h2 class="sidebar-section-title">履歴</h2>
+        <ul class="history-list" id="historyList"></ul>
+        <button type="button" class="btn btn-clear-history" id="btnClearHistory">履歴をすべて削除</button>
+        <p class="sidebar-hint">JSON 作成時に自動保存。行にマウスでプレビュー、「読み込み」で復元。</p>
+      </div>
+      <div class="sidebar-section">
+        <button type="button" class="btn btn-danger" id="btnReset" title="下書きリセット">
+          <span class="btn-icon">🗑</span><span class="label"> 下書きリセット</span>
+        </button>
+      </div>
+    </div>
+  </aside>
 
+  <div class="main-wrap">
 <header class="signboard">
   <div class="signboard-inner">
     <h1>Scenario <span class="accent">Maker</span></h1>
@@ -513,12 +725,6 @@
   <!-- 左: ウィザード -->
   <div class="panel">
     <div class="panel-head">冒険の準備（入力）</div>
-    <div class="preset-bar">
-      <button type="button" class="btn btn-secondary" data-preset="villager">村人・一言</button>
-      <button type="button" class="btn btn-secondary" data-preset="yesno">YES/NO 依頼</button>
-      <button type="button" class="btn btn-secondary" data-preset="yesno-if">YES/NO + フラグ分岐</button>
-      <button type="button" class="btn btn-danger" id="btnReset">下書きリセット</button>
-    </div>
     <div class="err-box" id="errBox"></div>
     <div class="steps" id="stepsWrap">
 
@@ -656,7 +862,10 @@
     </div>
   </div>
 </div>
+  </div><!-- .main-wrap -->
+</div><!-- .app-shell -->
 
+<div class="history-popover" id="historyPopover" role="tooltip"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -664,6 +873,9 @@
   "use strict";
 
   const STORAGE_KEY = "aiscenario-maker-draft-v1";
+  const HISTORY_KEY = "aiscenario-maker-history-v1";
+  const SIDEBAR_KEY = "aiscenario-maker-sidebar-collapsed";
+  const HISTORY_MAX = 30;
   const $ = (id) => document.getElementById(id);
   const steps = [...document.querySelectorAll(".step")];
   const TOTAL = steps.length;
@@ -674,6 +886,173 @@
     "trigger", "firstMsg", "uiclose", "choiceType", "yesLabel", "noLabel",
     "yesMsg", "noMsg", "flagVar", "ifMsg", "setFlagOnYes"
   ];
+
+  function getFormData() {
+    const data = {};
+    fieldIds.forEach((id) => {
+      const el = $(id);
+      if (!el) return;
+      data[id] = el.type === "checkbox" ? el.checked : el.value;
+    });
+    return data;
+  }
+
+  function applyFormData(data) {
+    fieldIds.forEach((id) => {
+      const el = $(id);
+      if (!el || !(id in data)) return;
+      if (el.type === "checkbox") el.checked = data[id];
+      else el.value = data[id];
+    });
+    syncRoleUi();
+    syncChoiceUi();
+    for (let i = 0; i < TOTAL; i++) updateSummary(i);
+    saveDraft();
+  }
+
+  function formatHistoryTime(ts) {
+    const d = new Date(ts);
+    const pad = (n) => String(n).padStart(2, "0");
+    return pad(d.getMonth() + 1) + "/" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
+  function historyLabel(formData, json) {
+    const role = formData.role === "villager" ? "村人" : "カスタム";
+    const map = json.map || formData.map || "?";
+    return role + " / " + (formData.name || "無名") + " @ " + map;
+  }
+
+  function loadHistory() {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function saveHistoryList(list) {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX)));
+    } catch (_) { /* ignore */ }
+  }
+
+  function pushHistory(formData, json) {
+    const list = loadHistory();
+    const entry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      ts: Date.now(),
+      formData: formData,
+      json: json,
+      label: historyLabel(formData, json)
+    };
+    list.unshift(entry);
+    saveHistoryList(list);
+    renderHistoryList();
+  }
+
+  let popoverHideTimer = null;
+
+  function positionPopover(anchorEl) {
+    const pop = $("historyPopover");
+    const rect = anchorEl.getBoundingClientRect();
+    const popW = pop.offsetWidth || 380;
+    let left = rect.right + 12;
+    let top = rect.top;
+    if (left + popW > window.innerWidth - 12) {
+      left = rect.left - popW - 12;
+    }
+    if (left < 12) left = 12;
+    if (top + pop.offsetHeight > window.innerHeight - 12) {
+      top = window.innerHeight - pop.offsetHeight - 12;
+    }
+    if (top < 12) top = 12;
+    pop.style.left = left + "px";
+    pop.style.top = top + "px";
+  }
+
+  function showHistoryPopover(entry, anchorEl) {
+    clearTimeout(popoverHideTimer);
+    const pop = $("historyPopover");
+    pop.innerHTML =
+      '<div class="history-popover-title">' + escapeHtml(entry.label) +
+      " <span style=\"font-weight:normal;color:var(--ink-muted)\">" +
+      escapeHtml(formatHistoryTime(entry.ts)) + "</span></div>" +
+      '<div class="preview-flow">' + buildPreviewHtml(entry.json) + "</div>";
+    pop.classList.add("show");
+    requestAnimationFrame(() => positionPopover(anchorEl));
+  }
+
+  function hideHistoryPopover(delay) {
+    clearTimeout(popoverHideTimer);
+    popoverHideTimer = setTimeout(() => {
+      $("historyPopover").classList.remove("show");
+    }, delay || 120);
+  }
+
+  function renderHistoryList() {
+    const ul = $("historyList");
+    const list = loadHistory();
+    if (!list.length) {
+      ul.innerHTML = '<li class="history-empty">まだ履歴がありません</li>';
+      return;
+    }
+    ul.innerHTML = list.map((entry) =>
+      '<li class="history-item" data-history-id="' + escapeHtml(entry.id) + '">' +
+      '<div class="history-item-head">' +
+      '<div class="history-item-meta">' +
+      '<div class="history-item-name">' + escapeHtml(entry.label) + "</div>" +
+      '<div class="history-item-time">' + escapeHtml(formatHistoryTime(entry.ts)) + "</div>" +
+      "</div>" +
+      '<button type="button" class="btn btn-load" data-load-id="' + escapeHtml(entry.id) + '">読み込み</button>' +
+      "</div></li>"
+    ).join("");
+
+    ul.querySelectorAll(".history-item").forEach((li) => {
+      const id = li.dataset.historyId;
+      const entry = list.find((e) => e.id === id);
+      if (!entry) return;
+      li.addEventListener("mouseenter", () => showHistoryPopover(entry, li));
+      li.addEventListener("mouseleave", () => hideHistoryPopover(150));
+      li.addEventListener("click", (ev) => {
+        if (ev.target.closest("[data-load-id]")) return;
+        showHistoryPopover(entry, li);
+      });
+    });
+    ul.querySelectorAll("[data-load-id]").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const id = btn.dataset.loadId;
+        const entry = loadHistory().find((e) => e.id === id);
+        if (!entry) return;
+        applyFormData(entry.formData);
+        lastJson = entry.json;
+        $("output").textContent = JSON.stringify(entry.json, null, 2);
+        renderPreview(entry.json);
+        hideHistoryPopover(0);
+        showToast("履歴を読み込みました");
+      });
+    });
+  }
+
+  function clearHistory() {
+    if (!confirm("履歴をすべて削除しますか？")) return;
+    localStorage.removeItem(HISTORY_KEY);
+    renderHistoryList();
+    hideHistoryPopover(0);
+    showToast("履歴を削除しました");
+  }
+
+  function initSidebar() {
+    const collapsed = localStorage.getItem(SIDEBAR_KEY) === "1";
+    if (collapsed) document.body.classList.add("sidebar-collapsed");
+    $("sidebarToggle").addEventListener("click", () => {
+      document.body.classList.toggle("sidebar-collapsed");
+      localStorage.setItem(SIDEBAR_KEY, document.body.classList.contains("sidebar-collapsed") ? "1" : "0");
+    });
+  }
 
   function showToast(msg) {
     const t = $("toast");
@@ -920,14 +1299,16 @@
   }
 
   function renderPreview(obj) {
-    const el = $("previewFlow");
+    $("previewFlow").innerHTML = buildPreviewHtml(obj);
+  }
+
+  function buildPreviewHtml(obj) {
     const ev = obj.events[0];
     let html = "<h3>会話の流れ（プレビュー）</h3>";
 
     if (ev.role === "villager") {
       html += '<div class="flow-line">💬 ' + escapeHtml(ev.msg) + "</div>";
-      el.innerHTML = html;
-      return;
+      return html;
     }
 
     const cmds = ev.pages[0].commands;
@@ -954,7 +1335,7 @@
       }
     });
 
-    el.innerHTML = html;
+    return html;
   }
 
   function escapeHtml(s) {
@@ -978,6 +1359,7 @@
     const text = JSON.stringify(lastJson, null, 2);
     $("output").textContent = text;
     renderPreview(lastJson);
+    pushHistory(getFormData(), lastJson);
     saveDraft();
     $("output").scrollIntoView({ behavior: "smooth", block: "nearest" });
     showToast("JSON を作成しました");
@@ -1008,14 +1390,8 @@
   }
 
   function saveDraft() {
-    const data = {};
-    fieldIds.forEach((id) => {
-      const el = $(id);
-      if (!el) return;
-      data[id] = el.type === "checkbox" ? el.checked : el.value;
-    });
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(getFormData()));
     } catch (_) { /* 容量超過等は無視 */ }
   }
 
@@ -1023,16 +1399,8 @@
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
-      const data = JSON.parse(raw);
-      fieldIds.forEach((id) => {
-        const el = $(id);
-        if (!el || !(id in data)) return;
-        if (el.type === "checkbox") el.checked = data[id];
-        else el.value = data[id];
-      });
+      applyFormData(JSON.parse(raw));
     } catch (_) { /* 破損下書きは無視 */ }
-    syncRoleUi();
-    syncChoiceUi();
   }
 
   function resetDraft() {
@@ -1086,15 +1454,7 @@
   function applyPreset(key) {
     const p = PRESETS[key];
     if (!p) return;
-    Object.entries(p).forEach(([k, v]) => {
-      const el = $(k);
-      if (!el) return;
-      if (el.type === "checkbox") el.checked = v;
-      else el.value = v;
-    });
-    syncRoleUi();
-    syncChoiceUi();
-    saveDraft();
+    applyFormData(p);
     showToast("プリセットを読み込みました");
   }
 
@@ -1111,6 +1471,7 @@
   $("btnCopy").addEventListener("click", copyJson);
   $("btnDownload").addEventListener("click", downloadJson);
   $("btnReset").addEventListener("click", resetDraft);
+  $("btnClearHistory").addEventListener("click", clearHistory);
   document.querySelectorAll("[data-preset]").forEach((btn) => {
     btn.addEventListener("click", () => applyPreset(btn.dataset.preset));
   });
@@ -1121,7 +1482,13 @@
       el.addEventListener("input", saveDraft);
   });
 
+  initSidebar();
   loadDraft();
+  renderHistoryList();
+
+  const popEl = $("historyPopover");
+  popEl.addEventListener("mouseenter", () => clearTimeout(popoverHideTimer));
+  popEl.addEventListener("mouseleave", () => hideHistoryPopover(100));
 })();
 </script>
 </body>
