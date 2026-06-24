@@ -578,37 +578,68 @@
   }
   .history-item-head {
     display: flex;
-    align-items: flex-start;
-    gap: 6px;
+    align-items: center;
+    gap: 8px;
   }
   .history-item-meta { flex: 1; min-width: 0; }
   .history-item-name {
-    font-size: 0.85em;
+    font-size: 0.82em;
     font-weight: 700;
     color: var(--parchment);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .history-item-sub {
-    font-size: 0.72em;
-    color: rgba(244, 228, 193, 0.6);
-    margin-top: 2px;
+    line-height: 1.3;
   }
   .history-item-time {
     font-size: 0.68em;
     color: rgba(244, 228, 193, 0.45);
+    margin-top: 2px;
+  }
+  .history-item-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
   .btn-load {
-    flex: 0 0 auto;
-    padding: 4px 8px !important;
-    font-size: 0.72em !important;
-    margin: 0 !important;
-    background: var(--moss) !important;
-    color: #fff !important;
-    border-color: #3d6348 !important;
+    display: inline-block;
+    width: auto;
+    padding: 3px 7px;
+    font-size: 0.65em;
+    font-weight: 600;
+    line-height: 1.2;
+    margin: 0;
+    background: var(--moss);
+    color: #fff;
+    border: 1px solid #3d6348;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
   }
-  .btn-load:hover { filter: brightness(1.1); }
+  .btn-load:hover { filter: brightness(1.12); }
+  .btn-delete {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    font-size: 0.85em;
+    font-weight: 700;
+    line-height: 1;
+    background: transparent;
+    color: rgba(255, 180, 180, 0.85);
+    border: 1px solid rgba(166, 61, 61, 0.55);
+    border-radius: 4px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .btn-delete:hover {
+    background: rgba(166, 61, 61, 0.35);
+    color: #fff;
+    border-color: var(--danger);
+  }
   .history-empty {
     font-size: 0.78em;
     color: rgba(244, 228, 193, 0.45);
@@ -1006,7 +1037,10 @@
       '<div class="history-item-name">' + escapeHtml(entry.label) + "</div>" +
       '<div class="history-item-time">' + escapeHtml(formatHistoryTime(entry.ts)) + "</div>" +
       "</div>" +
-      '<button type="button" class="btn btn-load" data-load-id="' + escapeHtml(entry.id) + '">読み込み</button>' +
+      '<div class="history-item-actions">' +
+      '<button type="button" class="btn-load" data-load-id="' + escapeHtml(entry.id) + '">読込</button>' +
+      '<button type="button" class="btn-delete" data-delete-id="' + escapeHtml(entry.id) + '" title="この履歴を削除">×</button>' +
+      "</div>" +
       "</div></li>"
     ).join("");
 
@@ -1017,7 +1051,7 @@
       li.addEventListener("mouseenter", () => showHistoryPopover(entry, li));
       li.addEventListener("mouseleave", () => hideHistoryPopover(150));
       li.addEventListener("click", (ev) => {
-        if (ev.target.closest("[data-load-id]")) return;
+        if (ev.target.closest("[data-load-id]") || ev.target.closest("[data-delete-id]")) return;
         showHistoryPopover(entry, li);
       });
     });
@@ -1035,6 +1069,24 @@
         showToast("履歴を読み込みました");
       });
     });
+    ul.querySelectorAll("[data-delete-id]").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        deleteHistoryEntry(btn.dataset.deleteId);
+      });
+    });
+  }
+
+  function deleteHistoryEntry(id) {
+    const list = loadHistory();
+    const entry = list.find((e) => e.id === id);
+    if (!entry) return;
+    const msg = "この履歴を削除しますか？\n\n" + entry.label + "\n" + formatHistoryTime(entry.ts);
+    if (!confirm(msg)) return;
+    saveHistoryList(list.filter((e) => e.id !== id));
+    renderHistoryList();
+    hideHistoryPopover(0);
+    showToast("履歴を削除しました");
   }
 
   function clearHistory() {
