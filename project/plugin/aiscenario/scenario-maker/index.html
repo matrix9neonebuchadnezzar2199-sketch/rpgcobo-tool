@@ -22,7 +22,7 @@
     --danger: #a63d3d;
     --border-wood: #6b4423;
     --sidebar-w: 268px;
-    --sidebar-collapsed-w: 52px;
+    --sidebar-collapsed-w: 48px;
   }
   * { box-sizing: border-box; }
   body {
@@ -517,8 +517,44 @@
     width: auto;
     filter: drop-shadow(0 1px 4px rgba(0,0,0,0.4));
   }
-  body.sidebar-collapsed .sidebar-logo { padding: 10px 8px; text-align: center; }
-  body.sidebar-collapsed .sidebar-logo img { height: 24px; }
+  body.sidebar-collapsed .sidebar-logo {
+    display: none;
+  }
+  body.sidebar-collapsed .sidebar-toggle {
+    padding: 10px 0;
+    text-align: center;
+  }
+  body.sidebar-collapsed .sidebar-scroll {
+    padding: 8px 0 12px;
+  }
+  body.sidebar-collapsed .sidebar-section {
+    padding: 0 4px;
+    margin-bottom: 10px;
+  }
+  body.sidebar-collapsed .sidebar-section-title,
+  body.sidebar-collapsed .sidebar-section .btn .label,
+  body.sidebar-collapsed .history-list,
+  body.sidebar-collapsed .sidebar-hint,
+  body.sidebar-collapsed .btn-clear-history {
+    display: none !important;
+  }
+  body.sidebar-collapsed .sidebar .btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    padding: 7px 0;
+    margin-bottom: 4px;
+    font-size: 1.15em;
+    line-height: 1;
+    text-align: center;
+    box-sizing: border-box;
+  }
+  body.sidebar-collapsed .sidebar .btn .btn-icon {
+    display: block;
+    flex: 0 0 auto;
+  }
   .sidebar-scroll {
     flex: 1;
     overflow-y: auto;
@@ -536,17 +572,6 @@
     padding-bottom: 4px;
     border-bottom: 1px solid rgba(232, 168, 56, 0.3);
   }
-  body.sidebar-collapsed .sidebar-section-title,
-  body.sidebar-collapsed .sidebar-section .btn .label,
-  body.sidebar-collapsed .history-list,
-  body.sidebar-collapsed .sidebar-hint,
-  body.sidebar-collapsed .btn-clear-history { display: none; }
-  body.sidebar-collapsed .sidebar-section .btn {
-    padding: 10px;
-    font-size: 1.25em;
-    text-align: center;
-  }
-  body.sidebar-collapsed .sidebar-section .btn .btn-icon { display: inline; }
   .sidebar .btn {
     display: block;
     width: 100%;
