@@ -473,9 +473,34 @@
   }
   .checkbox-row input { width: auto; }
   .checkbox-row label { margin: 0; font-weight: normal; }
+
+  /* 左上ロゴ */
+  .page-logo {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    z-index: 200;
+    display: block;
+    line-height: 0;
+  }
+  .page-logo img {
+    height: 36px;
+    width: auto;
+    display: block;
+    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+  }
+  @media (max-width: 600px) {
+    .page-logo { top: 10px; left: 10px; }
+    .page-logo img { height: 28px; }
+    .signboard { padding-top: 56px; }
+  }
 </style>
 </head>
 <body>
+
+<a class="page-logo" href="https://github.com/djkotori/rpgcobo-tool" title="RPG-Cobo" target="_blank" rel="noopener">
+  <img src="logo.png" alt="RPG-Cobo">
+</a>
 
 <header class="signboard">
   <div class="signboard-inner">
