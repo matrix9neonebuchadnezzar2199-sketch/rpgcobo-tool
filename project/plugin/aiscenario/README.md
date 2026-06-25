@@ -12,7 +12,7 @@
 ### プラグイン（RPG-Cobo 内）
 
 1. RPG-Cobo ツール起動（プロジェクトを開いた状態）
-2. **編集 → JSON シナリオ取り込み...** を実行
+2. **編集 → シナリオメーカー読み込み** を実行
 3. **JSON を貼り付け** または **JSON ファイルを選択**
 4. プレビュー（対象 map / events 件数 / 各 event の OK/NG）を確認 → **Import**
 5. ログは **表示 → システムコンソール**（Ctrl+@）
@@ -26,7 +26,7 @@
    - GitHub Pages: https://matrix9neonebuchadnezzar2199-sketch.github.io/aiscenario-maker/
    - または `scenario-maker/index.html` をローカルで開く
 2. **JSON を作成する** → **コピー** または **ダウンロード**
-3. RPG-Cobo で **編集 → JSON シナリオ取り込み...**
+3. RPG-Cobo で **編集 → シナリオメーカー読み込み**
    - コピーした JSON → **貼り付け**
    - ダウンロードした `.json` → **ファイル選択**
 4. プレビュー確認 → Import → マップ再オープン

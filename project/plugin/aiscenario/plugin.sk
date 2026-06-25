@@ -33,7 +33,7 @@ function loadPlugin( args, opt){
 			uid = "aiscenario_import_json",
 			parentid = "menu_edit",
 			block = "*9",
-			lbl = { "ja":"JSON シナリオ取り込み...", "en":"Import scenario JSON..." },
+			lbl = { "ja":"シナリオメーカー読み込み", "en":"Scenario Maker Import" },
 			func = @( m){
 				ImportDialog.run();
 			},
