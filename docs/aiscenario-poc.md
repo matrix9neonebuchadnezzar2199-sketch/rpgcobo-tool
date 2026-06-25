@@ -140,9 +140,10 @@ ScenarioImporter.importFromFile
 
 1. 編集中マップの最新データは **ディスクの map.json ではなく** `MapEditor.data` 内。
 2. `getResource(...).getContent()` は **エディタ未保存分を含まない**。
-3. アクティブエディタ: `::skstudio.editor`（map 以外のエディタの場合あり → `mapid` で防御）。
-4. 編集中データ: `::skstudio.editor.data`（`map.conf` 当該マップ相当）。
-5. 本家 savefunc（MapToolEvent.sk）作法:
+3. 開いているエディタ一覧: `::skstudio.tabeditors`（`path -> editor`）。
+4. マップエディタ判定: `path` が `/.x/map/M001` のようになり、`ed` に `MapEditor` インスタンスが入る（作者回答）。
+5. 編集中データ: `ed.data`（`map.conf` 当該マップ相当）。
+6. 本家 savefunc（MapToolEvent.sk）作法:
    ```
    editor.data.event[id] <- ev
    editor.save()
@@ -154,8 +155,8 @@ ScenarioImporter.importFromFile
 
 | 条件 | 経路 | ログ例 |
 |------|------|--------|
-| 対象 mapid が**アクティブ**マップエディタ | **A (editor)** | `into M001 (editor)` |
-| 未オープン / 別マップ編集中 | **B (disk)** | `into M001 (disk)` |
+| 対象 mapid が開いている（非アクティブタブ含む） | **A (editor)** | `into M001 (editor)` |
+| 対象 mapid が開いていない | **B (disk)** | `into M001 (disk)` |
 
 **実機確認（2026-06-23）**
 
@@ -164,13 +165,12 @@ ScenarioImporter.importFromFile
 - Path A 後、マップ再オープン → イベント表示・分岐データ保持 OK
 - villager / custom × Path A/B すべて OK
 
-### 4.3 既知の制約（TODO verify）
+### 4.3 既知の制約
 
 | 制約 | 内容 |
 |------|------|
 | ギズモ未生成 | Path A では 3D 表示オブジェクトは即時生成しない。マップ**再オープン**で反映 |
-| 非アクティブタブ | `::skstudio.editor` はアクティブのみ。同 mapid が別タブで開いていると Path B に落ち、後のエディタ保存で上書きリスク |
-| 作者への質問中 | 非アクティブ含むエディタ列挙 API の有無 |
+| 非アクティブタブ | 作者回答に基づき `::skstudio.tabeditors` で検出するため、Path B への誤落ちは解消 |
 
 ### 4.4 採用しなかった案
 
@@ -189,7 +189,7 @@ ScenarioImporter.importFromFile
 | `if` ビルダー登録失敗 | Squirrel 予約語 | `builders["if"]` |
 | uiclose=0 が 2 になる | `\|\|` による falsy 判定 | `("uiclose" in c)` |
 | contact が 1 | 観測値と作者仕様の差 | **3** に修正 |
-| 編集中インポート後に消失 | disk 経路で上書き | Path A 実装 |
+| 編集中インポート後に消失 | disk 経路で上書き | `::skstudio.tabeditors` で開いている MapEditor を検出し Path A |
 
 ---
 
@@ -236,6 +236,7 @@ ScenarioImporter.importFromFile
 - **変換の分担:** フォームは `type: "message"` 等の人間向け形式のみ出力。`cmdblock[]` や trigger 数値への変換は **プラグイン**（`ScenarioCommandBuilder.sk`）が担当
 - **フロー:** キャラ種類 → マップ・配置 → 会話（選択肢なし / YES-NO / YES-NO+if）
 - **便利機能:** プリセット読込、会話プレビュー、コピー、ダウンロード、localStorage 下書き、バリデーション
+- **GitHub Pages:** https://matrix9neonebuchadnezzar2199-sketch.github.io/aiscenario-maker/（リポ `aiscenario-maker`、正本 `scenario-maker/` から `update-from-rpgcobo.ps1` で同期）
 
 ---
 

@@ -142,17 +142,28 @@ ScenarioImporter <- {
 		return scenario;
 	},
 
-	//	対象 mapid が現在アクティブなマップエディタで開かれていれば
-	//	そのエディタを返す。そうでなければ null。
-	//	※ ::skstudio.editor は map 以外のエディタ（DB編集等）の場合があるため
-	//	  mapid フィールドの存在を防御的にチェックする。
-	function getActiveMapEditor( mapid){
-		local ed = ::skstudio["editor"];
+	function isTargetMapEditor( ed, mapid){
 		if( !ed) return null;
 		if( !("mapid" in ed)) return null;	//	マップエディタ以外
 		if( ed.mapid != mapid) return null;	//	別マップを編集中
 		if( !("data" in ed) || typeof( ed.data) != SS_TABLE) return null;
 		return ed;
+	},
+
+	//	対象 mapid が開いているマップエディタ（非アクティブタブ含む）を返す。
+	//	::skstudio.tabeditors は {path:editor} なので、まず作者提示 API で全タブを確認する。
+	function getOpenMapEditor( mapid){
+		local editors = ::skstudio["tabeditors"];
+		if( editors){
+			local targetPath = "/.x/map/" + mapid;
+			foreach( path, ed in editors){
+				if( path != targetPath) continue;
+				local matched = isTargetMapEditor( ed, mapid);
+				if( matched) return matched;
+			}
+		}
+		//	古い環境や tabeditors 未初期化時の保険。通常は上の分岐で active tab も拾える。
+		return isTargetMapEditor( ::skstudio["editor"], mapid);
 	},
 
 	function importFromFile( jsonPath){
@@ -167,9 +178,8 @@ ScenarioImporter <- {
 		}
 
 		//	NOTE(PR#3): 編集中マップは MapEditor.data に最新が保持されるため、
-		//	アクティブエディタが対象なら editor.data へ、そうでなければ disk へ追記する。
-		//	既知の制約: 非アクティブだが開いている同マップは検出できない（TODO(verify)）。
-		local activeEd = getActiveMapEditor( mapid);
+		//	開いている対象マップ（非アクティブタブ含む）があれば editor.data へ追記する。
+		local activeEd = getOpenMapEditor( mapid);
 		local eventTb;		//	追記先イベントテーブル
 		local mapdata = null;	//	経路B でのみ使用（保存対象）
 		local mapres = null;	//	経路B でのみ使用

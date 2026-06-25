@@ -32,18 +32,42 @@ AI なしで中間 JSON を作るウィザード HTML です。
 
 **版数:** `index.html` 内 `APP_VERSION` を修正のたびに更新（右上表示と連動）。
 
+### GitHub Pages 公開版
+
+ブラウザ単体で配布する公開 URL 用リポは **`aiscenario-maker`**（開発正本とは別）。
+
+| 項目 | 値 |
+|------|-----|
+| 公開 URL | https://matrix9neonebuchadnezzar2199-sketch.github.io/aiscenario-maker/ |
+| Pages リポ | https://github.com/matrix9neonebuchadnezzar2199-sketch/aiscenario-maker |
+| ローカル clone | `H:\CURSOR\aiscenario-maker` |
+
+**更新手順（正本 → Pages）:**
+
+```powershell
+# 1. ここ（scenario-maker/）を編集し APP_VERSION を bump → rpgcobo-tool を commit/push
+# 2. Pages リポへ同期
+cd H:\CURSOR\aiscenario-maker
+.\update-from-rpgcobo.ps1
+git add index.html logo.png
+git commit -m "chore: sync scenario maker from rpgcobo-tool"
+git push
+```
+
+運用メモ（Obsidian）: `40_Tools/aiscenario-maker-pages-update.md`
+
 ## 保存経路（PR#3 4点目）
 
 インポート先は対象マップの編集状態で自動分岐する。
 
 | 状態 | 経路 | 保存先 |
 |---|---|---|
-| 対象マップを**アクティブに**開いている | A（editor） | `::skstudio.editor.data.event` → `editor.save()` |
-| 開いていない / 別マップを編集中 | B（disk） | `getResource → deepclone → save()` |
+| 対象マップを開いている（非アクティブタブ含む） | A（editor） | `::skstudio.tabeditors["/.x/map/<mapid>"].data.event` → `editor.save()` |
+| 対象マップを開いていない | B（disk） | `getResource → deepclone → save()` |
 
 - **経路A:** 本家 `MapToolEvent.sk` の savefunc 作法（`save()` → `markSaved()` → `updateChangeFile`）に倣う。
 - **経路A の制約:** ギズモ（3D表示）の即時生成は PoC スコープ外。**マップを開き直す**と追記イベントがエディタ画面に表示される。
-- **既知の制約（TODO verify）:** `::skstudio.editor` はアクティブなエディタのみ。対象マップが別タブで開いているが非アクティブの場合は経路Bになり、後のエディタ保存で上書きされる可能性がある。
+- **作者確認済み:** `::skstudio.tabeditors` から非アクティブタブを含む開いているエディタを列挙できる。
 
 ## ファイル構成
 
