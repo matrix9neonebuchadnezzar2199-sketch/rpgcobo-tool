@@ -7,7 +7,7 @@ local srcdir = dirname( callee().getSourceName());
 pluginfo <- {
 	name : { "ja":"AI Scenario Importer", "en":"AI Scenario Importer" }
 	auther : "matrix9neonebuchadnezzar2199-sketch"
-	ver : "0.2.0"
+	ver : "0.3.0"
 	tags : [ "editor", "aiscenario" ]
 	order : 100
 	lock : false
@@ -27,11 +27,22 @@ function loadPlugin( args, opt){
 	module.hookAction( "editor_postload", @(){
 		::runsk( srcdir + "/ScenarioCommandBuilder.sk");
 		::runsk( srcdir + "/ScenarioImporter.sk");
+		::runsk( srcdir + "/ImportDialog.sk");
+		::runsk( srcdir + "/ScenarioAI.sk");
+		::skstudio.registerMenu( {
+			uid = "aiscenario_import_json",
+			parentid = "menu_edit",
+			block = "*9",
+			lbl = { "ja":"JSON シナリオ取り込み...", "en":"Import scenario JSON..." },
+			func = @( m){
+				ImportDialog.run();
+			},
+		});
 		::skstudio.registerMenu( {
 			uid = "aiscenario_import_villager",
 			parentid = "menu_edit",
 			block = "*9",
-			lbl = { "ja":"[PoC] villager JSON取り込み", "en":"[PoC] Import villager JSON" },
+			lbl = { "ja":"[Dev] sample villager", "en":"[Dev] sample villager" },
 			func = @( m){
 				ScenarioImporter.importSample( "/plugin/aiscenario/sample/villager.json");
 			},
@@ -40,12 +51,12 @@ function loadPlugin( args, opt){
 			uid = "aiscenario_import_custom",
 			parentid = "menu_edit",
 			block = "*9",
-			lbl = { "ja":"[PoC] custom JSON取り込み", "en":"[PoC] Import custom JSON" },
+			lbl = { "ja":"[Dev] sample custom", "en":"[Dev] sample custom" },
 			func = @( m){
 				ScenarioImporter.importSample( "/plugin/aiscenario/sample/custom.json");
 			},
 		});
-		printf( "[aiscenario] plugin loaded (v0.2 villager + custom)\n");
+		printf( "[aiscenario] plugin loaded (v0.3 paste/file import)\n");
 	}, 100);
 
 	return true;

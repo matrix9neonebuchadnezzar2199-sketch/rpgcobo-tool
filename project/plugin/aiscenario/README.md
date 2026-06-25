@@ -12,11 +12,24 @@
 ### プラグイン（RPG-Cobo 内）
 
 1. RPG-Cobo ツール起動（プロジェクトを開いた状態）
-2. **編集** メニューから取り込みを実行:
-   - `[PoC] villager JSON取り込み` — `sample/villager.json`
-   - `[PoC] custom JSON取り込み` — `sample/custom.json`
-3. ログは **表示 → システムコンソール**（Ctrl+@）
-4. 対象マップを**閉じて開き直す** → 配置・会話を確認
+2. **編集 → JSON シナリオ取り込み...** を実行
+3. **JSON を貼り付け** または **JSON ファイルを選択**
+4. プレビュー（対象 map / events 件数 / 各 event の OK/NG）を確認 → **Import**
+5. ログは **表示 → システムコンソール**（Ctrl+@）
+6. 対象マップを**閉じて開き直す** → 配置・会話を確認
+
+開発用 sample 固定メニュー（`[Dev] sample villager/custom`）も残しています。
+
+### Scenario Maker → RPG-Cobo 正式導線
+
+1. **Web で JSON を作る**
+   - GitHub Pages: https://matrix9neonebuchadnezzar2199-sketch.github.io/aiscenario-maker/
+   - または `scenario-maker/index.html` をローカルで開く
+2. **JSON を作成する** → **コピー** または **ダウンロード**
+3. RPG-Cobo で **編集 → JSON シナリオ取り込み...**
+   - コピーした JSON → **貼り付け**
+   - ダウンロードした `.json` → **ファイル選択**
+4. プレビュー確認 → Import → マップ再オープン
 
 ### シナリオメーカー（ブラウザ）
 
@@ -76,12 +89,27 @@ project/plugin/aiscenario/
 ├─ plugin.sk
 ├─ ScenarioImporter.sk
 ├─ ScenarioCommandBuilder.sk   # v2: type → cmd_* 変換
+├─ ImportDialog.sk               # 貼り付け / ファイル / プレビュー
+├─ ScenarioAI.sk                 # M5: AI 生成スタブ（中間 JSON のみ）
 ├─ scenario-maker/
 │  └─ index.html                 # ブラウザ用 JSON ウィザード
 └─ sample/
    ├─ villager.json
    └─ custom.json
 ```
+
+## マイルストーン
+
+| ID | 内容 | 状態 |
+|---|---|---|
+| M0 | sample import + editor/disk 保存経路 | 完了 |
+| M1 | JSON 貼り付け取り込み | 完了 |
+| M2 | JSON ファイル選択取り込み | 完了 |
+| M3 | 取り込み前 validate / preview | 完了 |
+| M4 | Scenario Maker → RPG-Cobo 正式導線 | 完了 |
+| M5 | AI 生成（中間 JSON のみ、validate 経由） | 設計スタブ |
+
+詳細: [`docs/aiscenario-milestones.md`](../../docs/aiscenario-milestones.md)
 
 ## データ仕様（v2 custom）
 

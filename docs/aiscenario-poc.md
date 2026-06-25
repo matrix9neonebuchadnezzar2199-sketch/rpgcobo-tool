@@ -221,10 +221,12 @@ ScenarioImporter.importFromFile
 
 ## 8. 今後（本 PR 外）
 
-- `ScenarioAI.sk` — AI 生成パイプライン
-- `ImportDialog.sk` — ファイル選択 UI
+- ~~`ImportDialog.sk` — ファイル選択 / 貼り付け UI~~ → **M1–M3 完了**（`ImportDialog.sk`）
+- `ScenarioAI.sk` — AI 生成パイプライン（**M5 スタブのみ**、実 API 未接続）
 - 他 role: itemchest / enemy / portal / clerk
-- 非アクティブタブ検出 or 警告 UI
+- ギズモ即時生成（Path A 後の 3D 表示）
+
+マイルストーン一覧: [aiscenario-milestones.md](./aiscenario-milestones.md)
 
 ---
 

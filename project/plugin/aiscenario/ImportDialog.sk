@@ -1,0 +1,155 @@
+import PropertyType;
+import VirtualKeyCode;
+import ModifiersMask;
+
+//
+//	JSON 貼り付け / ファイル選択 → 検証プレビュー → import
+//
+
+ImportDialog <- {
+	PASTE_PROPDEF = {
+		name = { "ja":"JSON 貼り付け", "en":"Paste JSON" },
+		width = 720,
+		props = [
+			{ pid="json", lbl={ "ja":"シナリオ JSON", "en":"Scenario JSON" }, type=SCRIPT, multiline=18, cnt="cnt6v.ui" },
+		],
+	},
+
+	function formatPreview( report){
+		local sb = StringBuffer();
+		sb .. "Target map: " .. (report.mapid || "(none)") .. "\n";
+		sb .. sprintf( "Events: %d (importable: %d)\n", report.eventCount, report.importableCount);
+		foreach( item in report.items){
+			local mark = item.ok ? "[OK]" : "[NG]";
+			sb .. mark .. " " .. item.message .. "\n";
+		}
+		if( length( report.warnings)){
+			sb .. "\nWarnings:\n";
+			foreach( w in report.warnings) sb .. "- " .. w .. "\n";
+		}
+		return string( sb);
+	},
+
+	function formatErrors( report){
+		local sb = StringBuffer();
+		foreach( err in report.errors) sb .. "- " .. err .. "\n";
+		return string( sb);
+	},
+
+	function showResultNotice( result){
+		local msg = sprintf(
+			"Imported %d event(s) into %S (%S)\nIDs: %S\n\nReopen the map to refresh the editor view.",
+			result.imported, result.mapid, result.route || "unknown", result.ids
+		);
+		Dialogs.notice( { msg=msg, icon="\ue86c" });
+	},
+
+	function confirmImport( report){
+		local msg = formatPreview( report);
+		if( length( report.warnings)){
+			msg = "Warnings detected.\n\n" + msg;
+		}
+		msg += "\nImport now?";
+		return Dialogs.confirm( { msg=msg, icon="\ue2c6", yestxt="Import", notxt="Cancel" });
+	},
+
+	function importValidated( report, sourceLabel){
+		if( !report.ok){
+			Dialogs.notice( { msg=formatErrors( report), icon="\ue002" });
+			return false;
+		}
+		if( !report.importableCount){
+			Dialogs.notice( { msg="No importable events.", icon="\ue002" });
+			return false;
+		}
+		if( !confirmImport( report)) return false;
+		try{
+			local result = ScenarioImporter.importFromScenario( report.scenario, sourceLabel);
+			if( result.imported > 0){
+				showResultNotice( result);
+				return true;
+			}
+			Dialogs.notice( { msg="No events were imported.", icon="\ue002" });
+		}catch( ex){
+			printf( "[aiscenario] import failed: %S\n", ex);
+			printexception( ex);
+			Popups.showErrorTrace( { error=ex });
+		}
+		return false;
+	},
+
+	function readClipboardJson(){
+		try{
+			local clip = skGetClipboardData();
+			if( length( clip)) return clip;
+		}catch( ex){
+			printf( "[aiscenario] clipboard read skipped: %S\n", ex);
+		}
+		return "";
+	},
+
+	function runPaste(){
+		local data = { json = readClipboardJson() };
+		local popup = ImportPastePopup( ::loadSKView( PropertyEditPopup_OK.POPUPUIPATH), data);
+		popup.show();
+		return popup.ret;
+	},
+
+	function pickJsonFile(){
+		local d = FileDialog();
+		d.setTitle( "Open scenario JSON");
+		d.setMode( FileDialogMode.FILEDIALOG_SELECT);
+		d.show();
+		while( d.isShown()){
+			suspend();
+			sleep( 100);
+		}
+		return d.getResult();
+	},
+
+	function runFile(){
+		local path = pickJsonFile();
+		if( !length( path)) return false;
+		try{
+			local scenario = ScenarioImporter.loadScenarioJson( path);
+			local report = ScenarioImporter.validateScenario( scenario);
+			report.scenario <- scenario;
+			return importValidated( report, path);
+		}catch( ex){
+			printf( "[aiscenario] file load failed: %S\n", ex);
+			printexception( ex);
+			Popups.showErrorTrace( { error=ex });
+		}
+		return false;
+	},
+
+	function run(){
+		local choice = MenuPopup.run( [
+			{ id="paste", lbl={ "ja":"JSON を貼り付け", "en":"Paste JSON" }, icon="\ue157" },
+			{ id="file", lbl={ "ja":"JSON ファイルを選択", "en":"Select JSON file" }, icon="\ue2c6" },
+		]);
+		if( !choice) return false;
+		if( choice.id == "file") return runFile();
+		return runPaste();
+	},
+};
+
+class ImportPastePopup extends PropertyEditPopup_OK
+{
+	constructor( v, data){
+		super( v, ImportDialog.PASTE_PROPDEF, data, this);
+	}
+
+	function actionevent( e){
+		if( e.src["name"] == "btn_apply"){
+			e.consume();
+			local report = ScenarioImporter.validateText( data.json || "");
+			if( ImportDialog.importValidated( report, "paste")){
+				ret = 1;
+				close();
+			}
+			return;
+		}
+		super.actionevent( e);
+	}
+}

@@ -125,6 +125,13 @@ ScenarioImporter <- {
 		};
 	},
 
+	function parseScenarioText( raw){
+		if( !length( raw)) throw Exception( "scenario json is empty");
+		local scenario = decodeJSON( raw);
+		if( typeof( scenario) != SS_TABLE) throw Exception( "invalid scenario json root");
+		return scenario;
+	},
+
 	function loadScenarioJson( jsonPath){
 		local raw = null;
 		//	/plugin/... は Resource 仮想パス。FileRef では開けない。
@@ -137,9 +144,112 @@ ScenarioImporter <- {
 			if( !f.exists()) throw Exception( "scenario file not found: " + jsonPath);
 			raw = f.load();
 		}
-		local scenario = decodeJSON( raw);
-		if( typeof( scenario) != SS_TABLE) throw Exception( "invalid scenario json root");
-		return scenario;
+		return parseScenarioText( raw);
+	},
+
+	function summarizeEvent( src, index){
+		local role = src["role"] || "villager";
+		local name = src["name"] || role;
+		local line = sprintf( "#%d %S \"%S\"", index, role, name);
+		if( role == "villager"){
+			local pos = src["pos"];
+			if( typeof( pos) == SS_ARRAY && pos.len() >= 4){
+				line += sprintf( " pos=[%d,%d,%d,%d]", pos[0], pos[1], pos[2], pos[3]);
+			}
+		}else
+		if( role == "custom"){
+			local pages = src["pages"];
+			local pcnt = typeof( pages) == SS_ARRAY ? length( pages) : 0;
+			line += sprintf( " pages=%d", pcnt);
+		}
+		return line;
+	},
+
+	function validateEvent( src, index){
+		local role = src["role"] || "villager";
+		if( typeof( src) != SS_TABLE){
+			return { ok=false, role=role, name="", message="event must be object" };
+		}
+		try{
+			local ev = buildEvent( src, 0);
+			if( !ev){
+				return { ok=false, role=role, name=src["name"]||"", message="unsupported role" };
+			}
+			return {
+				ok = true,
+				role = role,
+				name = src["name"] || "",
+				message = summarizeEvent( src, index),
+			};
+		}catch( ex){
+			return { ok=false, role=role, name=src["name"]||"", message=string( ex) };
+		}
+	},
+
+	//	取り込み前プレビュー用。errors が空なら import 可能。
+	function validateScenario( scenario){
+		local errors = [];
+		local warnings = [];
+		local items = [];
+		if( typeof( scenario) != SS_TABLE){
+			errors.push( "root must be a JSON object");
+			return { ok=false, errors=errors, warnings=warnings, items=items, mapid=null, eventCount=0, importableCount=0 };
+		}
+		local mapid = scenario["map"];
+		if( !length( mapid)){
+			errors.push( "map is required");
+		}else
+		if( !::getResource( "/.x/map/" + mapid)){
+			errors.push( "map not found: " + mapid);
+		}
+		local events = scenario["events"];
+		local eventCount = 0;
+		local importableCount = 0;
+		if( typeof( events) != SS_ARRAY){
+			errors.push( "events must be an array");
+		}else{
+			eventCount = length( events);
+			if( !eventCount) warnings.push( "events is empty");
+			foreach( i, src in events){
+				local item = validateEvent( src, i);
+				items.push( item);
+				if( item.ok) ++importableCount;
+				else errors.push( sprintf( "events[%d]: %S", i, item.message));
+			}
+		}
+		return {
+			ok = !length( errors),
+			errors = errors,
+			warnings = warnings,
+			items = items,
+			mapid = mapid,
+			eventCount = eventCount,
+			importableCount = importableCount,
+		};
+	},
+
+	function validateText( raw){
+		try{
+			local scenario = parseScenarioText( raw);
+			local report = validateScenario( scenario);
+			report.scenario <- scenario;
+			return report;
+		}catch( ex){
+			return {
+				ok = false,
+				errors = [ string( ex) ],
+				warnings = [],
+				items = [],
+				mapid = null,
+				eventCount = 0,
+				importableCount = 0,
+			};
+		}
+	},
+
+	function importFromText( raw, sourceLabel="paste"){
+		local scenario = parseScenarioText( raw);
+		return importFromScenario( scenario, sourceLabel);
 	},
 
 	function isTargetMapEditor( ed, mapid){
@@ -166,15 +276,14 @@ ScenarioImporter <- {
 		return isTargetMapEditor( ::skstudio["editor"], mapid);
 	},
 
-	function importFromFile( jsonPath){
-		local scenario = loadScenarioJson( jsonPath);
+	function importFromScenario( scenario, sourceLabel="file"){
 		local mapid = scenario["map"];
 		if( !length( mapid)) throw Exception( "scenario.map is required");
 
 		local events = scenario["events"];
 		if( typeof( events) != SS_ARRAY || !length( events)){
-			printf( "[aiscenario] no events in %S\n", jsonPath);
-			return 0;
+			printf( "[aiscenario] no events in %S\n", sourceLabel);
+			return { imported=0, skipped=0, ids=[], mapid=mapid, route=null, source=sourceLabel };
 		}
 
 		//	NOTE(PR#3): 編集中マップは MapEditor.data に最新が保持されるため、
@@ -230,29 +339,38 @@ ScenarioImporter <- {
 		}
 
 		if( !imported){
-			printf( "[aiscenario] nothing imported from %S (skipped %d)\n", jsonPath, skipped);
-			return 0;
+			printf( "[aiscenario] nothing imported from %S (skipped %d)\n", sourceLabel, skipped);
+			return { imported=0, skipped=skipped, ids=ids, mapid=mapid, route=null, source=sourceLabel };
 		}
 
+		local route = null;
 		//	保存（経路で分岐）
 		if( activeEd){
 			//	経路A: 本家 savefunc に倣った保存作法。
 			activeEd.save();
 			activeEd.op.markSaved();
 			::skstudio.updateChangeFile( activeEd);
+			route = "editor";
 			printf( "[aiscenario] imported %d, skipped %d into %S (editor) ids=%S\n", imported, skipped, mapid, ids);
 			printf( "[aiscenario] NOTE: reopen map %S to see newly added events in the editor view.\n", mapid);
 		}else{
 			//	経路B: ディスク保存。
 			mapres.save( mapdata);
+			route = "disk";
 			printf( "[aiscenario] imported %d, skipped %d into %S (disk) ids=%S\n", imported, skipped, mapid, ids);
 		}
-		return imported;
+		return { imported=imported, skipped=skipped, ids=ids, mapid=mapid, route=route, source=sourceLabel };
+	},
+
+	function importFromFile( jsonPath){
+		local scenario = loadScenarioJson( jsonPath);
+		return importFromScenario( scenario, jsonPath);
 	},
 
 	function importSample( jsonPath){
 		try{
-			return importFromFile( jsonPath);
+			local result = importFromFile( jsonPath);
+			return result.imported;
 		}catch( ex){
 			printf( "[aiscenario] import failed: %S\n", ex);
 			printexception( ex);
