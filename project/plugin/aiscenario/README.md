@@ -13,12 +13,11 @@
 
 1. RPG-Cobo ツール起動（プロジェクトを開いた状態）
 2. **編集 → シナリオメーカー読み込み** を実行
-3. **JSON を貼り付け** または **JSON ファイルを選択**
+3. **JSON を貼り付け** / **JSON ファイルを選択** / **履歴** から取り込み元を選ぶ
 4. プレビュー（対象 map / events 件数 / 各 event の OK/NG）を確認 → **Import**
-5. ログは **表示 → システムコンソール**（Ctrl+@）
-6. 対象マップを**閉じて開き直す** → 配置・会話を確認
-
-開発用 sample 固定メニュー（`[Dev] sample villager/custom`）も残しています。
+5. import 成功時、JSON 本文と表示用メタデータが **履歴** に自動保存される（最大 30 件）
+6. ログは **表示 → システムコンソール**（Ctrl+@）
+7. 対象マップを**閉じて開き直す**（経路 B の場合）→ 配置・会話を確認
 
 ### Scenario Maker → RPG-Cobo 正式導線
 
@@ -29,7 +28,19 @@
 3. RPG-Cobo で **編集 → シナリオメーカー読み込み**
    - コピーした JSON → **貼り付け**
    - ダウンロードした `.json` → **ファイル選択**
-4. プレビュー確認 → Import → マップ再オープン
+4. プレビュー確認 → Import → マップ再オープン（または編集中マップなら即反映）
+
+### 取り込み履歴（RPG-Cobo 側）
+
+import **成功時のみ**、プロジェクト配下 `tmp/aiscenario-history.json` に JSON 本文を保存する。
+
+| 項目 | 内容 |
+|------|------|
+| 保存上限 | 30 件（古い順に削除） |
+| 一覧表示 | 日時 / 名前 / 先頭メッセージ・アクション / 分岐あり・なし |
+| 再取り込み | **編集 → シナリオメーカー読み込み → 履歴** から選択 → 既存の validate / preview / import 経路 |
+
+貼り付け・ファイル選択の両方が対象。履歴から選んでも同じ JSON を再 import できる。
 
 ### シナリオメーカー（ブラウザ）
 
@@ -89,7 +100,7 @@ project/plugin/aiscenario/
 ├─ plugin.sk
 ├─ ScenarioImporter.sk
 ├─ ScenarioCommandBuilder.sk   # v2: type → cmd_* 変換
-├─ ImportDialog.sk               # 貼り付け / ファイル / プレビュー
+├─ ImportDialog.sk               # 貼り付け / ファイル / 履歴 / プレビュー
 ├─ ScenarioAI.sk                 # M5: AI 生成スタブ（中間 JSON のみ）
 ├─ scenario-maker/
 │  └─ index.html                 # ブラウザ用 JSON ウィザード
@@ -106,6 +117,7 @@ project/plugin/aiscenario/
 | M1 | JSON 貼り付け取り込み | 完了 |
 | M2 | JSON ファイル選択取り込み | 完了 |
 | M3 | 取り込み前 validate / preview | 完了 |
+| M3b | 取り込み履歴（再 import / 一覧） | 完了 |
 | M4 | Scenario Maker → RPG-Cobo 正式導線 | 完了 |
 | M5 | AI 生成（中間 JSON のみ、validate 経由） | 設計スタブ |
 

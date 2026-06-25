@@ -5,6 +5,8 @@
 ScenarioImporter <- {
 	EVENT_ID_MIN = 1000000,
 	EVENT_ID_MAX = 1999999,
+	HISTORY_MAX = 30,
+	HISTORY_PATH = "tmp/aiscenario-history.json",
 
 	//	event キーは int または "#1000001#" 文字列の両方があり得る。
 	function parseEventIdKey( key){
@@ -61,7 +63,7 @@ ScenarioImporter <- {
 			movespd = p["movespd"] || 4,
 			pararun = p["parallel"] || false,
 			reqs = convertConditions( p["conditions"]),
-			standani = p["standani"] || null,
+			standani = p["standani"] || { id="stand" },
 			trigger = convertTrigger( p["trigger"]),
 		};
 	},
@@ -128,8 +130,9 @@ ScenarioImporter <- {
 	function normalizeJsonRaw( raw){
 		if( raw == null || raw == undefined) return "";
 		if( typeof( raw) != SS_STRING) raw = string( raw);
-		//	UTF-8 BOM / UTF-16 BOM を除去
-		if( raw.len() >= 1 && raw[0] == '\uFEFF') raw = raw.slice( 1);
+		//	UTF-16 BOM（デコード済み文字列先頭）
+		if( raw.len() >= 1 && raw.slice( 0, 1) == "\uFEFF") raw = raw.slice( 1);
+		//	UTF-8 BOM（先頭 3 バイト）
 		if( raw.len() >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF){
 			raw = raw.slice( 3);
 		}
@@ -301,6 +304,26 @@ ScenarioImporter <- {
 		return importFromScenario( scenario, sourceLabel);
 	},
 
+	function syncImportedEventsToEditor( ed, importedEvents){
+		local synced = 0;
+		if( !ed || !("canvas" in ed) || !ed.canvas) return synced;
+		foreach( item in importedEvents){
+			ed.canvas.placeEventGizmo( item.id, item.event);
+			++synced;
+		}
+		if( ("tool" in ed) && ed.tool ){
+			try{
+				if( ed.tool["updateEventList"] ) ed.tool.updateEventList();
+				if( ed.tool["updateGizmoStates"] ) ed.tool.updateGizmoStates();
+			}catch( ex){
+				printf( "[aiscenario] WARN: editor event list refresh failed: %S\n", ex);
+				printexception( ex);
+			}
+		}
+		ed.canvas.view.repaint();
+		return synced;
+	},
+
 	function isTargetMapEditor( ed, mapid){
 		if( !ed) return null;
 		if( !("mapid" in ed)) return null;	//	マップエディタ以外
@@ -363,6 +386,7 @@ ScenarioImporter <- {
 		local imported = 0;
 		local skipped = 0;
 		local ids = [];
+		local importedEvents = [];
 		foreach( src in events){
 			try{
 				local role = src["role"] || "villager";
@@ -380,6 +404,7 @@ ScenarioImporter <- {
 				}
 				eventTb[evid] <- ev;
 				ids.push( evid);
+				importedEvents.push( { id=evid, event=ev } );
 				++imported;
 			}catch( ex){
 				printf( "[aiscenario] WARN: skip event (%S)\n", ex);
@@ -396,12 +421,12 @@ ScenarioImporter <- {
 		//	保存（経路で分岐）
 		if( activeEd){
 			//	経路A: 本家 savefunc に倣った保存作法。
+			local syncedGizmos = syncImportedEventsToEditor( activeEd, importedEvents);
 			activeEd.save();
 			activeEd.op.markSaved();
 			::skstudio.updateChangeFile( activeEd);
 			route = "editor";
-			printf( "[aiscenario] imported %d, skipped %d into %S (editor) ids=%S\n", imported, skipped, mapid, ids);
-			printf( "[aiscenario] NOTE: reopen map %S to see newly added events in the editor view.\n", mapid);
+			printf( "[aiscenario] imported %d, skipped %d into %S (editor) ids=%S gizmos=%d\n", imported, skipped, mapid, ids, syncedGizmos);
 		}else{
 			//	経路B: ディスク保存。
 			mapres.save( mapdata);
@@ -425,5 +450,193 @@ ScenarioImporter <- {
 			printexception( ex);
 			return -1;
 		}
+	},
+
+	function formatHistoryTimestamp( d=null){
+		if( !d) d = Date();
+		return sprintf( "%04d-%02d-%02d %02d:%02d",
+			d.tm_year + 1900, d.tm_mon + 1, d.tm_mday, d.tm_hour, d.tm_min);
+	},
+
+	function truncateText( text, maxLen){
+		if( !length( text)) return "";
+		if( text.len() <= maxLen) return text;
+		return text.slice( 0, maxLen) .. "...";
+	},
+
+	function summarizeCommand( c){
+		local typ = c["type"] || "";
+		switch( typ){
+		case "message":
+			local t = c["text"] || "";
+			return length( t) ? truncateText( t, 40) : "(message)";
+		case "wait":
+			return "wait " + (c["time"] || 0) + "ms";
+		case "setvar":
+			return "setvar " + (c["var"] || "?");
+		case "choice":
+			local opts = c["options"];
+			if( typeof( opts) == SS_ARRAY && length( opts)) return "choice: " + opts[0];
+			return "choice";
+		case "if":
+			return "if";
+		default:
+			return length( typ) ? typ : "(command)";
+		}
+	},
+
+	function findFirstContentInCommands( commands){
+		if( typeof( commands) != SS_ARRAY || !length( commands)) return null;
+		foreach( c in commands){
+			if( typeof( c) != SS_TABLE) continue;
+			local typ = c["type"];
+			if( typ == "message" || typ == "wait" || typ == "setvar" || typ == "choice" || typ == "if"){
+				return summarizeCommand( c);
+			}
+		}
+		foreach( c in commands){
+			if( typeof( c) != SS_TABLE) continue;
+			local typ = c["type"];
+			local nested = null;
+			if( typ == "choice"){
+				foreach( br in (c["branches"] || [])){
+					nested = findFirstContentInCommands( br);
+					if( nested) return nested;
+				}
+			}else
+			if( typ == "if"){
+				nested = findFirstContentInCommands( c["then"] || []);
+				if( nested) return nested;
+				nested = findFirstContentInCommands( c["else"] || []);
+				if( nested) return nested;
+			}
+		}
+		return null;
+	},
+
+	function commandTreeHasBranch( commands){
+		if( typeof( commands) != SS_ARRAY || !length( commands)) return false;
+		foreach( c in commands){
+			if( typeof( c) != SS_TABLE) continue;
+			local typ = c["type"];
+			if( typ == "choice" || typ == "if") return true;
+			if( typ == "choice"){
+				foreach( br in (c["branches"] || [])){
+					if( commandTreeHasBranch( br)) return true;
+				}
+			}else
+			if( typ == "if"){
+				if( commandTreeHasBranch( c["then"] || [])) return true;
+				if( commandTreeHasBranch( c["else"] || [])) return true;
+			}
+		}
+		return false;
+	},
+
+	function extractDisplayName( scenario){
+		local events = scenario["events"];
+		if( typeof( events) != SS_ARRAY || !length( events)) return "(無名)";
+		local name0 = events[0]["name"] || "(無名)";
+		local cnt = length( events);
+		if( cnt == 1) return name0;
+		return sprintf( "%S 他%d件", name0, cnt - 1);
+	},
+
+	function extractFirstContent( scenario){
+		local events = scenario["events"];
+		if( typeof( events) != SS_ARRAY || !length( events)) return "(なし)";
+		local ev = events[0];
+		local role = ev["role"] || "villager";
+		if( role == "villager"){
+			local msg = ev["msg"] || "";
+			if( !length( msg)) return "(msg なし)";
+			return truncateText( msg, 40);
+		}
+		local pages = ev["pages"];
+		if( typeof( pages) != SS_ARRAY || !length( pages)) return "(pages なし)";
+		local content = findFirstContentInCommands( pages[0]["commands"] || []);
+		return content || "(command なし)";
+	},
+
+	function scenarioHasBranch( scenario){
+		local events = scenario["events"];
+		if( typeof( events) != SS_ARRAY || !length( events)) return false;
+		foreach( ev in events){
+			local role = ev["role"] || "villager";
+			if( role == "villager") continue;
+			local pages = ev["pages"];
+			if( typeof( pages) != SS_ARRAY) continue;
+			if( length( pages) > 1) return true;
+			foreach( p in pages){
+				local conds = p["conditions"];
+				if( typeof( conds) == SS_ARRAY && length( conds)) return true;
+				if( commandTreeHasBranch( p["commands"] || [])) return true;
+			}
+		}
+		return false;
+	},
+
+	function makeHistoryEntry( raw, sourceLabel, result, report){
+		local scenario = report.scenario;
+		local d = Date();
+		return {
+			id = string( Date.currentTime()),
+			savedAt = Date.currentTime(),
+			savedAtText = formatHistoryTimestamp( d),
+			sourceLabel = sourceLabel,
+			mapid = result.mapid || report.mapid,
+			imported = result.imported,
+			displayName = extractDisplayName( scenario),
+			firstContent = extractFirstContent( scenario),
+			hasBranch = scenarioHasBranch( scenario),
+			raw = normalizeJsonRaw( raw),
+		};
+	},
+
+	function formatHistoryLabel( entry){
+		local branch = entry.hasBranch ? "あり" : "なし";
+		local first = truncateText( entry.firstContent || "", 24);
+		local name = truncateText( entry.displayName || "", 16);
+		return sprintf( "%S | %S | %S | %S", entry.savedAtText, name, first, branch);
+	},
+
+	function loadHistory(){
+		local f = FileRef( this.HISTORY_PATH);
+		if( !f.exists()) return [];
+		try{
+			local root = decodeJSON( f.load());
+			if( typeof( root) != SS_TABLE) return [];
+			local entries = root["entries"];
+			if( typeof( entries) != SS_ARRAY) return [];
+			return entries;
+		}catch( ex){
+			printf( "[aiscenario] WARN: history load failed: %S\n", ex);
+			return [];
+		}
+	},
+
+	function saveHistory( entries){
+		try{
+			local root = { version=1, entries=entries };
+			local bb = encodeJSON( root, 5, ByteBuffer());
+			FileRef( this.HISTORY_PATH).save( bb);
+			return true;
+		}catch( ex){
+			printf( "[aiscenario] WARN: history save failed: %S\n", ex);
+			printexception( ex);
+			return false;
+		}
+	},
+
+	function appendHistory( raw, sourceLabel, result, report){
+		if( !result || result.imported <= 0) return false;
+		if( !report || !("scenario" in report)) return false;
+		local entry = makeHistoryEntry( raw, sourceLabel, result, report);
+		local entries = loadHistory();
+		entries.insert( 0, entry);
+		while( entries.len() > this.HISTORY_MAX){
+			entries.remove( entries.len() - 1);
+		}
+		return saveHistory( entries);
 	},
 };

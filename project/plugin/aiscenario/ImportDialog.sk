@@ -7,10 +7,10 @@ import ModifiersMask;
 //
 
 ImportDialog <- {
-	//	multiline=18 の 1.5 倍。SCRIPT ではなく STRING で日本語表示とスクロールを改善。
+	//	multiline=18 の 1.5 倍 → さらに 1.3 倍。STRING で日本語表示とスクロールを改善。
 	PASTE_PROPDEF = {
 		name = { "ja":"JSON 貼り付け", "en":"Paste JSON" },
-		width = 800,
+		width = 1040,
 		tipskey = "aiscenario_import_paste",
 		menu = [
 			{ id="clip", lbl={ "ja":"クリップボード再読込", "en":"Reload clipboard" }, icon="\ue14d" },
@@ -21,24 +21,13 @@ ImportDialog <- {
 				pid = "json",
 				lbl = { "ja":"シナリオ JSON", "en":"Scenario JSON" },
 				type = STRING,
-				multiline = 27,
+				multiline = 35,
 				cnt = "cnt6v.ui",
 			},
 		],
-		menufunc = function( cmd, d){
-			switch( cmd.id){
-			case "clip":
-				d.json = readClipboardJson();
-				return d;
-			case "preview":
-				showPreviewOnly( d.json || "");
-				return null;
-			}
-			return null;
-		},
 	},
 
-	POPUP_MIN_HEIGHT = 520,
+	POPUP_MIN_HEIGHT = 676,
 
 	function formatPreview( report){
 		local sb = StringBuffer();
@@ -77,22 +66,30 @@ ImportDialog <- {
 
 	function showResultNotice( result){
 		local msg = sprintf(
-			"%d 件のイベントを %S に取り込みました（%S 経路）\nID: %S\n\nマップを開き直すとエディタ表示が更新されます。",
+			"%d 件のイベントを %S に取り込みました（%S 経路）\nID: %S",
 			result.imported, result.mapid, result.route || "unknown", result.ids
 		);
+		if( result.route == "editor"){
+			msg += "\n\nエディタ表示を更新しました。";
+		}else{
+			msg += "\n\nマップを開き直すとエディタ表示が更新されます。";
+		}
 		Dialogs.notice( { msg=msg, icon="\ue86c" });
 	},
 
 	function confirmImport( report){
-		local msg = formatPreview( report);
+		local msg = sprintf(
+			"対象マップ: %S\nイベント数: %d（取り込み可: %d）",
+			report.mapid || "(未指定)", report.eventCount, report.importableCount
+		);
 		if( length( report.warnings)){
 			msg = "警告があります。\n\n" + msg;
 		}
 		msg += "\n\n取り込みますか？";
-		return Dialogs.confirm( { msg=msg, icon="\ue2c6", yestxt="取り込む", notxt="キャンセル" });
+		return Dialogs.confirm( { msg=msg, yestxt="取り込む", notxt="キャンセル" });
 	},
 
-	function importValidated( report, sourceLabel){
+	function importValidated( report, sourceLabel, raw=null){
 		if( !report.ok){
 			showErrorNotice( formatErrors( report));
 			return false;
@@ -105,6 +102,11 @@ ImportDialog <- {
 		try{
 			local result = ScenarioImporter.importFromScenario( report.scenario, sourceLabel);
 			if( result.imported > 0){
+				local historyRaw = raw;
+				if( !length( historyRaw) && ("scenario" in report)){
+					historyRaw = encodeJSON( report.scenario, 5);
+				}
+				ScenarioImporter.appendHistory( historyRaw, sourceLabel, result, report);
 				showResultNotice( result);
 				return true;
 			}
@@ -134,9 +136,7 @@ ImportDialog <- {
 
 	function runPaste(){
 		local data = { json = readClipboardJson() };
-		local popup = ImportPastePopup( ::loadSKView( PropertyEditPopup_OK.POPUPUIPATH), data);
-		popup.show();
-		return popup.ret;
+		return ImportPastePopup.runDialog( data);
 	},
 
 	function pickJsonFile(){
@@ -155,10 +155,13 @@ ImportDialog <- {
 		local path = pickJsonFile();
 		if( !length( path)) return false;
 		try{
-			local scenario = ScenarioImporter.loadScenarioJson( path);
+			local f = FileRef( path);
+			local raw = f.load();
+			if( typeof( raw) != SS_STRING) raw = string( raw);
+			local scenario = ScenarioImporter.parseScenarioText( raw);
 			local report = ScenarioImporter.validateScenario( scenario);
 			report.scenario <- scenario;
-			return importValidated( report, path);
+			return importValidated( report, path, raw);
 		}catch( ex){
 			printf( "[aiscenario] file load failed: %S\n", ex);
 			printexception( ex);
@@ -167,32 +170,78 @@ ImportDialog <- {
 		return false;
 	},
 
+	function runHistory(){
+		local entries = ScenarioImporter.loadHistory();
+		if( !length( entries)){
+			showErrorNotice( "取り込み履歴がありません。\n\n貼り付けまたはファイル選択で import 成功すると履歴に保存されます。");
+			return false;
+		}
+		local menu = [];
+		foreach( i, entry in entries){
+			menu.push( {
+				id = string( i),
+				lbl = { "ja":ScenarioImporter.formatHistoryLabel( entry), "en":ScenarioImporter.formatHistoryLabel( entry) },
+				icon = "\ue889",
+			});
+		}
+		local choice = MenuPopup.run( menu);
+		if( !choice) return false;
+		local idx = int( choice.id);
+		if( idx < 0 || idx >= entries.len()) return false;
+		local entry = entries[idx];
+		local raw = entry.raw || "";
+		local report = ScenarioImporter.validateText( raw);
+		local label = "history:" + (entry.savedAtText || entry.id || string( idx));
+		return importValidated( report, label, raw);
+	},
+
 	function run(){
 		local choice = MenuPopup.run( [
 			{ id="paste", lbl={ "ja":"JSON を貼り付け", "en":"Paste JSON" }, icon="\ue157" },
 			{ id="file", lbl={ "ja":"JSON ファイルを選択", "en":"Select JSON file" }, icon="\ue2c6" },
+			{ id="history", lbl={ "ja":"履歴", "en":"History" }, icon="\ue889" },
 		]);
 		if( !choice) return false;
 		if( choice.id == "file") return runFile();
+		if( choice.id == "history") return runHistory();
 		return runPaste();
 	},
 };
 
+ImportDialog.PASTE_PROPDEF.menufunc <- function( cmd, d){
+	switch( cmd.id){
+	case "clip":
+		d.json = ImportDialog.readClipboardJson();
+		return d;
+	case "preview":
+		ImportDialog.showPreviewOnly( d.json || "");
+		return null;
+	}
+	return null;
+};
+
 class ImportPastePopup extends PropertyEditPopup_OK
 {
-	constructor( v, data){
-		minheight = ImportDialog.POPUP_MIN_HEIGHT;
-		super( v, ImportDialog.PASTE_PROPDEF, data, this);
-		tuneJsonEditor();
+	static function runDialog( data){
+		local p = ImportPastePopup(
+			::loadSKView( PropertyEditPopup_OK.POPUPUIPATH),
+			ImportDialog.PASTE_PROPDEF,
+			data,
+			null
+		);
+		p.minheight = ImportDialog.POPUP_MIN_HEIGHT;
+		p.proplist.ref = p;
+		p.tuneJsonEditor();
+		p.show();
+		return p.ret;
 	}
 
 	//	日本語表示・長文 JSON・マウスホイールスクロール向け調整
 	function tuneJsonEditor(){
 		if( !proplist || !proplist.listview) return;
 		foreach( row in proplist.listview.rows){
-			local pv = row.ref;
-			if( !pv) continue;
-			local edit = pv.findChild( "edit");
+			//	listview.rows は行 View。row.ref は pid などの値になる場合がある。
+			local edit = row.findChild( "edit");
 			if( !edit) continue;
 			edit.updateMaxLength( 65536);
 			if( edit.textedit){
@@ -215,7 +264,7 @@ class ImportPastePopup extends PropertyEditPopup_OK
 		if( e.src["name"] == "btn_apply"){
 			e.consume();
 			local report = ScenarioImporter.validateText( data.json || "");
-			if( ImportDialog.importValidated( report, "paste")){
+			if( ImportDialog.importValidated( report, "paste", data.json || "")){
 				ret = 1;
 				close();
 			}
