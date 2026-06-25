@@ -7,7 +7,7 @@ local srcdir = dirname( callee().getSourceName());
 pluginfo <- {
 	name : { "ja":"AI Scenario Importer", "en":"AI Scenario Importer" }
 	auther : "matrix9neonebuchadnezzar2199-sketch"
-	ver : "0.3.2"
+	ver : "0.3.3"
 	tags : [ "editor", "aiscenario" ]
 	order : 100
 	lock : false
@@ -38,7 +38,7 @@ function loadPlugin( args, opt){
 				ImportDialog.run();
 			},
 		});
-		printf( "[aiscenario] plugin loaded (v0.3.2 paste/file/history import)\n");
+		printf( "[aiscenario] plugin loaded (v0.3.3 paste/history tabs)\n");
 	}, 100);
 
 	return true;
