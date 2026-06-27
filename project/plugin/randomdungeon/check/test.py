@@ -176,6 +176,8 @@ def startup_regression_checks() -> list[CheckResult]:
         check("G101" not in src_text, "Phase 1 source does not touch G101"),
         check("G102" not in src_text, "Phase 1 source does not touch G102"),
         check("G110" not in src_text, "Phase 1 source does not touch unlock GVARs"),
+        check("cmd_showmsg" not in src_text, "Phase 1 generated events do not run message commands"),
+        check('role <- "enemy"' not in src_text, "Phase 1 generated enemies are non-reactive markers"),
         check(".find(" not in src_text, "Phase 1 source avoids string.find"),
         check(".insert(" not in src_text, "Phase 1 source avoids array.insert"),
         check("super(" not in src_text, "Phase 1 source avoids super constructor pitfalls"),

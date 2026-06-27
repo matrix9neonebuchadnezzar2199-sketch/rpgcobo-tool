@@ -104,13 +104,13 @@ RandomDungeon.Apply <- {
 	function buildEvent( entity, draft){
 		switch( entity.type ){
 		case "entrance":
-			return makeCustomEvent( entity, "*rd-entrance", "CV000", "入口", "ランダムダンジョン入口" );
+			return makeMarkerEvent( entity, "*rd-entrance", "CV000" );
 		case "exit":
-			return makeCustomEvent( entity, "*rd-exit", "CV000", "出口", "ランダムダンジョン出口" );
+			return makeMarkerEvent( entity, "*rd-exit", "CV000" );
 		case "chest":
-			return makeCustomEvent( entity, "*rd-chest", "CV036", "宝箱", "Phase 1: 報酬処理なし" );
+			return makeMarkerEvent( entity, "*rd-chest", "CV036" );
 		case "enemy":
-			return makeEnemyEvent( entity );
+			return makeMarkerEvent( entity, "*rd-enemy", "CV000" );
 		}
 		return null;
 	},
@@ -129,26 +129,21 @@ RandomDungeon.Apply <- {
 		};
 	},
 
-	function makeCustomEvent( entity, name, mdlid, title, msg){
+	function makeMarkerEvent( entity, name, mdlid){
 		local ev = makeBaseEvent( entity, name, mdlid);
 		ev.role <- "custom";
 		ev.page <- [
 			{
-				trigger = 3,
-				cmdblock = [
-					{ cmd="cmd_showmsg", msg=title + ": " + msg },
-				],
+				memo = "Random Dungeon Phase 1 marker",
+				moveaction = "stop",
+				movespd = 4,
+				standani = { id="stand" },
+				trigger = 0,
+				pararun = false,
+				reqs = null,
+				cmdblock = [],
 			},
 		];
-		return ev;
-	},
-
-	function makeEnemyEvent( entity){
-		local ev = makeBaseEvent( entity, "*rd-enemy", "CV000");
-		ev.role <- "enemy";
-		ev.gid <- ("gid" in entity.params) ? entity.params.gid : 1;
-		ev.moveaction <- "chase1";
-		ev.reqs0 <- null;
 		return ev;
 	},
 
