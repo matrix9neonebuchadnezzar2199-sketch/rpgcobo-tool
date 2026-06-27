@@ -29,6 +29,7 @@ RandomDungeon.Dialog <- {
 			{ pid="bossRoom", lbl="ボス部屋を作成", type=BOOL },
 			{ pid="floorTileId", lbl="床タイルID", type=SCALAR, range=(0,4096) },
 			{ pid="wallTileId", lbl="壁タイルID", type=SCALAR, range=(0,4096) },
+			{ pid="preserveTerrain", lbl="既存地形を保護", type=BOOL },
 		],
 	},
 
@@ -54,7 +55,10 @@ RandomDungeon.Dialog <- {
 		}
 
 		try{
-			local result = RandomDungeon.Apply.applyDraft( editor, draft, { overwriteMode="merge" } );
+			local result = RandomDungeon.Apply.applyDraft( editor, draft, {
+				overwriteMode = "merge",
+				preserveTerrain = ret.preserveTerrain,
+			} );
 			Dialogs.notice( {
 				msg = sprintf( "ランダムダンジョンを反映しました。\nタイル: %d\nイベント: %d\n\nUndo 1回で生成前に戻せます。", result.tiles, result.events ),
 				icon = "\ue86c",
@@ -77,6 +81,7 @@ RandomDungeon.Dialog <- {
 	function makeInitialData( editor){
 		local width = Math.min( 80, editor.bw.w );
 		local depth = Math.min( 80, editor.bw.d );
+		local tileGuess = guessThemeTiles( editor, width, depth);
 		return {
 			seed = "ruin-2026",
 			width = width,
@@ -90,9 +95,46 @@ RandomDungeon.Dialog <- {
 			treasureCount = 3,
 			enemyDensity = "normal",
 			bossRoom = true,
-			floorTileId = 1,
-			wallTileId = 129,
+			floorTileId = tileGuess.floorTileId,
+			wallTileId = tileGuess.wallTileId,
+			preserveTerrain = true,
 		};
+	},
+
+	function guessThemeTiles( editor, width, depth){
+		local counts = {};
+		for( local z = 0; z < depth; z += 4){
+			for( local x = 0; x < width; x += 4){
+				local tile = topBlockAt( editor, x, z);
+				if( tile){
+					counts[tile] <- (counts[tile] || 0) + 1;
+				}
+			}
+		}
+		local floorTile = mostCommonBlock( counts, 1);
+		return {
+			floorTileId = floorTile,
+			wallTileId = floorTile,
+		};
+	},
+
+	function topBlockAt( editor, x, z){
+		for( local y = editor.bw.h-1; y >= 0; y --){
+			local blk = editor.bw.blockat( x, y, z);
+			if( blk) return blk;
+		}
+		return 0;
+	},
+
+	function mostCommonBlock( counts, fallback){
+		local best = fallback, bestCount = 0;
+		foreach( blk, count in counts){
+			if( count > bestCount){
+				best = int( blk);
+				bestCount = count;
+			}
+		}
+		return best;
 	},
 
 	function makeConfig( editor, data){
@@ -112,6 +154,7 @@ RandomDungeon.Dialog <- {
 			themeId = "classic_stone",
 			floorTileId = data.floorTileId,
 			wallTileId = data.wallTileId,
+			preserveTerrain = data.preserveTerrain,
 		};
 	},
 

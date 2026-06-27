@@ -55,6 +55,16 @@ local oldEvents = snapshotEventsInRegion(editor.data.event, region);
 2. `draft.tileMask` を `BlockOperation.boxPaintBlock` または一括 `drawWorld` で描画
 3. `editor.canvas.loadInCameraMesh(20)` を `while(...){ suspend(); }`
 
+### 3.2.1 Phase 1.5 terrain preservation
+
+Phase 1.5 では既存マップへの馴染ませを優先し、`preserveTerrain=true` をデフォルトとする。Apply 時は、生成 tile patch の位置に既存の非空ブロックがあり、かつ生成 tileId と異なる場合は上書きしない。
+
+目的:
+
+- 既存地形・装飾・段差を不用意に塗り潰さない。
+- 生成床/壁が既存地形の上に不自然な色面として重なるのを抑える。
+- Phase 2 以降の本格テーマ選択 UI を入れるまで、現在マップの表面ブロック推定を初期値として使う。
+
 ### 3.3 Undo
 
 単一 `editor.submitOp(redo, undo)`:

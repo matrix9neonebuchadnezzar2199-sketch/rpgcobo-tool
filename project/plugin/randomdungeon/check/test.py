@@ -126,6 +126,7 @@ def startup_regression_checks() -> list[CheckResult]:
     loader_sk = read_text(PLUGIN_ROOT / "src" / "dungeon-loader.sk")
     core_sk = read_text(PLUGIN_ROOT / "src" / "randomdungeon.sk")
     dialog_sk = read_text(PLUGIN_ROOT / "src" / "dungeon-dialog.sk")
+    apply_sk = read_text(PLUGIN_ROOT / "src" / "dungeon-apply.sk")
     src_text = "\n".join(
         read_text(path)
         for path in sorted((PLUGIN_ROOT / "src").glob("*.sk"))
@@ -189,6 +190,23 @@ def startup_regression_checks() -> list[CheckResult]:
             and "Seed:" not in dialog_sk
             and "マップに反映しますか？" in dialog_sk,
             "confirmation dialog stays compact and avoids button overlap",
+        ),
+        check(
+            "guessThemeTiles" in dialog_sk
+            and "topBlockAt" in dialog_sk
+            and "floorTileId = tileGuess.floorTileId" in dialog_sk,
+            "dialog initializes tile IDs from current map surface",
+        ),
+        check(
+            "preserveTerrain" in dialog_sk
+            and "既存地形を保護" in dialog_sk
+            and "preserveTerrain = ret.preserveTerrain" in dialog_sk,
+            "dialog exposes preserve terrain option",
+        ),
+        check(
+            "shouldPreserveBlock" in apply_sk
+            and "preserveTerrain" in apply_sk,
+            "apply can preserve existing terrain blocks",
         ),
     ]
 

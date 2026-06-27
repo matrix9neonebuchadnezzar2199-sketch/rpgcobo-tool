@@ -19,9 +19,10 @@ RandomDungeon.Apply <- {
 
 		local snapshot = makeSnapshot( editor, draft);
 		local eventPlans = buildEventPlans( editor.data.event, draft);
+		local applyOptions = clone options;
 		local self = this, ed = editor;
 		local redo = [@(){
-			self.applyTiles( ed, draft);
+			self.applyTiles( ed, draft, applyOptions);
 			self.applyEvents( ed, eventPlans);
 			self.refreshEditor( ed);
 		}];
@@ -47,12 +48,23 @@ RandomDungeon.Apply <- {
 		return { oldBlocks=oldBlocks };
 	},
 
-	function applyTiles( editor, draft){
+	function applyTiles( editor, draft, options=null){
+		options = options || {};
+		local preserveTerrain = !!options["preserveTerrain"];
 		local pos = IPos( 0, 0, 0, 0);
 		foreach( patch in draft.tilePatches){
+			if( preserveTerrain && shouldPreserveBlock( editor, patch)){
+				continue;
+			}
 			pos.x = patch.x; pos.y = patch.y; pos.z = patch.z;
 			editor.bw.placeBlock( pos, patch.tileId, 0);
 		}
+	},
+
+	function shouldPreserveBlock( editor, patch){
+		local current = editor.bw.blockat( patch.x, patch.y, patch.z);
+		if( !current) return false;
+		return current != patch.tileId;
 	},
 
 	function restoreTiles( editor, snapshot){
