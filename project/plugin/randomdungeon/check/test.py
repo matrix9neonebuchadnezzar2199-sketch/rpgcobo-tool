@@ -123,6 +123,7 @@ def plugin_json_checks() -> list[CheckResult]:
 def startup_regression_checks() -> list[CheckResult]:
     """Check guards for the startup failure class observed in Phase 1."""
     plugin_sk = read_text(PLUGIN_ROOT / "plugin.sk")
+    loader_sk = read_text(PLUGIN_ROOT / "src" / "dungeon-loader.sk")
     core_sk = read_text(PLUGIN_ROOT / "src" / "randomdungeon.sk")
     src_text = "\n".join(
         read_text(path)
@@ -141,14 +142,20 @@ def startup_regression_checks() -> list[CheckResult]:
             "plugin.sk exposes visible RD menu",
         ),
         check(
-            "_rdEnsureLoaded" in plugin_sk
-            and "DungeonDialog.run();" in plugin_sk,
-            "plugin.sk lazy-loads Phase 1 implementation on menu action",
-            "Menu visibility stays decoupled from source loading; click loads the implementation.",
+            "_rdEnsureLoaded" not in plugin_sk
+            and "dungeon-loader.sk" in plugin_sk
+            and "RandomDungeonLoader.run" in plugin_sk,
+            "plugin.sk delegates lazy loading to dungeon-loader",
+            "PluginDialog compiles plugin.sk for listing; complex loading logic stays in src/dungeon-loader.sk.",
         ),
         check(
-            "Dialogs.notice" in plugin_sk,
+            "Dialogs.notice" in loader_sk,
             "plugin menu action has visible load-failure notice",
+        ),
+        check(
+            "DungeonDialog.run();" in loader_sk
+            and "ensureLoaded" in loader_sk,
+            "dungeon-loader runs DungeonDialog after source load",
         ),
         check(
             'where = ["editor_map"]' not in plugin_sk,

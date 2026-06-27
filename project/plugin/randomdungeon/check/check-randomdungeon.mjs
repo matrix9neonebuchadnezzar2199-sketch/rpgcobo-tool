@@ -95,10 +95,12 @@ if (exists(pluginSkPath, "plugin.sk exists")) {
   } else {
     fail("plugin-sk: global edit menu visibility", "Phase 1 menu should match aiscenario visibility while menu scope is investigated");
   }
-  if (sk.includes("_rdEnsureLoaded") && sk.includes("DungeonDialog.run();") && sk.includes("[RD]")) {
-    pass("phase1-plugin: RD menu lazy-loads DungeonDialog");
+  const loaderPath = path.join(PLUGIN_ROOT, "src/dungeon-loader.sk");
+  const loader = fs.existsSync(loaderPath) ? fs.readFileSync(loaderPath, "utf8") : "";
+  if (sk.includes("dungeon-loader.sk") && sk.includes("RandomDungeonLoader.run") && loader.includes("DungeonDialog.run();") && sk.includes("[RD]")) {
+    pass("phase1-plugin: RD menu delegates lazy-load to DungeonDialog");
   } else {
-    fail("phase1-plugin", "plugin.sk must expose [RD] menu and lazy-load DungeonDialog");
+    fail("phase1-plugin", "plugin.sk must expose [RD] menu and delegate lazy-load to DungeonDialog");
   }
   if (sk.includes('module.hookAction( "editor_postload"')) {
     pass("visibility-guard: simple editor_postload menu probe");
@@ -147,6 +149,7 @@ if (phase1Draft) {
 // --- Phase 1 source files ---
 const phase1SourceFiles = [
   "src/randomdungeon.sk",
+  "src/dungeon-loader.sk",
   "src/dungeon-rng.sk",
   "src/dungeon-generator.sk",
   "src/dungeon-validation.sk",
