@@ -131,25 +131,23 @@ def startup_regression_checks() -> list[CheckResult]:
 
     return [
         check(
-            'module.hookAction( "editor_postload"' not in plugin_sk,
-            "randomdungeon does not initialize through editor_postload",
-            "Phase 1 startup fix keeps loadPlugin direct-init to avoid hook-order crash.",
+            'module.hookAction( "editor_postload"' in plugin_sk,
+            "randomdungeon uses simple editor_postload visibility probe",
+            "Phase 1 reconnects functionality after PluginDialog/menu visibility is confirmed.",
         ),
         check(
-            "src/randomdungeon.sk" in plugin_sk
-            and "src/dungeon-dialog.sk" in plugin_sk
-            and "randomdungeon_generate" in plugin_sk,
-            "plugin.sk loads Phase 1 sources and menu",
+            "randomdungeon_generate" in plugin_sk
+            and "[RD]" in plugin_sk,
+            "plugin.sk exposes visible RD menu probe",
         ),
         check(
-            plugin_sk.find("::skstudio.registerMenu") < plugin_sk.find("_rdEnsureLoaded();"),
-            "plugin.sk registers menu before eager source load",
-            "The menu must remain visible even if Phase 1 source loading fails.",
+            "_rdEnsureLoaded" not in plugin_sk,
+            "plugin.sk keeps top-level simple for PluginDialog",
+            "PluginDialog compiles plugin.sk for listing, so complex lazy loaders are avoided here.",
         ),
         check(
-            "::skstudio.updateAllMenus();" in plugin_sk,
-            "plugin.sk rebuilds editor menus after registration",
-            "registerMenu only updates the registry; updateAllMenus is required for visible editor menus.",
+            "Dialogs.notice" in plugin_sk,
+            "plugin menu action has visible fallback notice",
         ),
         check(
             'where = ["editor_map"]' not in plugin_sk,
@@ -227,7 +225,8 @@ def main() -> int:
     failures = [result for result in results if not result.ok]
     for result in results:
         status = "PASS" if result.ok else "FAIL"
-        suffix = f" - {result.detail}" if result.detail else ""
+        detail = result.detail.replace("\u2014", "-") if result.detail else ""
+        suffix = f" - {detail}" if detail else ""
         print(f"{status} {result.name}{suffix}")
 
     print(f"\nRandom Dungeon pre-startup check: {len(results) - len(failures)} pass, {len(failures)} fail")
