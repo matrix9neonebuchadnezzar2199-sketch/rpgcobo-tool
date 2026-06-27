@@ -1,5 +1,5 @@
 //
-//	Random Dungeon Generator — ランダムダンジョン生成（Phase 0: 設計・骨格）
+//	Random Dungeon Generator — ランダムダンジョン生成（Phase 1）
 //
 
 local srcdir = dirname( callee().getSourceName());
@@ -7,13 +7,13 @@ local srcdir = dirname( callee().getSourceName());
 pluginfo <- {
 	name : { "ja":"ランダムダンジョン生成", "en":"Random Dungeon Generator" }
 	auther : "matrix9neonebuchadnezzar2199-sketch"
-	ver : "0.1.0-design"
+	ver : "0.1.0-phase1"
 	tags : [ "editor", "randomdungeon", "map" ]
 	order : 110
 	lock : false
 	desc : {
-		"ja":"半自動ダンジョン生成・プレビュー・確定反映（設計 Phase 0）",
-		"en":"Semi-auto dungeon generation with preview and commit (design Phase 0)",
+		"ja":"半自動ダンジョン生成・プレビュー・確定反映",
+		"en":"Semi-auto dungeon generation with preview and commit",
 	}
 	props : []
 }
@@ -25,13 +25,13 @@ function loadPlugin( args, opt){
 	}
 
 	module.hookAction( "editor_postload", @(){
-		//	Phase 1 で順次ロード:
-		//	::runsk( srcdir + "/DungeonModel.sk");
-		//	::runsk( srcdir + "/DungeonGenerator.sk");
-		//	::runsk( srcdir + "/DungeonValidator.sk");
-		//	::runsk( srcdir + "/DungeonRuntimeBuilder.sk");
-		//	::runsk( srcdir + "/DungeonApply.sk");
-		//	::runsk( srcdir + "/DungeonDialog.sk");
+		::runsk( srcdir + "/src/randomdungeon.sk");
+		::runsk( srcdir + "/src/dungeon-rng.sk");
+		::runsk( srcdir + "/src/dungeon-theme.sk");
+		::runsk( srcdir + "/src/dungeon-validation.sk");
+		::runsk( srcdir + "/src/dungeon-generator.sk");
+		::runsk( srcdir + "/src/dungeon-apply.sk");
+		::runsk( srcdir + "/src/dungeon-dialog.sk");
 
 		::skstudio.registerMenu( {
 			uid = "randomdungeon_generate",
@@ -40,17 +40,10 @@ function loadPlugin( args, opt){
 			where = ["editor_map"],
 			lbl = { "ja":"ランダムダンジョン生成", "en":"Random Dungeon Generator" },
 			func = @( m){
-				if( "DungeonDialog" in ::getroottable()){
-					DungeonDialog.run();
-				}else{
-					Dialogs.notice( {
-						"ja":"ランダムダンジョン生成は設計 Phase 0 です。\n詳細: project/plugin/randomdungeon/README.md",
-						"en":"Random Dungeon Generator is in design Phase 0.\nSee project/plugin/randomdungeon/README.md",
-					});
-				}
+				DungeonDialog.run();
 			},
 		});
-		printf( "[randomdungeon] plugin loaded (v0.1.0-design)\n");
+		printf( "[randomdungeon] plugin loaded (v0.1.0-phase1)\n");
 	}, 110);
 
 	return true;

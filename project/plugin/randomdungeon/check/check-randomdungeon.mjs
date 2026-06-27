@@ -95,6 +95,11 @@ if (exists(pluginSkPath, "plugin.sk exists")) {
   } else {
     fail("plugin-sk: editor_map scope", pluginSkPath);
   }
+  if (sk.includes("DungeonDialog.run();") && !sk.includes("設計 Phase 0")) {
+    pass("phase1-plugin: menu opens DungeonDialog");
+  } else {
+    fail("phase1-plugin", "plugin.sk must open DungeonDialog and must not be Phase 0 notice only");
+  }
 }
 
 // --- sample JSON ---
@@ -110,6 +115,57 @@ if (draft) {
   );
   if (draft.rooms?.length >= 2) pass("draft-schema: rooms array");
   else fail("draft-schema: rooms", "need >= 2 rooms");
+}
+
+const phase1Draft = readJson(
+  path.join(PLUGIN_ROOT, "sample/draft-phase1-classic.json"),
+  "sample/draft-phase1-classic.json"
+);
+if (phase1Draft) {
+  mustHaveKeys(
+    phase1Draft,
+    ["schema", "schemaVersion", "generatorVersion", "seed", "config", "bounds", "rooms", "connections", "tilePatches", "entities", "validation"],
+    "phase1-draft-schema: required top-level keys"
+  );
+  if (phase1Draft.validation?.ok === true) pass("phase1-draft-validation: ok");
+  else fail("phase1-draft-validation", "validation.ok must be true");
+  if (phase1Draft.rooms?.some((r) => r.type === "entrance")) pass("phase1-draft: entrance room");
+  else fail("phase1-draft: entrance room", "missing entrance");
+  if (phase1Draft.rooms?.some((r) => r.type === "exit" || r.type === "boss")) pass("phase1-draft: exit or boss");
+  else fail("phase1-draft: exit or boss", "missing exit/boss");
+  if (phase1Draft.entities?.some((e) => e.type === "chest")) pass("phase1-draft: chest entity");
+  else fail("phase1-draft: chest entity", "missing chest");
+  if (phase1Draft.entities?.some((e) => e.type === "enemy")) pass("phase1-draft: enemy entity");
+  else fail("phase1-draft: enemy entity", "missing enemy");
+}
+
+// --- Phase 1 source files ---
+const phase1SourceFiles = [
+  "src/randomdungeon.sk",
+  "src/dungeon-rng.sk",
+  "src/dungeon-generator.sk",
+  "src/dungeon-validation.sk",
+  "src/dungeon-dialog.sk",
+  "src/dungeon-apply.sk",
+  "src/dungeon-theme.sk",
+];
+for (const f of phase1SourceFiles) {
+  exists(path.join(PLUGIN_ROOT, f), `phase1-src-exists: ${f}`);
+}
+
+const phase1SourceText = phase1SourceFiles
+  .map((f) => fs.existsSync(path.join(PLUGIN_ROOT, f)) ? fs.readFileSync(path.join(PLUGIN_ROOT, f), "utf8") : "")
+  .join("\n");
+for (const needle of ["cmd_itemop", "G101", "G102", "G110", "G111", "G112"]) {
+  if (!phase1SourceText.includes(needle)) {
+    pass(`phase1-scope: no ${needle}`);
+  } else {
+    fail(`phase1-scope: forbidden ${needle}`, "Phase 1 source must not touch reward GVAR/item ops");
+  }
+}
+for (const needle of ["RandomDungeon.RNG", "RandomDungeon.Generator", "RandomDungeon.Validation", "RandomDungeon.Dialog", "RandomDungeon.Apply"]) {
+  if (phase1SourceText.includes(needle)) pass(`phase1-symbol: ${needle}`);
+  else fail(`phase1-symbol: ${needle}`, "missing Phase 1 symbol");
 }
 
 readJson(path.join(PLUGIN_ROOT, "sample/gvar-dungeon.json"), "sample/gvar-dungeon.json");
