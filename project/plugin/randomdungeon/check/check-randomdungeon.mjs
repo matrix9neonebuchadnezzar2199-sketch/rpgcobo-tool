@@ -95,10 +95,10 @@ if (exists(pluginSkPath, "plugin.sk exists")) {
   } else {
     fail("plugin-sk: global edit menu visibility", "Phase 1 menu should match aiscenario visibility while menu scope is investigated");
   }
-  if (sk.includes("Dialogs.notice") && sk.includes("[RD]")) {
-    pass("visibility-probe: RD menu shows fallback notice");
+  if (sk.includes("_rdEnsureLoaded") && sk.includes("DungeonDialog.run();") && sk.includes("[RD]")) {
+    pass("phase1-plugin: RD menu lazy-loads DungeonDialog");
   } else {
-    fail("visibility-probe", "plugin.sk must expose [RD] menu with visible fallback notice");
+    fail("phase1-plugin", "plugin.sk must expose [RD] menu and lazy-load DungeonDialog");
   }
   if (sk.includes('module.hookAction( "editor_postload"')) {
     pass("visibility-guard: simple editor_postload menu probe");

@@ -138,16 +138,17 @@ def startup_regression_checks() -> list[CheckResult]:
         check(
             "randomdungeon_generate" in plugin_sk
             and "[RD]" in plugin_sk,
-            "plugin.sk exposes visible RD menu probe",
+            "plugin.sk exposes visible RD menu",
         ),
         check(
-            "_rdEnsureLoaded" not in plugin_sk,
-            "plugin.sk keeps top-level simple for PluginDialog",
-            "PluginDialog compiles plugin.sk for listing, so complex lazy loaders are avoided here.",
+            "_rdEnsureLoaded" in plugin_sk
+            and "DungeonDialog.run();" in plugin_sk,
+            "plugin.sk lazy-loads Phase 1 implementation on menu action",
+            "Menu visibility stays decoupled from source loading; click loads the implementation.",
         ),
         check(
             "Dialogs.notice" in plugin_sk,
-            "plugin menu action has visible fallback notice",
+            "plugin menu action has visible load-failure notice",
         ),
         check(
             'where = ["editor_map"]' not in plugin_sk,
