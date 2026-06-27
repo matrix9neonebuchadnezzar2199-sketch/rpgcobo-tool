@@ -46,6 +46,7 @@ function loadPlugin( args, opt){
 			DungeonDialog.run();
 		},
 	});
+	::skstudio.updateAllMenus();
 
 	printf( "[randomdungeon] plugin loaded (v0.1.0-phase1 direct)\n");
 	return true;

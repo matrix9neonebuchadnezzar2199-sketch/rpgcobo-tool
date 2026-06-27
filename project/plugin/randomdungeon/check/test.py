@@ -142,6 +142,11 @@ def startup_regression_checks() -> list[CheckResult]:
             "plugin.sk loads Phase 1 sources and menu",
         ),
         check(
+            "::skstudio.updateAllMenus();" in plugin_sk,
+            "plugin.sk rebuilds editor menus after registration",
+            "registerMenu only updates the registry; updateAllMenus is required for visible editor menus.",
+        ),
+        check(
             "import PropertyType" not in core_sk,
             "core namespace file has no UI import",
             "randomdungeon.sk must stay host-API-light; UI imports belong in dungeon-dialog.sk.",
