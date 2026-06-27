@@ -2,7 +2,7 @@
 //	Random Dungeon Generator — namespace and common helpers.
 //
 
-if( !("RandomDungeon" in ::getroottable())) RandomDungeon <- {};
+if( !::["RandomDungeon"]) ::RandomDungeon <- {};
 
 RandomDungeon.VERSION <- "0.1.0-phase1";
 

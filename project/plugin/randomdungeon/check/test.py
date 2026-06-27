@@ -179,6 +179,7 @@ def startup_regression_checks() -> list[CheckResult]:
         check(".find(" not in src_text, "Phase 1 source avoids string.find"),
         check(".insert(" not in src_text, "Phase 1 source avoids array.insert"),
         check("super(" not in src_text, "Phase 1 source avoids super constructor pitfalls"),
+        check("getroottable()" not in src_text, "Phase 1 source avoids getroottable namespace checks"),
     ]
 
 
