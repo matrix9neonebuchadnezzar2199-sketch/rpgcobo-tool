@@ -142,6 +142,11 @@ def startup_regression_checks() -> list[CheckResult]:
             "plugin.sk loads Phase 1 sources and menu",
         ),
         check(
+            plugin_sk.find("::skstudio.registerMenu") < plugin_sk.find("_rdEnsureLoaded();"),
+            "plugin.sk registers menu before eager source load",
+            "The menu must remain visible even if Phase 1 source loading fails.",
+        ),
+        check(
             "::skstudio.updateAllMenus();" in plugin_sk,
             "plugin.sk rebuilds editor menus after registration",
             "registerMenu only updates the registry; updateAllMenus is required for visible editor menus.",
