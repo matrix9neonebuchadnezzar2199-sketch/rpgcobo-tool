@@ -101,6 +101,19 @@ importedEvents.push({ id=evid, event=ev });
 
 経路 A では即 `canvas.placeEventGizmo(evid, ev)`。
 
+### 4.2.1 Phase 1 marker policy
+
+Phase 1 の生成イベントは runtime 動作確認用ではなく、マップ上の配置確認用 marker として扱う。
+
+| entity type | Phase 1 role | runtime 挙動 |
+|-------------|--------------|--------------|
+| `entrance` | `custom` | `trigger=0`, `cmdblock=[]` |
+| `exit` | `custom` | `trigger=0`, `cmdblock=[]` |
+| `chest` | `custom` | `trigger=0`, `cmdblock=[]` |
+| `enemy` | `custom` | `trigger=0`, `cmdblock=[]` |
+
+Phase 1 では `itemchest` / `enemy` ロールを使わない。理由は、宝箱接触で未完成の報酬コマンドが実行されたり、敵接触で戦闘・消滅の runtime 挙動へ入るのを避けるため。`cmd_showmsg` も Phase 1 生成イベントからは出力しない。
+
 ### 4.3 ギズモ同期
 
 `ScenarioImporter.syncImportedEventsToEditor` と同一:
@@ -154,6 +167,8 @@ v0.1 では **生成範囲 ⊆ 現 bw** を UI で強制し、リサイズは Ph
 | キャンセル | 不変 | 不変 |
 
 プレビュー用 `DungeonDraft` は `DungeonDialog` のインスタンス変数 `currentDraft` に保持。
+
+Phase 1 の確認ダイアログは固定サイズの `Dialogs.confirm` を使うため、本文は 3〜4 行以内に制限する。ボタン領域と重ならないことを UI 確認の必須項目とする。
 
 ---
 

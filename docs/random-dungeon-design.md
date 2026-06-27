@@ -163,6 +163,8 @@ flowchart TD
 | 交換 NPC | `clerk` + `storeid` |
 | 解放ゲート | `custom` + `reqs` on `G11x` |
 
+**Phase 1 の実装制約**: ランタイム報酬ループをまだ接続しないため、生成される入口・出口・宝箱・敵はすべて `custom` の非反応 marker とする。`trigger=0` / `cmdblock=[]` とし、触れても `EventRunner` が動かない状態を Phase 1 の完了条件に含める。`itemchest` / `enemy` / `cmd_showmsg` / G101/G102 連携は Phase 2 で再接続する。
+
 ---
 
 ## 8. UI
@@ -178,6 +180,10 @@ flowchart TD
 
 部屋タイプを色分けオーバーレイ（エディタ canvas 上または 2D ミニマップ `SKView`）。  
 確定前は `DungeonDraft` のみ更新。
+
+### 8.3 確認ダイアログの表示制約
+
+`Dialogs.confirm` / `Dialogs.notice` は固定サイズでボタン領域と本文が重なりやすい。Phase 1 では確認文言を 3〜4 行以内に圧縮し、詳細統計はログまたは将来の専用プレビュー UI へ逃がす。確認本文がボタン・タブ・入力欄と重ならないことを手動確認および `check/test.py` のガード対象にする。
 
 ---
 
