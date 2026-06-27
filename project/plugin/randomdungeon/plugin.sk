@@ -1,0 +1,57 @@
+//
+//	Random Dungeon Generator — ランダムダンジョン生成（Phase 0: 設計・骨格）
+//
+
+local srcdir = dirname( callee().getSourceName());
+
+pluginfo <- {
+	name : { "ja":"ランダムダンジョン生成", "en":"Random Dungeon Generator" }
+	auther : "matrix9neonebuchadnezzar2199-sketch"
+	ver : "0.1.0-design"
+	tags : [ "editor", "randomdungeon", "map" ]
+	order : 110
+	lock : false
+	desc : {
+		"ja":"半自動ダンジョン生成・プレビュー・確定反映（設計 Phase 0）",
+		"en":"Semi-auto dungeon generation with preview and commit (design Phase 0)",
+	}
+	props : []
+}
+
+function loadPlugin( args, opt){
+	if( !::["SKStudio"]) return false;
+	if( !::getResource( "/data/setting.json")){
+		return true;
+	}
+
+	module.hookAction( "editor_postload", @(){
+		//	Phase 1 で順次ロード:
+		//	::runsk( srcdir + "/DungeonModel.sk");
+		//	::runsk( srcdir + "/DungeonGenerator.sk");
+		//	::runsk( srcdir + "/DungeonValidator.sk");
+		//	::runsk( srcdir + "/DungeonRuntimeBuilder.sk");
+		//	::runsk( srcdir + "/DungeonApply.sk");
+		//	::runsk( srcdir + "/DungeonDialog.sk");
+
+		::skstudio.registerMenu( {
+			uid = "randomdungeon_generate",
+			parentid = "menu_edit",
+			block = "*10",
+			where = ["editor_map"],
+			lbl = { "ja":"ランダムダンジョン生成", "en":"Random Dungeon Generator" },
+			func = @( m){
+				if( "DungeonDialog" in ::getroottable()){
+					DungeonDialog.run();
+				}else{
+					Dialogs.notice( {
+						"ja":"ランダムダンジョン生成は設計 Phase 0 です。\n詳細: project/plugin/randomdungeon/README.md",
+						"en":"Random Dungeon Generator is in design Phase 0.\nSee project/plugin/randomdungeon/README.md",
+					});
+				}
+			},
+		});
+		printf( "[randomdungeon] plugin loaded (v0.1.0-design)\n");
+	}, 110);
+
+	return true;
+}
